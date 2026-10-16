@@ -1,0 +1,213 @@
+{
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "name": "objects",
+  "image": "object_atlas.png",
+  "imagewidth": 420,
+  "imageheight": 128,
+  "columns": 0,
+  "margin": 0,
+  "spacing": 0,
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 14,
+  "tiles": [
+    {
+      "id": 0,
+      "x": 0,
+      "y": 0,
+      "width": 26,
+      "height": 128,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 1,
+      "x": 378,
+      "y": 0,
+      "width": 12,
+      "height": 16,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 2,
+      "x": 391,
+      "y": 0,
+      "width": 11,
+      "height": 16,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 3,
+      "x": 283,
+      "y": 0,
+      "width": 26,
+      "height": 39,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 4,
+      "x": 243,
+      "y": 0,
+      "width": 39,
+      "height": 72,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 5,
+      "x": 27,
+      "y": 0,
+      "width": 79,
+      "height": 92,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 6,
+      "x": 180,
+      "y": 0,
+      "width": 62,
+      "height": 77,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 7,
+      "x": 107,
+      "y": 0,
+      "width": 72,
+      "height": 79,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 8,
+      "x": 411,
+      "y": 0,
+      "width": 9,
+      "height": 9,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 9,
+      "x": 327,
+      "y": 0,
+      "width": 16,
+      "height": 16,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 10,
+      "x": 344,
+      "y": 0,
+      "width": 16,
+      "height": 16,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 11,
+      "x": 310,
+      "y": 0,
+      "width": 16,
+      "height": 21,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 12,
+      "x": 361,
+      "y": 0,
+      "width": 16,
+      "height": 16,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    },
+    {
+      "id": 13,
+      "x": 403,
+      "y": 0,
+      "width": 7,
+      "height": 14,
+      "pivot": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "collider": {
+        "type": "none"
+      }
+    }
+  ]
+}

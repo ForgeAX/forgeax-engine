@@ -1,0 +1,409 @@
+{
+  "schemaVersion": "3.0",
+  "templates": {
+    "浅色草地": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          1,
+          2,
+          3,
+          5,
+          18,
+          6,
+          17,
+          7,
+          9,
+          10,
+          11
+        ],
+        "basePieces": 11,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 11,
+      "variant_prob": 0,
+      "graphic_id": [
+        1,
+        2,
+        3,
+        5,
+        18,
+        6,
+        17,
+        7,
+        9,
+        10,
+        11
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "深色草地": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          21,
+          22,
+          23,
+          26,
+          37,
+          38,
+          25,
+          29,
+          27,
+          31,
+          30,
+          33,
+          28,
+          20,
+          34,
+          35
+        ],
+        "basePieces": 12,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 12,
+      "variant_prob": 0,
+      "graphic_id": [
+        21,
+        22,
+        23,
+        26,
+        37,
+        38,
+        25,
+        29,
+        27,
+        31,
+        30,
+        33,
+        28,
+        20,
+        34,
+        35
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "地板": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          40
+        ],
+        "basePieces": 1,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 1,
+      "variant_prob": 0,
+      "graphic_id": [
+        40
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "墙体": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          50,
+          53,
+          55,
+          56,
+          52,
+          57,
+          41
+        ],
+        "basePieces": 7,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 7,
+      "variant_prob": 0,
+      "graphic_id": [
+        50,
+        53,
+        55,
+        56,
+        52,
+        57,
+        41
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "道路": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          58,
+          59,
+          65,
+          63,
+          60,
+          61,
+          64,
+          68,
+          67,
+          69,
+          76,
+          75,
+          73,
+          66
+        ],
+        "basePieces": 13,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 13,
+      "variant_prob": 0,
+      "graphic_id": [
+        58,
+        59,
+        65,
+        63,
+        60,
+        61,
+        64,
+        68,
+        67,
+        69,
+        76,
+        75,
+        73,
+        66
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "湖泊": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          79,
+          80,
+          93,
+          83,
+          96,
+          84,
+          95,
+          88,
+          89,
+          85,
+          86,
+          81,
+          87,
+          78,
+          91,
+          82
+        ],
+        "basePieces": 15,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 15,
+      "variant_prob": 0,
+      "graphic_id": [
+        79,
+        80,
+        93,
+        83,
+        96,
+        84,
+        95,
+        88,
+        89,
+        85,
+        86,
+        81,
+        87,
+        78,
+        91,
+        82
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "田垄": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          99,
+          112,
+          101,
+          102,
+          103,
+          105,
+          107,
+          109,
+          100,
+          108
+        ],
+        "basePieces": 8,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 8,
+      "variant_prob": 0,
+      "graphic_id": [
+        99,
+        112,
+        101,
+        102,
+        103,
+        105,
+        107,
+        109,
+        100,
+        108
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    },
+    "田地": {
+      "terrain_type": "base",
+      "region": "village_idyll",
+      "water_body_id": null,
+      "passability": {
+        "category": "passable",
+        "moveCost": 1,
+        "exploreSpeedMod": 1,
+        "requiredTags": [],
+        "failMoveCost": null,
+        "maxClimbDelta": 1,
+        "blocksLineOfSight": false
+      },
+      "navTerrain": "normal",
+      "ramp": null,
+      "graphic": {
+        "ids": [
+          115,
+          116,
+          117,
+          119,
+          132,
+          120,
+          131,
+          121,
+          123,
+          124,
+          125
+        ],
+        "basePieces": 11,
+        "variantProb": 0,
+        "placement": "random"
+      },
+      "base_pieces": 11,
+      "variant_prob": 0,
+      "graphic_id": [
+        115,
+        116,
+        117,
+        119,
+        132,
+        120,
+        131,
+        121,
+        123,
+        124,
+        125
+      ],
+      "explore_speed_mod": 1,
+      "battle_move_cost": 1
+    }
+  }
+}

@@ -1,0 +1,94 @@
+; FBX 7.4.0 project file
+; Minimal ASCII fixture for the ForgeaX Morph importer integration gate.
+; The Shape -> BlendShapeChannel -> BlendShape -> Geometry links are the
+; standard FBX deformer chain consumed by the pinned ufbx v0.23.0 parser.
+; Source is intentionally text so the fixture is auditable and reproducible.
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+	Creator: "ForgeaX Morph Integration Fixture"
+}
+GlobalSettings:  {
+	Version: 1000
+	Properties70:  {
+		P: "UpAxis", "int", "Integer", "",1
+		P: "UpAxisSign", "int", "Integer", "",1
+		P: "FrontAxis", "int", "Integer", "",2
+		P: "FrontAxisSign", "int", "Integer", "",1
+		P: "CoordAxis", "int", "Integer", "",0
+		P: "CoordAxisSign", "int", "Integer", "",1
+		P: "UnitScaleFactor", "double", "Number", "",1
+	}
+}
+Definitions:  {
+	Version: 100
+	Count: 6
+	ObjectType: "Geometry" {
+		Count: 3
+	}
+	ObjectType: "Model" {
+		Count: 1
+	}
+	ObjectType: "Deformer" {
+		Count: 4
+	}
+}
+Objects:  {
+	Geometry: 1000, "Geometry::MorphTriangle", "Mesh" {
+		GeometryVersion: 124
+		Vertices: *9 {
+			a: 0,0,0, 1,0,0, 0,1,0
+		}
+		PolygonVertexIndex: *3 {
+			a: 0,1,-3
+		}
+	}
+	Geometry: 1100, "Geometry::Smile", "Shape" {
+		GeometryVersion: 124
+		Indexes: *2 {
+			a: 1,2
+		}
+		Vertices: *6 {
+			a: 0.25,0,0, 0,0.5,0
+		}
+	}
+	Geometry: 1200, "Geometry::Blink", "Shape" {
+		GeometryVersion: 124
+		Indexes: *1 {
+			a: 0
+		}
+		Vertices: *3 {
+			a: 0,0,-0.25
+		}
+	}
+	Model: 2000, "Model::MorphTriangle", "Mesh" {
+		Version: 232
+	}
+	Deformer: 3000, "Deformer::MorphTriangle", "BlendShape" {
+		Version: 100
+	}
+	Deformer: 3100, "SubDeformer::Smile", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 25
+		FullWeights: *1 {
+			a: 100
+		}
+	}
+	Deformer: 3200, "SubDeformer::Blink", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 50
+		FullWeights: *1 {
+			a: 100
+		}
+	}
+}
+Connections:  {
+	C: "OO", 1000, 2000
+	C: "OO", 3000, 1000
+	C: "OO", 3100, 3000
+	C: "OO", 1100, 3100
+	C: "OO", 3200, 3000
+	C: "OO", 1200, 3200
+}
+Takes:  {
+}

@@ -1,0 +1,145 @@
+.fx-ue-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  font-family: var(--fx-type-ui-font-family);
+  isolation: isolate;
+}
+
+.fx-ue-overlay[hidden],
+.fx-ue-preview[hidden] {
+  display: none;
+}
+
+.fx-ue-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: var(--fx-border-width) solid
+    color-mix(in srgb, var(--fx-color-selection-indicator) 58%, transparent);
+  border-radius: var(--fx-ref-radius-4);
+  background: color-mix(in srgb, var(--fx-color-selection-bg) 72%, transparent);
+  transition:
+    transform var(--fx-motion-feedback) var(--fx-motion-ease),
+    width var(--fx-motion-feedback) var(--fx-motion-ease),
+    height var(--fx-motion-feedback) var(--fx-motion-ease);
+}
+
+.fx-ue-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.fx-ue-zone {
+  fill: color-mix(in srgb, var(--fx-color-scrim) 20%, transparent);
+  stroke: color-mix(in srgb, var(--fx-color-selection-indicator) 68%, transparent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  transition:
+    fill var(--fx-motion-feedback) var(--fx-motion-ease),
+    stroke var(--fx-motion-feedback) var(--fx-motion-ease);
+}
+
+.fx-ue-zone.is-active {
+  fill: color-mix(in srgb, var(--fx-color-selection-bg) 76%, transparent);
+  stroke: var(--fx-color-selection-indicator);
+}
+
+.fx-ue-ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: var(--fx-component-panel-config-max-width);
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
+  overflow: hidden;
+  border: var(--fx-border-width) solid var(--fx-color-selection-indicator);
+  border-radius: var(--fx-ref-radius-4);
+  background: var(--fx-color-surface-raised);
+  color: var(--fx-color-text-primary);
+  box-shadow: var(--fx-shadow-floating);
+  font-size: var(--fx-ref-font-size-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-ue-live-host {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.fx-ue-overlay .fx-ue-svg,
+.fx-ue-overlay .fx-ue-preview,
+.fx-ue-overlay .fx-ue-ghost {
+  z-index: 2;
+}
+
+.fx-ue-live-preview {
+  pointer-events: none !important;
+  opacity: 0.9;
+  overflow: hidden !important;
+  border: var(--fx-border-width) solid
+    color-mix(in srgb, var(--fx-color-selection-indicator) 64%, transparent) !important;
+  border-radius: var(--fx-ref-radius-4) !important;
+  box-shadow: none !important;
+}
+
+.fx-ue-live-preview.fx-ue-live-preview--hidden {
+  display: none !important;
+}
+
+.fx-ue-lifted {
+  pointer-events: none !important;
+  opacity: 0.9;
+  box-shadow: none !important;
+}
+
+.fx-ue-lifted--hidden {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
+.fx-ue-preview--strip {
+  background: none;
+  border-color: var(--fx-color-brand-accent);
+}
+
+html.fx-ue-dragging,
+html.fx-ue-dragging * {
+  cursor: grabbing !important;
+}
+
+html.fx-ue-dragging iframe {
+  pointer-events: none !important;
+}
+
+html.fx-ue-dragging .fx-view-dockview-host .dv-drop-target-anchor,
+html.fx-ue-dragging .fx-view-dockview-host .dv-drop-target-container {
+  display: none !important;
+}
+
+.fx-view-dockview-host .dv-resize-container.fx-ue-lifted.fx-ue-lifted--hidden {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.fx-view-dockview .dv-tab.fx-edge-preview-tab {
+  opacity: 0.72;
+  font-style: italic;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-ue-preview,
+  .fx-ue-zone {
+    transition: none;
+  }
+}

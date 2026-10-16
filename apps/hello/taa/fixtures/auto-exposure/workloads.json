@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "hello-taa-auto-exposure-workloads/1",
+  "featureId": "feat-20260827-auto-exposure-hdr-color-grading",
+  "fixtureIdentityFile": "scene-identity.json",
+  "evidencePolicy": {
+    "kind": "declarative-workload-definition",
+    "rawEvidence": false,
+    "identitySource": "each Browser/Dawn producer must derive source, build, and testedRevision from its current exact checkout"
+  },
+  "frameIdentity": {
+    "first": 0,
+    "last": 59,
+    "count": 60,
+    "generation": 1
+  },
+  "backends": ["browser-webgpu", "dawn-node"],
+  "workloads": [
+    {
+      "kind": "manual",
+      "executed": true,
+      "exposureMode": "manual",
+      "whiteBalance": { "temperature": 6504, "tint": 0 },
+      "strength": 0,
+      "generation": 0,
+      "sourceKey": "none",
+      "observationId": "workload-manual-d65-lut0-v1",
+      "captureSha256": "not-captured:browser-manual-control"
+    },
+    {
+      "kind": "auto",
+      "executed": true,
+      "exposureMode": "auto",
+      "whiteBalance": { "temperature": 6504, "tint": 0 },
+      "generation": 1,
+      "observationId": "workload-auto-d65-lut0-v1",
+      "captureSha256": "not-captured:browser-auto-awaiting-stage-readback"
+    },
+    {
+      "kind": "positive-lut",
+      "executed": true,
+      "exposureMode": "manual",
+      "whiteBalance": { "temperature": 6504, "tint": 0 },
+      "strength": 1,
+      "generation": 1,
+      "sourceKey": "auto-exposure-positive-lut",
+      "observationId": "workload-manual-d65-lut-positive-v1",
+      "captureSha256": "not-captured:browser-positive-lut-awaiting-receipt"
+    }
+  ]
+}

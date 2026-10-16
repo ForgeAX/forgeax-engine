@@ -1,0 +1,67 @@
+{
+  "name": "@forgeax/hello-animation-graph",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Fox.glb AnimationGraph DAG demo (feat-20260713-animation-state-machine-plugin M5). createApp + defineAnimationGraph Add(base=Blend(Survey,Blend(Walk,Run)),additive=overlay@0.3). Keyboard drives nodeWeights parameters -- evaluateAnimationGraph auto-computes weights[] each frame (AC-13). HUD shows per-node effective weights + final N-slot weights[] sum > 1 when overlay is on.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "animation_graph",
+      "category": "Animation",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-animation-graph smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape downstream of @forgeax/engine-runtime already tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-animation-graph smoke covers DAG numerical correctness gate (AC-13); fps not a primary metric for this demo"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "convergence integration app; bench focus on @forgeax/engine-math + @forgeax/engine-ecs"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-animation-graph smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; animation-graph pipeline ships per-feature"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16"
+  }
+}

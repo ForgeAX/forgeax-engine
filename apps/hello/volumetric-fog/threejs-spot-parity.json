@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "case": "spot-volumetric-fog",
+  "references": [
+    { "name": "threejs-godrays", "status": "reference-only" },
+    { "name": "threejs-volume-lighting", "status": "reference-only" }
+  ],
+  "observed": {
+    "source": "browser-smoke",
+    "renderer": "Engine Standard pipeline",
+    "light": "SpotLight",
+    "variants": ["baseline", "empty-density", "disable-volume", "diagnostic-no-shadow", "diagnostic-ceiling-occluder"]
+  },
+  "verdict": "unavailable",
+  "reason": "Paired headed-WebGPU captures are required before claiming visual parity."
+}

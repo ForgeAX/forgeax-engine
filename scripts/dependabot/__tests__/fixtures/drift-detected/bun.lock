@@ -1,0 +1,12 @@
+# bug-20260514 M2 T-007 fixture bun.lock - intentionally NOT updated for
+# example-pkg 1.2.3, so the drift-detection path triggers.
+# Old payload pinning example-pkg 1.0.0; sha256 frozen by git.
+"name": "drift-detected-fixture"
+"lockfileVersion": 1
+"workspaces":
+  "":
+    "dependencies":
+      "example-pkg": "1.0.0"
+"packages":
+  "example-pkg@1.0.0":
+    "integrity": "sha512-FixtureOnlyOldVersionDoNotInstall="

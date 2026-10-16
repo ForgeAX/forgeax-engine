@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><title>ForgeaX diffuse GI scene</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#15191e;color:#e9eef3}body{margin:28px auto;max-width:1320px;padding:0 24px}h1{font-size:26px;margin-bottom:8px}p{color:#b7c2ce;line-height:1.55}.controls{display:flex;gap:18px;flex-wrap:wrap;align-items:end;margin:24px 0}label{display:grid;gap:7px}button,select{font:inherit;padding:8px 12px;background:#26313e;color:inherit;border:1px solid #627284;border-radius:5px}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.panels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}figure{margin:0}canvas{width:100%;height:auto;background:#090b0e;display:block}figcaption{margin:10px 0;font-weight:600}.diagnostics{grid-template-columns:repeat(2,minmax(0,1fr));max-width:866px;margin-top:20px}#status{min-height:24px;color:#85d8b7}pre{white-space:pre-wrap;background:#1b232d;padding:16px;overflow:auto}small{color:#bac7d6}@media(max-width:760px){.panels{grid-template-columns:1fr}}
+</style><body>
+<h1>Diffuse GI · a room with color bounce</h1>
+<p>Same scene, camera, materials, point light and exposure. Compare the dark faces and the floor near the colored walls.</p>
+<div class="controls">
+<label>Point light<select id="light"><option value="1">35 cd</option><option value="0.5">17.5 cd</option><option value="0">Off</option></select></label>
+<label>Left wall<select id="wall"><option value="red">Red</option><option value="white">White</option><option value="blue">Blue</option></select></label>
+<label>Camera<select id="camera"><option value="0">Center</option><option value="1.5">Right</option><option value="-1.5">Left</option></select></label>
+<label>Resolution<select id="resolution"><option>256</option><option>128</option><option>512</option></select></label>
+<label>PT samples<select id="samples"><option>64</option><option>32</option><option>128</option><option>256</option></select></label>
+<button type="button" id="render">Render scene</button><button type="button" id="capture" disabled>Download RHI capture</button>
+</div><div id="status" role="status">Preparing GPU</div>
+<div class="panels"><figure><canvas id="direct"></canvas><figcaption>Direct light only</figcaption></figure><figure><canvas id="gi"></canvas><figcaption>Direct + diffuse GI</figcaption></figure><figure><canvas id="path"></canvas><figcaption>Independent path reference · 2 bounces</figcaption></figure></div>
+<p><small>GI uses a raster primary view, mesh SDF visibility, material cards and irradiance probes. The path reference traces exact triangles. Both include one indirect surface bounce. This bounded scene is an experiment; it is not the production Renderer GI feature or full Sponza integration.</small></p>
+<details><summary>Indirect light and coverage</summary><div class="panels diagnostics"><figure><canvas id="indirect"></canvas><figcaption>Indirect only · same exposure</figcaption></figure><figure><canvas id="coverage"></canvas><figcaption>Coverage · green complete, pink incomplete</figcaption></figure></div><pre id="report"></pre></details>
+<script type="module" src="./browser.mjs"></script></body></html>

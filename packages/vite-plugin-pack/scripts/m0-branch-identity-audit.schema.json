@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forgeax://vite-plugin-pack/m0-branch-identity-audit.schema.json",
+  "title": "M0 branch identity audit",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "featureId",
+    "generatedAt",
+    "repository",
+    "sourceIdentity",
+    "baseIdentity",
+    "toolVersions",
+    "distIdentity",
+    "designIdentity",
+    "provenance",
+    "protocolAnomalies",
+    "baselineConflicts",
+    "packageSurface"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "featureId": { "type": "string", "minLength": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "repository": {
+      "type": "object",
+      "required": ["worktreeRoot", "branch", "commitSha", "status", "statusEntries", "upstream"],
+      "properties": {
+        "worktreeRoot": { "type": "string" },
+        "branch": { "type": ["string", "null"] },
+        "commitSha": { "type": ["string", "null"] },
+        "status": { "enum": ["clean", "dirty"] },
+        "statusEntries": { "type": "array", "items": { "type": "string" } },
+        "upstream": { "type": ["string", "null"] }
+      }
+    },
+    "sourceIdentity": {
+      "type": "object",
+      "required": ["commitSha", "sha256", "bytes", "lines", "fileCount", "files"],
+      "properties": {
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "lines": { "type": "integer", "minimum": 0 },
+        "fileCount": { "type": "integer", "minimum": 0 },
+        "files": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "baseIdentity": { "type": "object" },
+    "toolVersions": { "type": "object" },
+    "distIdentity": {
+      "type": "object",
+      "required": ["directory", "status", "classification"],
+      "properties": {
+        "directory": { "type": "string" },
+        "status": { "enum": ["absent", "present"] },
+        "classification": { "type": "string" }
+      }
+    },
+    "designIdentity": { "type": "object" },
+    "provenance": { "type": "object" },
+    "protocolAnomalies": { "type": "object" },
+    "baselineConflicts": { "type": "object" },
+    "packageSurface": { "type": "object" }
+  }
+}

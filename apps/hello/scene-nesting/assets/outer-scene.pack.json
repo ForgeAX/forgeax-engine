@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "kind": "scene",
+      "guid": "d07a7b8e-9c12-4f6b-a8e1-3d4f5a6b7c8d",
+      "refs": [
+        "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "008e4f75-e7a3-4715-b05b-b93a9ec12074"
+      ],
+      "artifacts": {},
+      "payload": {
+        "entities": {
+          "sibling": {
+            "components": {
+              "Transform": {
+                "pos": [
+                  0,
+                  0,
+                  0
+                ],
+                "quat": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "scale": [
+                  1,
+                  1,
+                  1
+                ]
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "inner": {
+            "components": {},
+            "instance": {
+              "source": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+              "overrides": [
+                {
+                  "target": [
+                    "cube"
+                  ],
+                  "components": {
+                    "Transform": {
+                      "pos": [
+                        1.0,
+                        0,
+                        0
+                      ]
+                    },
+                    "Name": {
+                      "value": "m30-mounted-member"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

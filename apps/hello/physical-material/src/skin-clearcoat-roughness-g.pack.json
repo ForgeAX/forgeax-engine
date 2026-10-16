@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "8a5a0001-0000-4000-8000-000000000006",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "../../../../packages/shader/src/default-standard-pbr-skin.wgsl",
+      "payload": {
+        "kind": "material",
+        "colorSpace": "linear",
+        "staticSwitches": {"clearcoat": true},
+        "passes": [{ "name": "Forward", "program": { "module": "physical-material::pbr-skin-clearcoat-roughness-g", "vertexEntry": "vs_main", "fragmentEntry": "fs_main" } }],
+        "parameters": [
+          { "name": "baseColor", "type": "color" },
+          { "name": "metallic", "type": "f32" },
+          { "name": "roughness", "type": "f32" },
+          { "name": "metallicChannel", "type": "f32" },
+          { "name": "roughnessChannel", "type": "f32" },
+          { "name": "aoChannel", "type": "f32" },
+          { "name": "extraChannel", "type": "f32" },
+          { "name": "emissive", "type": "vec3" },
+          { "name": "emissiveIntensity", "type": "f32" },
+          { "name": "occlusionStrength", "type": "f32" },
+          { "name": "alphaCutoff", "type": "f32" },
+          { "name": "specular", "type": "f32" },
+          { "name": "specularColor", "type": "vec3" },
+          { "name": "normalScale", "type": "vec2" },
+          { "name": "ior", "type": "f32" },
+          { "name": "displacementScale", "type": "f32" },
+          { "name": "displacementBias", "type": "f32" },
+          { "name": "clearcoat", "type": "f32" },
+          { "name": "clearcoatRoughness", "type": "f32" },
+          { "name": "clearcoatNormalScale", "type": "f32" },
+          { "name": "baseColorTexture", "type": "texture" },
+          { "name": "metallicRoughnessTexture", "type": "texture" },
+          { "name": "normalTexture", "type": "texture" },
+          { "name": "emissiveTexture", "type": "texture" },
+          { "name": "occlusionTexture", "type": "texture" },
+          { "name": "clearcoatRoughnessTexture", "type": "texture" }
+        ],
+        "values": {
+          "baseColor": [1,1,1,1],
+          "metallic": 0,
+          "roughness": 0.42,
+          "metallicChannel": 2,
+          "roughnessChannel": 1,
+          "aoChannel": 0,
+          "extraChannel": 0,
+          "emissive": [0,0,0],
+          "emissiveIntensity": 0,
+          "occlusionStrength": 1,
+          "alphaCutoff": 0,
+          "specular": 1,
+          "specularColor": [1,1,1],
+          "normalScale": [1,1],
+          "ior": 1.5,
+          "displacementScale": 1,
+          "displacementBias": 0,
+          "clearcoat": 1,
+          "clearcoatRoughness": 0.18,
+          "clearcoatNormalScale": 1
+        }
+      },
+      "refs": []
+    }
+  ]
+}

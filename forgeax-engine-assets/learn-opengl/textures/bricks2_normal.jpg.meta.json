@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "bricks2_normal.jpg",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e3969-1d45-7020-8756-675a0f885532",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

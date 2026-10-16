@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "cyborg_normal.png",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019ee3df-a911-7a89-a11b-0559d08ea949",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

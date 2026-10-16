@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/bevy-sprite-animation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Bevy sprite_animation example reproduced with the public sprite atlas tick system",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "sprite_animation",
+      "category": "2D Rendering",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-sprite-animation smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle downstream of engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "sprite animation demo; fps no-regression covered by engine-runtime gates"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "sprite animation demo; bench focus on engine-math / pixel-parity"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-sprite-animation smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; Bevy sprite animation reproduction"
+      }
+    }
+  }
+}

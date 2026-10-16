@@ -1,0 +1,20 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
+import vitePluginRhiDebug from '@forgeax/engine-vite-plugin-rhi-debug';
+import { defineConfig } from 'vite';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const monorepoRoot = resolve(here, '..', '..', '..');
+
+export default defineConfig({
+  plugins: [
+    forgeaxShader({ materialPackages: [resolve(here, 'src/shader-material-2d.pack.json')] }) as never,
+    vitePluginRhiDebug(),
+  ],
+  server: { fs: { allow: [monorepoRoot] } },
+  build: {
+    target: 'esnext',
+    rollupOptions: { input: { main: resolve(here, 'index.html') } },
+  },
+});

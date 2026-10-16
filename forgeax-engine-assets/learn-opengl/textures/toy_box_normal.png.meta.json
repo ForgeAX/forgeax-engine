@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "toy_box_normal.png",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e3969-1d48-77f0-9acb-b5fecfc42a7a",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

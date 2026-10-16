@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "metallic.png",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019ee3df-a90e-7bab-813b-547a5d49f067",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

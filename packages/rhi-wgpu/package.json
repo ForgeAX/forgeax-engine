@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/engine-rhi-wgpu",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "TS-only thin shell implementation of @forgeax/engine-rhi — depends on @forgeax/engine-wgpu-wasm for the merged wgpu 30 + naga 30 wasm bindings; spec-aligned wasm-bindgen surface, math-free.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./wasm-runtime": {
+      "types": "./dist/wasm-browser.d.ts",
+      "forgeax-native": "./dist/wasm-native.mjs",
+      "default": "./dist/wasm-browser.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-wgpu-wasm": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "TS-only thin shell; wasm physical bundle size is measured at @forgeax/engine-wgpu-wasm workspace (single bundle-size SSOT per AC-07 + D-P9)"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "thin shell, no runtime canvas; fps reported by hello-triangle / hello-cube apps that drive this shim"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "shim has no hot path bench; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "smoke gate is anchored at apps/hello/triangle smoke (rhi-webgpu) and apps/hello/cube + browser test renderer-wgpu-wasm.browser.test.ts; shim itself has no standalone binary gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; rhi-wgpu is the productionised TS thin shell over @forgeax/engine-wgpu-wasm (feat-20260511-naga-rhi-wgpu-merge)"
+      }
+    }
+  }
+}

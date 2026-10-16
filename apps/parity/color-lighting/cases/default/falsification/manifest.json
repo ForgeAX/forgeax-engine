@@ -1,0 +1,29 @@
+{
+  "required": true,
+  "colorDomain": "linearLdr",
+  "scene": { "width": 4, "height": 4, "background": [0, 0, 0, 0] },
+  "budget": { "analyticMax": 0.01, "roiMax": 0.01, "byteMax": 0 },
+  "artifacts": ["forgeax-final", "three-primary-final", "diff-roi"],
+  "cases": [
+    {
+      "caseId": "falsify-reversed-clear-alpha",
+      "sourceCaseId": "default-transparent-alpha",
+      "mutation": "reverse-clear-alpha"
+    },
+    {
+      "caseId": "falsify-flat-color-substitution",
+      "sourceCaseId": "default-scalar-srgb",
+      "mutation": "flat-color-substitution"
+    },
+    {
+      "caseId": "falsify-repeated-decode",
+      "sourceCaseId": "default-srgb-texture",
+      "mutation": "repeated-decode"
+    },
+    {
+      "caseId": "falsify-omitted-decode",
+      "sourceCaseId": "default-srgb-texture",
+      "mutation": "omitted-decode"
+    }
+  ]
+}

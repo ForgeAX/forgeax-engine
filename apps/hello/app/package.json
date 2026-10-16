@@ -1,0 +1,55 @@
+{
+  "name": "@forgeax/hello-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "One-screen createApp(canvas) takeoff exemplar (feat-20260518-app-shell-game-loop M6 / D-12).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-app smoke",
+    "_comment": "smokeInvocation = self-contained SSOT (mirrors hello-cube). hello-app smoke literal lives in apps/hello/app/package.json#forgeax.smokeInvocation + .github/workflows/ci.yml only; the scripts/smoke.mjs verdict is clearColor-only (D-12) + onError/console.error counts == 0.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-app + @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "triangle baseline anchor only; hello-app smoke covers GPU end-to-end via clearColor + onError/console.error counts"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "createApp thin-wrapper exemplar; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-app smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the createApp(canvas) one-screen takeoff exemplar (D-12)"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

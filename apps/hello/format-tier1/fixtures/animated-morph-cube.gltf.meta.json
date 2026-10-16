@@ -1,0 +1,21 @@
+{
+  "kind": "external-asset-package",
+  "importer": "gltf",
+  "importSettings": {},
+  "schemaVersion": 1,
+  "source": "animated-morph-cube.gltf",
+  "subAssets": [
+    {
+      "guid": "11111111-1111-4111-8111-111111111111",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "gltf:mesh:Cube"
+    },
+    {
+      "guid": "44444444-4444-4444-8444-444444444444",
+      "kind": "animation-clip",
+      "sourceIndex": 0,
+      "sourceKey": "gltf:animation:Square"
+    }
+  ]
+}

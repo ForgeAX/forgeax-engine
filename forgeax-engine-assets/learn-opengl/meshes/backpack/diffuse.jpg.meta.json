@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "diffuse.jpg",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019ee3df-a910-74ba-9b36-19c5158e4d04",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

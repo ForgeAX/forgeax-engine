@@ -1,0 +1,58 @@
+{
+  "name": "@forgeax/hello-rect-light-texture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "RectAreaLight sourceTexture demo: an image-painted area light on a diffuse floor and glossy/rough metal spheres, with a Dawn orientation/revert falsifier and BC7 KTX2 sources resampled on the GPU.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-rect-light-texture smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle is downstream of engine packages already tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "the Dawn smoke reports textured/uniform frame-time ratio; no per-app fps sampling"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no benchmark workload; source-texture cost is one extra filtered array fetch per rect light"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-rect-light-texture smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the RectAreaLight sourceTexture exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

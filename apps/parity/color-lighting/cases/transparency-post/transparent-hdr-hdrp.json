@@ -1,0 +1,8 @@
+{
+  "caseId": "transparent-hdr-hdrp",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "deferred" },
+  "scene": { "width": 64, "height": 64, "background": [0.08, 0.12, 0.18, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 255 }
+}

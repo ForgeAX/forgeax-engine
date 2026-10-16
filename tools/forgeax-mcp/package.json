@@ -1,0 +1,59 @@
+{
+  "name": "@forgeax/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional local MCP adapter for ForgeaX Engine and View owner APIs",
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/view": "workspace:*",
+    "@modelcontextprotocol/server": "2.3.1",
+    "zod": "^4.2.0",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@openai/mcp-extensions": "0.1.0",
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "ws": "^8.21.0",
+    "vite": "8.0.16",
+    "typescript": "6.0.3",
+    "esbuild": "0.27.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "playwright": "1.63.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Private local MCP bridge is bundled into the optional Host Pack."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "No canvas; View and Engine browser gates own frame evidence."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Bounded bridge behavior is checked by focused integration probes."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Optional Host and MCP probes require a live project-specific backend."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This package is not an experimental rendering spike."
+      }
+    }
+  },
+  "scripts": {
+    "build:app": "node codex/build-app.mjs",
+    "test:app": "node --test __tests__/app/*.test.mjs",
+    "check": "tsc -p tsconfig.json"
+  }
+}

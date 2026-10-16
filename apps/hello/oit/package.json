@@ -1,0 +1,54 @@
+{
+  "name": "@forgeax/hello-oit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Weighted blended order-independent transparency exemplar: a cyclic interpenetrating triple that no object sort can order.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-oit smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle is downstream of engine package sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "OIT cost is measured by the render gpu-pass-timing host and the render transparency bench, not by this correctness carrier"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "OIT CPU record cost lives in packages/render/bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-oit smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the weighted blended OIT exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "package": "math",
+  "member": "packages/math",
+  "kind": "bench",
+  "enabled": true,
+  "status": "ok",
+  "value": 41.25,
+  "threshold": null,
+  "details": { "unit": "ns/op" }
+}

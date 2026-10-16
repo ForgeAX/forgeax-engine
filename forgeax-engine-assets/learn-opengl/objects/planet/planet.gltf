@@ -1,0 +1,189 @@
+{
+  "accessors": [
+    {
+      "name": "Mars_Cube.002-Mesh_0_positions",
+      "componentType": 5126,
+      "count": 441,
+      "min": [
+        -3.3820269107818604,
+        -3.377593994140625,
+        -3.388803005218506
+      ],
+      "max": [
+        3.3820269107818604,
+        3.377593994140625,
+        3.388803005218506
+      ],
+      "type": "VEC3",
+      "bufferView": 0,
+      "byteOffset": 0
+    },
+    {
+      "name": "Mars_Cube.002-Mesh_0_normals",
+      "componentType": 5126,
+      "count": 441,
+      "min": [
+        -0.998238742351532,
+        -0.9963276982307434,
+        -0.9998615384101868
+      ],
+      "max": [
+        0.998238742351532,
+        0.9963276982307434,
+        0.9998615384101868
+      ],
+      "type": "VEC3",
+      "bufferView": 1,
+      "byteOffset": 0
+    },
+    {
+      "name": "Mars_Cube.002-Mesh_0_texcoords",
+      "componentType": 5126,
+      "count": 441,
+      "min": [
+        0.009050999768078327,
+        0.011996000073850155
+      ],
+      "max": [
+        0.9909489750862122,
+        0.9880040287971497
+      ],
+      "type": "VEC2",
+      "bufferView": 2,
+      "byteOffset": 0
+    },
+    {
+      "name": "Mars_Cube.002-Mesh_0_indices",
+      "componentType": 5123,
+      "count": 2304,
+      "min": [
+        0
+      ],
+      "max": [
+        440
+      ],
+      "type": "SCALAR",
+      "bufferView": 3,
+      "byteOffset": 0
+    }
+  ],
+  "asset": {
+    "generator": "obj2gltf",
+    "version": "2.0"
+  },
+  "buffers": [
+    {
+      "name": "planet",
+      "byteLength": 18720,
+      "uri": "planet.bin"
+    }
+  ],
+  "bufferViews": [
+    {
+      "name": "bufferView_0",
+      "buffer": 0,
+      "byteLength": 5292,
+      "byteOffset": 0,
+      "byteStride": 12,
+      "target": 34962
+    },
+    {
+      "name": "bufferView_1",
+      "buffer": 0,
+      "byteLength": 5292,
+      "byteOffset": 5292,
+      "byteStride": 12,
+      "target": 34962
+    },
+    {
+      "name": "bufferView_2",
+      "buffer": 0,
+      "byteLength": 3528,
+      "byteOffset": 10584,
+      "byteStride": 8,
+      "target": 34962
+    },
+    {
+      "name": "bufferView_3",
+      "buffer": 0,
+      "byteLength": 4608,
+      "byteOffset": 14112,
+      "target": 34963
+    }
+  ],
+  "images": [
+    {
+      "name": "mars",
+      "uri": "mars.png"
+    }
+  ],
+  "materials": [
+    {
+      "name": "Mars",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0
+        },
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.903921557
+      },
+      "emissiveFactor": [
+        0,
+        0,
+        0
+      ],
+      "alphaMode": "OPAQUE",
+      "doubleSided": false
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Mars_Cube.002-Mesh",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Mars_Cube.002",
+      "mesh": 0
+    }
+  ],
+  "samplers": [
+    {
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "textures": [
+    {
+      "name": "mars",
+      "sampler": 0,
+      "source": 0
+    }
+  ]
+}

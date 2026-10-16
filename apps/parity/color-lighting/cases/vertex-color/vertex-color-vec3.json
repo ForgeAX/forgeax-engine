@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "caseId": "vertex-color-vec3",
+  "semantic": "gltf VEC3 FLOAT color with implicit alpha one",
+  "colorDomain": "displayEncoded",
+  "vertices": [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]],
+  "samplePoints": [{ "id": "triangle-centroid", "coordinate": [0.5, 0.5] }, { "id": "vertex-a", "coordinate": [0.25, 0.25] }]
+}

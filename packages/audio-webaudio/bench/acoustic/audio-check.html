@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ROI22 native acoustic A/B evidence</title>
+<style>
+body{max-width:960px;margin:32px auto;padding:0 20px;background:#10151c;color:#e3edf8;font:16px/1.6 system-ui}h1{line-height:1.25}section{padding:18px;margin:16px 0;background:#182330;border-radius:8px}audio{display:block;width:100%;margin-top:12px}img{width:100%;height:auto}a{color:#70d8ff}.status{border-left:4px solid #f6c970;padding-left:16px}
+</style>
+<h1>ROI22 native acoustic A/B evidence</h1>
+<p class="status">Complete functional native evidence from epoch8, base <code>4ae7abc66</code> plus frozen source/site digests. Twelve native PCM checks and both public serial/shared Worker paths passed, including fresh World/Context rebuild. Full Engine gates, installed SDK and final CI remain pending. No clean performance result or completed listening claim.</p>
+<p>Play the clips at the same volume. The source approaches the room from 0.5 to 1 second, stays inside until 2 seconds, then leaves. Its input is silent from 1.5 to 1.8 seconds. The enabled room should retain a short echo during that silence. Compare the three controls for missing wet effect, and listen for clicks around the transitions.</p>
+<section><strong>Room enabled</strong><p>Automatic source route, listener wet and send. Real stereo 48 kHz PCM; maximum sample error 2.98e-8 against the independent oracle.</p><audio controls preload="none" src="../../../../artifacts/roi22-acoustics/native-4ae7abc66-rounds-7/0-enabled.wav"></audio></section>
+<section><strong>Regions off</strong><p>Same input and scene path. The native output matches the dry input.</p><audio controls preload="none" src="../../../../artifacts/roi22-acoustics/native-4ae7abc66-rounds-7/0-off.wav"></audio></section>
+<section><strong>Wet zero</strong><p>Routing remains active; the convolved tail is absent.</p><audio controls preload="none" src="../../../../artifacts/roi22-acoustics/native-4ae7abc66-rounds-7/0-zero-wet.wav"></audio></section>
+<section><strong>Send off</strong><p>Room routing remains active; no signal enters the echo bus.</p><audio controls preload="none" src="../../../../artifacts/roi22-acoustics/native-4ae7abc66-rounds-7/0-send-off.wav"></audio></section>
+<p>The image below comes from the complete functional native pass. It contains actual measured waveforms and tail spectrum, with the performance panel explicitly unmeasured. Repeated label overdraw is preserved in this original image; it is corrected for future captures.</p>
+<img alt="Actual native path, four waveform controls and wet-tail spectrum; performance unmeasured" src="../../../../artifacts/roi22-acoustics/native-4ae7abc66-rounds-7/signal-and-performance.png">
+</html>

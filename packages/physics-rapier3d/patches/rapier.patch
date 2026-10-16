@@ -1,0 +1,439 @@
+diff --git a/src/control/character_controller.rs b/src/control/character_controller.rs
+index 742684e..08506ce 100644
+--- a/src/control/character_controller.rs
++++ b/src/control/character_controller.rs
+@@ -696,11 +696,16 @@ impl KinematicCharacterController {
+         let tangent = translation - normal_part - penetration_part;
+         #[cfg(feature = "dim3")]
+         let horizontal_tangent_dir = hit.normal1.cross(self.up);
++        #[cfg(feature = "dim3")]
++        let horizontal_tangent = if let Some(dir) = horizontal_tangent_dir.try_normalize() {
++            tangent.dot(dir) * dir
++        } else {
++            // For a surface parallel to the horizontal plane, the horizontal
++            // tangent space is the whole plane rather than a zero direction.
++            tangent - tangent.dot(self.up) * self.up
++        };
+         #[cfg(feature = "dim2")]
+-        let horizontal_tangent_dir = Vector::ZERO;
+-
+-        let horizontal_tangent_dir = horizontal_tangent_dir.try_normalize().unwrap_or_default();
+-        let horizontal_tangent = tangent.dot(horizontal_tangent_dir) * horizontal_tangent_dir;
++        let horizontal_tangent = Vector::ZERO;
+         let vertical_tangent = tangent - horizontal_tangent;
+ 
+         HitDecomposition {
+@@ -995,6 +1000,52 @@ mod test {
+     };
+     use std::dbg;
+ 
++    #[test]
++    fn flat_contact_keeps_horizontal_motion_with_rounded_normals() {
++        use super::EffectiveCharacterMovement;
++        use parry::query::ShapeCastStatus;
++
++        // A cast normal may differ from unit length by one floating-point ULP.
++        // When the surface normal is parallel to up, every horizontal direction
++        // belongs to the surface tangent plane, not a zero-dimensional tangent.
++        for up in [Vector::Y, -Vector::Y, Vector::X, -Vector::Z] {
++            let controller = KinematicCharacterController {
++                up,
++                ..Default::default()
++            };
++            let horizontal = if up.x.abs() == 1.0 {
++                Vector::Z * 0.09
++            } else {
++                Vector::X * 0.09
++            };
++            let desired = horizontal - up * 0.0046200668;
++            for normal_length in [
++                1.0,
++                f32::from_bits(1.0_f32.to_bits() - 1),
++                f32::from_bits(1.0_f32.to_bits() + 1),
++            ] {
++                let hit = controller.compute_hit_info(ShapeCastHit {
++                    time_of_impact: 0.0,
++                    normal1: up * normal_length,
++                    normal2: -up * normal_length,
++                    witness1: Vector::ZERO,
++                    witness2: Vector::ZERO,
++                    status: ShapeCastStatus::Converged,
++                });
++                let mut result = EffectiveCharacterMovement {
++                    translation: Vector::ZERO,
++                    grounded: true,
++                    is_sliding_down_slope: false,
++                };
++                let actual = controller.handle_slopes(&hit, desired, desired, 0.0, &mut result);
++                assert!(
++                    (actual.dot(horizontal.normalize()) - horizontal.length()).abs() < 1.0e-6,
++                    "up={up:?}, normal_length={normal_length}: lost horizontal motion {actual:?}"
++                );
++            }
++        }
++    }
++
+     #[test]
+     fn character_controller_climb_test() {
+         let mut colliders = ColliderSet::new();
+diff --git a/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs b/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs
+index 941bc64..55a65f8 100644
+--- a/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs
++++ b/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs
+@@ -714,6 +714,11 @@ impl ContactWithCoulombFriction<SimdReal> {
+                     //         constraint chunk; no other live reference exists.
+                     let manifold = unsafe { manifolds_all.get_mut(self.manifold_id[ii]) };
+                     let active_contact = &mut manifold.points[contact_id as usize];
++                    // The first substep accumulated the incoming seed before solving.
++                    // Keep solver state intact; publish only this step's solved sum.
++                    active_contact.data.current_step_impulse = utils::canonicalize_zero(
++                        impulses[ii] - active_contact.data.warmstart_impulse,
++                    );
+                     active_contact.data.warmstart_impulse = warmstart_impulses[ii];
+                     active_contact.data.warmstart_tangent_impulse =
+                         warmstart_tangent_impulses.extract(ii);
+diff --git a/src/dynamics/solver/contact_constraint/contact_with_twist_friction.rs b/src/dynamics/solver/contact_constraint/contact_with_twist_friction.rs
+index 11c9236..be215ca 100644
+--- a/src/dynamics/solver/contact_constraint/contact_with_twist_friction.rs
++++ b/src/dynamics/solver/contact_constraint/contact_with_twist_friction.rs
+@@ -806,6 +806,11 @@ impl ContactWithTwistFriction<SimdReal> {
+                     //         constraint chunk; no other live reference exists.
+                     let manifold = unsafe { manifolds_all.get_mut(self.manifold_id[ii]) };
+                     let active_contact = &mut manifold.points[contact_id as usize];
++                    // The first substep accumulated the incoming seed before solving.
++                    // Keep solver state intact; publish only this step's solved sum.
++                    active_contact.data.current_step_impulse = utils::canonicalize_zero(
++                        impulses[ii] - active_contact.data.warmstart_impulse,
++                    );
+                     active_contact.data.warmstart_impulse = warmstart_impulses[ii];
+                     active_contact.data.impulse = impulses[ii];
+                     active_contact.data.warmstart_tangent_impulse =
+diff --git a/src/dynamics/solver/contact_constraint/generic_contact_constraint.rs b/src/dynamics/solver/contact_constraint/generic_contact_constraint.rs
+index 3e0a0a7..a730c1d 100644
+--- a/src/dynamics/solver/contact_constraint/generic_contact_constraint.rs
++++ b/src/dynamics/solver/contact_constraint/generic_contact_constraint.rs
+@@ -704,6 +704,11 @@ impl GenericContactConstraint {
+             let active_contact = &mut manifold.points[contact_id as usize];
+             // The stored impulses are serialized state: canonicalize signed zeros (see
+             // `utils::canonicalize_zero`) so snapshots stay cross-platform deterministic.
++            // The first substep accumulated the incoming seed before solving. Report
++            // only this step's solved sum, without changing restitution/warm-start state.
++            active_contact.data.current_step_impulse = utils::canonicalize_zero(
++                self.normal_part[k].total_impulse() - active_contact.data.warmstart_impulse,
++            );
+             active_contact.data.warmstart_impulse =
+                 utils::canonicalize_zero(self.normal_part[k].impulse);
+             active_contact.data.warmstart_tangent_impulse =
+diff --git a/src/geometry/contact_pair.rs b/src/geometry/contact_pair.rs
+index 6879a80..29df7b6 100644
+--- a/src/geometry/contact_pair.rs
++++ b/src/geometry/contact_pair.rs
+@@ -56,6 +56,10 @@ pub struct ContactData {
+     ///
+     /// The impulse applied to the second collider's rigid-body is given by `-impulse`.
+     pub impulse: Real,
++    /// Completed-step normal impulse, excluding the incoming warm-start seed.
++    /// Observation only: never used for restitution, contact persistence or warm-starting.
++    #[cfg_attr(feature = "serde-serialize", serde(skip))]
++    pub current_step_impulse: Real,
+     /// The friction impulse along the vector orthonormal to the contact normal, applied to the first
+     /// collider's rigid-body.
+     pub tangent_impulse: TangentImpulse<Real>,
+@@ -90,6 +94,7 @@ impl Default for ContactData {
+     fn default() -> Self {
+         Self {
+             impulse: 0.0,
++            current_step_impulse: 0.0,
+             tangent_impulse: na::zero(),
+             warmstart_impulse: 0.0,
+             warmstart_tangent_impulse: na::zero(),
+diff --git a/typescript/src.ts/geometry/narrow_phase.ts b/typescript/src.ts/geometry/narrow_phase.ts
+index 6163053..58d7c5a 100644
+--- a/typescript/src.ts/geometry/narrow_phase.ts
++++ b/typescript/src.ts/geometry/narrow_phase.ts
+@@ -59,6 +59,7 @@ export class NarrowPhase {
+      * @param collider2 - The second collider involved in the contact.
+      * @param bodies - The set of rigid-bodies the colliders are attached to. Solver contacts are
+      *                 anchored in body-local space, so this is needed to read them back in world-space.
++     * @param solver - Read the actual solver roster, including composite-shape clusters.
+      * @param f - Closure that will be called on each contact manifold between the two colliders. If the second argument
+      *            passed to this closure is `true`, then the contact manifold data is flipped, i.e., methods like `localNormal1`
+      *            actually apply to the `collider2` and fields like `localNormal2` apply to the `collider1`.
+@@ -68,26 +69,27 @@ export class NarrowPhase {
+         collider2: ColliderHandle,
+         bodies: RigidBodySet,
+         f: (manifold: TempContactManifold, flipped: boolean) => void,
++        solver = false,
+     ) {
+-        const rawPair = this.raw.contact_pair(collider1, collider2);
++        const rawPair = this.raw.contact_pair(collider1, collider2, solver);
+ 
+         if (!!rawPair) {
+             const flipped = rawPair.collider1() != collider1;
+ 
+-            let i;
+-            for (i = 0; i < rawPair.numContactManifolds(); ++i) {
+-                this.tempManifold.bodies = bodies;
+-                this.tempManifold.raw = rawPair.contactManifold(i);
+-                if (!!this.tempManifold.raw) {
+-                    f(this.tempManifold, flipped);
++            try {
++                for (let i = 0; i < rawPair.numContactManifolds(); ++i) {
++                    this.tempManifold.bodies = bodies;
++                    this.tempManifold.raw = rawPair.contactManifold(i);
++                    try {
++                        if (!!this.tempManifold.raw) f(this.tempManifold, flipped);
++                    } finally {
++                        // Callback failure must not retain a pointer across the next step.
++                        this.tempManifold.free();
++                    }
+                 }
+-
+-                // SAFETY: The RawContactManifold stores a raw pointer that will be invalidated
+-                //         at the next timestep. So we must be sure to free the pair here
+-                //         to avoid unsoundness in the Rust code.
+-                this.tempManifold.free();
++            } finally {
++                rawPair.free();
+             }
+-            rawPair.free();
+         }
+     }
+ 
+@@ -222,6 +224,11 @@ export class TempContactManifold {
+     }
+     // #endif
+ 
++    /** Normal impulse of this solver contact, using its native geometric-contact identity. */
++    public solverContactImpulse(i: number): number {
++        return this.raw.solver_contact_impulse(i);
++    }
++
+     public numSolverContacts(): number {
+         return this.raw.num_solver_contacts();
+     }
+diff --git a/typescript/src/geometry/narrow_phase.rs b/typescript/src/geometry/narrow_phase.rs
+index fc1cc9d..f7745eb 100644
+--- a/typescript/src/geometry/narrow_phase.rs
++++ b/typescript/src/geometry/narrow_phase.rs
+@@ -14,7 +14,7 @@ impl RawNarrowPhase {
+         RawNarrowPhase(NarrowPhase::new())
+     }
+ 
+-    pub fn contact_pairs_with(&self, handle1: FlatHandle, f: js_sys::Function) {
++    pub fn contact_pairs_with(&self, handle1: FlatHandle, f: js_sys::Function) -> Result<(), JsValue> {
+         let this = JsValue::null();
+         let handle1 = utils::collider_handle(handle1);
+         for pair in self.0.contact_pairs_with(handle1) {
+@@ -24,16 +24,17 @@ impl RawNarrowPhase {
+                 utils::flat_handle(pair.collider1.0)
+             };
+ 
+-            let _ = f.call1(&this, &JsValue::from(handle2));
++            f.call1(&this, &JsValue::from(handle2))?;
+         }
++        Ok(())
+     }
+ 
+-    pub fn contact_pair(&self, handle1: FlatHandle, handle2: FlatHandle) -> Option<RawContactPair> {
++    pub fn contact_pair(&self, handle1: FlatHandle, handle2: FlatHandle, solver: bool) -> Option<RawContactPair> {
+         let handle1 = utils::collider_handle(handle1);
+         let handle2 = utils::collider_handle(handle2);
+         self.0
+             .contact_pair(handle1, handle2)
+-            .map(|p| RawContactPair(p as *const ContactPair))
++            .map(|p| RawContactPair(p as *const ContactPair, solver))
+     }
+ 
+     pub fn intersection_pairs_with(&self, handle1: FlatHandle, f: js_sys::Function) {
+@@ -60,7 +61,7 @@ impl RawNarrowPhase {
+ }
+ 
+ #[wasm_bindgen]
+-pub struct RawContactPair(*const ContactPair);
++pub struct RawContactPair(*const ContactPair, bool);
+ #[wasm_bindgen]
+ pub struct RawContactManifold(*const ContactManifold);
+ 
+@@ -80,12 +81,13 @@ impl RawContactPair {
+     }
+ 
+     pub fn numContactManifolds(&self) -> usize {
+-        unsafe { (*self.0).manifolds.len() }
++        unsafe { if self.1 { (*self.0).solver_manifolds().len() } else { (*self.0).manifolds.len() } }
+     }
+     pub fn contactManifold(&self, i: usize) -> Option<RawContactManifold> {
+         unsafe {
+-            (&(*self.0).manifolds)
+-                .get(i)
++            let pair = &*self.0;
++            let manifolds = if self.1 { pair.solver_manifolds() } else { &pair.manifolds };
++            manifolds.get(i)
+                 .map(|m| RawContactManifold(m as *const ContactManifold))
+         }
+     }
+@@ -267,6 +269,16 @@ impl RawContactManifold {
+         }
+     }
+ 
++    // Solver contacts select/reorder geometric contacts; never assume aligned indices.
++    pub fn solver_contact_impulse(&self, i: usize) -> Real {
++        unsafe {
++            let manifold = &*self.0;
++            manifold.data.solver_contacts.get(i)
++                .and_then(|contact| manifold.points.get(contact.contact_indices()[0] as usize))
++                .map_or(0.0, |contact| contact.data.current_step_impulse)
++        }
++    }
++
+     pub fn num_solver_contacts(&self) -> usize {
+         unsafe { (*self.0).data.solver_contacts.len() }
+     }
+diff --git a/src/dynamics/ccd/ccd_solver.rs b/src/dynamics/ccd/ccd_solver.rs
+index ee5cd9b..50d5739 100644
+--- a/src/dynamics/ccd/ccd_solver.rs
++++ b/src/dynamics/ccd/ccd_solver.rs
+@@ -43,6 +43,11 @@ impl CCDSolver {
+         Self::default()
+     }
+ 
++    /// Remember scene changes even when no fast body consumes the cache this step.
++    pub(crate) fn invalidate_fixed_targets_cache(&mut self) {
++        self.fixed_targets_cache = None;
++    }
++
+     /// Updates the set of bodies that needs CCD to be resolved.
+     ///
+     /// Returns `true` if any rigid-body must have CCD resolved.
+diff --git a/src/pipeline/physics_pipeline/substep.rs b/src/pipeline/physics_pipeline/substep.rs
+index 75b86d0..e1eb9bc 100644
+--- a/src/pipeline/physics_pipeline/substep.rs
++++ b/src/pipeline/physics_pipeline/substep.rs
+@@ -339,6 +339,9 @@ impl PhysicsPipeline {
+         let ccd_scene_changed = !modified_colliders.is_empty()
+             || !removed_colliders.is_empty()
+             || !modified_bodies.is_empty();
++        if ccd_scene_changed {
++            ccd_solver.invalidate_fixed_targets_cache();
++        }
+ 
+         // Join islands based on new joints.
+         #[cfg(feature = "enhanced-determinism")]
+diff --git a/typescript/src/pipeline/physics_pipeline.rs b/typescript/src/pipeline/physics_pipeline.rs
+--- a/typescript/src/pipeline/physics_pipeline.rs
++++ b/typescript/src/pipeline/physics_pipeline.rs
+@@ -151,6 +151,17 @@
+             filter_contact_pair: hookFilterContactPair,
+             filter_intersection_pair: hookFilterIntersectionPair,
+         };
++        // Preserve events when the public optional hook object is absent.
++        // Any explicitly supplied callbacks keep the original JS hook path.
++        let hooks: &dyn rapier::pipeline::PhysicsHooks =
++            if (hooks.this.is_undefined() || hooks.this.is_null())
++                && hooks.filter_contact_pair.is_none()
++                && hooks.filter_intersection_pair.is_none()
++            {
++                &()
++            } else {
++                &hooks
++            };
+ 
+         self.0.step(
+             gravity.0,
+@@ -163,7 +174,7 @@
+             &mut joints.0,
+             &mut articulations.0,
+             &mut ccd_solver.0,
+-            &hooks,
++            hooks,
+             &eventQueue.collector,
+         );
+     }
+
+
+diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/physics_hooks.rs
+--- a/typescript/src/pipeline/physics_hooks.rs
++++ b/typescript/src/pipeline/physics_hooks.rs
+@@ -5,8 +5,8 @@
+ 
+ pub struct RawPhysicsHooks {
+     pub this: js_sys::Object,
+-    pub filter_contact_pair: js_sys::Function,
+-    pub filter_intersection_pair: js_sys::Function,
++    pub filter_contact_pair: Option<js_sys::Function>,
++    pub filter_intersection_pair: Option<js_sys::Function>,
+     // pub modify_solver_contacts: &'a js_sys::Function,
+ }
+ 
+@@ -20,6 +20,9 @@
+ 
+ impl PhysicsHooks for RawPhysicsHooks {
+     fn filter_contact_pair(&self, ctxt: &PairFilterContext) -> Option<SolverFlags> {
++        let Some(filter) = self.filter_contact_pair.as_ref() else {
++            return Some(SolverFlags::COMPUTE_IMPULSES);
++        };
+         let rb1 = ctxt
+             .rigid_body1
+             .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
+@@ -29,14 +32,14 @@
+             .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
+             .unwrap_or(JsValue::NULL);
+ 
+-        let result = self
+-            .filter_contact_pair
+-            .bind2(
++        let result = filter
++            .call4(
+                 &self.this,
+                 &JsValue::from(utils::flat_handle(ctxt.collider1.0)),
+                 &JsValue::from(utils::flat_handle(ctxt.collider2.0)),
++                &rb1,
++                &rb2,
+             )
+-            .call2(&self.this, &rb1, &rb2)
+             .ok()?;
+         let flags = result.as_f64()?;
+         // TODO: not sure exactly why we have to do `flags as u32` instead
+@@ -45,6 +48,9 @@
+     }
+ 
+     fn filter_intersection_pair(&self, ctxt: &PairFilterContext) -> bool {
++        let Some(filter) = self.filter_intersection_pair.as_ref() else {
++            return true;
++        };
+         let rb1 = ctxt
+             .rigid_body1
+             .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
+@@ -54,13 +60,14 @@
+             .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
+             .unwrap_or(JsValue::NULL);
+ 
+-        self.filter_intersection_pair
+-            .bind2(
++        filter
++            .call4(
+                 &self.this,
+                 &JsValue::from(utils::flat_handle(ctxt.collider1.0)),
+                 &JsValue::from(utils::flat_handle(ctxt.collider2.0)),
++                &rb1,
++                &rb2,
+             )
+-            .call2(&self.this, &rb1, &rb2)
+             .ok()
+             .and_then(|res| res.as_bool())
+             .unwrap_or(false)
+
+diff --git a/typescript/src/pipeline/physics_pipeline.rs b/typescript/src/pipeline/physics_pipeline.rs
+--- a/typescript/src/pipeline/physics_pipeline.rs
++++ b/typescript/src/pipeline/physics_pipeline.rs
+@@ -139,8 +139,8 @@
+         ccd_solver: &mut RawCCDSolver,
+         eventQueue: &mut RawEventQueue,
+         hookObject: js_sys::Object,
+-        hookFilterContactPair: js_sys::Function,
+-        hookFilterIntersectionPair: js_sys::Function,
++        hookFilterContactPair: Option<js_sys::Function>,
++        hookFilterIntersectionPair: Option<js_sys::Function>,
+     ) {
+         if eventQueue.auto_drain {
+             eventQueue.clear();

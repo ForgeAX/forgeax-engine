@@ -1,0 +1,97 @@
+{
+  "kind": "material",
+  "colorSpace": "srgb",
+  "parameters": [
+    {
+      "name": "baseColor",
+      "type": "color",
+      "default": [1, 1, 1, 1]
+    },
+    {
+      "name": "shadowColor",
+      "type": "color",
+      "default": [0.34, 0.43, 0.56, 1]
+    },
+    {
+      "name": "rimColor",
+      "type": "color",
+      "default": [0.72, 0.88, 0.84, 1]
+    },
+    {
+      "name": "rimStrength",
+      "type": "f32",
+      "default": 0.018
+    },
+    {
+      "name": "specularStrength",
+      "type": "f32",
+      "default": 0.008
+    },
+    {
+      "name": "emissionStrength",
+      "type": "f32",
+      "default": 0
+    },
+    {
+      "name": "sideShade",
+      "type": "f32",
+      "default": 0.84
+    },
+    {
+      "name": "surfaceRoughness",
+      "type": "f32",
+      "default": 0.86
+    },
+    {
+      "name": "surfaceMetallic",
+      "type": "f32",
+      "default": 0
+    },
+    {
+      "name": "pigmentStrength",
+      "type": "f32",
+      "default": 0.08
+    },
+    {
+      "name": "pigmentScale",
+      "type": "f32",
+      "default": 3.2
+    }
+  ],
+  "passes": [
+    {
+      "name": "Forward",
+      "program": {
+        "module": "ai_weapon_spirit::low_poly_toon",
+        "vertexEntry": "vs_main",
+        "fragmentEntry": "fs_main"
+      },
+      "renderState": {
+        "tags": {
+          "LightMode": "Forward"
+        },
+        "queue": 2000
+      }
+    },
+    {
+      "name": "ShadowCaster",
+      "program": {
+        "module": "ai_weapon_spirit::low_poly_toon",
+        "vertexEntry": "vs_shadow",
+        "fragmentEntry": "fs_shadow"
+      },
+      "renderState": {
+        "tags": {
+          "LightMode": "ShadowCaster"
+        }
+      }
+    }
+  ],
+  "values": {
+    "baseColor": [0.4, 0.65, 0.55, 1],
+    "emissionStrength": 0,
+    "pigmentStrength": 0,
+    "surfaceMetallic": 0,
+    "sideShade": 0.84
+  }
+}

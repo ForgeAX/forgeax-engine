@@ -1,0 +1,56 @@
+{
+  "name": "@forgeax/hello-m6-inspection-forensics",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M6 inspection/forensics gauntlet: browser remote-live mutation and RHI tape replay.",
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "pngjs": "^7.0.0",
+    "playwright": "^1.50.0"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m6-inspection-forensics smoke",
+    "gauntletScenario": {
+      "id": "hello-m6-inspection-forensics",
+      "script": "smoke",
+      "domains": ["Inspection, debugging, and development bridges", "World and host contract", "GPU abstraction and implementations"],
+      "packages": ["@forgeax/engine-remote", "@forgeax/engine-rhi-debug", "@forgeax/engine-rhi-debug-viewer", "@forgeax/remote-demo"],
+      "risks": ["baseline", "dynamic", "behavioral", "fault", "recovery", "cleanup"],
+      "phaseInputs": ["baseline", "dynamic", "behavioral", "fault", "snapshot-timeout", "same-process-retry", "offline-inspect", "recovery"],
+      "evidence": {
+        "frontDoors": ["remote-live-browser", "rhi-debug-cli", "rhi-debug-viewer", "remote-contracts"],
+        "legs": ["semantic", "live", "gpu", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m6-forensics] same-scene live capture: PASS",
+          "[m6-forensics] semantic live mutation: PASS",
+          "[m6-forensics] RHI frame model: PASS",
+          "[m6-forensics] RHI offline inspect/replay: PASS",
+          "[m6-forensics] same-scene live RHI frame model: PASS",
+          "[m6-forensics] same-scene live RHI inspect/replay: PASS",
+          "[m6-forensics] semantic-to-pixel correlation: PASS",
+          "[m6-forensics] RHI viewer: PASS",
+          "[m6-forensics] RHI falsifier: PASS",
+          "[m6-forensics] M21 snapshot timeout: PASS",
+          "[m6-forensics] M21 retry recovery: PASS",
+          "[m6-forensics] M21 offline inspect: PASS",
+          "[m6-forensics] remote contracts: PASS",
+          "[m6-forensics] PASS - M6 inspection/forensics gates GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {"enabled": false, "reason": "headless inspection composition has no dedicated bundle"},
+      "fps": {"enabled": false, "reason": "inspection correctness is not a performance benchmark"},
+      "bench": {"enabled": false, "reason": "inspection correctness is covered by live and package contracts"},
+      "gate": {"enabled": true, "command": "pnpm --filter @forgeax/hello-m6-inspection-forensics smoke"},
+      "spike-report": {"enabled": false, "reason": "not a spike app"}
+    }
+  }
+}

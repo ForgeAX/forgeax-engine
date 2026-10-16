@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/visual-evidence.schema.json",
+  "title": "ForgeaX 视觉证据",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "evidenceKind", "records"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "evidenceKind": { "const": "visual-evidence" },
+    "records": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "product",
+          "artifact",
+          "backend",
+          "expected",
+          "observed",
+          "verdict",
+          "confidence"
+        ],
+        "properties": {
+          "product": { "type": "string", "minLength": 1 },
+          "artifact": { "$ref": "#/$defs/artifact" },
+          "backend": { "$ref": "#/$defs/backend" },
+          "expected": { "type": "string", "minLength": 1 },
+          "observed": { "type": "string", "minLength": 1 },
+          "verdict": { "enum": ["pass", "fail", "insufficient-evidence"] },
+          "confidence": { "enum": ["high", "medium", "low"] }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": { "enum": ["chromium", "dawn"] },
+        "identity": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

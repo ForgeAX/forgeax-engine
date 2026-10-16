@@ -1,0 +1,7 @@
+{
+  "name": "runner-over-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

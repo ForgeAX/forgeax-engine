@@ -1,0 +1,12 @@
+// apps/bevy/3d-shapes -- ambient declarations.
+//
+// `virtual:forgeax/bundler` is provided by @forgeax/engine-vite-plugin-shader
+// at build/dev time; createRenderer / createApp consume its adapter for the
+// shader manifest URL.
+
+declare module 'virtual:forgeax/bundler' {
+  export function forgeaxBundlerAdapter(): {
+    readonly shaderManifestUrl: string;
+    readonly importTransport?: undefined;
+  };
+}

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0",
+  "captureId": "capture-0001",
+  "timeUnit": "microseconds",
+  "frameLimit": 2,
+  "eventLimit": 8,
+  "phaseCatalog": {
+    "app": ["input", "update"],
+    "render": ["prepare", "submit"]
+  },
+  "records": [
+    {
+      "kind": "phase",
+      "source": "app",
+      "frameId": 1,
+      "phase": "input",
+      "startMicros": 1000,
+      "endMicros": 1100,
+      "durationMicros": 100
+    },
+    {
+      "kind": "skip",
+      "source": "render",
+      "frameId": 1,
+      "phase": "submit",
+      "reason": "no-render"
+    },
+    {
+      "kind": "phase",
+      "source": "app",
+      "frameId": 2,
+      "phase": "update",
+      "startMicros": 2000,
+      "endMicros": 2200,
+      "durationMicros": 200
+    }
+  ],
+  "completeness": {
+    "status": "complete",
+    "retainedEventCount": 3,
+    "droppedEventCount": 0
+  }
+}

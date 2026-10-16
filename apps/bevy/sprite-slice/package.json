@@ -1,0 +1,22 @@
+{
+  "name": "@forgeax/bevy-sprite-slice",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reproduce Bevy's sprite_slice example with stretch and tile 9-slice panels.",
+  "scripts": { "dev": "vite", "typecheck": "tsc --noEmit", "build": "vite build", "smoke": "node scripts/smoke-dawn.mjs" },
+  "forgeax": {
+    "bevyExample": { "name": "sprite_slice", "category": "2D Rendering", "status": "implemented" },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-sprite-slice smoke",
+    "metrics": {
+      "bundle-size": { "enabled": false, "reason": "vite app bundle downstream of engine-runtime sizes already tracked at the package level" },
+      "fps": { "enabled": false, "reason": "static demo; 9-slice geometry is the completed reproduction criterion" },
+      "bench": { "enabled": false, "reason": "static demo; benchmark focus remains on engine packages" },
+      "gate": { "enabled": true, "command": "pnpm --filter @forgeax/bevy-sprite-slice smoke" },
+      "spike-report": { "enabled": false, "reason": "not a spike app; Bevy example reproduction" }
+    }
+  },
+  "dependencies": { "@forgeax/engine-app": "workspace:*", "@forgeax/engine-assets-runtime": "workspace:*", "@forgeax/engine-ecs": "workspace:*", "@forgeax/engine-runtime": "workspace:*", "@forgeax/engine-types": "workspace:*", "@forgeax/engine-scene": "workspace:*", "@forgeax/engine-render": "workspace:*" },
+  "devDependencies": { "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*", "@forgeax/engine-vite-plugin-shader": "workspace:*", "@webgpu/types": "^0.1.74", "vite": "8.0.16", "@forgeax/engine-dawn-node": "workspace:*" }
+}

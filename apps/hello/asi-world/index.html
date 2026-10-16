@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>forgeax-engine - ASI World demo (test2-b30f5a + Kirito)</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1a1a22; color: #e8e8ef; font-family: ui-monospace, monospace; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+      .hint {
+        position: fixed; left: 12px; top: 12px;
+        background: rgba(0, 0, 0, 0.55); padding: 8px 12px;
+        border-radius: 6px; line-height: 1.4; pointer-events: none;
+        font-size: 12px;
+      }
+      .hud {
+        position: fixed; right: 12px; top: 12px;
+        background: rgba(0, 0, 0, 0.65); padding: 8px 12px;
+        border-radius: 6px; line-height: 1.4; pointer-events: none;
+        font-size: 12px; min-width: 220px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app" width="960" height="720"></canvas>
+    <div class="hint">
+      <b>ASI World demo</b><br />
+      WASD / Arrow keys to move<br />
+      Tilemap object-layer rendering (feat-20260608 M4)<br />
+      Data: asi_world test2-b30f5a + Kirito spritesheet
+    </div>
+    <div id="hud" class="hud">loading...</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

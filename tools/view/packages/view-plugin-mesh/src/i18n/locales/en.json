@@ -1,0 +1,14 @@
+{
+  "mesh": {
+    "empty": "Open a mesh asset",
+    "unavailable": "Mesh inspection unavailable",
+    "inspectFailed": "Engine asset.inspect did not return mesh facts for this GUID.",
+    "previewUnavailable": "Mesh preview unavailable",
+    "previewCapabilityMissing": "Engine did not return a preview target for this mesh.",
+    "previewEmpty": "No mesh preview",
+    "facts": "Mesh facts",
+    "slots": "Material slots",
+    "resetView": "Reset view",
+    "navigationHint": "WASD/QE move · Shift boost · RMB look/fly · wheel speed · F focus"
+  }
+}

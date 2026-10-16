@@ -1,0 +1,77 @@
+{
+  "name": "@forgeax/engine-codec",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Runtime-safe zstd decode + KTX2 container parse + build-time zstd encode for the forgeax asset pipeline.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./encode": {
+      "types": "./dist/encode/index.d.ts",
+      "import": "./dist/encode/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./basis-factory": {
+      "types": "./dist/basis-browser.d.ts",
+      "forgeax-native": "./dist/basis-native-factory.mjs",
+      "default": "./dist/basis-browser.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "pkg",
+    "scripts",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup && node scripts/build-native.mjs",
+    "build:wasm": "node scripts/fetch-basis.mjs && node scripts/build-wasm.mjs",
+    "fetch-wasm": "node scripts/fetch-wasm.mjs",
+    "postinstall": "node scripts/ensure-wasm.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.2.0",
+    "@bokuweb/zstd-wasm": "0.0.27",
+    "fzstd": "^0.1.1"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "pkg/basis_transcoder.wasm",
+        "compression": "gzip",
+        "expected": 450430
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "codec is a pure-function decode library, no runtime canvas; fps reported by consuming apps"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "zstd decode + KTX2 parse are asset-load-time operations, not per-frame hot paths; micro-benchmark OOS for Loop 1"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; round-trip correctness covered by codec unit tests + smoke tests in consuming apps"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; codec is a foundational compression layer established in feat-20260706-loop1"
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.40",
+    "@webgpu/types": "^0.1.74"
+  }
+}

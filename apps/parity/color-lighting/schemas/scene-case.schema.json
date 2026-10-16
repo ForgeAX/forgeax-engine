@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/color-lighting/scene-case.schema.json",
+  "title": "Color lighting parity scene case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["caseId", "required", "colorDomain", "scene", "budget"],
+  "properties": {
+    "caseId": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "required": { "type": "boolean" },
+    "colorDomain": { "enum": ["linearHdr", "linearLdr", "displayEncoded"] },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "engineId", "renderPath"],
+      "properties": {
+        "identity": { "const": "standard" },
+        "engineId": { "const": "forgeax::standard" },
+        "renderPath": { "enum": ["forward", "deferred"] }
+      }
+    },
+    "light": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "color", "intensity"],
+      "properties": {
+        "authorityId": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["directional", "point", "spot", "rect-area"] },
+        "color": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "intensity": { "type": "number", "minimum": 0 },
+        "range": { "type": "number", "exclusiveMinimum": 0 },
+        "direction": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number" }
+        },
+        "innerConeDeg": { "type": "number", "minimum": 0, "maximum": 90 },
+        "outerConeDeg": { "type": "number", "exclusiveMinimum": 0, "maximum": 90 },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "center": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }], "items": false },
+        "axisX": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }], "items": false },
+        "axisY": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }], "items": false }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frontFacing", "brdf", "shadowTile", "unlitContribution", "punctualInverseSquare"],
+      "properties": {
+        "frontFacing": { "type": "string", "minLength": 1 },
+        "brdf": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "shadowTile": { "type": "string", "minLength": 1 },
+        "unlitContribution": { "type": "number", "minimum": 0 },
+        "punctualInverseSquare": { "type": "boolean" }
+      }
+    },
+    "import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "intensityScale", "rangeZero", "cone"],
+      "properties": {
+        "source": { "enum": ["none", "KHR_lights_punctual"] },
+        "intensityScale": { "type": "number", "minimum": 0 },
+        "rangeZero": { "enum": ["no-cutoff"] },
+        "cone": { "enum": ["radians-to-degrees"] }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primaryMetric"],
+      "properties": {
+        "primaryMetric": {
+          "enum": ["rgba", "alpha", "occupancy"],
+          "default": "rgba"
+        }
+      }
+    },
+    "extendedLighting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology", "carrier", "iesSliceCount", "cookieSliceCount", "cookieMatrixCount", "expectedComposition", "cookieColorDomain", "evidencePlan"],
+      "properties": {
+        "topology": { "const": "extendedLighting" },
+        "carrier": { "enum": ["rect-area", "spot-modifiers", "probe", "recovery"] },
+        "iesSliceCount": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "cookieSliceCount": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "cookieMatrixCount": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "expectedComposition": { "const": "brdf*range*cone*ies*cookie*shadow" },
+        "cookieColorDomain": { "const": "linear" },
+        "evidencePlan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expectations", "identity", "numericRoi", "recordReceipt", "resourceReceipt", "falsifiers"],
+          "properties": {
+            "expectations": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+            "identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["fixtureId", "sourceKey"],
+              "properties": {
+                "fixtureId": { "type": "string", "minLength": 1 },
+                "sourceKey": { "type": "string", "minLength": 1 }
+              }
+            },
+            "numericRoi": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["analyticMax", "roiMax", "epsilon", "colorDomain"],
+              "properties": {
+                "analyticMax": { "type": "number", "minimum": 0 },
+                "roiMax": { "type": "number", "minimum": 0 },
+                "epsilon": { "type": "number", "minimum": 0 },
+                "colorDomain": { "const": "linearHdr" }
+              }
+            },
+            "recordReceipt": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "byteLength", "maxBytes"],
+              "properties": {
+                "status": { "enum": ["not-run", "ready", "recovered"] },
+                "byteLength": { "const": 160 },
+                "maxBytes": { "const": 160 }
+              }
+            },
+            "resourceReceipt": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "topology"],
+              "properties": {
+                "status": { "enum": ["not-run", "candidate", "accepted", "lkg", "recovered"] },
+                "topology": { "const": "extendedLighting" }
+              }
+            },
+            "falsifiers": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "expectedFailure"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "expectedFailure": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "background"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "background": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["analyticMax", "roiMax", "byteMax"],
+      "properties": {
+        "analyticMax": { "type": "number", "minimum": 0 },
+        "roiMax": { "type": "number", "minimum": 0 },
+        "byteMax": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

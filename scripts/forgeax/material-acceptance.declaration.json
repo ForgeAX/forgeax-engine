@@ -1,0 +1,1646 @@
+{
+  "schemaVersion": 1,
+  "kind": "material-acceptance-declaration",
+  "producer": "apps/hello/custom-shader",
+  "requiredCategories": [
+    "custom-shader",
+    "runtime-cooked-fixture",
+    "built-in-cold-recook",
+    "gltf-cold-recook",
+    "fbx-cold-recook",
+    "material-bearing-consumer",
+    "runtime-bool-no-compile",
+    "module-slot-replacement",
+    "compiler-context-variant"
+  ],
+  "witnesses": [
+    {
+      "id": "custom-shader-dawn",
+      "category": "custom-shader",
+      "subject": "apps/hello/custom-shader/src/pulse-material.shader.pack.json",
+      "fixture": "apps/hello/custom-shader/assets/pulse-material.pack.json",
+      "materialGuid": "01935b00-7d8c-7c4e-9f12-345678abcd02",
+      "evidence": "dawn",
+      "command": {
+        "program": "pnpm",
+        "args": ["--filter", "@forgeax/hello-custom-shader", "smoke"]
+      }
+    },
+    {
+      "id": "custom-shader-browser",
+      "category": "custom-shader",
+      "subject": "apps/hello/custom-shader/src/pulse-material.shader.pack.json",
+      "fixture": "apps/hello/custom-shader/assets/pulse-material.pack.json",
+      "materialGuid": "01935b00-7d8c-7c4e-9f12-345678abcd02",
+      "evidence": "browser",
+      "command": {
+        "program": "pnpm",
+        "args": ["--filter", "@forgeax/hello-custom-shader", "smoke:browser"]
+      }
+    },
+    {
+      "id": "runtime-cooked-fixture-dawn",
+      "category": "runtime-cooked-fixture",
+      "subject": "packages/shader/src/default-standard-pbr.wgsl",
+      "fixture": "scripts/forgeax/material-witness-fixtures/runtime.receipt.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000101",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": ["packages/vite-plugin-pack/scripts/material-witness-smoke.mjs", "runtime"]
+      }
+    },
+    {
+      "id": "builtin-cold-recook-dawn",
+      "category": "built-in-cold-recook",
+      "subject": "packages/shader/src/unlit.wgsl",
+      "fixture": "scripts/forgeax/material-witness-fixtures/builtin.receipt.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000102",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": ["packages/vite-plugin-pack/scripts/material-witness-smoke.mjs", "builtin"]
+      }
+    },
+    {
+      "id": "gltf-cold-recook-dawn",
+      "category": "gltf-cold-recook",
+      "subject": "apps/hello/gltf/assets/box.gltf",
+      "fixture": "scripts/forgeax/material-witness-fixtures/gltf.receipt.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000103",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": ["packages/vite-plugin-pack/scripts/material-witness-smoke.mjs", "gltf"]
+      }
+    },
+    {
+      "id": "fbx-cold-recook-dawn",
+      "category": "fbx-cold-recook",
+      "subject": "forgeax-engine-assets/vendor/fbx-test/cube.fbx",
+      "fixture": "scripts/forgeax/material-witness-fixtures/fbx.receipt.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000104",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": ["packages/vite-plugin-pack/scripts/material-witness-smoke.mjs", "fbx"]
+      }
+    },
+    {
+      "id": "material-bearing-consumer-dawn",
+      "category": "material-bearing-consumer",
+      "subject": "apps/hello/fbx-cube/src/main.ts",
+      "fixture": "scripts/forgeax/material-witness-fixtures/consumer.receipt.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000105",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": ["packages/vite-plugin-pack/scripts/material-witness-smoke.mjs", "consumer"]
+      }
+    },
+    {
+      "id": "runtime-bool-no-compile-dawn",
+      "category": "runtime-bool-no-compile",
+      "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-runtime-bool-no-compile.pack.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000201",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": [
+          "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+          "runtime-bool-no-compile",
+          "dawn"
+        ]
+      }
+    },
+    {
+      "id": "runtime-bool-no-compile-browser",
+      "category": "runtime-bool-no-compile",
+      "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-runtime-bool-no-compile.pack.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000201",
+      "evidence": "browser",
+      "command": {
+        "program": "node",
+        "args": [
+          "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+          "runtime-bool-no-compile",
+          "browser"
+        ]
+      }
+    },
+    {
+      "id": "module-slot-replacement-dawn",
+      "category": "module-slot-replacement",
+      "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-module-slot-replacement.pack.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000201",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": [
+          "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+          "module-slot-replacement",
+          "dawn"
+        ]
+      }
+    },
+    {
+      "id": "module-slot-replacement-browser",
+      "category": "module-slot-replacement",
+      "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-module-slot-replacement.pack.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000201",
+      "evidence": "browser",
+      "command": {
+        "program": "node",
+        "args": [
+          "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+          "module-slot-replacement",
+          "browser"
+        ]
+      }
+    },
+    {
+      "id": "compiler-context-variant-dawn",
+      "category": "compiler-context-variant",
+      "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-compiler-context-variant.pack.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000201",
+      "evidence": "dawn",
+      "command": {
+        "program": "node",
+        "args": [
+          "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+          "compiler-context-variant",
+          "dawn"
+        ]
+      }
+    },
+    {
+      "id": "compiler-context-variant-browser",
+      "category": "compiler-context-variant",
+      "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-compiler-context-variant.pack.json",
+      "materialGuid": "019f0000-0000-7000-8000-000000000201",
+      "evidence": "browser",
+      "command": {
+        "program": "node",
+        "args": [
+          "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
+          "compiler-context-variant",
+          "browser"
+        ]
+      }
+    }
+  ],
+  "scopeAudit": {
+    "artifact": "scope-audit.json",
+    "featureId": "feat-20260831-physical-material-second-stage",
+    "milestone": "M0",
+    "sourcePlanRevision": "35b91772^",
+    "testedRevision": "29c67b5cb41a7c77b016e41ceddcf78e2fbf5e6f",
+    "status": "human-approved-attribution",
+    "summary": {
+      "historicalTaskRecordsBeforeRepair": 56,
+      "historicalUndeclaredChangedFileEntriesBeforeRepair": 75,
+      "currentTaskRecordsAudited": 61,
+      "currentUndeclaredChangedFileEntries": 85,
+      "currentUniqueUndeclaredPaths": 33,
+      "allAuditedCommitsResolvable": true
+    },
+    "identityCorrection": {
+      "incorrectCommitSha": "7d78f2b297b9c67af3af4c3e88d77f3585ebd69e",
+      "correctCommitSha": "7d78f2b29789f824ae83a3bad940a491dd5e4548",
+      "correctionVerifiedWithGit": true
+    },
+    "entries": [
+      {
+        "taskId": "m1-05",
+        "commitSha": "77f7d1ff8d9e1a507948963c8fd55ed31f47f60f",
+        "path": "apps/hello/physical-material/src/vite-env.d.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "77f7d1ff8d9e1a507948963c8fd55ed31f47f60f",
+        "path": "apps/hello/physical-material/tsconfig.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "77f7d1ff8d9e1a507948963c8fd55ed31f47f60f",
+        "path": "apps/hello/physical-material/vite.config.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "1da73fc9144a13ba8632ea9601267fa2842cb55e",
+        "path": "packages/render/src/pbr-pipeline.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "ee63fe90ea33a533d499d23c9120bae7aee75d5b",
+        "path": "packages/render/src/__tests__/renderer-factory-material-contract.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "ee63fe90ea33a533d499d23c9120bae7aee75d5b",
+        "path": "packages/render/src/assembly/factory.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "35eeb443c3391570e4061816b4ab1051b1f403e5",
+        "path": "packages/render/src/__tests__/renderer-factory-material-contract.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "35eeb443c3391570e4061816b4ab1051b1f403e5",
+        "path": "packages/render/src/pbr-pipeline.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "35eeb443c3391570e4061816b4ab1051b1f403e5",
+        "path": "packages/render/src/record/main-pass-material.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "0565a54c47d9f9e84e2a90c5cdc55012f17f1858",
+        "path": "packages/render/src/__tests__/renderer-factory-material-contract.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "0565a54c47d9f9e84e2a90c5cdc55012f17f1858",
+        "path": "packages/render/src/assembly/factory.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "bcd29be93a648d61dcf40c041753a648c213579d",
+        "path": "packages/render/src/record/__tests__/standard-pbr-ubo-layout.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "bcd29be93a648d61dcf40c041753a648c213579d",
+        "path": "packages/render/src/record/main-pass-material.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "bcd29be93a648d61dcf40c041753a648c213579d",
+        "path": "packages/render/src/record/render-context.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "95e0c115f082d4069a40aa07ae67d1ae217d6e9e",
+        "path": "apps/hello/physical-material/evidence/case-manifest.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "7aa8c6cce0183fa38c4adf891b365d8608dff150",
+        "path": "packages/render/src/pbr-pipeline.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "7aa8c6cce0183fa38c4adf891b365d8608dff150",
+        "path": "packages/render/src/assembly/factory.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "7aa8c6cce0183fa38c4adf891b365d8608dff150",
+        "path": "packages/render/src/record/main-pass-geometry.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "7aa8c6cce0183fa38c4adf891b365d8608dff150",
+        "path": "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "5554310b36d7ed2e5300a93b783a1fed46eaaa4a",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "5554310b36d7ed2e5300a93b783a1fed46eaaa4a",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d891f4030f67d90e9dcc81a173404912b3833a52",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d891f4030f67d90e9dcc81a173404912b3833a52",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d891f4030f67d90e9dcc81a173404912b3833a52",
+        "path": "packages/render/src/assembly/factory.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d9c646a4137841aedc7d59f5c8e91bcfbdb784f9",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d9c646a4137841aedc7d59f5c8e91bcfbdb784f9",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "a099f5189b85599a127124c787ec5aa1a0f02b45",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "a099f5189b85599a127124c787ec5aa1a0f02b45",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "66de50c4aecd685e62cf7bc25db5220506046b61",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "66de50c4aecd685e62cf7bc25db5220506046b61",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d69f64e6bb86365ecf95f5c49c614cc40ec004c4",
+        "path": "apps/hello/physical-material/evidence/case-manifest.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d69f64e6bb86365ecf95f5c49c614cc40ec004c4",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d69f64e6bb86365ecf95f5c49c614cc40ec004c4",
+        "path": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "d69f64e6bb86365ecf95f5c49c614cc40ec004c4",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "7a353f3932bfdaf706fdae8261fb13fe6e3bac66",
+        "path": "apps/hello/physical-material/evidence/reference-generator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "7a353f3932bfdaf706fdae8261fb13fe6e3bac66",
+        "path": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "356e4bd24820069a95cad93b33718281897bb23d",
+        "path": "apps/hello/physical-material/evidence/case-manifest.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "356e4bd24820069a95cad93b33718281897bb23d",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "356e4bd24820069a95cad93b33718281897bb23d",
+        "path": "apps/hello/physical-material/evidence/reference-generator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "356e4bd24820069a95cad93b33718281897bb23d",
+        "path": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "356e4bd24820069a95cad93b33718281897bb23d",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f5e9e312048dd3971495c0600ba33065f2030d70",
+        "path": "apps/hello/physical-material/evidence/additive-coat-mutant.wgsl",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f5e9e312048dd3971495c0600ba33065f2030d70",
+        "path": "apps/hello/physical-material/evidence/case-manifest.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f5e9e312048dd3971495c0600ba33065f2030d70",
+        "path": "apps/hello/physical-material/evidence/reference-generator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f5e9e312048dd3971495c0600ba33065f2030d70",
+        "path": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "5abd962dbed5273727d321cfe232d082a94f3453",
+        "path": "packages/render/src/record/main-pass-geometry.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "5abd962dbed5273727d321cfe232d082a94f3453",
+        "path": "packages/render/src/record/main-pass-material.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "55f4343f0b805dc10ad23e11d3d6b3b52b513079",
+        "path": "packages/render/src/record/__tests__/mesh-ssbo.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "55f4343f0b805dc10ad23e11d3d6b3b52b513079",
+        "path": "packages/render/src/record/main-pass-geometry.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "55f4343f0b805dc10ad23e11d3d6b3b52b513079",
+        "path": "packages/render/src/record/main-pass-material.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "55f4343f0b805dc10ad23e11d3d6b3b52b513079",
+        "path": "packages/render/src/record/mesh-ssbo.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "e812cbebd3dd8cdf9ee77e25ebf27bf8c819974d",
+        "path": "packages/render/src/record/main-pass-material.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "cadce04e6da6b30bbcacfbbc59ab40d2658003fc",
+        "path": "packages/render/src/assembly/factory.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "cadce04e6da6b30bbcacfbbc59ab40d2658003fc",
+        "path": "packages/render/src/record/main-pass-geometry.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "cadce04e6da6b30bbcacfbbc59ab40d2658003fc",
+        "path": "packages/render/src/record/main-pass.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "3ac73b725e",
+        "path": "packages/render/src/record/main-pass-material.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "3ac73b725e",
+        "path": "packages/render/src/record/__tests__/standard-pbr-ubo-layout.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "4450e5378b7422668e86dae2595c4ec8c5865fce",
+        "path": "apps/hello/physical-material/evidence/case-input.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "4450e5378b7422668e86dae2595c4ec8c5865fce",
+        "path": "apps/hello/physical-material/evidence/case-manifest.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "4450e5378b7422668e86dae2595c4ec8c5865fce",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "4450e5378b7422668e86dae2595c4ec8c5865fce",
+        "path": "apps/hello/physical-material/evidence/reference-generator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "4450e5378b7422668e86dae2595c4ec8c5865fce",
+        "path": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "5b325c9196ea4bd1d5f44115dbaea5b60d77df4a",
+        "path": "packages/shader/src/__tests__/shader.unit.test.ts",
+        "owner": "shader Standard PBR ABI",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "5b325c9196ea4bd1d5f44115dbaea5b60d77df4a",
+        "path": "packages/shader/src/ibl-prefilter.wgsl",
+        "owner": "shader Standard PBR ABI",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "66ffcadc42df8584b3719fefa0e941fe5cbf0331",
+        "path": "apps/hello/physical-material/evidence/case-input.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "66ffcadc42df8584b3719fefa0e941fe5cbf0331",
+        "path": "apps/hello/physical-material/evidence/case-manifest.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "66ffcadc42df8584b3719fefa0e941fe5cbf0331",
+        "path": "apps/hello/physical-material/evidence/reference-generator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "66ffcadc42df8584b3719fefa0e941fe5cbf0331",
+        "path": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "b046ecdf417039084fab4159daf1ef944ed7f125",
+        "path": "apps/hello/physical-material/evidence/browser-executor.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "b046ecdf417039084fab4159daf1ef944ed7f125",
+        "path": "apps/hello/physical-material/vite.config.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "c76caa09fde50b7b0353c495f0e5b30fd4714dc7",
+        "path": "apps/hello/physical-material/evidence/browser-executor.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "65274e9d5849ddf0bd98027fc8cd6eedd69a2a7d",
+        "path": "packages/render/src/__tests__/ibl/face-uniforms.unit.test.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "65274e9d5849ddf0bd98027fc8cd6eedd69a2a7d",
+        "path": "packages/render/src/device/gpu-residency.ts",
+        "owner": "render assembly/record",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "65274e9d5849ddf0bd98027fc8cd6eedd69a2a7d",
+        "path": "packages/shader/src/__tests__/shader.unit.test.ts",
+        "owner": "shader Standard PBR ABI",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "65274e9d5849ddf0bd98027fc8cd6eedd69a2a7d",
+        "path": "packages/shader/src/ibl-prefilter.wgsl",
+        "owner": "shader Standard PBR ABI",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-04",
+        "commitSha": "d854589a447887348133b578f12bfe8a6cee8f44",
+        "path": "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts",
+        "owner": "shader Standard PBR ABI",
+        "reason": "该文件实际参与 m1-04「实现 clearcoat module 与分层 Fresnel evaluator」的 layout、variant 或 renderer owner 链，但历史 plan targetFiles 未列出；需人工确认其应补入 m1-04 或拆到对应 consumer task。",
+        "targetFiles": [
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/assembly/material/standard-layer-projection.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader-compiler/src/material/compose.ts",
+          "packages/shader-compiler/src/material/source-catalog.ts",
+          "packages/shader/src/default-standard-pbr-skin.wgsl",
+          "packages/shader/src/default-standard-pbr.wgsl",
+          "packages/shader/src/material/physical/clearcoat.wgsl"
+        ]
+      },
+      {
+        "taskId": "m1-01",
+        "commitSha": "329e338bcb6c134c6eff5eca80d6ce68ff5dbe47",
+        "path": "apps/hello/physical-material/evidence/browser-executor.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件出现在任务 m1-01「建立 clearcoat 与 tangent 的红测试」的 git commit 中，但历史 plan targetFiles 未列出；当前缺少可执行的任务边界证据，不能静默归入目标范围。",
+        "targetFiles": [
+          "packages/geometry/src/__tests__/physical-tangent.unit.test.ts",
+          "packages/gltf/src/__tests__/physical-clearcoat.unit.test.ts",
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts"
+        ]
+      },
+      {
+        "taskId": "m1-01",
+        "commitSha": "329e338bcb6c134c6eff5eca80d6ce68ff5dbe47",
+        "path": "apps/hello/physical-material/evidence/evaluator-core.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件出现在任务 m1-01「建立 clearcoat 与 tangent 的红测试」的 git commit 中，但历史 plan targetFiles 未列出；当前缺少可执行的任务边界证据，不能静默归入目标范围。",
+        "targetFiles": [
+          "packages/geometry/src/__tests__/physical-tangent.unit.test.ts",
+          "packages/gltf/src/__tests__/physical-clearcoat.unit.test.ts",
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts"
+        ]
+      },
+      {
+        "taskId": "m1-01",
+        "commitSha": "329e338bcb6c134c6eff5eca80d6ce68ff5dbe47",
+        "path": "apps/hello/physical-material/evidence/evaluator.mjs",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件出现在任务 m1-01「建立 clearcoat 与 tangent 的红测试」的 git commit 中，但历史 plan targetFiles 未列出；当前缺少可执行的任务边界证据，不能静默归入目标范围。",
+        "targetFiles": [
+          "packages/geometry/src/__tests__/physical-tangent.unit.test.ts",
+          "packages/gltf/src/__tests__/physical-clearcoat.unit.test.ts",
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts"
+        ]
+      },
+      {
+        "taskId": "m1-01",
+        "commitSha": "329e338bcb6c134c6eff5eca80d6ce68ff5dbe47",
+        "path": "apps/hello/physical-material/src/__tests__/evaluator-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件出现在任务 m1-01「建立 clearcoat 与 tangent 的红测试」的 git commit 中，但历史 plan targetFiles 未列出；当前缺少可执行的任务边界证据，不能静默归入目标范围。",
+        "targetFiles": [
+          "packages/geometry/src/__tests__/physical-tangent.unit.test.ts",
+          "packages/gltf/src/__tests__/physical-clearcoat.unit.test.ts",
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts"
+        ]
+      },
+      {
+        "taskId": "m1-01",
+        "commitSha": "329e338bcb6c134c6eff5eca80d6ce68ff5dbe47",
+        "path": "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件出现在任务 m1-01「建立 clearcoat 与 tangent 的红测试」的 git commit 中，但历史 plan targetFiles 未列出；当前缺少可执行的任务边界证据，不能静默归入目标范围。",
+        "targetFiles": [
+          "packages/geometry/src/__tests__/physical-tangent.unit.test.ts",
+          "packages/gltf/src/__tests__/physical-clearcoat.unit.test.ts",
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts"
+        ]
+      },
+      {
+        "taskId": "m1-01",
+        "commitSha": "329e338bcb6c134c6eff5eca80d6ce68ff5dbe47",
+        "path": "apps/hello/physical-material/src/main.ts",
+        "owner": "physical-material app/evidence",
+        "reason": "该文件出现在任务 m1-01「建立 clearcoat 与 tangent 的红测试」的 git commit 中，但历史 plan targetFiles 未列出；当前缺少可执行的任务边界证据，不能静默归入目标范围。",
+        "targetFiles": [
+          "packages/geometry/src/__tests__/physical-tangent.unit.test.ts",
+          "packages/gltf/src/__tests__/physical-clearcoat.unit.test.ts",
+          "packages/render/src/__tests__/materials-standard-contract.unit.test.ts",
+          "packages/render/src/__tests__/physical-clearcoat.integration.test.ts",
+          "packages/render/src/materials.ts",
+          "packages/shader/src/__tests__/physical-clearcoat.unit.test.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f74a3c3e7d6a245e02c47d86674acd64e0f33f2e",
+        "path": "packages/runtime/src/__tests__/material-texture-uv-scale.unit.test.ts",
+        "owner": "runtime contract test",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f74a3c3e7d6a245e02c47d86674acd64e0f33f2e",
+        "path": "packages/runtime/src/__tests__/pipeline.unit.test.ts",
+        "owner": "runtime contract test",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      },
+      {
+        "taskId": "m1-05",
+        "commitSha": "f74a3c3e7d6a245e02c47d86674acd64e0f33f2e",
+        "path": "packages/runtime/src/__tests__/render-system-record.test.ts",
+        "owner": "runtime contract test",
+        "reason": "该文件实际参与 m1-05「运行 clearcoat 真实 Browser/Dawn carrier 用例」的载体、证据或渲染链，但历史 plan targetFiles 未列出；应由编排者确认是 m1-05 越界声明还是需要重切任务边界。",
+        "targetFiles": [
+          "apps/hello/physical-material/evidence/manifest.json",
+          "apps/hello/physical-material/index.html",
+          "apps/hello/physical-material/package.json",
+          "apps/hello/physical-material/scripts/smoke-browser.mjs",
+          "apps/hello/physical-material/scripts/smoke-dawn.mjs",
+          "apps/hello/physical-material/src/__tests__/smoke-contract.test.ts",
+          "apps/hello/physical-material/src/main.ts"
+        ]
+      }
+    ]
+  },
+  "provenanceFreeze": {
+    "artifactId": "physical-material-provenance-freeze-v1",
+    "status": "frozen",
+    "featureId": "feat-20260831-physical-material-second-stage",
+    "milestone": "M0",
+    "exactHead": "29c67b5cb41a7c77b016e41ceddcf78e2fbf5e6f",
+    "reference": {
+      "asset": "newport_loft.hdr",
+      "version": "sourceRevision:b84174ebac471401df41a2b8cad9ce06d1853b9cbadb1ed01e29b2a4963a2086",
+      "sourceGuid": "019e4a26-3c29-7420-af5d-20f2724a16b0",
+      "bodySha256": "391ac77feea42745a6ae6b12d4da46bed90e8af4721525f4def0882c10cd8084",
+      "format": "rgba16float",
+      "colorSpace": "linear"
+    },
+    "renderer": {
+      "package": "@forgeax/engine-render",
+      "version": "0.0.0",
+      "shaderPackageVersion": "0.0.0",
+      "shaderCompilerPackageVersion": "0.0.0"
+    },
+    "deviceBackend": {
+      "dawn": "dawn-node via @forgeax/engine-rhi-wgpu-native; exact device receipt remains carrier evidence",
+      "browser": "Chromium WebGPU via Xvfb; exact device receipt remains carrier evidence"
+    },
+    "camera": {
+      "identity": "perspective-fov-45-at-origin",
+      "position": [0, 0, 7],
+      "fovRadians": 0.7853981633974483,
+      "near": 0.1,
+      "far": 100,
+      "aspect": 1.3333333333333333
+    },
+    "roi": {
+      "layout": "phase-local-4x2",
+      "width": 50,
+      "height": 75,
+      "renderWidth": 200,
+      "renderHeight": 150
+    },
+    "epsilon": 0.05,
+    "timing": {
+      "method": "submitted-frame-count",
+      "minimumFrames": 300,
+      "warmup": "carrier-defined; no timing approval before receipt"
+    },
+    "boundArtifacts": {
+      "caseInput": "apps/hello/physical-material/evidence/case-input.json",
+      "caseInputSha256": "b917d16a04005ef3a121d796643e31dca446eae893e10b286e48950179ffca03",
+      "caseManifest": "apps/hello/physical-material/evidence/case-manifest.json",
+      "caseManifestSha256": "b59db6e71502344a3f8c0e8436e9e1ab71b96f96e1d6838bb35bef83d90334fd",
+      "referenceArtifact": "apps/hello/physical-material/evidence/reference-linear-hdr.json",
+      "referenceArtifactSha256": "4d8241b78431f037e9bc42141fd3d86cab7d955381a4ab4874acb8765c341f32",
+      "productShaderSha256": {
+        "default-standard-pbr.wgsl": "c1f8fe8ad3e4c8ab4488fb396ade9f8fa1fa5e38cb13851c01b32082d0761f6c",
+        "default-standard-pbr-skin.wgsl": "0dfcd53364e3581799bd0994fdd3c13d9946fbc0a2fa7eff2d52d709b45cb5c9"
+      }
+    },
+    "approvalRule": "先冻结字段与绑定 hash，再采集或批准 M1-M4 像素；exact-head、输入或 receipt 任一漂移即失效。"
+  }
+}

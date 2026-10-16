@@ -1,0 +1,21 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "auto-exposure-positive-lut.cube",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": false,
+    "addressMode": "clamp-to-edge",
+    "filterMode": "linear",
+    "compressionMode": "none"
+  },
+  "subAssets": [
+    {
+      "guid": "019f2026-0827-7000-8000-000000000001",
+      "sourceIndex": 0,
+      "kind": "texture",
+      "sourceKey": "auto-exposure-positive-lut"
+    }
+  ]
+}

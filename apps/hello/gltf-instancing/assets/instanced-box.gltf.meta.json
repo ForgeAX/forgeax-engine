@@ -1,0 +1,37 @@
+{
+  "kind": "external-asset-package",
+  "importer": "gltf",
+  "importSettings": {
+    "defaultSceneIndex": 0,
+    "diagnostics": {
+      "matrixTrsCoexistNodes": [],
+      "nodeNames": [
+        "InstancedBox",
+        "MainCamera"
+      ],
+      "unsupportedExtensions": []
+    }
+  },
+  "schemaVersion": 1,
+  "source": "instanced-box.gltf",
+  "subAssets": [
+    {
+      "guid": "019e39e4-dd6a-7afd-8893-f10111360a2f",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh"
+    },
+    {
+      "guid": "019e39e4-dd6a-7a64-b4ee-28dd22136f91",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material"
+    },
+    {
+      "guid": "019e39e4-dd6a-7934-9b8a-2c0bd82be52c",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene"
+    }
+  ]
+}

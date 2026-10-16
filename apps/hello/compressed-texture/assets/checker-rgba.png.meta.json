@@ -1,0 +1,20 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "checker-rgba.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": false,
+    "addressMode": "repeat",
+    "filterMode": "linear",
+    "compressionMode": "etc1s"
+  },
+  "subAssets": [
+    {
+      "guid": "8a2b5c3d-4e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+{
+  "cases": [
+    {
+      "name": "unsupported schema version",
+      "capture": { "schemaVersion": "2.0" }
+    },
+    {
+      "name": "zero frame limit",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0003",
+        "timeUnit": "microseconds",
+        "frameLimit": 0,
+        "eventLimit": 1,
+        "phaseCatalog": { "app": [], "render": [] },
+        "records": [],
+        "completeness": {
+          "status": "partial",
+          "retainedEventCount": 0,
+          "droppedEventCount": 0,
+          "incompleteReason": "stopped-before-frame"
+        }
+      }
+    },
+    {
+      "name": "fractional event limit",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0004",
+        "timeUnit": "microseconds",
+        "frameLimit": 1,
+        "eventLimit": 1.5,
+        "phaseCatalog": { "app": [], "render": [] },
+        "records": [],
+        "completeness": {
+          "status": "partial",
+          "retainedEventCount": 0,
+          "droppedEventCount": 0,
+          "incompleteReason": "stopped-before-frame"
+        }
+      }
+    },
+    {
+      "name": "negative duration",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0005",
+        "timeUnit": "microseconds",
+        "frameLimit": 1,
+        "eventLimit": 1,
+        "phaseCatalog": { "app": ["input"], "render": [] },
+        "records": [
+          {
+            "kind": "phase",
+            "source": "app",
+            "frameId": 1,
+            "phase": "input",
+            "startMicros": 20,
+            "endMicros": 10,
+            "durationMicros": -10
+          }
+        ],
+        "completeness": { "status": "complete", "retainedEventCount": 1, "droppedEventCount": 0 }
+      }
+    },
+    {
+      "name": "unknown phase",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0006",
+        "timeUnit": "microseconds",
+        "frameLimit": 1,
+        "eventLimit": 1,
+        "phaseCatalog": { "app": ["input"], "render": [] },
+        "records": [
+          {
+            "kind": "skip",
+            "source": "app",
+            "frameId": 1,
+            "phase": "unknown",
+            "reason": "not-declared"
+          }
+        ],
+        "completeness": {
+          "status": "partial",
+          "retainedEventCount": 1,
+          "droppedEventCount": 0,
+          "incompleteReason": "phase-not-declared"
+        }
+      }
+    },
+    {
+      "name": "complete with incomplete reason",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0007",
+        "timeUnit": "microseconds",
+        "frameLimit": 1,
+        "eventLimit": 1,
+        "phaseCatalog": { "app": [], "render": [] },
+        "records": [],
+        "completeness": {
+          "status": "complete",
+          "retainedEventCount": 0,
+          "droppedEventCount": 0,
+          "incompleteReason": "source-failed"
+        }
+      }
+    },
+    {
+      "name": "frame id is not positive safe integer",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0008",
+        "timeUnit": "microseconds",
+        "frameLimit": 1,
+        "eventLimit": 1,
+        "phaseCatalog": { "app": ["input"], "render": [] },
+        "records": [
+          { "kind": "skip", "source": "app", "frameId": -1, "phase": "input", "reason": "not-run" }
+        ],
+        "completeness": {
+          "status": "partial",
+          "retainedEventCount": 1,
+          "droppedEventCount": 0,
+          "incompleteReason": "source-failed"
+        }
+      }
+    },
+    {
+      "name": "overflow without affected frame range",
+      "capture": {
+        "schemaVersion": "1.0",
+        "captureId": "capture-0009",
+        "timeUnit": "microseconds",
+        "frameLimit": 1,
+        "eventLimit": 1,
+        "phaseCatalog": { "app": [], "render": [] },
+        "records": [],
+        "completeness": { "status": "overflow", "retainedEventCount": 0, "droppedEventCount": 1 }
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "240de8ec-681e-57e5-8205-facbb46dbc3d",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "animate-shader.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "bevy::animate_shader",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "time",
+            "type": "f32",
+            "default": 0
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

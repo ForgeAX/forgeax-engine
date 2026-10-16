@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "f150593f-bdb8-5204-b75c-3f3fda283d83",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "fractal-pyramid.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "shadertoy::fractal_pyramid",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            },
+            "renderState": {
+              "cullMode": "none",
+              "depthCompare": "always",
+              "depthWriteEnabled": false,
+              "tags": { "LightMode": "Forward" },
+              "queue": 2000
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "iResolution",
+            "type": "vec2"
+          },
+          {
+            "name": "iTime",
+            "type": "f32"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

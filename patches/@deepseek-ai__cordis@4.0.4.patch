@@ -1,0 +1,100 @@
+diff --git a/lib/index.js b/lib/index.js
+index 8f198c05e00abf8d0c542fdc68d2cb7d0deacd89..a40e51fc85d7c1f1d0e1a4b88993db413729c2c3 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -171,7 +171,8 @@ function createCallable(name, proto, tracker) {
+ function handleError(info, reason, getOuterStack) {
+ 	const innerLines = info.error.stack.split("\n");
+ 	if (typeof reason?.stack !== "string") {
+-		const outerError = new Error(reason);
++		const message = typeof reason?.message === "string" ? reason.message : isObject(reason) ? "Plugin effect failed" : String(reason);
++		const outerError = new Error(message, { cause: reason });
+ 		const lines = outerError.stack.split("\n");
+ 		lines.splice(1, Infinity, ...getOuterStack());
+ 		outerError.stack = lines.join("\n");
+@@ -961,6 +962,7 @@ function resolveConfig(runtime, config) {
+ 	else return result.value;
+ }
+ const effectInertia = /* @__PURE__ */ new WeakMap();
++const effectOwners = /* @__PURE__ */ new WeakMap();
+ function runDisposable(dispose) {
+ 	const result = dispose();
+ 	return effectInertia.get(dispose)?.() ?? result;
+@@ -1136,11 +1138,11 @@ var Fiber = class {
+ 		const oldEpoch = runner.epoch;
+ 		return composeError((info) => {
+ 			const safeCollect = (dispose) => {
+-				if (typeof dispose === "function") runner.collect(dispose);
++				if (typeof dispose === "function") runner.collect(effectOwners.get(dispose) ?? dispose);
+ 				else if (!isNullable(dispose)) throw new TypeError("Invalid effect");
+ 			};
+ 			const effect = runner.execute.call(this);
+-			if (typeof effect === "function") return runner.collect(effect);
++			if (typeof effect === "function") return safeCollect(effect);
+ 			else if (isNullable(effect)) {} else if (!isObject(effect)) throw new TypeError("Invalid effect");
+ 			else if ("then" in effect) return effect.then(safeCollect);
+ 			else if (Symbol.iterator in effect) {
+@@ -1272,6 +1274,7 @@ var Fiber = class {
+ 			runner.epoch = false;
+ 			return finalizeDisposal(dispose);
+ 		};
++		effectOwners.set(disposeAsync, wrapper);
+ 		wrapper.then = async (onFulfilled, onRejected) => {
+ 			return Promise.resolve(task).then(() => disposeAsync).then(onFulfilled, onRejected);
+ 		};
+diff --git a/src/fiber.ts b/src/fiber.ts
+index 6bb1caa7a5c66c0129cbd88b94e6d9a01025b455..f7c6b9ad892b8d40ddfc7354cfb517311e61dc1a 100644
+--- a/src/fiber.ts
++++ b/src/fiber.ts
+@@ -111,6 +111,10 @@ interface EffectRunner<T> {
+ // effects must still be able to join a cleanup that another caller started.
+ const effectInertia = new WeakMap<Disposable, () => void | Promise<void>>()
+ 
++// Async generators await yielded thenables. Recover the original registered
++// disposer from the non-thenable alias returned by an awaited effect.
++const effectOwners = new WeakMap<Disposable, Disposable>()
++
+ function runDisposable(dispose: Disposable) {
+   const result = dispose()
+   return effectInertia.get(dispose)?.() ?? result
+@@ -358,14 +362,14 @@ export class Fiber {
+     return composeError((info) => {
+       const safeCollect = (dispose: void | Disposable) => {
+         if (typeof dispose === 'function') {
+-          runner.collect(dispose)
++          runner.collect(effectOwners.get(dispose) ?? dispose)
+         } else if (!isNullable(dispose)) {
+           throw new TypeError('Invalid effect')
+         }
+       }
+       const effect: Effect = runner.execute.call(this)
+       if (typeof effect === 'function') {
+-        return runner.collect(effect)
++        return safeCollect(effect)
+       } else if (isNullable(effect)) {
+         // return
+       } else if (!isObject(effect)) {
+@@ -552,6 +556,7 @@ export class Fiber {
+       runner.epoch = false
+       return finalizeDisposal(dispose)
+     }
++    effectOwners.set(disposeAsync, wrapper)
+     wrapper.then = async (onFulfilled, onRejected) => {
+       return Promise.resolve(task)
+         .then(() => disposeAsync)
+diff --git a/src/utils.ts b/src/utils.ts
+index 024d21f5e025290b2fd01277ea83ad2128908bfa..32d0265ab3844fc261fc9df65e48cecf1e47d6d9 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -242,7 +242,10 @@ function handleError(info: StackInfo, reason: any, getOuterStack: () => string[]
+ 
+   // malformed error
+   if (typeof reason?.stack !== 'string') {
+-    const outerError = new Error(reason)
++    const message = typeof reason?.message === 'string'
++      ? reason.message
++      : isObject(reason) ? 'Plugin effect failed' : String(reason)
++    const outerError = new Error(message, { cause: reason })
+     const lines = outerError.stack!.split('\n')
+     lines.splice(1, Infinity, ...getOuterStack())
+     outerError.stack = lines.join('\n')

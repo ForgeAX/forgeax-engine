@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - learn-render section-5.advanced-lighting 8.deferred-shading</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+      canvas#app { display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <script>
+      var app = document.getElementById('app');
+      function resizeApp() {
+        var dpr = window.devicePixelRatio || 1;
+        var w = window.innerWidth;
+        var h = window.innerHeight;
+        app.width = Math.floor(w * dpr);
+        app.height = Math.floor(h * dpr);
+        app.style.width = w + 'px';
+        app.style.height = h + 'px';
+      }
+      window.addEventListener('resize', resizeApp);
+      resizeApp();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

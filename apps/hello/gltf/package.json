@@ -1,0 +1,66 @@
+{
+  "name": "@forgeax/hello-gltf",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "feat-20260515-gltf-loader-via-asset-system M5 convergence app - Tier-B BoxTextured fork (single mesh POSITION + INDICES + UnlitMaterial baseColor + Camera perspective). End-to-end proof of charter P4 consistent abstraction: AI users discover the same loadByGuid<SceneAsset> + sceneInstances.instantiate path the hello-room app uses, with the disk-schema sidecar (<source>.meta.json, assetType=gltf) produced by forgeax asset import.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "load_gltf",
+      "category": "glTF",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-gltf smoke",
+    "_comment": "smokeInvocation = hello-gltf SSOT for AC-14. Literal `pnpm --filter @forgeax/hello-gltf smoke` must match byte-for-byte across apps/hello/gltf/package.json#forgeax.smokeInvocation + .github/workflows/ci.yml + AGENTS.md#Smoke-gate (charter P4 consistent abstraction; mirror of hello-room#forgeax.smokeInvocation).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu + @forgeax/engine-gltf sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle baseline anchor only; hello-gltf smoke covers 60-frame Tier-B GPU path (AC-14)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "convergence integration app; bench focus stays on @forgeax/engine-math + @forgeax/engine-ecs"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-gltf smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; gltf importer ships a runtime parser bundle (@forgeax/engine-gltf) with bundle-size locked at the package level"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

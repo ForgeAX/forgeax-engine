@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "8a5a0001-0000-4000-8000-000000000008",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "../../../../packages/shader/src/default-standard-pbr.wgsl",
+      "payload": {
+        "kind": "material",
+        "colorSpace": "linear",
+        "staticSwitches": {"clearcoat": true, "sheen": true, "anisotropy": true, "iridescence": true},
+        "passes": [{ "name": "Forward", "program": { "module": "physical-material::standard-full-physical", "vertexEntry": "vs_main", "fragmentEntry": "fs_main" } }],
+        "parameters": [
+          { "name": "baseColor", "type": "color" },
+          { "name": "metallic", "type": "f32" },
+          { "name": "roughness", "type": "f32" },
+          { "name": "metallicChannel", "type": "f32", "optional": true },
+          { "name": "roughnessChannel", "type": "f32", "optional": true },
+          { "name": "aoChannel", "type": "f32", "optional": true },
+          { "name": "extraChannel", "type": "f32", "optional": true },
+          { "name": "emissive", "type": "vec3", "optional": true },
+          { "name": "emissiveIntensity", "type": "f32", "optional": true },
+          { "name": "occlusionStrength", "type": "f32", "optional": true },
+          { "name": "alphaCutoff", "type": "f32", "optional": true },
+          { "name": "specular", "type": "f32", "optional": true },
+          { "name": "specularColor", "type": "vec3", "optional": true },
+          { "name": "normalScale", "type": "vec2", "optional": true },
+          { "name": "ior", "type": "f32", "optional": true },
+          { "name": "transmission", "type": "f32", "optional": true },
+          { "name": "thickness", "type": "f32", "optional": true },
+          { "name": "attenuationColor", "type": "vec3", "optional": true },
+          { "name": "attenuationDistance", "type": "f32", "optional": true },
+          { "name": "anisotropyStrength", "type": "f32", "optional": true },
+          { "name": "anisotropyRotation", "type": "f32", "optional": true },
+          { "name": "iridescence", "type": "f32", "optional": true },
+          { "name": "iridescenceIor", "type": "f32", "optional": true },
+          { "name": "iridescenceThicknessMinimum", "type": "f32", "optional": true },
+          { "name": "iridescenceThicknessMaximum", "type": "f32", "optional": true },
+          { "name": "sheenColor", "type": "vec3", "optional": true },
+          { "name": "sheenRoughness", "type": "f32", "optional": true },
+          { "name": "clearcoat", "type": "f32", "optional": true },
+          { "name": "clearcoatRoughness", "type": "f32", "optional": true },
+          { "name": "clearcoatNormalScale", "type": "f32", "optional": true },
+          { "name": "baseColorTexture", "type": "texture", "optional": true },
+          { "name": "metallicRoughnessTexture", "type": "texture", "optional": true },
+          { "name": "normalTexture", "type": "texture", "optional": true },
+          { "name": "emissiveTexture", "type": "texture", "optional": true },
+          { "name": "occlusionTexture", "type": "texture", "optional": true },
+          { "name": "clearcoatTexture", "type": "texture", "optional": true },
+          { "name": "clearcoatRoughnessTexture", "type": "texture", "optional": true },
+          { "name": "clearcoatNormalTexture", "type": "texture", "optional": true },
+          { "name": "transmissionTexture", "type": "texture", "optional": true },
+          { "name": "thicknessTexture", "type": "texture", "optional": true }
+        ],
+        "values": {
+          "baseColor": [1, 1, 1, 1],
+          "metallic": 0,
+          "roughness": 0.42,
+          "transmission": 0,
+          "ior": 1.5,
+          "thickness": 0,
+          "attenuationColor": [1, 1, 1]
+        }
+      },
+      "refs": []
+    }
+  ]
+}

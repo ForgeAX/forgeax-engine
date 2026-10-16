@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/bevy-eased-motion",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reproduction of Bevy's `animation/eased_motion` example through AnimationClip, AnimationGraph, and AnimationPlayer.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "eased_motion",
+      "category": "Animation",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-eased-motion smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle; engine package sizes are tracked separately"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "animation demo; hello-cube and hello-room own fps coverage"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "animation demo; no benchmark surface"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-eased-motion smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "implemented Bevy animation reproduction"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

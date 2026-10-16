@@ -1,0 +1,37 @@
+{
+  "required": true,
+  "colorDomain": "linearLdr",
+  "scene": { "width": 4, "height": 4, "background": [0, 0, 0, 0] },
+  "budget": { "analyticMax": 0.01, "roiMax": 0.01, "byteMax": 0 },
+  "caseIds": [
+    "default-transparent-alpha",
+    "default-scalar-srgb",
+    "default-srgb-texture",
+    "default-linear-input",
+    "default-factor-texture",
+    "default-channel-ramp"
+  ],
+  "inputs": {
+    "default-scalar-srgb": {
+      "kind": "scalar-srgb",
+      "color": [0.5, 0.25, 0.75, 1]
+    },
+    "default-srgb-texture": {
+      "kind": "srgb-texture",
+      "color": [0.8, 0.4, 0.2, 1]
+    },
+    "default-linear-input": {
+      "kind": "linear-input",
+      "color": [0.2140411405, 0.0508760882, 0.6038273389, 1]
+    },
+    "default-factor-texture": {
+      "kind": "factor-texture",
+      "factor": [0.5, 0.75, 0.25, 1],
+      "color": [0.8, 0.4, 0.2, 1]
+    },
+    "default-channel-ramp": {
+      "kind": "channel-ramp",
+      "color": [0.125, 0.5, 0.875, 1]
+    }
+  }
+}

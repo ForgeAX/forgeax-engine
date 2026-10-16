@@ -1,0 +1,121 @@
+{
+  "name": "@forgeax/engine-devkit",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "ForgeaX external game project CLI and build orchestration.",
+  "bin": {
+    "forgeax": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./cli": "./dist/cli.mjs",
+    "./package.json": "./package.json",
+    "./plugin-build": {
+      "types": "./dist/plugin-build.d.ts",
+      "import": "./dist/plugin-build.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "smoke:capture": "node scripts/check-capture-policy.mjs",
+    "smoke:sync": "node scripts/check-live-sync.mjs",
+    "test:runtime-browser": "vitest run --config vitest.runtime-browser.config.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-audio": "workspace:*",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-font": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-preview": "workspace:*",
+    "@forgeax/engine-project": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-null": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-render-graph": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "es-module-lexer": "2.1.0",
+    "import-meta-resolve": "4.2.0",
+    "jiti": "1.21.7",
+    "magic-string": "0.30.21",
+    "parse5": "7.3.0",
+    "playwright": "1.60.0",
+    "vite": "8.0.16",
+    "vitest": "4.0.18",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "ws": "^8.21.0",
+    "typescript": "6.0.3",
+    "yaml": "^2.9.0",
+    "@pnpm/fs.packlist": "1100.0.4",
+    "@forgeax/engine-mesh-io": "workspace:*",
+    "@fontsource-variable/noto-sans-sc": "5.3.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-platform-wechat": "workspace:*",
+    "@forgeax/engine-ui-blitz": "workspace:*",
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.18.1"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/cli.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Node-only build orchestration; runtime FPS belongs to consumer games"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "CLI latency is not a runtime hot path"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/devkit"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "production DevKit package"
+      }
+    }
+  }
+}

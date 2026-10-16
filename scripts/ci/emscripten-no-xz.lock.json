@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "emscriptenVersion": "6.0.2",
+  "releaseHash": "004876f1984e18a9eb0736c5ca417ac86d386fb8",
+  "releaseIdentity": "releases-004876f1984e18a9eb0736c5ca417ac86d386fb8-64bit",
+  "runnerOs": "Linux",
+  "runnerArch": "x86_64",
+  "archiveUrl": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/004876f1984e18a9eb0736c5ca417ac86d386fb8/wasm-binaries.tar.xz",
+  "archiveSha256": "sha256:d574428df9ecf00790e28636bdc47027432737c31621b18cdb418123afda4ac1",
+  "archiveContentLength": 290630564,
+  "emsdkManifestUrl": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.2/emsdk_manifest.json",
+  "emscriptenReleasesTagsUrl": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.2/emscripten-releases-tags.json",
+  "toolchainLayout": {
+    "installRoot": "install/emscripten",
+    "toolBinRelativePath": "install/bin",
+    "binaryenRootRelativePath": "install",
+    "emscriptenCacheRelativePath": "install/emscripten/cache",
+    "compilerRelativePath": "emcc",
+    "releaseMarkerRelativePath": ".forgeax/release.json"
+  },
+  "bootstrapInput": {
+    "emsdkRef": "6.0.2",
+    "releaseHash": "004876f1984e18a9eb0736c5ca417ac86d386fb8",
+    "releaseIdentity": "releases-004876f1984e18a9eb0736c5ca417ac86d386fb8-64bit",
+    "runnerOs": "Linux",
+    "runnerArch": "x86_64"
+  }
+}

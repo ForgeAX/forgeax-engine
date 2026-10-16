@@ -1,0 +1,20 @@
+[
+  {
+    "crate": "vello_gpu",
+    "version": "0.3.0",
+    "url": "https://crates.io/api/v1/crates/vello_gpu/0.3.0/download",
+    "sha256": "f0e01b02c55094a3bcfbf80d736221a74bc3f8914b566298b4ad3c9f05e7ac08"
+  },
+  {
+    "crate": "vello_gpu_shaders",
+    "version": "0.3.0",
+    "url": "https://crates.io/api/v1/crates/vello_gpu_shaders/0.3.0/download",
+    "sha256": "ccf14e175813d9ddefdf52d9430d075de46c1d72560e917575857c97d6fc74cc"
+  },
+  {
+    "crate": "vello_common",
+    "version": "0.3.0",
+    "url": "https://crates.io/api/v1/crates/vello_common/0.3.0/download",
+    "sha256": "73c2fbe53548bcd25c8ff42f75a93770a8611a16b37bee56d7ef7b44e36027f1"
+  }
+]

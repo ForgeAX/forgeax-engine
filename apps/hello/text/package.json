@@ -1,0 +1,57 @@
+{
+  "name": "@forgeax/hello-text",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "World-space MSDF text demo (feat-20260531-world-space-msdf-text-rendering): four scenes (HUD label, multi-line, HDR-bloom, depth-occluded) via the GlyphText authoring component.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-text smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "text demo is a correctness exemplar; fps anchored by hello-triangle"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "MSDF text correctness exemplar; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-text smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*"
+  }
+}

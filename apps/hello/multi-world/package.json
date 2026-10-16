@@ -1,0 +1,56 @@
+{
+  "name": "@forgeax/hello-multi-world",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Composited multi-world rendering exemplar: renderer.draw([worldA, worldB], { owner: 0 }) merges renderables + lights across worlds into one frame (feat-20260708-composited-multi-world-rendering M5 / AC-12).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-multi-world smoke",
+    "_comment": "smokeInvocation = self-contained SSOT for AC-12: the hello-multi-world smoke literal lives in apps/hello/multi-world/package.json#forgeax.smokeInvocation + .github/workflows/ci.yml smoke-fleet step only. The smoke-fleet is explicitly enumerated per demo (not auto-discovered); this SSOT pair is what makes the demo actually run in CI (MEMORY never-run-label-gated-ci-job-stacks-latent-bugs).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle owns the fps baseline anchor; hello-multi-world's dawn-node smoke covers the multi-world GPU path (pixel readback), not per-frame timing"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "multi-world compositing demo; vitest bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-multi-world smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; no spike artefacts for this demo"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "@forgeax/engine-net-websocket",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "WebSocket transport adapters for the forgeax NetEndpoint contract.",
+  "exports": {
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.mjs"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "node": "./dist/node.mjs",
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": { "enabled": true, "path": "dist/browser.mjs", "compression": "gzip" },
+      "fps": { "enabled": false, "reason": "library package, no canvas" },
+      "bench": { "enabled": false, "reason": "no performance benchmarks" },
+      "gate": { "enabled": true, "command": "pnpm -F @forgeax/engine-net-websocket test" },
+      "spike-report": { "enabled": false, "reason": "not a spike package" }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-net": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@types/ws": "^8.5.10"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "kind": "external-asset-package",
+  "importer": "fbx",
+  "importSettings": {},
+  "schemaVersion": 1,
+  "source": "humanoid.fbx",
+  "subAssets": [
+    {
+      "guid": "019ecd87-179b-783a-ab90-8ec801099cc4",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:mesh"
+    },
+    {
+      "guid": "019ecd87-179b-7d98-adce-47eff37bb747",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:material"
+    },
+    {
+      "guid": "019ecd87-179b-7eb3-a37d-391f05c61e52",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:scene"
+    },
+    {
+      "guid": "019ecd87-179b-789b-a37b-71f62bb2e75a",
+      "kind": "skeleton",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:skeleton"
+    },
+    {
+      "guid": "019ecd87-179b-798b-9864-debe6517b8e2",
+      "kind": "skin",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:skin"
+    },
+    {
+      "guid": "019ecd87-179b-71f7-b9f8-4c8518326b65",
+      "kind": "animation-clip",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:animation-clip"
+    },
+    {
+      "guid": "019ecd87-179b-7843-a17a-513a3c8c6b3b",
+      "kind": "animation-clip",
+      "sourceIndex": 1,
+      "sourceKey": "fbx:animation-clip:1"
+    },
+    {
+      "guid": "019ecd87-179b-73a7-8bd0-e05301dc8df0",
+      "kind": "animation-clip",
+      "sourceIndex": 2,
+      "sourceKey": "fbx:animation-clip:2"
+    }
+  ]
+}

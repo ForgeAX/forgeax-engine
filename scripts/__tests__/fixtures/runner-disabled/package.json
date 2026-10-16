@@ -1,0 +1,7 @@
+{
+  "name": "runner-disabled-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

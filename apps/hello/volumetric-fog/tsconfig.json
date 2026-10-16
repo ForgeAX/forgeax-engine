@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "types": ["@webgpu/types", "node"]
+  },
+  "include": [
+    "src/main.ts",
+    "src/scene-pose.ts",
+    "src/spot-demo.ts",
+    "src/volumetric-density-importer.ts",
+    "src/vite-env.d.ts"
+  ],
+  "exclude": ["src/__tests__"]
+}

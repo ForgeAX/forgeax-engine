@@ -1,0 +1,61 @@
+{
+  "name": "@forgeax/engine-render-graph",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "RHI-pure typed GPU work graph: resource access declaration, immutable compilation, execution, and retirement.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-null": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "render-graph is a compile-time / orchestration layer without canvas; fps reported by consuming runtime apps"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "compile path is not perf-critical; bench focus stays on @forgeax/engine-math and runtime render loop"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "physical-isolation grep gate (check-render-graph-no-runtime-import) is a repo-root script wired into ci.yml lint job, not a per-package gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

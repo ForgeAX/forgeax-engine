@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "brickwall_normal.jpg",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e3969-1d46-78ef-b4d9-0163f7f93193",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

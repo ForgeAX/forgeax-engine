@@ -1,0 +1,22 @@
+{
+  "kind": "external-asset-package",
+  "importer": "gltf",
+  "schemaVersion": 1,
+  "source": "lod-scene.gltf",
+  "importSettings": { "defaultSceneIndex": 0 },
+  "subAssets": [
+    { "guid": "019e2b88-aece-7b6e-bbfe-45d6453d2101", "kind": "mesh", "sourceIndex": 0, "sourceKey": "mesh" },
+    { "guid": "019e2b88-aece-7b6e-bbfe-45d6453d2102", "kind": "mesh", "sourceIndex": 1, "sourceKey": "mesh:1" },
+    { "guid": "019e2b88-aece-7b6e-bbfe-45d6453d2103", "kind": "mesh", "sourceIndex": 2, "sourceKey": "mesh:2" },
+    { "guid": "019e2b88-aecf-7e78-9888-655f0ec62ebc", "kind": "material", "sourceIndex": 0, "sourceKey": "material" },
+    { "guid": "019e2b88-aecf-7e78-9888-6560222ee28a", "kind": "scene", "sourceIndex": 0, "sourceKey": "scene" }
+  ],
+  "sourceOverrides": {
+    "mesh": {
+      "lods": [
+        { "sourceKey": "mesh:1", "meshGuid": "019e2b88-aece-7b6e-bbfe-45d6453d2102", "screenCoverage": 0.5 },
+        { "sourceKey": "mesh:2", "meshGuid": "019e2b88-aece-7b6e-bbfe-45d6453d2103", "screenCoverage": 0.2 }
+      ]
+    }
+  }
+}

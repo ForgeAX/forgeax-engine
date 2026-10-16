@@ -1,0 +1,47 @@
+{
+  "caseId": "rect-area",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "light": {
+    "authorityId": "threeR184RectAreaLtc",
+    "kind": "rect-area",
+    "color": [1, 0.75, 0.5],
+    "intensity": 12,
+    "width": 4,
+    "height": 2,
+    "range": 5,
+    "center": [0, 0, 0],
+    "axisX": [1, 0, 0],
+    "axisY": [0, 1, 0]
+  },
+  "oracle": {
+    "frontFacing": "axisX-cross-axisY",
+    "brdf": ["lambert-ltc", "ggx-ltc"],
+    "shadowTile": "none",
+    "unlitContribution": 0,
+    "punctualInverseSquare": false
+  },
+  "extendedLighting": {
+    "topology": "extendedLighting",
+    "carrier": "rect-area",
+    "iesSliceCount": 0,
+    "cookieSliceCount": 0,
+    "cookieMatrixCount": 0,
+    "expectedComposition": "brdf*range*cone*ies*cookie*shadow",
+    "cookieColorDomain": "linear",
+    "evidencePlan": {
+      "expectations": ["rect-ltc-physical", "lighting-owner-coexistence", "zero-feature-exact-zero"],
+      "identity": { "fixtureId": "rect-area", "sourceKey": "parity/extended-lighting/rect-area" },
+      "numericRoi": { "analyticMax": 0.05, "roiMax": 0.05, "epsilon": 0.05, "colorDomain": "linearHdr" },
+      "recordReceipt": { "status": "not-run", "byteLength": 160, "maxBytes": 160 },
+      "resourceReceipt": { "status": "not-run", "topology": "extendedLighting" },
+      "falsifiers": [
+        { "id": "reverse-front-facing", "expectedFailure": "back-facing Rect ROI must lose its direct contribution" },
+        { "id": "zero-ltc-tables", "expectedFailure": "zero LTC tables must change the lit ROI" }
+      ]
+    }
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 65536 }
+}

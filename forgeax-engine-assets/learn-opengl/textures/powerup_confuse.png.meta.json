@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "powerup_confuse.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e3969-1d47-750f-bc39-31a5c912d010",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

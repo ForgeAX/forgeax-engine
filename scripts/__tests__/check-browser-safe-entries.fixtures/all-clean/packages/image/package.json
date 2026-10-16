@@ -1,0 +1,18 @@
+{
+  "exports": {
+    "./parse-image": {
+      "types": "./dist/parse-image.d.ts",
+      "node": {
+        "import": "./dist/parse-image.mjs"
+      },
+      "default": null
+    },
+    "./decode-image-from-file": {
+      "types": "./dist/decode-image-from-file.d.ts",
+      "node": {
+        "import": "./dist/decode-image-from-file.mjs"
+      },
+      "default": null
+    }
+  }
+}

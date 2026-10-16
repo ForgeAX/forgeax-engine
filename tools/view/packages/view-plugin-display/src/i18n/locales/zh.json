@@ -1,0 +1,8 @@
+{
+  "display": {
+    "title": "运行时截图",
+    "idle": "View 就绪（空闲）",
+    "running": "运行中 {{service}}:{{run}}",
+    "error": "View 连接错误：{{message}}"
+  }
+}

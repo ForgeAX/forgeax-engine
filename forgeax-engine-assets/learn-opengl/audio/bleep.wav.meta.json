@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "bleep.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019ee3df-a914-713a-bdc8-a50871338e18",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

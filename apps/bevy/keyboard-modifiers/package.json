@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/bevy-keyboard-modifiers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Bevy input/keyboard_modifiers example: Ctrl+Shift+A physical modifier chord.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "keyboard_modifiers",
+      "category": "Input",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-keyboard-modifiers smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle is downstream of the shared engine runtime"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "input state semantics are the demo metric"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "input state semantics are not a benchmark"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-keyboard-modifiers smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; Bevy example reproduction"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "name": "@forgeax/hello-boss-lightning",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Boss Lightning code-authored GPU particle composition with billboard, mesh, and emissive strike outputs.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs && node scripts/smoke-fields-dawn.mjs",
+    "smoke:fields": "node scripts/smoke-fields-dawn.mjs",
+    "smoke:sdf": "node scripts/smoke-sdf-dawn.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-rhi-debug.mjs",
+    "smoke:m11": "node scripts/smoke-m11-device-loss.mjs",
+    "smoke:falsify": "node scripts/smoke-falsify.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-boss-lightning smoke",
+    "gauntletScenario": {
+      "id": "hello-boss-lightning-m11-device-loss",
+      "script": "smoke:m11",
+      "domains": [
+        "Rendering and shader construction",
+        "Simulation and media implementations",
+        "Inspection, debugging, and development bridges"
+      ],
+      "packages": [
+        "@forgeax/engine-render",
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-vfx",
+        "@forgeax/engine-vfx-render"
+      ],
+      "risks": [
+        "baseline",
+        "dynamic",
+        "live",
+        "fault",
+        "recovery",
+        "cleanup",
+        "behavioral",
+        "visual"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "dynamic",
+        "live",
+        "fault",
+        "recovery",
+        "cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "browser-webgpu",
+          "dawn-node",
+          "browser-gpu-device-loss",
+          "renderer-recover",
+          "vfx-host-inspect",
+          "vfx-public-control"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m11-vfx] Dawn generation fence: PASS",
+          "[m11-vfx] browser device-loss recovery: PASS",
+          "[m11-vfx] cleanup idempotency: PASS",
+          "[m11-vfx] PASS - M11 VFX generation-fenced device-loss gates GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle size follows the engine runtime packages"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "demo smoke validates particle output structure and pixels"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "the product smoke records correctness and pixels; no adapter-qualified timing baseline is frozen"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-boss-lightning smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "this is a production-facing demo, not a spike"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "pngjs": "7.0.0",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

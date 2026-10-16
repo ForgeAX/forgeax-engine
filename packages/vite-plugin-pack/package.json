@@ -1,0 +1,98 @@
+{
+  "name": "@forgeax/engine-vite-plugin-pack",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Vite plugin: dev HMR, build-time Pack output, and explicit project/build DDC lifecycle roots for the forgeax engine asset package system.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": null,
+      "import": "./dist/index.mjs"
+    },
+    "./catalog-client": {
+      "types": "./dist/catalog-client.d.ts",
+      "import": "./dist/catalog-client.mjs"
+    },
+    "./http-artifact": {
+      "types": "./dist/http-artifact.d.ts",
+      "browser": null,
+      "import": "./dist/http-artifact.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "schema",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-ddc": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "chokidar": "4.0.3"
+  },
+  "peerDependencies": {
+    "vite": "^7 || ^8"
+  },
+  "devDependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-naga": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*",
+    "@types/node": "^20.14.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "typescript": "6.0.3",
+    "vite": "8.0.16"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "build-time vite plugin; no runtime canvas or frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "thin plugin shell over @forgeax/engine-pack scanner; no perf-critical hot path"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no standalone binary gate for this package; CI gates are repo-root scripts"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

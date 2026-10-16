@@ -1,0 +1,20 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "checker-rgba-nobc.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": false,
+    "addressMode": "repeat",
+    "filterMode": "linear",
+    "compressionMode": "none"
+  },
+  "subAssets": [
+    {
+      "guid": "9b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

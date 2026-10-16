@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "walk.atlas.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": false,
+    "addressMode": "clamp-to-edge",
+    "filterMode": "nearest"
+  },
+  "subAssets": [
+    {
+      "guid": "0e8657b1-c0ab-4940-a4f6-27fcd976823c",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

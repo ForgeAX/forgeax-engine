@@ -1,0 +1,8 @@
+{
+  "asset": {
+    "empty": "打开资产",
+    "unavailable": "资产检查不可用",
+    "inspectFailed": "Engine asset.inspect 没有返回该 GUID 的事实。",
+    "facts": "资产事实"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "name": "@forgeax/bevy-change-detection",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reproduce Bevy's `change_detection` example with Changed and Added query filters.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "change_detection",
+      "category": "ECS (Entity Component System)",
+      "status": "implemented"
+    },
+    "rhiDebug": {
+      "riskFamilies": [
+        "ecs-scheduling"
+      ]
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-change-detection smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle is downstream of engine package metrics"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "demo-specific fps is not the reproduction criterion"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "change detection is verified by ECS behavior"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-change-detection smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

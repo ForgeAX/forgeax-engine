@@ -1,0 +1,35 @@
+[package]
+name = "forgeax-ui-blitz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "rust/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+blitz-dom = { path = "../../third_party/blitz/packages/blitz-dom", default-features = false, features = ["woff", "raster"] }
+blitz-html = { path = "../../third_party/blitz/packages/blitz-html", default-features = false }
+blitz-paint = { path = "../../third_party/blitz/packages/blitz-paint", default-features = false }
+blitz-traits = { path = "../../third_party/blitz/packages/blitz-traits", default-features = false }
+anyrender = "=0.14.0"
+vello_gpu = { path = "vendor/vello_gpu", version = "=0.3.0", default-features = false, features = ["portable"] }
+vello_common = { version = "=0.3.0", default-features = false, features = ["std"] }
+glifo = { version = "=0.4.0", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+anyrender_vello_cpu = { version = "=0.18.0", default-features = false, features = ["filters"] }
+wasm-bindgen = "=0.2.129"
+data-url = "=0.3.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+[profile.release.package.vello_common]
+opt-level = 3
+
+[patch.crates-io]
+vello_common = { path = "vendor/vello_common" }

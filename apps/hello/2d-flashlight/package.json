@@ -1,0 +1,58 @@
+{
+  "name": "@forgeax/hello-2d-flashlight",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "2D scene: flat sprite-lit demo with a SpotLight sweeping the sprite plane + a PointLight circle patch (tweak-20260701 M2).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-2d-flashlight smoke",
+    "_comment": "smokeInvocation = self-contained SSOT. hello-2d-flashlight covers the flat sprite-lit shading model AC-1 (SpotLight sweep on the sprite plane, pos z=0/directionZ=0, wedge center brightness > 0.5) + AC-2 (PointLight circle patch, center > 0.7 / edge < 0.1) via dawn-node pixel readback. Browser probe asserts sprite-lit pipeline is built end-to-end and zero device validation errors.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo workspace; bundle size tracked at @forgeax/engine-runtime + engine-app + engine-shader package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression covered by hello-cube / hello-app gates; 2d-flashlight perf equals sprite-lit which is bounded by 1 sprite + 2 lights (URP cap 4)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "perf-critical bench (per-light forward shading) anchored at @forgeax/engine-runtime; 2d-flashlight reuses the same lighting buffer pipeline as sprite-lit -- no demo-level bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-2d-flashlight smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the tweak-20260701 M2 acceptance demo for the flat sprite-lit shading model"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

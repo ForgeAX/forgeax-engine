@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "grass.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": "auto",
+    "addressMode": "clamp-to-edge",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e3969-1d46-73fe-af59-5ce69389b7bb",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

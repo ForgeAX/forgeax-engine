@@ -1,0 +1,3 @@
+{ "view": { "html": {
+  "file": "文件", "path": "路径", "size": "大小", "modified": "修改时间", "viewport": "视口", "device": "设备", "phone": "手机", "tablet": "平板", "desktop": "桌面", "resolution": "分辨率预设", "custom": "自定义", "orientation": "方向", "portrait": "竖屏", "landscape": "横屏", "width": "宽度", "height": "高度", "mode": "预览模式", "interact": "交互", "pan": "平移", "zoom": "缩放", "fit": "适配", "refresh": "刷新预览", "status": "状态", "idle": "未打开文件", "loading": "正在加载 HTML...", "ready": "就绪", "error": "资源问题", "failed": "预览不可用", "empty": "打开 HTML 文件", "issueCount": "{{count}} 个资源问题", "preview": "预览源码", "sourceFiles": "源码文件", "emptySource": "无源码内容"
+} } }

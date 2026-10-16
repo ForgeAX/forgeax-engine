@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>forgeax-engine - learn-render section-5.advanced-lighting 4.normal-mapping</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+      canvas#app { display: block; }
+      .legend { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); display: flex; width: min(640px, 92vw); justify-content: space-around; gap: 12px; pointer-events: none; font: 600 14px/1.4 system-ui, sans-serif; color: #fff; text-shadow: 0 1px 3px #000; }
+      .legend span { padding: 5px 10px; background: #101820bb; border: 1px solid #ffffff66; border-radius: 5px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div class="legend" aria-label="Material comparison"><span>Normal map · scale [2, 0.35]</span><span>Bump map · scale -6</span></div>
+    <script>
+      var app = document.getElementById('app');
+      function resizeApp() {
+        var dpr = window.devicePixelRatio || 1;
+        var w = window.innerWidth;
+        var h = window.innerHeight;
+        app.width = Math.floor(w * dpr);
+        app.height = Math.floor(h * dpr);
+        app.style.width = w + 'px';
+        app.style.height = h + 'px';
+      }
+      window.addEventListener('resize', resizeApp);
+      resizeApp();
+    </script>
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

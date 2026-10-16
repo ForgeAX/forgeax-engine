@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>ForgeaX Physical Material</title>
+    <style>
+      html,body{margin:0;height:100%;background:#080b12;color:#e8ecff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+      canvas:not([hidden]){display:block;width:100%;height:100%}
+      canvas[hidden]{display:none}
+      #physical-material-hud{position:fixed;top:16px;left:16px;padding:9px 12px;border:1px solid #39415f;border-radius:7px;background:rgba(8,11,18,.78);font-size:12px;line-height:1.5;letter-spacing:.01em;pointer-events:none;user-select:none}
+      #physical-material-hud strong{color:#ffe59a;font-weight:600}
+      #physical-material-hud span{color:#b7c0df}
+      #physical-material-legend{position:fixed;inset:108px 28px 28px;display:grid;grid-template-columns:64px repeat(4,minmax(0,1fr));grid-template-rows:24px repeat(2,minmax(0,1fr));gap:8px;pointer-events:none;user-select:none}
+      #physical-material-legend .column{align-self:start;justify-self:center;padding:3px 8px;border:1px solid rgba(91,105,151,.55);border-radius:4px;background:rgba(8,11,18,.62);color:#d2d9f5;font-size:11px;line-height:1.2;letter-spacing:.04em;white-space:nowrap}
+      #physical-material-legend .row{align-self:center;justify-self:end;padding:3px 6px;border:1px solid rgba(91,105,151,.55);border-radius:4px;background:rgba(8,11,18,.62);color:#aeb9de;font-size:10px;line-height:1.2;letter-spacing:.05em;writing-mode:vertical-rl;transform:rotate(180deg)}
+      @media (max-width:600px){
+        #physical-material-hud{top:8px;left:8px;right:8px}
+        #physical-material-legend{inset:108px 8px 16px;grid-template-columns:36px repeat(4,minmax(0,1fr));gap:4px}
+        #physical-material-legend .column{padding:3px 2px;font-size:9px;white-space:normal;text-align:center}
+        #physical-material-legend .row{font-size:8px}
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="physical-material-hud">
+      <strong>Physical Material · Clearcoat</strong><br />
+      <span>same red base · response is verified in linear HDR</span>
+    </div>
+    <div id="physical-material-legend" aria-hidden="true">
+      <div></div>
+      <div class="column">R FACTOR</div>
+      <div class="column">G ROUGHNESS</div>
+      <div class="column">RG COAT NORMAL</div>
+      <div class="column">RG ISOLATION</div>
+      <div class="row">RIGID BOX</div>
+      <div></div><div></div><div></div><div></div>
+      <div class="row">SKINNED TRIANGLE</div>
+      <div></div><div></div><div></div><div></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

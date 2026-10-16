@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>ForgeaX Multiplayer Snake</title>
+    <style>
+      html,
+      body,
+      canvas {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #111827;
+        color: #e5e7eb;
+        font: 14px ui-monospace, monospace;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      [data-testid='snake-state'] {
+        display: none;
+      }
+
+      .hud {
+        position: fixed;
+        inset: 18px 18px auto;
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        pointer-events: none;
+      }
+
+      .panel {
+        background: color-mix(in srgb, #0f172a 88%, transparent);
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 10px 12px;
+        box-shadow: 0 8px 24px #02061780;
+      }
+
+      #round-status { font-weight: 700; color: #f8fafc; }
+      #scoreboard { display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
+      .cyan { color: #22d3ee; }
+      .orange { color: #fb923c; }
+      .hint { color: #94a3b8; text-align: right; line-height: 1.45; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <aside class="hud" aria-live="polite">
+      <section class="panel">
+        <div id="round-status">Connecting to authority…</div>
+        <div id="scoreboard"></div>
+      </section>
+      <section class="panel hint">Open this URL in a second window to join.<br />Arrow keys steer your snake.</section>
+    </aside>
+    <output data-testid="snake-state">Connecting…</output>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

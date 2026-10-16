@@ -1,0 +1,35 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "types": ["node", "@webgpu/types", "vite/client"],
+    "rootDir": "../.."
+  },
+  "include": ["src/**/*.ts", "src/**/*.json"],
+  "exclude": [],
+  "references": [
+    { "path": "../assets-runtime" },
+    { "path": "../audio-webaudio" },
+    { "path": "../codec" },
+    { "path": "../ecs" },
+    { "path": "../geometry" },
+    { "path": "../graphics-extras" },
+    { "path": "../input" },
+    { "path": "../math" },
+    { "path": "../pack" },
+    { "path": "../plugin" },
+    { "path": "../profiler" },
+    { "path": "../render-graph" },
+    { "path": "../rhi" },
+    { "path": "../rhi-null" },
+    { "path": "../rhi-webgpu" },
+    { "path": "../rhi-wgpu" },
+    { "path": "../scene" },
+    { "path": "../shader" },
+    { "path": "../vite-plugin-shader" },
+    { "path": "../skinning" },
+    { "path": "../terrain" },
+    { "path": "../types" }
+  ]
+}

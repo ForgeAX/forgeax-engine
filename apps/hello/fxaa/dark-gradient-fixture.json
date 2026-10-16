@@ -1,0 +1,42 @@
+{
+  "schema": "forgeax.dark-gradient-fixture/1",
+  "id": "hello-fxaa/dark-gradient/v1",
+  "frameCount": 60,
+  "resolution": { "width": 800, "height": 600 },
+  "camera": {
+    "position": [0, 0, 6],
+    "fovRadians": 0.7853981633974483,
+    "aspect": 1.3333333333333333,
+    "near": 0.1,
+    "far": 100
+  },
+  "scene": {
+    "clearColor": [0.002, 0.002, 0.002, 1],
+    "lightDirection": [-0.4, -0.6, -0.7],
+    "lightIntensity": 0.12,
+    "gradient": {
+      "width": 512,
+      "height": 512,
+      "stops": 16,
+      "linearRange": [0.01, 1.0],
+      "semantic": "quantized-xy-luma-gradient"
+    },
+    "gradientQuad": {
+      "position": [0, 0, -0.5],
+      "scale": [2.5, 1.8, 1]
+    }
+  },
+  "roi": { "x": 160, "y": 120, "width": 480, "height": 360 },
+  "scanline": { "y": 300, "xStart": 160, "xEnd": 640 },
+  "lanes": ["direct", "clustered"],
+  "backends": ["browser-webgpu", "dawn", "webkit-webgl2", "chromium-webgl2"],
+  "thresholds": {
+    "uniqueColorRatio": 0.75,
+    "levelRatio": 0.7,
+    "minimumReferenceUniqueColors": 64,
+    "minimumReferenceScanlineLevels": 16,
+    "meanAbsoluteChannelDelta": 0.00784313725490196,
+    "parity": 0.95,
+    "minimumRoiMeanLuma": 0.01
+  }
+}

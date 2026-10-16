@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/hello-gltf-instancing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "feat-20260518-gltf-instancing-and-name-component M5 demo - EXT_mesh_gpu_instancing N=4 plus per-node Name component, end-to-end through gltfDocToSceneAsset bridge SSOT and the Renderer/RenderSystem instanced drawcall path.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-gltf-instancing smoke",
+    "_comment": "smokeInvocation = hello-gltf-instancing SSOT for AC-13. Literal pnpm --filter @forgeax/hello-gltf-instancing smoke must match byte-for-byte with .github/workflows/ci.yml step entry (charter P4 consistent abstraction; mirror of hello-gltf#forgeax.smokeInvocation).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu + @forgeax/engine-gltf already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle baseline anchor only; hello-gltf-instancing smoke covers 60-frame instanced GPU path (AC-13)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "convergence integration app; bench focus stays on @forgeax/engine-math + @forgeax/engine-ecs"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-gltf-instancing smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; gltf importer ships a runtime parser bundle (@forgeax/engine-gltf) with bundle-size locked at the package level"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

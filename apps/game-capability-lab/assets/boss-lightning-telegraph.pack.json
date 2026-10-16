@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019e9c00-0000-7000-8000-000000000100",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "mouth-charge",
+            "capacity": 96,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 1.5
+            },
+            "schedule": {
+              "rate": 18,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 12
+                }
+              ]
+            },
+            "program": {
+              "module": "mouth-charge.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "d8c45043-90f3-58d5-b6d4-55a5b3f7e05e",
+                "blend": "additive"
+              }
+            ]
+          },
+          {
+            "id": "charge-arcane-dial",
+            "capacity": 2,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 0.45,
+              "bursts": [
+                {
+                  "time": 0.06,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.2
+            },
+            "program": {
+              "module": "arc-nova-flow-field.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "fb9f8248-fe28-5277-8e5d-1b949ec42a44",
+                "blend": "additive"
+              }
+            ]
+          },
+          {
+            "id": "charge-hex-seal",
+            "capacity": 4,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 0.75,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 1.6
+            },
+            "program": {
+              "module": "arc-nova-sigil.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "fb9f8248-fe28-5277-8e5d-1b949ec42a44",
+                "blend": "additive"
+              }
+            ]
+          },
+          {
+            "id": "charge-prismatic-crown",
+            "capacity": 4,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 0.75,
+              "bursts": [
+                {
+                  "time": 0.18,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 1.6
+            },
+            "program": {
+              "module": "arc-nova-shockwave.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "92d59402-ff1d-5ab4-bf22-6550d047e75b",
+                "mesh": "b889a6f8-2384-5684-8968-54bf19be24fb",
+                "submesh": 0
+              }
+            ]
+          }
+        ]
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

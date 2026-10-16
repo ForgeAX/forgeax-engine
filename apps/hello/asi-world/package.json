@@ -1,0 +1,74 @@
+{
+  "name": "@forgeax/hello-asi-world",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "ASI World scene + WASD + tile/object collision demo (asi_world test2-b30f5a terrain + kirito spritesheet, ported onto Tilemap/TileLayer/Sprite/SpriteAnimation).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-rhi-debug.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-asi-world smoke",
+    "rhiDebug": {
+      "riskFamilies": [
+        "materials-textures"
+      ]
+    },
+    "publicAssetOverrides": {
+      "world/terrain.json": "../../../forgeax-engine-assets/demo-assets/hello-asi-world/terrain.json",
+      "world/terrain_atlas.png": "../../../forgeax-engine-assets/demo-assets/hello-asi-world/terrain_atlas.png",
+      "world/object_atlas.png": "../../../forgeax-engine-assets/demo-assets/hello-asi-world/object_atlas.png",
+      "character/idle.png": "../../../forgeax-engine-assets/demo-assets/hello-asi-world/idle.png",
+      "character/move.png": "../../../forgeax-engine-assets/demo-assets/hello-asi-world/move.png"
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "downstream demo, not size-tracked"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "feat-20260622-chunk-gpu-instancing-sprite-tilemap M3 / D-4 / L-8: AC-02 65536-cell tilemap p95>=60 fps gate cannot be validated on the GH-hosted ubuntu metrics-validate runner \u2014 that runner falls back to swiftshader WebGL2 where fps was previously fake-green (bug-20260612). The swiftshader software path slows progressively at large cell count, so the gate would flake or report unrealistic numbers. AC-02 p95 SSOT moved to verify-stage local sandbox run (charter P5); re-enable when a hardware-WebGPU CI runner is wired (precedent: apps/parity/instancing-static)."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "not perf-critical"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-asi-world smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

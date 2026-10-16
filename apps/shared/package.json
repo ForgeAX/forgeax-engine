@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/apps-shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared demo bootstrap helpers for apps/* (D-P4 path-A; populateDemoWorld and friends).",
+  "type": "module",
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "exports": {
+    "./asset-runtime-config": "./src/asset-runtime-config.ts",
+    "./auto-exposure-fixture": "./src/auto-exposure-fixture.ts",
+    "./canvas-capture": "./src/canvas-capture.ts",
+    "./onerror-gate": "./src/onerror-gate.ts",
+    "./rhi-debug-browser-replay": "./src/rhi-debug-browser-replay.ts",
+    "./gpu-driven-evidence": "./src/gpu-driven-evidence.ts"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16",
+    "vitest": "^4.1.11",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bootstrap helper consumed by sibling apps/* via tsconfig path mapping; no standalone dist artefact (D-P4 minimal form)"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "no runtime canvas; fps reported by hello-cube / inspector-demo consumers"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no perf-critical surface; consumers exercise the helper via their own e2e smoke / vitest runs"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "node scripts/check-learn-render-onerror-gate.mjs"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; clone #2 cash-out audit lives at .forgeax-harness/forgeax-loop/feat-20260514-ci-jscpd-duplication-gate/"
+      }
+    }
+  }
+}

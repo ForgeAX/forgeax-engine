@@ -1,0 +1,59 @@
+{
+  "name": "@forgeax/hello-scene-nesting",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "feat-20260608-scene-nesting-ecs-fication M5 convergence app — outer SceneAsset mounts inner SceneAsset via mounts[]; mount-time override moves child cube position. End-to-end proof of ECS-fication SceneInstance component + nested instantiate path.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-scene-nesting smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape is downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle baseline anchor only; hello-scene-nesting is an integration demo"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "integration app; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-scene-nesting smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.56.1"
+  }
+}

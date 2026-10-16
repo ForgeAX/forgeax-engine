@@ -1,0 +1,24 @@
+{
+  "name": "@forgeax/template-empty",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.10.1",
+  "type": "module",
+  "description": "ForgeaX 最小工程模板",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": { "enabled": false, "reason": "模板构建由 SDK 验证器负责" },
+      "fps": { "enabled": false, "reason": "模板没有独立基准工作负载" },
+      "bench": { "enabled": false, "reason": "模板基线由 Engine 应用负责" },
+      "gate": { "enabled": false, "reason": "浏览器验收由 SDK 验证器负责" },
+      "spike-report": { "enabled": false, "reason": "模板不是 spike 应用" }
+    }
+  },
+  "dependencies": { "@forgeax/engine": "workspace:*" },
+  "devDependencies": { "@types/node": "^20.19.40", "typescript": "6.0.3", "vitest": "4.1.11" }
+}

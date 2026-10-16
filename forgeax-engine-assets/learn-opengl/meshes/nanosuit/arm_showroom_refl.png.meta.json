@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "arm_showroom_refl.png",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019ee3df-a912-76f4-b019-7f52568a2a9e",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

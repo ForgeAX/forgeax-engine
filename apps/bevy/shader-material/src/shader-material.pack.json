@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "e97e725d-0f45-5317-9472-5b41f19a1684",
+      "kind": "material",
+      "sourceKey": "shader-material.wgsl",
+      "execution": "cooked",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "bevy::shader_material",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

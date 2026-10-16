@@ -1,0 +1,12 @@
+# bug-20260514 M4 T-015 fixture bun.lock - in-sync payload pinning
+# example-pkg 1.2.3, mirroring package.json + pnpm-lock.yaml. check-drift
+# must early-exit 0 because the working tree bytes match HEAD bytes.
+"name": "no-drift-fixture"
+"lockfileVersion": 1
+"workspaces":
+  "":
+    "dependencies":
+      "example-pkg": "1.2.3"
+"packages":
+  "example-pkg@1.2.3":
+    "integrity": "sha512-FixtureOnlyDoNotUseInRealInstall="

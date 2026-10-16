@@ -1,0 +1,45 @@
+{
+  "name": "@forgeax/template-game-3d",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.10.1",
+  "type": "module",
+  "description": "Minimal ForgeaX third-person 3D reference with physics, skinning, animation, and UI.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "forgeax project build --out-dir .forgeax/typecheck-dist --json && tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "template bundle is downstream of the SDK verifier host"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "template has no independent benchmark harness"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "template scaffold; benchmark ownership stays with engine apps"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "browser acceptance is owned by the exact SDK verifier"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.40",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

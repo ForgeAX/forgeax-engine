@@ -1,0 +1,20 @@
+{
+  "staticFrames": 4,
+  "viewport": { "width": 320, "height": 180 },
+  "squareSize": 128,
+  "shadowMapSize": 256,
+  "cascadeCount": 1,
+  "reflectionResolution": 16,
+  "subsurfaceQuality": "low",
+  "irradianceRaysPerProbe": 32,
+  "geometry": {
+    "sphereWidth": 16,
+    "sphereHeight": 12,
+    "cylinderSegments": 12,
+    "torusRadial": 8,
+    "torusTubular": 24,
+    "surfaceU": 24,
+    "surfaceV": 8
+  },
+  "particles": { "capacity": 32, "rate": 8, "burst": 8 }
+}

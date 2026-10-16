@@ -1,0 +1,14 @@
+{
+  "mesh": {
+    "empty": "打开网格资产",
+    "unavailable": "网格检查不可用",
+    "inspectFailed": "Engine asset.inspect 没有返回该 GUID 的网格事实。",
+    "previewUnavailable": "网格预览不可用",
+    "previewCapabilityMissing": "Engine 没有为该网格返回预览目标。",
+    "previewEmpty": "没有网格预览",
+    "facts": "网格事实",
+    "slots": "材质槽",
+    "resetView": "重置视角",
+    "navigationHint": "WASD/QE move · Shift boost · RMB look/fly · wheel speed · F focus"
+  }
+}

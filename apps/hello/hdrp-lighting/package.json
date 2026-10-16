@@ -1,0 +1,57 @@
+{
+  "name": "@forgeax/hello-hdrp-lighting",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Standard clustered-lighting 256-light demo (feat-20260608-cluster-lighting M7 / w25). Spawns 256 punctual lights through the closed Standard profile and validates the real Dawn host path. AC-06 / AC-21.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-hdrp-lighting smoke",
+    "_comment": "smokeInvocation = self-contained SSOT: the Standard clustered lane + 256-light spawn must survive the dawn-node 60-frame loop with 0 RhiError and receipt evidence.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression is covered by the shared hello gates; Standard clustered cost is verified by the real Dawn smoke rather than per-app fps sampling"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "clustered-lighting perf bench scope is deferred; the parity lane remains the bounded pixel-diff benchmark"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-hdrp-lighting smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M7 Standard clustered-lighting exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

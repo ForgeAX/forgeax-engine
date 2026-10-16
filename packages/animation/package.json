@@ -1,0 +1,82 @@
+{
+  "name": "@forgeax/engine-animation",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Animation graph and playback domain.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./target-id": {
+      "types": "./dist/target-id.d.ts",
+      "import": "./dist/target-id.mjs"
+    },
+    "./package.json": "./package.json",
+    "./animated-bounds": {
+      "types": "./dist/animated-bounds.d.ts",
+      "import": "./dist/animated-bounds.mjs"
+    },
+    "./skeletal-motion": {
+      "types": "./dist/skeletal-motion.d.ts",
+      "import": "./dist/skeletal-motion.mjs"
+    },
+    "./spline-ik": {
+      "types": "./dist/spline-ik.d.ts",
+      "import": "./dist/spline-ik.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "bench": "node bench/animation.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-path": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "headless animation package"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "CPU scaling evidence uses bench/animation.mjs; no registered throughput metric"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package binary gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

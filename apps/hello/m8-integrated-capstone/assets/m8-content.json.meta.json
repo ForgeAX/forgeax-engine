@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "m8-capstone-blob",
+  "source": "m8-content.json",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "8215d398-8120-4ffa-baf2-4496216cd4f6",
+      "sourceIndex": 0,
+      "name": "m8-capstone-content",
+      "kind": "m8-capstone-blob"
+    }
+  ]
+}

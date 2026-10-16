@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "c1de0000-0000-7000-8000-000000000001",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "forward",
+            "program": { "module": "forgeax::default-standard-pbr" },
+            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 3000 }
+          }
+        ],
+        "values": {
+          "baseColor": [0.18, 0.025, 0.003, 1],
+          "metallic": 0.02,
+          "roughness": 0.82,
+          "emissive": [0.38, 0.012, 0.001],
+          "emissiveIntensity": 1.35
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "c1de0000-0000-7000-8000-000000000002",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "forward",
+            "program": { "module": "forgeax::default-unlit" },
+            "renderState": {
+              "tags": { "LightMode": "Forward" },
+              "queue": 3000,
+              "depthCompare": "always",
+              "blend": {
+                "color": { "srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add" },
+                "alpha": { "srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add" }
+              },
+              "depthWriteEnabled": false
+            }
+          }
+        ],
+        "values": { "baseColor": [1, 0.12, 0.01, 1] },
+        "particleInputs": [
+          { "name": "heat", "type": "f32", "visibility": "fragment", "lane": 0 }
+        ]
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "c1de0000-0000-7000-8000-000000000003",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "forward",
+            "program": { "module": "forgeax::default-unlit" },
+            "renderState": {
+              "tags": { "LightMode": "Forward" },
+              "queue": 3000,
+              "depthCompare": "always",
+              "blend": {
+                "color": { "srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add" },
+                "alpha": { "srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add" }
+              },
+              "depthWriteEnabled": false
+            }
+          }
+        ],
+        "values": { "baseColor": [0.76, 0.5, 0.34, 0.72] }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "c1de0000-0000-7000-8000-000000000004",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "forward",
+            "program": { "module": "forgeax::default-standard-pbr" },
+            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+          }
+        ],
+        "values": {
+          "baseColor": [0.10, 0.15, 0.24, 1],
+          "metallic": 0.05,
+          "roughness": 0.86,
+          "emissive": [0, 0, 0],
+          "emissiveIntensity": 0
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "c1de0000-0000-7000-8000-000000000005",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "forward",
+            "program": { "module": "forgeax::default-standard-pbr" },
+            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 1900 }
+          }
+        ],
+        "values": {
+          "baseColor": [0.045, 0.006, 0.001, 1],
+          "metallic": 0,
+          "roughness": 0.92,
+          "emissive": [0, 0, 0],
+          "emissiveIntensity": 0
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

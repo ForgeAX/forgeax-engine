@@ -1,0 +1,61 @@
+{
+  "name": "@forgeax/hello-fxaa",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "FXAA plus Engine-owned dark-gradient output fixture (60-frame Browser/Dawn/WebGL2 evidence; metrics remain in the fixture report).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:mipmap": "node scripts/smoke-mipmap-browser.mjs",
+    "bench": "node scripts/dark-gradient-fixture.mjs --bench"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-fxaa smoke",
+    "_comment": "smokeInvocation = self-contained SSOT. hello-fxaa exercises the fixed dark-gradient fixture and Camera antialias=fxaa end-to-end (geometry pass -> copy swap-chain -> FXAA fullscreen pass).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression covered by hello-cube / hello-room / hello-app gates that run the default zero-overhead path; FXAA opt-in cost is verified via the smoke gate (60-frame readback) rather than per-app fps sampling"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "paired float baseline requires a concrete device timing provider; the bench script remains an explicit insufficient-evidence entry point until that provider is available"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-fxaa smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M4 hello-fxaa opt-in exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

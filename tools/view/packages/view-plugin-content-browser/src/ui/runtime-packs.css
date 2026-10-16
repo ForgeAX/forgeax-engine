@@ -1,0 +1,7 @@
+.cb-runtime { flex: 0 0 auto; max-height: 60%; overflow: auto; padding: 12px; border-bottom: 1px solid var(--fx-color-border-subtle); }
+.cb-runtime-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.cb-runtime fieldset { min-width: 0; margin: 8px 0; padding: 12px; border: 1px solid var(--fx-color-border-subtle); }
+.cb-runtime select, .cb-runtime input { box-sizing: border-box; width: 100%; padding: 4px 6px; color: inherit; background: var(--fx-color-surface-inset); border: 1px solid var(--fx-color-border-subtle); }
+.cb-runtime pre { max-height: 100px; overflow: auto; white-space: pre-wrap; }
+.cb-runtime [role='alert'] { color: var(--fx-color-status-error-fg); }
+@media (max-width: 640px) { .cb-runtime-columns { grid-template-columns: minmax(0, 1fr); } }

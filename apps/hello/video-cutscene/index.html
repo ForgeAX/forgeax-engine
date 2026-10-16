@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>forgeax-engine -- Video Cutscene</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #111; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      /* The cutscene overlay is host DOM/CSS -- the engine never touches it
+         (host-engine contract, contact surface 5). Hidden until pause. */
+      #video-overlay {
+        display: none;
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+        z-index: 10;
+      }
+      #hint {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        color: #fff;
+        font: 16px/1.4 system-ui, sans-serif;
+        padding: 8px 16px;
+        background: rgba(0, 0, 0, 0.6);
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 5;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="hint">Press C to play the cutscene</div>
+    <video id="video-overlay" muted playsinline src="/cutscene.webm"></video>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

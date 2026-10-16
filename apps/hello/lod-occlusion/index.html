@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeaX 普通网格 LOD 双视图验收</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      body { margin: 0; padding: 16px; background: #111827; color: #e5e7eb; }
+      #stage { position: relative; width: min(800px, 100%); }
+      #app { display: block; width: 100%; height: auto; border: 1px solid #4b5563; background: #f8fafc; cursor: grab; }
+      #app:active { cursor: grabbing; }
+      #hud { position: absolute; top: 12px; left: 12px; display: grid; gap: 4px; min-width: 150px; padding: 10px 12px; border: 1px solid #64748b; border-radius: 8px; background: rgb(15 23 42 / 86%); box-shadow: 0 4px 16px rgb(0 0 0 / 30%); pointer-events: none; }
+      #lod-level { font-size: 24px; line-height: 1; color: #7dd3fc; }
+      #lod-detail { font-size: 12px; color: #cbd5e1; }
+      #lod-geometry { font-size: 12px; font-weight: 700; }
+      #multi-view-detail { font-size: 12px; color: #cbd5e1; }
+      #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0; font-size: 13px; color: #cbd5e1; }
+      #legend { flex-basis: 100%; font-size: 12px; color: #94a3b8; }
+      .presets { display: inline-flex; gap: 6px; }
+      button { border: 1px solid #64748b; border-radius: 5px; padding: 4px 9px; background: #1e293b; color: #e2e8f0; cursor: pointer; }
+      button:hover, button:focus-visible { border-color: #7dd3fc; background: #334155; }
+      #status { max-height: 360px; overflow: auto; margin: 0; padding: 10px; border: 1px solid #374151; border-radius: 6px; background: #0b1220; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="app" width="800" height="600" aria-label="LOD 双视图场景"></canvas>
+      <div id="hud" aria-live="polite">
+        <strong id="lod-level">LOD --</strong>
+        <span id="lod-detail">等待渲染...</span>
+        <span id="lod-geometry">等待几何与材质...</span>
+        <span id="multi-view-detail">等待两视图统计...</span>
+      </div>
+    </div>
+    <div id="controls">
+      <span>左侧相机：滚轮或 +/- 缩放 · 1/2/3 预设距离 · R 重置</span>
+      <span class="presets" aria-label="相机距离预设">
+        <button type="button" data-distance="5">LOD0 · 近 (1)</button>
+        <button type="button" data-distance="20">LOD1 · 中 (2)</button>
+        <button type="button" data-distance="45">LOD2 · 远 (3)</button>
+      </span>
+      <span class="presets" aria-label="验收控制">
+        <button id="toggle-visibility" data-visible-label="隐藏目标" data-hidden-label="显示目标" type="button">隐藏目标</button>
+        <button id="load-low-lod" data-loaded-label="远景低模已加载" type="button">加载远景低模</button>
+        <button id="accept-revision-race" type="button">验收 revision 4 / 3</button>
+      </span>
+      <span id="legend">覆盖率阈值：LOD0 ≥ 0.5 · LOD1 ≥ 0.2 · LOD2 &lt; 0.2 · 左右 CameraView 独立选择；低模未就绪时回退到较精细层级。</span>
+    </div>
+    <pre id="status">正在加载普通 MeshAsset LOD...</pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "required": true,
+  "colorDomain": "linearHdr",
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 65536 },
+  "artifacts": ["forgeax-final", "three-primary-final", "diff-roi"],
+  "cases": [
+    {
+      "caseId": "rect-area-reversed-front",
+      "sourceCaseId": "rect-area",
+      "mutation": "reverse-front-facing",
+      "expected": "the lit front ROI changes and the falsifier is not a pass"
+    },
+    {
+      "caseId": "rect-area-zero-ltc",
+      "sourceCaseId": "rect-area",
+      "mutation": "zero-ltc-tables",
+      "expected": "the lit ROI changes and the falsifier is not a pass"
+    },
+    {
+      "caseId": "probe-sky-contributor",
+      "sourceCaseId": "probe",
+      "mutation": "add-sky-as-probe-contributor",
+      "expected": "Sky remains an explicit diffuse residual and does not enter probe A/Q/alpha"
+    },
+    {
+      "caseId": "recovery-stale-generation",
+      "sourceCaseId": "recovery",
+      "mutation": "reuse-stale-generation-after-recovery",
+      "expected": "stale records are rejected and the last-known-good record remains observable"
+    }
+  ]
+}

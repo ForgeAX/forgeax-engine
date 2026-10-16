@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-1000-7000-8000-000000000104",
+  "assets": {
+    "shaders/animated-target.wgsl": {
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "game_default::animated_target",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "time",
+            "type": "f32",
+            "default": 0
+          }
+        ]
+      },
+      "refs": []
+    }
+  }
+}

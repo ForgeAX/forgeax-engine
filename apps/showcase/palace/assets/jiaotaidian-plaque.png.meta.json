@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "../../../../forgeax-engine-assets/demo-assets/palace/jiaotaidian-plaque.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": true,
+    "addressMode": "clamp-to-edge",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "01a09875-143d-74ed-a63f-0fc10acb8f32",
+      "sourceIndex": 0,
+      "kind": "texture",
+      "sourceKey": "texture"
+    }
+  ]
+}

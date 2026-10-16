@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>forgeax-engine - Hello Sprite-Lit (3 lights, Half-Lambert)</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1a1a22; color: #e8e8ef; font-family: ui-monospace, monospace; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      .hint {
+        position: fixed; left: 12px; top: 12px;
+        background: rgba(0, 0, 0, 0.45); padding: 8px 12px;
+        border-radius: 6px; line-height: 1.4; pointer-events: none;
+      }
+      .hint b { color: #ffe57c; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div class="hint">
+      <b>sprite-lit demo</b> -- 1 directional + 1 point + 1 spot light<br />
+      Half-Lambert squared, no normal map, no shadow<br />
+      URL <b>?mode=</b> directional-only / three-lights / ab-compare
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

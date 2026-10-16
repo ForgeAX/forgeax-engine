@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019e3969-2000-7000-8000-000000000003",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "baseColorTexture": "019e3969-1d46-7945-a75a-ef97d537531e",
+          "metallicRoughnessTexture": "019e3969-1d46-76ca-9a46-2168b746a292"
+        }
+      },
+      "refs": [
+        "019e3969-1d46-7945-a75a-ef97d537531e",
+        "019e3969-1d46-76ca-9a46-2168b746a292"
+      ]
+    }
+  ]
+}

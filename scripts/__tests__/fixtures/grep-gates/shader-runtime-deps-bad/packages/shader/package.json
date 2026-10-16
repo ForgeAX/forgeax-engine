@@ -1,0 +1,8 @@
+{
+  "name": "@forgeax/engine-shader",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@forgeax/engine-wgpu-wasm": "workspace:*"
+  }
+}

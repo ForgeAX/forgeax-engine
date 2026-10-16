@@ -1,0 +1,1214 @@
+:root {
+  font-family: var(--fx-type-ui-font-family);
+  font-size: var(--fx-type-ui-font-size);
+  line-height: var(--fx-type-ui-line-height);
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--fx-color-surface-canvas);
+  color: var(--fx-color-text-primary);
+}
+
+#root {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ThemeProvider wrapper: restores the viewport height chain broken by an extra fx-ui shell. */
+.fx-view-root.fx-ui {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  --fx-view-shell-chrome-height: var(--fx-component-navigation-row-height);
+  --fx-view-unconfigured-offset: calc(var(--fx-ref-space-48) * 2 + var(--fx-ref-space-8) - var(--fx-ref-space-6));
+}
+
+/* Project admission belongs to the selected page; artifact tabs stay reachable. */
+.fx-view-project-open {
+  position: absolute;
+  inset: var(--fx-view-shell-chrome-height) 0 0;
+  z-index: 40;
+  height: fit-content;
+}
+
+.fx-view-header__recovery-feedback {
+  width: 100%;
+  min-width: 0;
+  padding: 0 var(--fx-ref-space-10);
+  align-items: center;
+  border-radius: var(--fx-radius-control);
+}
+
+.fx-view-header__recovery-feedback .fx-feedback__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.fx-view-header__recovery-feedback .fx-feedback__body strong {
+  font: var(--fx-type-compact-font-weight) var(--fx-type-compact-font-size) / var(--fx-type-compact-line-height)
+    var(--fx-type-compact-font-family);
+}
+
+.fx-view-header__connection-status {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.fx-view-connection-state {
+  position: absolute;
+  top: var(--fx-view-shell-chrome-height);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: var(--fx-space-section);
+  background: var(--fx-color-surface-canvas);
+  box-sizing: border-box;
+}
+
+.fx-view-connection-state > .fx-empty {
+  width: min(100%, calc(var(--fx-component-panel-chat-min-width) + var(--fx-ref-space-48) + var(--fx-ref-space-32)));
+  min-height: calc(var(--fx-ref-space-48) * 5 + var(--fx-ref-space-16) + var(--fx-ref-space-4));
+  border: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  border-radius: var(--fx-radius-card);
+  background: var(--fx-color-surface-sidebar);
+  box-shadow: var(--fx-shadow-card);
+  box-sizing: border-box;
+}
+
+.fx-view-connection-state__icon {
+  width: var(--fx-component-control-height-default);
+  height: var(--fx-component-control-height-default);
+  color: var(--fx-color-status-error-fg);
+  stroke-width: 1.5;
+}
+
+.fx-view-connection-state__description {
+  display: grid;
+  gap: var(--fx-ref-space-8);
+}
+
+.fx-view-connection-state__command {
+  padding: var(--fx-border-width) var(--fx-ref-space-4);
+  border-radius: var(--fx-ref-radius-4);
+  background: var(--fx-color-surface-inset);
+  color: var(--fx-color-text-primary);
+  font-family: var(--fx-type-code-font-family);
+  font-size: inherit;
+  white-space: nowrap;
+}
+
+.fx-view-connection-state__reason {
+  display: block;
+  max-width: var(--fx-component-conversation-max-width);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border-radius: var(--fx-ref-radius-4);
+  background: var(--fx-color-surface-inset);
+  color: var(--fx-color-text-muted);
+  font-size: var(--fx-ref-font-size-12);
+  overflow-wrap: anywhere;
+}
+
+.fx-view-root > .fx-view-app {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.fx-view-app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fx-view-app > .fx-page-tab-strip {
+  flex: 0 0 auto;
+}
+
+
+.fx-view-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-ref-space-8);
+  flex-shrink: 0;
+  padding: 0 var(--fx-ref-space-12);
+  white-space: nowrap;
+  color: var(--fx-color-text-primary);
+}
+
+.fx-view-brand strong {
+  font-weight: var(--fx-ref-font-weight-600);
+}
+
+.fx-view-header__status-slot {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: var(--fx-component-control-height-compact);
+  height: var(--fx-component-control-height-compact);
+}
+
+.fx-view-header__status-dot {
+  width: var(--fx-ref-space-6);
+  height: var(--fx-ref-space-6);
+  border-radius: var(--fx-radius-pill);
+  background: var(--fx-color-status-success-fg);
+}
+
+.fx-view-header__status-dot--connected {
+  background: var(--fx-color-status-success-fg);
+}
+
+.fx-view-header__status-dot--connecting {
+  background: var(--fx-color-status-warning-fg);
+  animation: fx-view-host-status-pulse 1.4s ease-in-out infinite;
+}
+
+.fx-view-header__status-dot--failed {
+  background: var(--fx-color-status-error-fg);
+}
+
+@keyframes fx-view-host-status-pulse {
+  0%,
+  100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.fx-view-header__status-slot:focus-visible {
+  outline: var(--fx-border-width) solid var(--fx-color-border-focus);
+  outline-offset: var(--fx-ref-space-2);
+  border-radius: var(--fx-radius-control);
+}
+
+.fx-view-unconfigured {
+  position: absolute;
+  right: var(--fx-view-unconfigured-offset);
+  padding: var(--fx-ref-space-2) var(--fx-ref-space-6);
+  border: var(--fx-border-width) solid var(--fx-color-status-warning-fg);
+  border-radius: var(--fx-ref-radius-4);
+  background: var(--fx-color-status-warning-bg);
+  color: var(--fx-color-status-warning-fg);
+  font-family: var(--fx-type-code-font-family);
+  font-size: var(--fx-ref-font-size-12);
+  line-height: var(--fx-type-caption-line-height);
+  letter-spacing: var(--fx-type-caption-letter-spacing);
+}
+
+.fx-view-header__prefs {
+  flex-shrink: 0;
+  padding-right: var(--fx-ref-space-8);
+  display: flex;
+  align-items: center;
+  gap: var(--fx-ref-space-4);
+}
+
+.fx-locale-trigger {
+  min-width: var(--fx-ref-space-16);
+  font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size)/
+    var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+  letter-spacing: 0.04em;
+}
+
+.fx-view-main-col {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.fx-view-project-restoring {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--fx-ref-space-4);
+  padding: var(--fx-ref-space-8);
+  text-align: center;
+}
+
+.fx-view-workspace-row {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  background: var(--fx-color-surface-canvas);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.fx-view-workspace-row.is-active {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.fx-view-workspace-row[hidden] {
+  display: none;
+}
+
+.fx-view-page-surface {
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: var(--fx-ref-space-8);
+  padding: var(--fx-space-section);
+  min-height: 0;
+  overflow: auto;
+}
+
+.fx-view-workbench {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fx-view-dockview-host {
+  position: relative;
+  isolation: isolate;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  --fx-edge-drawer-z: 1000;
+}
+
+/* Map dockview theme vars to ForgeaX tokens (interface DockShell.css `.fx-dockshell`).
+   Dockview 6.6.1 applies `theme.className` on `.dv-shell` only (see dockview-core updateTheme),
+   so overrides must target the shell — not `.fx-view-dockview` — to beat `.dockview-theme-abyss`. */
+.fx-view-dockview-host,
+.fx-view-dockview-host .dv-shell.dockview-theme-abyss {
+  --fx-dock-container-background: var(--fx-color-surface-canvas);
+  --fx-dock-panel-background: var(--fx-color-surface-sidebar);
+  --dv-background-color: var(--fx-dock-container-background);
+  --dv-group-view-background-color: var(--fx-dock-panel-background);
+  --dv-tabs-and-actions-container-background-color: var(--fx-color-surface-inset);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--fx-dock-panel-background);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-inset);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--fx-dock-panel-background);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-raised);
+  --dv-activegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-activegroup-hiddenpanel-tab-color: var(--fx-color-text-secondary);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--fx-color-text-muted);
+  --dv-tab-divider-color: var(--fx-color-border-subtle);
+  --dv-separator-border: var(--fx-color-border-subtle);
+  --dv-active-sash-color: transparent;
+  --dv-paneview-active-outline-color: var(--fx-color-brand-accent);
+  --dv-drag-over-background-color: var(--fx-color-brand-soft);
+  --dv-drag-over-border-color: var(--fx-color-brand-accent);
+  --dv-floating-border: none;
+  --dv-floating-group-border: none;
+  --dv-context-menu-background-color: var(--fx-color-surface-raised);
+  --dv-context-menu-color: var(--fx-color-text-secondary);
+  --dv-color-abyss-dark: var(--fx-color-surface-sidebar);
+  --dv-color-abyss: var(--fx-color-surface-inset);
+  --dv-color-abyss-light: var(--fx-color-surface-raised);
+  --dv-color-abyss-lighter: var(--fx-color-surface-raised);
+  --dv-color-abyss-accent: var(--fx-color-brand-accent);
+}
+
+/* Hoisted edge strips: re-declare on the group so panel/tab surfaces never inherit Abyss literals. */
+.fx-view-workbench .dv-groupview-edge {
+  --fx-dock-panel-background: var(--fx-color-surface-sidebar);
+  --dv-color-abyss-dark: var(--fx-color-surface-sidebar);
+  --dv-color-abyss: var(--fx-color-surface-inset);
+  --dv-color-abyss-light: var(--fx-color-surface-inset);
+  --dv-color-abyss-lighter: var(--fx-color-surface-raised);
+  --dv-color-abyss-accent: var(--fx-color-brand-accent);
+  --dv-group-view-background-color: var(--fx-dock-panel-background);
+  --dv-tabs-and-actions-container-background-color: var(--fx-color-surface-inset);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--fx-dock-panel-background);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-inset);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--fx-dock-panel-background);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-raised);
+  --dv-activegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-activegroup-hiddenpanel-tab-color: var(--fx-color-text-secondary);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--fx-color-text-muted);
+  --dv-tab-divider-color: var(--fx-color-border-subtle);
+  --dv-separator-border: var(--fx-color-border-subtle);
+  --dv-context-menu-background-color: var(--fx-color-surface-raised);
+  --dv-context-menu-color: var(--fx-color-text-secondary);
+}
+
+/* Body portal for edge drawer flyout — interface DockShell.css + semantic tokens. */
+.fx-edge-drawer-portal-host {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  /* Grid sashes stay in their isolated host; body menus must remain above drawers. */
+  z-index: 50;
+  --fx-dock-panel-background: var(--fx-color-surface-sidebar);
+  --dv-color-abyss-dark: var(--fx-color-surface-sidebar);
+  --dv-color-abyss: var(--fx-color-surface-inset);
+  --dv-color-abyss-light: var(--fx-color-surface-inset);
+  --dv-color-abyss-lighter: var(--fx-color-surface-raised);
+  --dv-color-abyss-accent: var(--fx-color-brand-accent);
+  --dv-group-view-background-color: var(--fx-dock-panel-background);
+  --dv-tabs-and-actions-container-background-color: var(--fx-color-surface-inset);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--fx-dock-panel-background);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-inset);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--fx-dock-panel-background);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-raised);
+  --dv-activegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-activegroup-hiddenpanel-tab-color: var(--fx-color-text-secondary);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--fx-color-text-muted);
+  --dv-tab-divider-color: var(--fx-color-border-subtle);
+  --dv-separator-border: var(--fx-color-border-subtle);
+  --dv-context-menu-background-color: var(--fx-color-surface-raised);
+  --dv-context-menu-color: var(--fx-color-text-secondary);
+}
+
+.fx-view-dockview {
+  width: 100%;
+  height: 100%;
+}
+
+.fx-view-dockview-host .fx-view-dockview .dv-dockview {
+  --dv-separator-border: transparent;
+  background-color: var(--fx-dock-container-background, var(--fx-color-surface-canvas));
+}
+
+/* Lift the native bottom group out of Dockview's middle column so the real
+   tab strip, its pointer target and its drawer all span the host width. */
+.fx-view-dockview-host .dv-view.fx-bottom-edge-spanning {
+  position: fixed !important;
+  left: var(--fx-bottom-edge-left) !important;
+  top: auto !important;
+  bottom: var(--fx-bottom-edge-bottom) !important;
+  width: var(--fx-bottom-edge-width) !important;
+  height: var(--fx-bottom-edge-height) !important;
+  z-index: 1001;
+}
+
+/* Core grid groups: borderless — separation is the canvas-colored gap (interface DockShell.css). */
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-groupview:not(.dv-groupview-edge),
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .groupview:not(.groupview-edge) {
+  border: 0 !important;
+  outline: 0;
+  box-shadow: none;
+}
+
+/* Edge shell splitview separators sit outside `.dv-dockview`; hide static separator lines. */
+.fx-view-dockview-host
+  .dv-shell
+  > .dv-split-view-container.dv-separator-border
+  > .dv-view-container
+  > .dv-view:not(:first-child)::before,
+.fx-view-dockview-host
+  .dv-shell-middle-column
+  > .dv-split-view-container.dv-separator-border
+  > .dv-view-container
+  > .dv-view:not(:first-child)::before {
+  display: none;
+}
+
+.fx-view-dockview .dv-tabs-and-actions-container {
+  height: calc(var(--fx-component-navigation-row-height) - var(--fx-ref-space-6));
+  min-height: calc(var(--fx-component-navigation-row-height) - var(--fx-ref-space-6));
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+}
+
+.fx-view-dockview .dv-tab {
+  border-radius: var(--fx-ref-radius-4) var(--fx-ref-radius-4) 0 0 !important;
+  font-size: var(--fx-ref-font-size-12);
+  letter-spacing: var(--fx-type-caption-letter-spacing);
+}
+
+.fx-view-dockview .dv-groupview:not(.dv-groupview-edge) .fx-dock-tab {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--fx-ref-space-6);
+}
+
+.fx-view-dockview .dv-groupview:not(.dv-groupview-edge) .fx-dock-tab .dv-default-tab-content {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-view-dockview .fx-dock-tab-icon {
+  flex: 0 0 auto;
+  color: var(--fx-color-text-muted);
+}
+
+.fx-view-dockview .dv-tab.dv-active-tab .fx-dock-tab-icon {
+  color: var(--fx-color-text-secondary);
+}
+
+.fx-view-dockview .fx-dock-tab .dv-default-tab-action {
+  display: grid;
+  place-items: center;
+  width: calc(var(--fx-ref-space-16) + var(--fx-ref-space-2));
+  height: calc(var(--fx-ref-space-16) + var(--fx-ref-space-2));
+  min-height: calc(var(--fx-ref-space-16) + var(--fx-ref-space-2));
+  margin-left: var(--fx-ref-space-2);
+  padding: 0;
+  border: 0;
+  border-radius: var(--fx-ref-radius-4);
+  color: var(--fx-color-text-muted);
+}
+
+.fx-view-dockview .fx-dock-tab .dv-default-tab-action:hover {
+  background: var(--fx-color-surface-hover);
+  color: var(--fx-color-text-primary);
+}
+
+.fx-view-dockview .fx-dock-tab .dv-default-tab-action.fx-edge-pin--on {
+  color: var(--fx-color-brand-accent);
+}
+
+/* Suppress dockview tab focus ring; use ::before focus accent (interface DockShell.css). */
+.fx-view-dockview-host .dv-tab:focus-within::after,
+.fx-view-dockview-host .dv-tab:focus::after {
+  content: none;
+}
+
+.fx-view-dockview-host
+  .dv-groupview.dv-active-group:not(.dv-groupview-edge)
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab,
+.fx-view-workbench
+  .dv-groupview-edge.fx-edge-drawer-open.dv-active-group
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab {
+  position: relative;
+}
+
+.fx-view-dockview-host
+  .dv-groupview.dv-active-group:not(.dv-groupview-edge)
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab::before,
+.fx-view-workbench
+  .dv-groupview-edge.fx-edge-drawer-open.dv-active-group
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab::before {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--fx-color-brand-accent) 55%, transparent) 22%,
+    var(--fx-color-brand-accent) 50%,
+    color-mix(in srgb, var(--fx-color-brand-accent) 55%, transparent) 78%,
+    transparent 100%
+  );
+  left: 0;
+  right: 0;
+  top: 1px;
+  height: 1px;
+  width: auto;
+}
+
+.fx-view-workbench
+  .dv-groupview-edge.fx-edge-drawer-open.dv-active-group.dv-groupview-header-left
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container.dv-tabs-container-vertical
+  > .dv-tab.dv-active-tab::before {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: auto;
+  width: 1px;
+  height: auto;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--fx-color-brand-accent) 55%, transparent) 22%,
+    var(--fx-color-brand-accent) 50%,
+    color-mix(in srgb, var(--fx-color-brand-accent) 55%, transparent) 78%,
+    transparent 100%
+  );
+}
+
+.fx-view-workbench
+  .dv-groupview-edge.fx-edge-drawer-open.dv-active-group.dv-groupview-header-right
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container.dv-tabs-container-vertical
+  > .dv-tab.dv-active-tab::before {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: auto;
+  width: 1px;
+  height: auto;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--fx-color-brand-accent) 55%, transparent) 22%,
+    var(--fx-color-brand-accent) 50%,
+    color-mix(in srgb, var(--fx-color-brand-accent) 55%, transparent) 78%,
+    transparent 100%
+  );
+}
+
+/* Edge strips may hoist beside `.dv-dockview` — scope under workbench, not only the host. */
+.fx-view-workbench .dv-groupview-edge .dv-tabs-container.dv-tabs-container-vertical {
+  text-orientation: sideways;
+  padding-top: var(--fx-ref-space-6);
+}
+
+.fx-view-workbench .dv-groupview-edge .dv-default-tab .dv-default-tab-content {
+  margin: 0;
+  padding: var(--fx-ref-space-2) 0;
+}
+
+.fx-view-workbench
+  .dv-groupview-edge.dv-active-group:not(.fx-edge-drawer-open)
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab {
+  background-color: var(--dv-activegroup-hiddenpanel-tab-background-color);
+  color: var(--dv-activegroup-hiddenpanel-tab-color);
+}
+
+.fx-view-workbench
+  .dv-groupview-edge.dv-inactive-group:not(.fx-edge-drawer-open)
+  > .dv-tabs-and-actions-container
+  .dv-tabs-container
+  > .dv-tab.dv-active-tab {
+  background-color: var(--dv-inactivegroup-hiddenpanel-tab-background-color);
+  color: var(--dv-inactivegroup-hiddenpanel-tab-color);
+}
+
+.fx-view-workbench .dv-groupview-edge.fx-edge-empty {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.fx-view-workbench .dv-groupview-edge .dv-tabs-container.dv-tabs-container-vertical > .dv-tab {
+  min-height: 104px;
+  padding: var(--fx-ref-space-10) var(--fx-ref-space-6);
+  box-sizing: border-box;
+}
+
+.fx-view-workbench .dv-groupview-edge .dv-tabs-container:not(.dv-tabs-container-vertical) > .dv-tab {
+  min-width: 104px;
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-12);
+  box-sizing: border-box;
+}
+
+.fx-view-workbench .dv-groupview-edge .dv-default-tab {
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-2);
+  gap: var(--fx-ref-space-6);
+  box-sizing: border-box;
+}
+
+.fx-view-workbench .dv-groupview-edge .dv-tabs-container-vertical .fx-dock-tab-icon {
+  writing-mode: horizontal-tb;
+  margin-right: 0;
+  margin-bottom: var(--fx-ref-space-6);
+}
+
+.fx-view-workbench .dv-default-tab-action.fx-edge-pin {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fx-view-workbench .dv-groupview-edge .dv-tab:hover .dv-default-tab-action.fx-edge-pin,
+.fx-view-workbench .dv-groupview-edge .dv-default-tab-action.fx-edge-pin--on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.fx-edge-drawer-portal-host > .fx-edge-drawer-grip {
+  pointer-events: auto;
+}
+
+/* Raise the open strip inside the isolated grid; body flyouts and menus remain above it. */
+.fx-view-dockview-host .dv-groupview-edge.fx-edge-drawer-open {
+  position: relative;
+  z-index: var(--fx-edge-drawer-z, 1000) !important;
+}
+
+.fx-view-dockview-host .dv-popover-anchor > * {
+  z-index: calc(var(--fx-edge-drawer-z, 1000) + 1) !important;
+}
+
+.fx-view-dockview-host .dv-groupview-edge.fx-edge-drawer-open > .dv-content-container,
+.fx-edge-drawer-portal-host > .dv-content-container {
+  --fx-edge-drawer-inset: var(--fx-ref-space-6);
+  display: block !important;
+  position: fixed;
+  pointer-events: auto;
+  width: var(--fx-edge-drawer-width, 300px);
+  height: calc(var(--fx-edge-strip-height) - 2 * var(--fx-edge-drawer-inset));
+  top: calc(var(--fx-edge-strip-top) + var(--fx-edge-drawer-inset));
+  z-index: 60;
+  box-sizing: border-box;
+  background: var(--dv-group-view-background-color, var(--fx-color-surface-sidebar));
+  color: var(--fx-color-text-primary);
+  border: var(--fx-border-width) solid var(--dv-separator-border, var(--fx-color-border-subtle));
+  border-radius: var(--fx-ref-radius-6);
+  overflow: hidden;
+}
+
+.fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-left.fx-edge-drawer-open > .dv-content-container,
+.fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-left {
+  left: calc(var(--fx-edge-drawer-left) - 3px);
+  width: calc(var(--fx-edge-drawer-width, 300px) + 3px);
+  box-shadow: 4px 0 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
+    1px 0 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
+}
+
+.fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-right.fx-edge-drawer-open > .dv-content-container,
+.fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-right {
+  right: calc(var(--fx-edge-drawer-right) - 3px);
+  width: calc(var(--fx-edge-drawer-width, 300px) + 3px);
+  box-shadow: -4px 0 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
+    -1px 0 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
+}
+
+.fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-bottom.fx-edge-drawer-open > .dv-content-container,
+.fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-bottom {
+  top: auto;
+  left: calc(var(--fx-edge-strip-left) + var(--fx-edge-drawer-inset));
+  width: calc(var(--fx-edge-strip-width) - 2 * var(--fx-edge-drawer-inset));
+  height: calc(var(--fx-edge-drawer-height, 300px) + 3px);
+  bottom: calc(var(--fx-edge-drawer-bottom) - 3px);
+  box-shadow: 0 -4px 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
+    0 -1px 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
+}
+
+.fx-ue-live-host .fx-ue-lifted,
+.fx-ue-live-host .dv-resize-container.fx-ue-lifted {
+  box-shadow: none !important;
+}
+
+.fx-edge-drawer-grip {
+  z-index: 61;
+  background: transparent;
+  transition: background 0.1s ease;
+}
+
+.fx-edge-drawer-grip.fx-edge-drawer-grip--dragging {
+  background: var(--fx-color-brand-accent);
+}
+
+/* interface DockShell.css — hidden single-tab chrome + title restore affordance */
+.fx-view-dockview-host
+  .dv-groupview[data-fx-dock-title-state="hidden"]
+  > .dv-tabs-and-actions-container.dv-single-tab {
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  opacity: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+.fx-view-dockview-host .fx-dock-title-restore,
+.fx-edge-drawer-portal-host .fx-dock-title-restore {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: var(--fx-component-choice-size) !important;
+  height: calc(var(--fx-ref-space-16) + var(--fx-ref-space-4)) !important;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fx-color-text-muted);
+  cursor: pointer;
+}
+
+.fx-view-dockview-host .fx-dock-title-restore::before,
+.fx-edge-drawer-portal-host .fx-dock-title-restore::before {
+  content: '';
+  width: var(--fx-ref-space-12);
+  height: var(--fx-ref-space-12);
+  align-self: flex-start;
+  background: var(--fx-color-text-muted);
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  transition: background var(--fx-motion-hover) var(--fx-motion-ease);
+}
+
+.fx-view-dockview-host .fx-dock-title-restore:hover::before,
+.fx-view-dockview-host .fx-dock-title-restore:focus-visible::before,
+.fx-edge-drawer-portal-host .fx-dock-title-restore:hover::before,
+.fx-edge-drawer-portal-host .fx-dock-title-restore:focus-visible::before {
+  background: var(--fx-color-brand-accent);
+}
+
+.fx-view-dockview-host .fx-dock-title-restore:focus-visible,
+.fx-edge-drawer-portal-host .fx-dock-title-restore:focus-visible {
+  outline: none;
+}
+
+.fx-view-dockview-host
+  .dv-groupview[data-fx-dock-title-state="hidden"]
+  .fx-dock-title-restore,
+.fx-edge-drawer-portal-host
+  > .dv-content-container[data-fx-dock-title-state="hidden"]
+  .fx-dock-title-restore {
+  display: inline-flex !important;
+}
+
+.fx-view-dockview-host .dv-context-menu {
+  min-width: calc(var(--fx-component-menu-min-width) - var(--fx-ref-space-48));
+  padding: var(--fx-ref-space-4) !important;
+  border: var(--fx-border-width) solid var(--fx-color-border-default);
+  border-radius: var(--fx-radius-popover);
+  background: var(--dv-context-menu-background-color, var(--fx-color-surface-raised)) !important;
+  color: var(--dv-context-menu-color, var(--fx-color-text-secondary)) !important;
+  box-shadow: var(--fx-shadow-floating);
+}
+
+.fx-view-dockview-host .dv-context-menu-item {
+  min-height: var(--fx-component-control-height-compact);
+  gap: var(--fx-ref-space-8);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border-radius: var(--fx-ref-radius-4);
+  font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) / var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+  color: var(--dv-context-menu-color, var(--fx-color-text-secondary));
+}
+
+.fx-view-dockview-host .dv-context-menu-item .dv-svg,
+.fx-view-dockview-host .dv-context-menu-item svg {
+  width: var(--fx-ref-space-16);
+  height: var(--fx-ref-space-16);
+  flex-shrink: 0;
+}
+
+.fx-view-dockview-host .dv-context-menu-item:not(.dv-context-menu-item--disabled):hover {
+  background: var(--fx-color-action-primary-bg) !important;
+  color: var(--fx-color-action-primary-fg) !important;
+}
+
+.fx-view-dockview-host .dv-context-menu-item:not(.dv-context-menu-item--disabled):hover .dv-svg,
+.fx-view-dockview-host .dv-context-menu-item:not(.dv-context-menu-item--disabled):hover svg {
+  color: var(--fx-color-action-primary-fg);
+  fill: currentcolor;
+}
+
+.fx-view-dockview-host .dv-context-menu-item.dv-context-menu-item--disabled {
+  opacity: 0.5;
+}
+
+.fx-view-dockview-host .dv-context-menu-separator {
+  height: var(--fx-border-width);
+  margin: var(--fx-ref-space-4);
+  background: var(--fx-color-border-subtle);
+}
+
+/* Core grid sash: dockview hit target; ::after bar on hover/drag only (interface DockShell.css). */
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-sash {
+  background: transparent !important;
+}
+
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-sash::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  background: var(--fx-color-brand-accent);
+  transition: opacity 100ms ease;
+}
+
+.fx-view-dockview-host
+  .fx-view-dockview
+  .dv-dockview
+  .dv-split-view-container.dv-horizontal
+  > .dv-sash-container
+  > .dv-sash::before {
+  content: '';
+  position: absolute;
+  inset: 0 -1px;
+}
+
+.fx-view-dockview-host
+  .fx-view-dockview
+  .dv-dockview
+  .dv-split-view-container.dv-vertical
+  > .dv-sash-container
+  > .dv-sash::before {
+  content: '';
+  position: absolute;
+  inset: -1px 0;
+}
+
+.fx-view-dockview-host
+  .fx-view-dockview
+  .dv-dockview
+  .dv-split-view-container.dv-horizontal
+  > .dv-sash-container
+  > .dv-sash::after {
+  inset: 0 -1px;
+}
+
+.fx-view-dockview-host
+  .fx-view-dockview
+  .dv-dockview
+  .dv-split-view-container.dv-vertical
+  > .dv-sash-container
+  > .dv-sash::after {
+  inset: -1px 0;
+}
+
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-sash:hover::after,
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-sash:active::after,
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-sash.dv-sash-active::after {
+  opacity: 1;
+}
+
+.fx-view-dockview-host .fx-view-dockview .dv-dockview .dv-resize-container {
+  border-radius: var(--fx-ref-radius-8);
+  box-shadow: var(--fx-shadow-floating);
+  overflow: hidden;
+}
+
+.fx-view-dock-panel,
+.fx-view-slot-mount,
+.fx-view-slot-mount-host {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.fx-view-dock-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--fx-color-surface-sidebar);
+}
+
+.fx-view-page-mount {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--fx-color-surface-inset);
+  pointer-events: none;
+}
+
+.fx-view-page-mount.is-active {
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.fx-view-slot-mount-host > * {
+  flex: 1 1 0%;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fx-view-page-mount > .fx-view-display-surface,
+.fx-view-slot-mount-host > .fx-view-viewport-surface {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: var(--fx-color-surface-inset);
+}
+
+.fx-view-page-mount > .fx-view-display-surface {
+  visibility: visible !important;
+}
+
+.fx-view-slot-chrome {
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+}
+
+.fx-view-slot-chrome__title {
+  margin: 0;
+  padding: var(--fx-ref-space-8) var(--fx-ref-space-12);
+  font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) / var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+  text-transform: uppercase;
+  letter-spacing: var(--fx-type-caption-letter-spacing);
+  color: var(--fx-color-text-muted);
+}
+
+.fx-view-slot-chrome__mount {
+  min-height: var(--fx-ref-space-32);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.fx-view-zone--left .fx-view-slot-chrome,
+.fx-view-zone--right .fx-view-slot-chrome {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.fx-view-zone--left .fx-view-slot-chrome__mount,
+.fx-view-zone--right .fx-view-slot-chrome__mount {
+  flex: 1;
+  min-height: calc(var(--fx-ref-space-48) * 4);
+}
+
+.fx-view-panel__header {
+  padding: var(--fx-ref-space-8) var(--fx-ref-space-12);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+}
+
+.fx-view-panel__title {
+  margin: 0;
+  font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) / var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+  text-transform: uppercase;
+  letter-spacing: var(--fx-type-caption-letter-spacing);
+}
+
+.fx-view-panel__body {
+  padding: var(--fx-ref-space-8);
+}
+
+.fx-view-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: var(--fx-ref-space-8);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border: var(--fx-border-width) solid var(--fx-color-border-control);
+  border-radius: var(--fx-radius-control);
+  background: var(--fx-color-surface-raised);
+  color: inherit;
+}
+
+.fx-view-list,
+.fx-view-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fx-view-list__item,
+.fx-view-tree__node {
+  width: 100%;
+  text-align: left;
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border: 0;
+  border-radius: var(--fx-radius-control);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.fx-view-list__item:hover,
+.fx-view-tree__node:hover {
+  background: var(--fx-color-surface-hover);
+}
+
+.fx-view-list__item--selected,
+.fx-view-tree__node--selected {
+  background: var(--fx-color-selection-bg);
+  outline: var(--fx-border-width) solid var(--fx-color-selection-indicator);
+}
+
+.fx-view-list__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--fx-ref-space-2);
+}
+
+.fx-view-list__label,
+.fx-view-tree__label {
+  font-size: var(--fx-type-compact-font-size);
+  line-height: var(--fx-type-compact-line-height);
+}
+
+.fx-view-list__meta {
+  font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) / var(--fx-type-caption-line-height) var(--fx-type-code-font-family);
+  color: var(--fx-color-text-muted);
+}
+
+.fx-view-selection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fx-ref-space-8);
+  margin: 0 0 var(--fx-ref-space-8);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border-radius: var(--fx-radius-control);
+  background: var(--fx-color-surface-raised);
+  font-size: var(--fx-type-caption-font-size);
+  line-height: var(--fx-type-caption-line-height);
+}
+
+.fx-view-selection-summary__kind {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fx-color-text-muted);
+}
+
+.fx-view-selection-summary__label {
+  color: var(--fx-color-text-primary);
+}
+
+.fx-view-muted {
+  color: var(--fx-color-text-secondary);
+  font-size: var(--fx-type-ui-font-size);
+  line-height: var(--fx-type-ui-line-height);
+}
+
+.fx-view-json {
+  margin: 0;
+  padding: var(--fx-ref-space-8);
+  font: var(--fx-type-code-font-weight) var(--fx-type-code-font-size) / var(--fx-type-code-line-height) var(--fx-type-code-font-family);
+  overflow: auto;
+  max-height: 40vh;
+  background: var(--fx-color-surface-inset);
+  border-radius: var(--fx-radius-control);
+}
+
+.fx-view-content-browser-host {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.fx-view-content-browser-ui {
+  flex: 1;
+  overflow: auto;
+}
+
+.fx-view-content-browser-presentation {
+  flex: 1;
+  min-height: calc(var(--fx-ref-space-48) * 2 + var(--fx-ref-space-24));
+  position: relative;
+}
+
+/* Dockview promotes overlays with a 3D transform. WebGPU canvases inside that
+   ancestor composite blank even when capture/readback still has pixels. */
+.fx-view-dockview .dv-render-overlay:has(.fx-view-viewport-surface) {
+  transform: none;
+  will-change: auto;
+}
+
+/* The Editor viewport only presents the Engine surface; Shell owns page chrome. */
+.fx-view-viewport-surface,
+.fx-view-viewport-surface [data-forgeax-view-workspace="root"],
+.fx-view-viewport-surface [data-forgeax-view-workspace="workbench"],
+.fx-view-viewport-surface [data-forgeax-view-workspace="preview"],
+.fx-view-viewport-surface [data-forgeax-view-workspace="targets"] {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.fx-view-viewport-surface [data-forgeax-view-workspace="targets"] {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+.fx-view-viewport-surface [data-forgeax-view-workspace="targets"] #app-shell,
+.fx-view-viewport-surface [data-forgeax-view-workspace="targets"] #app {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  transform: none;
+}
+.fx-view-viewport-surface [data-forgeax-view-workspace="targets"] #app-shell {
+  position: relative;
+}
+
+/* Engine writes #forgeax-fatal (inline display:grid + text). View hides that
+   node and mirrors it onto a canvas-positioned banner. */
+#forgeax-fatal {
+  display: none !important;
+}
+.fx-engine-fatal-banner {
+  position: absolute;
+  top: var(--fx-ref-space-12);
+  left: 50%;
+  z-index: var(--fx-layer-toast);
+  box-sizing: border-box;
+  display: flex;
+  width: min(720px, calc(100% - var(--fx-ref-space-24)));
+  max-height: 40%;
+  padding: var(--fx-ref-space-8) var(--fx-ref-space-12);
+  overflow: hidden;
+  transform: translateX(-50%);
+  align-items: flex-start;
+  gap: var(--fx-space-control);
+  border: var(--fx-border-width) solid var(--fx-color-status-error-fg);
+  border-radius: var(--fx-radius-popover);
+  background: var(--fx-color-status-error-bg);
+  color: var(--fx-color-status-error-fg);
+  box-shadow: var(--fx-shadow-floating);
+  pointer-events: auto;
+}
+.fx-view-viewport-surface [data-forgeax-view-workspace="targets"] > .fx-engine-fatal-banner {
+  grid-area: 1 / 1;
+}
+.fx-engine-fatal-banner[hidden] {
+  display: none;
+}
+.fx-engine-fatal-banner__message {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  max-height: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: var(--fx-type-code-font-weight) var(--fx-type-code-font-size)/var(--fx-type-code-line-height) var(--fx-type-code-font-family);
+}
+.fx-engine-fatal-banner__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--fx-ref-space-4);
+}

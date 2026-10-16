@@ -1,0 +1,10 @@
+{
+  "package": "hello-triangle",
+  "member": "apps/hello/triangle",
+  "kind": "gate",
+  "enabled": true,
+  "status": "unavailable",
+  "value": 1,
+  "threshold": 0,
+  "details": { "command": "pnpm --filter @forgeax/hello-triangle smoke", "exit": 1 }
+}

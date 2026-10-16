@@ -1,0 +1,14 @@
+[
+  {"id":"default","mesh":"box","parameters":{},"moveWall":true,"camera":[0,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3]},{"pos":[2,0.65,0],"scale":[0.1,1.5,3]}]},
+  {"id":"floor","mesh":"box","parameters":{"velocity":[0,-3,0],"jitter":0},"moveWall":false,"camera":[4,2,4],"cameraTarget":[-1.5,0,0],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3]}]},
+  {"id":"wall","mesh":"box","parameters":{"velocity":[4,0,0],"gravity":0},"moveWall":false,"camera":[0,1,8],"obstacles":[{"pos":[2,0.65,0],"scale":[0.1,1.5,3]}]},
+  {"id":"corner","mesh":"box","parameters":{"position":[-1.5,1.5,-1.5],"velocity":[4,-3,4],"jitter":0,"spread":0.4},"moveWall":false,"camera":[0,2.5,1],"cameraTarget":[1,0.65,1],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3]},{"pos":[2,0.65,0],"scale":[0.1,1.5,3]},{"pos":[0,0.65,2],"scale":[3,1.5,0.1]}]},
+  {"id":"thin-wall","mesh":"box","parameters":{"velocity":[4,0,0],"gravity":0,"radius":0.005},"moveWall":false,"camera":[0,1,8],"obstacles":[{"pos":[2,0.65,0],"scale":[0.015,1.5,3]}]},
+  {"id":"slope","mesh":"box","parameters":{},"moveWall":false,"camera":[0,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3],"quat":[0,0,0.25881904510252074,0.9659258262890683]}]},
+  {"id":"negative-scale","mesh":"box","parameters":{},"moveWall":true,"camera":[0,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[-3,0.15,3]},{"pos":[2,0.65,0],"scale":[0.1,1.5,3]}]},
+  {"id":"two-sided","mesh":"plane","parameters":{"velocity":[0,-3,0],"jitter":0},"moveWall":false,"camera":[4,2,4],"cameraTarget":[-1.5,0,0],"obstacles":[{"pos":[0,-1,0],"scale":[3,3,1],"quat":[-0.7071067811865476,0,0,0.7071067811865476]}]},
+  {"id":"two-sided-back","mesh":"plane","parameters":{"position":[0,-2,0],"velocity":[0,2,0],"gravity":0,"jitter":0},"moveWall":false,"camera":[0,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[3,3,1],"quat":[-0.7071067811865476,0,0,0.7071067811865476]}]},
+  {"id":"off-frustum","mesh":"box","parameters":{},"moveWall":true,"camera":[100,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3]},{"pos":[2,0.65,0],"scale":[0.1,1.5,3]}]},
+  {"id":"large-radius","mesh":"box","parameters":{"radius":0.15,"restitution":0.25},"moveWall":true,"camera":[0,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3]},{"pos":[2,0.65,0],"scale":[0.1,1.5,3]}]},
+  {"id":"sticking","mesh":"box","parameters":{"restitution":0,"friction":1},"moveWall":true,"camera":[0,1,8],"obstacles":[{"pos":[0,-1,0],"scale":[3,0.15,3]},{"pos":[2,0.65,0],"scale":[0.1,1.5,3]}]}
+]

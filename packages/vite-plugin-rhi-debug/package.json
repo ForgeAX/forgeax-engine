@@ -1,0 +1,64 @@
+{
+  "name": "@forgeax/engine-vite-plugin-rhi-debug",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Vite serve-only raw .rhitape capture provider with strict validation and atomic persistence.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "vite": "^7 || ^8"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@types/node": "^20.14.0",
+    "vite": "8.0.16"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "dev-server-only vite plugin; no runtime canvas or frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "thin middleware shell validates and persists raw tape bytes; no perf-critical hot path"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no standalone binary gate for this package; CI gates are repo-root scripts"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

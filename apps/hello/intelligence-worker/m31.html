@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeaX M31 Intelligence Worker</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #10131a; color: #dce6f2; }
+      body { font: 14px ui-monospace, monospace; }
+      main { padding: 16px; max-width: 960px; }
+      h1 { font: 600 20px system-ui, sans-serif; margin: 0 0 12px; }
+      #status { font: 600 16px system-ui, sans-serif; margin: 0 0 12px; }
+      #game { display: block; width: 640px; height: 360px; max-width: 100%; background: #182331; }
+      #report { white-space: pre-wrap; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>One-credit intelligence backlog through an Engine Worker</h1>
+      <p id="status" data-status="starting" role="status">M31 starting</p>
+      <pre id="report">starting</pre>
+      <canvas id="game" width="640" height="360"></canvas>
+    </main>
+    <script type="module" src="/src/m31-main.ts"></script>
+  </body>
+</html>

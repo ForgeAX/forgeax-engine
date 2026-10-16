@@ -1,0 +1,53 @@
+{
+  "name": "@forgeax/hello-taa",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:webgl2": "node scripts/smoke-webgl2.mjs",
+    "smoke:rhinull": "node scripts/smoke-rhinull.mjs",
+    "smoke:falsify": "node scripts/smoke-falsify.mjs",
+    "smoke:performance": "node scripts/smoke-performance.mjs",
+    "smoke:performance:admission": "node scripts/smoke-performance.mjs --performance-admission",
+    "smoke:performance:native-admission": "node scripts/smoke-dawn.mjs --native-performance-admission",
+    "demo:color-grading": "node scripts/capture-color-grading-demo.mjs",
+    "demo:color-grading:validate": "node scripts/validate-color-grading-demo.mjs",
+    "gpu-pass-timing:auto-exposure": "node scripts/auto-exposure-gpu-pass-timing-host.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-taa smoke",
+    "metrics": {
+      "bundle-size": { "enabled": false, "reason": "consumer app bundle" },
+      "fps": { "enabled": false, "reason": "smoke owns the bounded frame gate; performance smoke reports admission separately" },
+      "bench": { "enabled": false, "reason": "temporal-motion-blur benchmark is owned by packages/render/bench" },
+      "gate": { "enabled": true, "command": "pnpm --filter @forgeax/hello-taa smoke" },
+      "spike-report": { "enabled": false, "reason": "not a spike app" }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16"
+  }
+}

@@ -1,0 +1,236 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`scripts/metrics/render-sticky.mjs sticky comment composer (w22) > (i) all-ok fixture: stdout matches snapshot 1`] = `
+"### forgeax-engine metrics report
+
+Metric status is separate from overall CI acceptance. \`n/a\` target means no threshold was declared; an \`ok\` row does not establish an undeclared performance budget.
+
+total: 4/4 (package x kind) entries passed (all status=ok)
+
+| kind | reported | ok | non-ok |
+|:--|--:|--:|--:|
+| bundle-size | 2 | 2 | 0 |
+| fps | 0 | 0 | 0 |
+| bench | 1 | 1 | 0 |
+| gate | 1 | 1 | 0 |
+| spike-report | 0 | 0 | 0 |
+
+<details>
+<summary>complete metrics details (4 entries)</summary>
+
+| package | kind | value | target | status |
+| --- | --- | --- | --- | --- |
+| engine | bundle-size | 51200 bytes (50.00 KB) | <= 102400 bytes (100.00 KB) | ok |
+| hello-triangle | gate | 0 | 0 | ok |
+| math | bundle-size | 4096 bytes (4.00 KB) | <= 102400 bytes (100.00 KB) | ok |
+| math | bench | 41.25 ns/op | n/a | ok |
+
+</details>
+
+<details>
+<summary>Producer evidence and failure details</summary>
+
+#### engine / bundle-size
+
+Report file: \`engine/bundle-size.json\`
+
+\`\`\`json
+{
+  "compression": "gzip"
+}
+\`\`\`
+
+#### hello-triangle / gate
+
+Report file: \`hello-triangle/gate.json\`
+
+\`\`\`json
+{
+  "command": "pnpm --filter @forgeax/hello-triangle smoke",
+  "exit": 0
+}
+\`\`\`
+
+#### math / bundle-size
+
+Report file: \`math/bundle-size.json\`
+
+\`\`\`json
+{
+  "compression": "gzip"
+}
+\`\`\`
+
+#### math / bench
+
+Report file: \`math/bench.json\`
+
+\`\`\`json
+{
+  "unit": "ns/op"
+}
+\`\`\`
+
+</details>
+"
+`;
+
+exports[`scripts/metrics/render-sticky.mjs sticky comment composer (w22) > (ii) partial fixture: stdout matches snapshot 1`] = `
+"### forgeax-engine metrics report
+
+Metric status is separate from overall CI acceptance. \`n/a\` target means no threshold was declared; an \`ok\` row does not establish an undeclared performance budget.
+
+| package | kind | value | target | status |
+| --- | --- | --- | --- | --- |
+| engine | bundle-size | 153600 bytes (150.00 KB) | <= 102400 bytes (100.00 KB) | over |
+total: 3/4 (package x kind) entries passed
+
+| kind | reported | ok | non-ok |
+|:--|--:|--:|--:|
+| bundle-size | 2 | 1 | 1 |
+| fps | 0 | 0 | 0 |
+| bench | 1 | 1 | 0 |
+| gate | 1 | 1 | 0 |
+| spike-report | 0 | 0 | 0 |
+
+<details>
+<summary>complete metrics details (4 entries)</summary>
+
+| package | kind | value | target | status |
+| --- | --- | --- | --- | --- |
+| engine | bundle-size | 153600 bytes (150.00 KB) | <= 102400 bytes (100.00 KB) | over |
+| hello-triangle | gate | 0 | 0 | ok |
+| math | bundle-size | 4096 bytes (4.00 KB) | <= 102400 bytes (100.00 KB) | ok |
+| math | bench | 41.25 ns/op | n/a | ok |
+
+</details>
+
+<details>
+<summary>Producer evidence and failure details</summary>
+
+#### engine / bundle-size
+
+Report file: \`engine/bundle-size.json\`
+
+\`\`\`json
+{
+  "compression": "gzip"
+}
+\`\`\`
+
+#### hello-triangle / gate
+
+Report file: \`hello-triangle/gate.json\`
+
+\`\`\`json
+{
+  "command": "pnpm --filter @forgeax/hello-triangle smoke",
+  "exit": 0
+}
+\`\`\`
+
+#### math / bundle-size
+
+Report file: \`math/bundle-size.json\`
+
+\`\`\`json
+{
+  "compression": "gzip"
+}
+\`\`\`
+
+#### math / bench
+
+Report file: \`math/bench.json\`
+
+\`\`\`json
+{
+  "unit": "ns/op"
+}
+\`\`\`
+
+</details>
+"
+`;
+
+exports[`scripts/metrics/render-sticky.mjs sticky comment composer (w22) > (iii) all-bad fixture: stdout matches snapshot 1`] = `
+"### forgeax-engine metrics report
+
+Metric status is separate from overall CI acceptance. \`n/a\` target means no threshold was declared; an \`ok\` row does not establish an undeclared performance budget.
+
+| package | kind | value | target | status |
+| --- | --- | --- | --- | --- |
+| engine | bundle-size | 153600 bytes (150.00 KB) | <= 102400 bytes (100.00 KB) | over |
+| hello-triangle | gate | 1 | 0 | unavailable |
+| math | bundle-size | n/a | <= 102400 bytes (100.00 KB) | missing |
+| math | bench | n/a | n/a | unavailable |
+total: 0/4 (package x kind) entries passed
+
+| kind | reported | ok | non-ok |
+|:--|--:|--:|--:|
+| bundle-size | 2 | 0 | 2 |
+| fps | 0 | 0 | 0 |
+| bench | 1 | 0 | 1 |
+| gate | 1 | 0 | 1 |
+| spike-report | 0 | 0 | 0 |
+
+<details>
+<summary>complete metrics details (4 entries)</summary>
+
+| package | kind | value | target | status |
+| --- | --- | --- | --- | --- |
+| engine | bundle-size | 153600 bytes (150.00 KB) | <= 102400 bytes (100.00 KB) | over |
+| hello-triangle | gate | 1 | 0 | unavailable |
+| math | bundle-size | n/a | <= 102400 bytes (100.00 KB) | missing |
+| math | bench | n/a | n/a | unavailable |
+
+</details>
+
+<details>
+<summary>Producer evidence and failure details</summary>
+
+#### engine / bundle-size
+
+Report file: \`engine/bundle-size.json\`
+
+\`\`\`json
+{
+  "compression": "gzip"
+}
+\`\`\`
+
+#### hello-triangle / gate
+
+Report file: \`hello-triangle/gate.json\`
+
+\`\`\`json
+{
+  "command": "pnpm --filter @forgeax/hello-triangle smoke",
+  "exit": 1
+}
+\`\`\`
+
+#### math / bundle-size
+
+Report file: \`math/bundle-size.json\`
+
+\`\`\`json
+{
+  "compression": "gzip",
+  "message": "artefact missing"
+}
+\`\`\`
+
+#### math / bench
+
+Report file: \`math/bench.json\`
+
+\`\`\`json
+{
+  "message": "no benchmark median found"
+}
+\`\`\`
+
+</details>
+"
+`;

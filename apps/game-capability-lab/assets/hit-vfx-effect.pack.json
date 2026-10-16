@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-1000-7000-8000-000000000010",
+  "assets": {
+    "vfx/hit": {
+      "kind": "particle-effect",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "hit-billboard",
+            "capacity": 64,
+            "backend": { "required": "gpu" },
+            "space": "local",
+            "schedule": { "rate": 0, "bursts": [{ "time": 0.02, "count": 18 }] },
+            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 1.5 },
+            "program": { "module": "hit.vfx.wgsl" },
+            "renderers": [{ "kind": "billboard", "material": "b9db2905-cbdf-5f0b-82cb-f02629450f23", "blend": "additive" }]
+          },
+          {
+            "id": "hit-mesh",
+            "capacity": 24,
+            "backend": { "required": "gpu" },
+            "space": "world",
+            "schedule": { "rate": 0, "bursts": [{ "time": 0.05, "count": 8 }] },
+            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 1.5 },
+            "program": { "module": "hit.vfx.wgsl" },
+            "renderers": [{ "kind": "mesh", "material": "18ee653a-90cd-5c67-ad0e-b6c7a151de6b", "mesh": "cbe42beb-8975-5096-b3a1-3dda4cb4c077" }]
+          }
+        ]
+      },
+      "refs": [
+        "b9db2905-cbdf-5f0b-82cb-f02629450f23",
+        "18ee653a-90cd-5c67-ad0e-b6c7a151de6b",
+        "cbe42beb-8975-5096-b3a1-3dda4cb4c077"
+      ],
+      "artifacts": {}
+    }
+  }
+}

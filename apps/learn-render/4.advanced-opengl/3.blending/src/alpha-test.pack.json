@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "8850f56e-0e80-5517-96f4-134f27a1333d",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "alpha-test.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "learn_render::alpha_test",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "metallic",
+            "type": "f32"
+          },
+          {
+            "name": "roughness",
+            "type": "f32"
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

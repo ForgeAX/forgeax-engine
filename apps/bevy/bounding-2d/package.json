@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/bevy-bounding-2d",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reproduction of Bevy's `bounding_2d` example using ForgeaX 2D AABB, bounding-circle, raycast, and sweep primitives.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "bounding_2d",
+      "category": "Math",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-bounding-2d smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle downstream of engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "bounding-volume demo; frame-rate regressions are covered by hello-cube / hello-room gates"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "demo-specific benchmarks belong to engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-bounding-2d smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; Bevy bounding_2d reproduction"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-debug-draw": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

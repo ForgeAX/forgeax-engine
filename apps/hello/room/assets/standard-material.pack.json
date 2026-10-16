@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "f6af7007-158f-4d92-9e47-93bf2f213e1f",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.8,
+            0.4,
+            0.2,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.5
+        }
+      },
+      "refs": []
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "colors.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": "auto",
+    "addressMode": "clamp-to-edge",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019f0000-0000-7000-8000-0000000003f2",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

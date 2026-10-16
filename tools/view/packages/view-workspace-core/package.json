@@ -1,0 +1,78 @@
+{
+  "name": "@forgeax/view-workspace-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Transport-neutral workspace host, client, contract, and Engine adapter for ForgeaX View.",
+  "exports": {
+    ".": "./src/api.ts",
+    "./api": "./src/api.ts",
+    "./backend": "./src/backend.ts",
+    "./broker": "./src/broker.ts",
+    "./cli": "./src/cli.ts",
+    "./client": "./src/client.ts",
+    "./command-error": "./src/command-error.ts",
+    "./contract": "./src/contract.ts",
+    "./page-title": "./src/page-title.ts",
+    "./workspace-state": "./src/workspace-state.ts",
+    "./workspace-client-connection": "./src/workspace-client-connection.ts",
+    "./engine-adapter": "./src/engine-adapter.ts",
+    "./engine-presentation": "./src/engine-presentation.ts",
+    "./adopt-surface": "./src/adopt-surface.ts",
+    "./extension-bridge": "./src/extension-bridge.ts",
+    "./frontend-plugin": "./src/frontend-plugin.ts",
+    "./id": "./src/id.ts",
+    "./locale-bridge": "./src/locale-bridge.ts",
+    "./resident": "./src/resident.ts",
+    "./resource-open": "./src/resource-open.ts",
+    "./resource-page": "./src/resource-page.ts",
+    "./scene-entity-classification": "./src/scene-entity-classification.ts",
+    "./preview-camera": "./src/preview-camera.ts",
+    "./preview-surface": "./src/preview-surface.ts",
+    "./render-resize-sync": "./src/render-resize-sync.ts",
+    "./inspection-presentation": "./src/inspection-presentation.ts",
+    "./tool-runtime": "./src/tool-runtime.ts",
+    "./workspace-recovery": "./src/workspace-recovery.ts",
+    "./project-session": "./src/project-session.ts",
+    "./view-trace": "./src/view-trace.ts",
+    "./frontend-contract": "./src/frontend-contract.ts",
+    "./plugin-i18n": "./src/plugin-i18n.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "ws": "^8.21.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  },
+  "devDependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@types/ws": "^8.18.2"
+  }
+}

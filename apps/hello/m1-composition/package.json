@@ -1,0 +1,94 @@
+{
+  "name": "@forgeax/hello-m1-composition",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Headless M1 Living World composition journey for ECS schedules, state, input, hierarchy, multi-world, plugins, and App error fan-out.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:gauntlet": "node scripts/smoke-live.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "schedule_data",
+      "category": "Dev tools",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m1-composition smoke",
+    "gauntletScenario": {
+      "id": "hello-m1-composition-live",
+      "script": "smoke:gauntlet",
+      "domains": ["World and host contract", "Simulation and media implementations"],
+      "packages": [
+        "@forgeax/engine-app",
+        "@forgeax/engine-ecs",
+        "@forgeax/engine-input",
+        "@forgeax/engine-math",
+        "@forgeax/engine-plugin",
+        "@forgeax/engine-scene",
+        "@forgeax/engine-state"
+      ],
+      "risks": ["baseline", "dynamic", "churn", "fault", "recovery", "behavioral"],
+      "phaseInputs": ["baseline", "dynamic", "churn", "fault", "recovery", "focus-loss", "reacquire"],
+      "evidence": {
+        "frontDoors": ["node-app", "browser-app", "remote-live", "ecs-world"],
+        "legs": ["semantic", "live", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m1-composition] schedule order: update-before-fixed -> fixed -> fixed -> update-after-fixed",
+          "[m1-composition] schedule data snapshot: PASS",
+          "[m1-composition] deferred mutation, state lifecycle, input, hierarchy, and math: PASS",
+          "[m1-composition] multi-world drawSource and plugin registry: PASS",
+          "[m1-composition] App error fan-out and same-process recovery: PASS",
+          "[m1-composition] PASS - M1 composition gates GREEN",
+          "[m1-live] PASS - live baseline=",
+          "[m19-input] PASS - focus loss cancelled held input, gestures, and pointer lock; reacquisition required new edges:"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "headless semantic composition scenario has no browser bundle"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "headless schedule and lifecycle scenario has no visual frame-rate claim"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "fixed-step counters are a semantic gate, not a performance benchmark"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-m1-composition smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-state": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74"
+  }
+}

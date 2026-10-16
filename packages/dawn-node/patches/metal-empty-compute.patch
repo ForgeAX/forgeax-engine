@@ -1,0 +1,110 @@
+diff --git a/src/dawn/native/metal/DeviceMTL.h b/src/dawn/native/metal/DeviceMTL.h
+--- a/src/dawn/native/metal/DeviceMTL.h
++++ b/src/dawn/native/metal/DeviceMTL.h
+@@ -88,6 +88,9 @@
+     // single-byte buffer
+     id<MTLBuffer> GetMockBlitMtlBuffer();
+ 
++    // Materialize stage-boundary timestamp writes for compute encoders without GPU work.
++    ResultOrError<id<MTLComputePipelineState>> GetEmptyTimestampComputePipeline();
++
+   private:
+     Device(AdapterBase* adapter,
+            NSPRef<id<MTLDevice>> mtlDevice,
+@@ -159,6 +162,7 @@
+     // vertex/fragement stage
+     bool mCounterSamplingAtStageBoundary;
+     NSPRef<id<MTLBuffer>> mMockBlitMtlBuffer;
++    NSPRef<id<MTLComputePipelineState>> mEmptyTimestampComputePipeline;
+ };
+ 
+ }  // namespace dawn::native::metal
+diff --git a/src/dawn/native/metal/DeviceMTL.mm b/src/dawn/native/metal/DeviceMTL.mm
+--- a/src/dawn/native/metal/DeviceMTL.mm
++++ b/src/dawn/native/metal/DeviceMTL.mm
+@@ -382,6 +382,7 @@
+     //   other threads using the device since there are no other live refs.
+     mMtlDevice = nullptr;
+     mMockBlitMtlBuffer = nullptr;
++    mEmptyTimestampComputePipeline = nullptr;
+ }
+ 
+ uint32_t Device::GetOptimalBytesPerRowAlignment() const {
+@@ -419,6 +420,34 @@
+     }
+ 
+     return mMockBlitMtlBuffer.Get();
++}
++
++ResultOrError<id<MTLComputePipelineState>> Device::GetEmptyTimestampComputePipeline() {
++    if (mEmptyTimestampComputePipeline == nullptr) {
++        NSError* error = nullptr;
++        NSPRef<id<MTLLibrary>> library = AcquireNSPRef([GetMTLDevice()
++            newLibraryWithSource:@"kernel void dawn_empty_timestamp_compute() {}"
++                         options:nil
++                           error:&error]);
++        if (library == nullptr) {
++            return DAWN_FORMAT_INTERNAL_ERROR("Error creating empty timestamp library: %s",
++                                       error == nullptr ? "unknown" :
++                                           [error.localizedDescription UTF8String]);
++        }
++        NSPRef<id<MTLFunction>> function =
++            AcquireNSPRef([*library newFunctionWithName:@"dawn_empty_timestamp_compute"]);
++        if (function == nullptr) {
++            return DAWN_INTERNAL_ERROR("Empty timestamp compute function is unavailable");
++        }
++        mEmptyTimestampComputePipeline.Acquire(
++            [GetMTLDevice() newComputePipelineStateWithFunction:*function error:&error]);
++        if (mEmptyTimestampComputePipeline == nullptr) {
++            return DAWN_FORMAT_INTERNAL_ERROR("Error creating empty timestamp pipeline: %s",
++                                       error == nullptr ? "unknown" :
++                                           [error.localizedDescription UTF8String]);
++        }
++    }
++    return mEmptyTimestampComputePipeline.Get();
+ }
+ 
+ void Device::StartTrace() {
+diff --git a/src/dawn/native/metal/CommandBufferMTL.mm b/src/dawn/native/metal/CommandBufferMTL.mm
+--- a/src/dawn/native/metal/CommandBufferMTL.mm
++++ b/src/dawn/native/metal/CommandBufferMTL.mm
+@@ -1553,6 +1553,7 @@
+                                             BeginComputePassCmd* computePassCmd,
+                                             const ComputePassResourceUsage& resourceUsage) {
+     uint64_t currentDispatch = 0;
++    bool hasNonzeroDirectDispatch = false;
+     ComputePipeline* lastPipeline = nullptr;
+     StorageBufferLengthTracker storageBufferLengths{GetDevice()};
+     BindGroupTracker bindGroups(&storageBufferLengths,
+@@ -1592,6 +1593,23 @@
+             case Command::EndComputePass: {
+                 mCommands.NextCommand<EndComputePassCmd>();
+ 
++                // Metal may omit stage-boundary sampling when no actual compute work runs.
++                // Indirect counts cannot be known here; a no-side-effect kernel guarantees
++                // timestamp writes for empty/zero dispatches without touching user resources.
++                if (!hasNonzeroDirectDispatch &&
++                    ToBackend(GetDevice())->UseCounterSamplingAtStageBoundary() &&
++                    (computePassCmd->timestampWrites.beginningOfPassWriteIndex !=
++                         wgpu::kQuerySetIndexUndefined ||
++                     computePassCmd->timestampWrites.endOfPassWriteIndex !=
++                         wgpu::kQuerySetIndexUndefined)) {
++                    id<MTLComputePipelineState> pipeline;
++                    DAWN_TRY_ASSIGN(pipeline,
++                                    ToBackend(GetDevice())->GetEmptyTimestampComputePipeline());
++                    [encoder setComputePipelineState:pipeline];
++                    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
++                            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
++                }
++
+                 // Simulate timestamp write at the end of render pass if it does not support
+                 // counter sampling at stage boundary.
+                 if (ToBackend(GetDevice())->UseCounterSamplingAtCommandBoundary() &&
+@@ -1628,6 +1646,7 @@
+ 
+                 [encoder dispatchThreadgroups:MTLSizeMake(dispatch->x, dispatch->y, dispatch->z)
+                         threadsPerThreadgroup:lastPipeline->GetLocalWorkGroupSize()];
++                hasNonzeroDirectDispatch = true;
+                 currentDispatch++;
+                 break;
+             }

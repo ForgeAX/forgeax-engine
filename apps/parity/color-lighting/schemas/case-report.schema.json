@@ -1,0 +1,644 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/color-lighting/case-report.schema.json",
+  "title": "Color lighting parity case report",
+  "oneOf": [
+    { "$ref": "#/$defs/crossRuntimeCaseReport" },
+    { "$ref": "#/$defs/captureMatrixCaseReport" },
+    { "$ref": "#/$defs/iblCaseReport" },
+    { "$ref": "#/$defs/vertexColorCaseReport" },
+    { "$ref": "#/$defs/autoExposureCaseReport" },
+    { "$ref": "#/$defs/autoExposureAc27JoinReport" },
+    { "$ref": "#/$defs/rectAreaCaseReport" },
+    { "$ref": "#/$defs/extendedLightingCaseReport" }
+  ],
+  "$defs": {
+    "vertexColorProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "renderer", "adapterId", "pinnedCommit", "buildIdentity"],
+      "properties": {
+        "implementation": { "enum": ["forgeax", "three"] },
+        "version": { "type": "string", "minLength": 1 },
+        "renderer": { "const": "webgpu" },
+        "adapterId": { "type": "string", "minLength": 1 },
+        "pinnedCommit": { "type": "string", "minLength": 1 },
+        "buildIdentity": { "type": "string", "minLength": 1 }
+      }
+    },
+    "vertexColorSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "coordinate", "expected", "observed", "rgbMaxDelta", "alphaDelta", "verdict", "confidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "coordinate": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "items": false },
+        "expected": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }], "items": false },
+        "observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["forgeax", "three"],
+          "properties": {
+            "forgeax": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }], "items": false },
+            "three": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }], "items": false }
+          }
+        },
+        "rgbMaxDelta": { "type": "number", "minimum": 0, "maximum": 0.05 },
+        "alphaDelta": { "type": "number", "minimum": 0, "maximum": 0.05 },
+        "verdict": { "enum": ["passed", "failed"] },
+        "confidence": { "enum": ["high", "medium", "low"] }
+      }
+    },
+    "vertexColorCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "required", "invocationId", "backend", "sourceSha", "sourceFixtureHash", "colorDomain", "frameCount", "epsilon", "producers", "samples", "falsifier", "artifacts", "verdict", "status"],
+      "properties": {
+        "schemaVersion": { "const": 3 },
+        "kind": { "const": "vertex-color" },
+        "caseId": { "enum": ["vertex-color-vec3", "vertex-color-vec4", "vertex-color-normalized", "vertex-color-skinning", "vertex-color-mixed-primitives", "vertex-color-mask-taa", "vertex-color-no-color-baseline"] },
+        "required": { "const": true },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "backend": { "enum": ["browser-webgpu", "dawn"] },
+        "sourceSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "sourceFixtureHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "colorDomain": { "enum": ["linearHdr", "displayEncoded"] },
+        "frameCount": { "const": 60 },
+        "epsilon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rgb", "alpha"],
+          "properties": {
+            "rgb": { "type": "number", "minimum": 0, "maximum": 0.05 },
+            "alpha": { "type": "number", "minimum": 0, "maximum": 0.05 }
+          }
+        },
+        "producers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["forgeax", "three"],
+          "properties": {
+            "forgeax": { "allOf": [{ "$ref": "#/$defs/vertexColorProducer" }, { "properties": { "implementation": { "const": "forgeax" } } }] },
+            "three": { "allOf": [{ "$ref": "#/$defs/vertexColorProducer" }, { "properties": { "implementation": { "const": "three" }, "version": { "const": "r184" } } }] }
+          }
+        },
+        "samples": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/vertexColorSample" } },
+        "falsifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "verdict", "observed"],
+          "properties": {
+            "kind": { "enum": ["white-color", "no-color-baseline"] },
+            "verdict": { "enum": ["passed", "failed"] },
+            "observed": { "type": "string", "minLength": 1 }
+          }
+        },
+        "artifacts": { "type": "array", "minItems": 2, "items": { "type": "string", "minLength": 1 } },
+        "verdict": { "enum": ["passed", "failed"] },
+        "status": { "enum": ["complete", "failed", "blocked"] }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "renderer", "adapterId"],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "renderer": { "type": "string", "minLength": 1 },
+        "adapterId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "bytes", "format", "size", "rawHash", "frameId", "pipelineId", "backendId"],
+      "properties": {
+        "kind": { "enum": ["linearHdr", "finalDisplay"] },
+        "status": { "const": "ready" },
+        "bytes": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+        "format": { "type": "string", "minLength": 1 },
+        "size": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "rawHash": { "type": "string", "pattern": "^[0-9a-f-]{8,}$" },
+        "frameId": { "type": "integer", "minimum": 0 },
+        "pipelineId": { "const": "forgeax::standard" },
+        "backendId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipelineId", "runtimeId", "backendId", "frameId", "copySrc", "lifetime", "provenance", "semantic", "source", "sourceHash", "semanticHash", "linearHdr", "finalDisplay"],
+      "properties": {
+        "pipelineId": { "const": "forgeax::standard" },
+        "runtimeId": { "enum": ["browser", "dawn"] },
+        "backendId": { "type": "string", "minLength": 1 },
+        "frameId": { "type": "integer", "minimum": 0 },
+        "copySrc": { "const": true },
+        "lifetime": { "const": "active" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "semantic": { "const": "linear-hdr" },
+        "source": { "const": "live-producer" },
+        "sourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "semanticHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "linearHdr": { "$ref": "#/$defs/observation" },
+        "finalDisplay": { "$ref": "#/$defs/observation" }
+      }
+    },
+    "attachmentEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producers", "attachmentReadbackStatus", "capabilityStatus", "executionStatus", "verdict", "capturedPipelineIds", "missingPipelineIds"],
+      "properties": {
+        "producers": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/producer" } },
+        "attachmentReadbackStatus": { "const": "complete" },
+        "capabilityStatus": { "const": "supported" },
+        "executionStatus": { "const": "complete" },
+        "verdict": { "const": "passed" },
+        "capturedPipelineIds": { "type": "array", "uniqueItems": true, "items": { "const": "standard" } },
+        "missingPipelineIds": { "type": "array", "uniqueItems": true, "items": { "const": "standard" } }
+      }
+    },
+    "crossRuntimeCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "caseId", "required", "invocationId", "sceneCaseIdentity", "attachmentEvidence", "verdict", "status"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "caseId": { "type": "string", "minLength": 1 },
+        "required": { "type": "boolean" },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "sceneCaseIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceHash", "semanticHash"],
+          "properties": {
+            "sourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "semanticHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "attachmentEvidence": { "$ref": "#/$defs/attachmentEvidence" },
+        "verdict": { "const": "passed" },
+        "status": { "const": "complete" }
+      }
+    },
+    "namedCaptures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["linear", "final", "hash"],
+      "properties": {
+        "linear": { "type": "array", "items": { "type": "number" } },
+        "final": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+        "hash": { "type": "string", "pattern": "^[0-9a-f-]{8,}$" }
+      }
+    },
+    "captureMatrixCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "required", "invocationId", "sceneCaseIdentity", "primary", "dawn", "verdict", "status"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "kind": { "const": "capture-matrix" },
+        "caseId": { "type": "string", "minLength": 1 },
+        "required": { "type": "boolean" },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "sceneCaseIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceHash", "semanticHash"],
+          "properties": {
+            "sourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "semanticHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "primary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "backendId", "forgeax", "three", "metrics"],
+          "properties": {
+            "status": { "enum": ["pass", "failed"] },
+            "backendId": { "const": "browser-webgpu" },
+            "forgeax": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["provenance", "captures"],
+              "properties": {
+                "provenance": { "$ref": "#/$defs/provenance" },
+                "captures": { "$ref": "#/$defs/namedCaptures" }
+              }
+            },
+            "three": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["provenance", "captures"],
+              "properties": {
+                "provenance": { "$ref": "#/$defs/provenance" },
+                "captures": { "$ref": "#/$defs/namedCaptures" }
+              }
+            },
+            "metrics": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["analyticMax", "roiMax", "differingBytes"],
+              "properties": {
+                "analyticMax": { "type": "number", "minimum": 0 },
+                "roiMax": { "type": "number", "minimum": 0 },
+                "differingBytes": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        "dawn": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "observations"],
+          "properties": {
+            "status": { "enum": ["pass", "failed"] },
+            "observations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["caseId", "pipelineId", "backendId", "frameId", "bytes", "rawHash"],
+                "properties": {
+                  "caseId": { "type": "string", "minLength": 1 },
+                  "pipelineId": { "const": "forgeax::standard" },
+                  "backendId": { "type": "string", "minLength": 1 },
+                  "frameId": { "type": "integer", "minimum": 0 },
+                  "bytes": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+                  "rawHash": { "type": "string", "pattern": "^[0-9a-f-]{8,}$" }
+                }
+              }
+            }
+          }
+        },
+        "verdict": { "enum": ["passed", "failed"] },
+        "status": { "enum": ["complete", "failed"] }
+      }
+    },
+    "rectAreaProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "observed", "verdict", "confidence"],
+      "properties": {
+        "status": { "enum": ["not-run", "unavailable", "complete", "failed"] },
+        "observed": { "type": "string", "minLength": 1 },
+        "verdict": { "enum": ["notRun", "failed", "passed"] },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "bytes": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+        "rawHash": { "type": ["string", "null"], "pattern": "^[0-9a-f-]{8,}$" },
+        "pixels": { "type": ["array", "null"], "items": { "type": "number" } },
+        "validation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rectAreaFalsifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "observed", "verdict", "confidence"],
+      "properties": {
+        "status": { "enum": ["not-run", "unavailable", "complete", "failed"] },
+        "observed": { "type": "string", "minLength": 1 },
+        "verdict": { "enum": ["notRun", "failed", "passed"] },
+        "confidence": { "enum": ["high", "medium", "low"] }
+      }
+    },
+    "extendedLightingReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "byteLength"],
+      "properties": {
+        "status": { "enum": ["not-run", "ready", "recovered"] },
+        "byteLength": { "const": 160 },
+        "maxBytes": { "const": 160 }
+      }
+    },
+    "extendedLightingResourceReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "topology", "resourceCount", "uploadBytes"],
+      "properties": {
+        "status": { "enum": ["not-run", "candidate", "accepted", "lkg", "recovered"] },
+        "topology": { "const": "extendedLighting" },
+        "resourceCount": { "type": "integer", "minimum": 0 },
+        "uploadBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "extendedLightingCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "required", "invocationId", "sourceFixtureHash", "exactHead", "carrier", "expectations", "identity", "observed", "numericRoi", "recordReceipt", "resourceReceipt", "falsifier", "verdict", "confidence", "status"],
+      "properties": {
+        "schemaVersion": { "const": 4 },
+        "kind": { "const": "extended-lighting" },
+        "caseId": { "type": "string", "minLength": 1 },
+        "required": { "const": true },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "sourceFixtureHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "exactHead": { "type": "string", "minLength": 1 },
+        "carrier": { "enum": ["rect-area", "spot-modifiers", "probe", "recovery"] },
+        "expectations": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fixtureId", "sourceKey", "generation"],
+          "properties": {
+            "fixtureId": { "type": "string", "minLength": 1 },
+            "sourceKey": { "type": "string", "minLength": 1 },
+            "generation": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "summary"],
+          "properties": {
+            "state": { "enum": ["authored", "published", "admitted", "accepted", "lkg", "recovered", "verified", "not-run"] },
+            "summary": { "type": "string", "minLength": 1 }
+          }
+        },
+        "numericRoi": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["analyticMax", "roiMax", "epsilon", "colorDomain"],
+          "properties": {
+            "analyticMax": { "type": "number", "minimum": 0 },
+            "roiMax": { "type": "number", "minimum": 0 },
+            "epsilon": { "type": "number", "minimum": 0 },
+            "colorDomain": { "const": "linearHdr" }
+          }
+        },
+        "recordReceipt": { "$ref": "#/$defs/extendedLightingReceipt" },
+        "resourceReceipt": { "$ref": "#/$defs/extendedLightingResourceReceipt" },
+        "falsifier": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status", "observed", "verdict"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["not-run", "unavailable", "complete", "failed"] },
+              "observed": { "type": "string", "minLength": 1 },
+              "verdict": { "enum": ["notRun", "failed", "passed"] }
+            }
+          }
+        },
+        "verdict": { "enum": ["notRun", "failed", "passed"] },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "status": { "enum": ["blocked", "failed", "complete"] }
+      }
+    },
+    "rectAreaCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "required", "invocationId", "sourceFixtureHash", "colorDomain", "frameCount", "executionStatus", "verdict", "status", "producers", "falsifier"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "kind": { "const": "rect-area-ltc" },
+        "caseId": { "const": "rect-area" },
+        "required": { "const": true },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "sourceFixtureHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "colorDomain": { "const": "linearHdr" },
+        "frameCount": { "const": 60 },
+        "epsilon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rgb"],
+          "properties": { "rgb": { "type": "number", "minimum": 0, "maximum": 0.05 } }
+        },
+        "executionStatus": { "enum": ["not-run", "partial", "complete"] },
+        "verdict": { "enum": ["notRun", "failed", "passed"] },
+        "status": { "enum": ["blocked", "failed", "complete"] },
+        "producers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["browser", "dawn"],
+          "properties": {
+            "browser": { "$ref": "#/$defs/rectAreaProducer" },
+            "dawn": { "$ref": "#/$defs/rectAreaProducer" }
+          }
+        },
+        "falsifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reverseFront", "zeroLtc"],
+          "properties": {
+            "reverseFront": { "$ref": "#/$defs/rectAreaFalsifier" },
+            "zeroLtc": { "$ref": "#/$defs/rectAreaFalsifier" }
+          }
+        }
+      }
+    },
+    "iblProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "evidence", "finalDisplay", "analytic"],
+      "properties": {
+        "capability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["capabilityStatus", "executionStatus", "verdict", "rgba16floatRenderable", "outputFormat", "fallbackArtifact", "expectedImpact", "hint", "lastKnownGood"],
+          "properties": {
+            "capabilityStatus": { "enum": ["missing", "unsupported", "degraded", "supported"] },
+            "executionStatus": { "enum": ["notExecuted", "running", "partial", "complete"] },
+            "verdict": { "enum": ["notRun", "failed", "passed"] },
+            "rgba16floatRenderable": { "type": "boolean" },
+            "outputFormat": { "type": ["string", "null"] },
+            "fallbackArtifact": { "enum": ["white-cube", null] },
+            "expectedImpact": { "type": "string", "minLength": 1 },
+            "hint": { "type": "string", "minLength": 1 },
+            "lastKnownGood": { "type": "string", "minLength": 1 }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "attachmentName", "layer", "bytes", "format", "size", "rawHash", "frameId", "lifetime", "capabilitySnapshot", "fallbackArtifact", "lastKnownGood"],
+          "properties": {
+            "status": { "enum": ["ready", "failed"] },
+            "attachmentName": { "type": "string", "minLength": 1 },
+            "layer": { "type": "integer", "minimum": 0 },
+            "bytes": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+            "format": { "type": ["string", "null"] },
+            "size": { "type": ["object", "null"], "additionalProperties": false, "required": ["width", "height"], "properties": { "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 } } },
+            "rawHash": { "type": ["string", "null"], "pattern": "^[0-9a-f-]{8,}$" },
+            "frameId": { "type": ["integer", "null"], "minimum": 0 },
+            "lifetime": { "type": ["object", "null"], "additionalProperties": false, "required": ["frameId", "state"], "properties": { "frameId": { "type": "integer", "minimum": 0 }, "state": { "enum": ["active", "retired"] } } },
+            "capabilitySnapshot": { "type": "object", "additionalProperties": false, "required": ["rgba16floatRenderable"], "properties": { "rgba16floatRenderable": { "type": "boolean" } } },
+            "fallbackArtifact": { "type": ["string", "null"] },
+            "lastKnownGood": { "type": "string", "minLength": 1 }
+          }
+        },
+        "finalDisplay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "bytes", "format", "rawHash"],
+          "properties": {
+            "status": { "enum": ["ready", "failed"] },
+            "bytes": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+            "format": { "enum": ["rgba8unorm", null] },
+            "rawHash": { "type": ["string", "null"], "pattern": "^[0-9a-f-]{8,}$" }
+          }
+        },
+        "analytic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["environment", "payload", "reconstructed", "maxError"],
+          "properties": {
+            "environment": { "type": "number" },
+            "payload": { "type": "number" },
+            "reconstructed": { "type": "number" },
+            "maxError": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "autoExposureCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "provenance", "fixtureIdentity", "rendererFields", "config", "stageMapping", "readback", "notApplicable", "overallParityClaim", "status", "testedRevision", "runner", "resolution"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "kind": { "const": "auto-exposure" },
+        "caseId": { "const": "auto-exposure-three-r184" },
+        "testedRevision": { "type": "string", "minLength": 1 },
+        "runner": { "type": "object", "required": ["kind", "id"], "additionalProperties": false, "properties": { "kind": { "type": "string" }, "id": { "type": "string" } } },
+        "resolution": { "type": "object", "required": ["width", "height"], "additionalProperties": false, "properties": { "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 } } },
+        "provenance": { "type": "object", "additionalProperties": false, "required": ["package", "version", "commit", "integrity"], "properties": { "package": { "const": "three" }, "version": { "const": "0.184.0" }, "commit": { "const": "d3b629c0c2097cec664ad16369bb6eae3b10e335" }, "integrity": { "type": "string", "pattern": "^sha512-.+" } } },
+        "fixtureIdentity": { "type": "object", "additionalProperties": false, "required": ["asset", "camera", "light", "input"], "properties": { "asset": { "$ref": "#/$defs/autoExposureIdentity" }, "camera": { "$ref": "#/$defs/autoExposureIdentity" }, "light": { "$ref": "#/$defs/autoExposureIdentity" }, "input": { "$ref": "#/$defs/autoExposureIdentity" } } },
+        "rendererFields": { "const": ["toneMapping", "toneMappingExposure", "outputColorSpace"] },
+        "config": { "type": "object", "required": ["forgeax", "three"], "additionalProperties": true, "properties": { "forgeax": { "type": "object" }, "three": { "type": "object" } } },
+        "stageMapping": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["stage", "domain", "reference"], "additionalProperties": false, "properties": { "stage": { "type": "string" }, "domain": { "type": "string" }, "reference": { "enum": ["common", "not-applicable"] } } } },
+        "readback": { "type": "object", "required": ["domain", "roiEpsilon", "rawDelta"], "additionalProperties": false, "properties": { "domain": { "const": "decoded-sRGB" }, "roiEpsilon": { "type": "number", "minimum": 0, "maximum": 0.05 }, "rawDelta": { "type": "number", "minimum": 0 } } },
+        "notApplicable": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["stage", "reason"], "additionalProperties": false, "properties": { "stage": { "type": "string" }, "reason": { "type": "string", "minLength": 1 } } } },
+        "overallParityClaim": { "const": false },
+        "status": { "enum": ["passed", "failed", "blocked"] }
+      }
+    },
+    "autoExposureAc27JoinReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "referenceLane", "testedRevision", "runner", "resolution", "provenance", "fixtureIdentity", "rendererFields", "config", "stageMapping", "notApplicable", "overallParityClaim", "readback", "errors", "status"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "kind": { "const": "auto-exposure-three-r184-ac27" },
+        "caseId": { "const": "auto-exposure-three-r184" },
+        "referenceLane": { "enum": ["direct", "clustered", null] },
+        "testedRevision": { "anyOf": [{ "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }, { "type": "null" }] },
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["forgeax", "three"],
+          "properties": {
+            "forgeax": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+            "three": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
+          }
+        },
+        "resolution": {
+          "anyOf": [
+            { "type": "object", "additionalProperties": false, "required": ["width", "height"], "properties": { "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 } } },
+            { "type": "null" }
+          ]
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["three", "forgeax"],
+          "properties": {
+            "three": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["package", "version", "commit", "integrity"],
+              "properties": {
+                "package": { "const": "three" },
+                "version": { "const": "0.184.0" },
+                "commit": { "const": "d3b629c0c2097cec664ad16369bb6eae3b10e335" },
+                "integrity": { "const": "sha512-wtTRjG92pM5eUg/KuUnHsqSAlPM296brTOcLgMRqEeylYTh/CdtvKUvCyyCQTzFuStieWxvZb8mVTMvdPyUpxg==" }
+              }
+            },
+            "forgeax": {
+              "anyOf": [
+                { "type": "object", "additionalProperties": false, "required": ["implementation", "package", "version", "commit", "build", "backend"], "properties": { "implementation": { "const": "forgeax" }, "package": { "const": "@forgeax/engine" }, "version": { "type": "string", "minLength": 1 }, "commit": { "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }, "build": { "type": "string", "minLength": 1 }, "backend": { "enum": ["browser-webgpu", "dawn"] } } },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "fixtureIdentity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["asset", "camera", "light", "input"],
+          "properties": { "asset": { "$ref": "#/$defs/autoExposureIdentity" }, "camera": { "$ref": "#/$defs/autoExposureIdentity" }, "light": { "$ref": "#/$defs/autoExposureIdentity" }, "input": { "$ref": "#/$defs/autoExposureIdentity" } }
+        },
+        "rendererFields": { "const": ["toneMapping", "toneMappingExposure", "outputColorSpace"] },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["forgeax", "three"],
+          "properties": {
+            "forgeax": { "anyOf": [{ "$ref": "#/$defs/autoExposureAc27RendererConfig" }, { "type": "null" }] },
+            "three": { "anyOf": [{ "$ref": "#/$defs/autoExposureAc27RendererConfig" }, { "type": "null" }] }
+          }
+        },
+        "stageMapping": { "const": [{ "stage": "linear-HDR", "domain": "linear-HDR" }, { "stage": "tone-mapping", "domain": "linear-LDR" }, { "stage": "output-encoding", "domain": "final-sRGB" }, { "stage": "decoded-sRGB-roi", "domain": "decoded-sRGB" }] },
+        "notApplicable": { "type": "array", "minItems": 3, "items": { "type": "object", "required": ["stage", "reason"], "additionalProperties": false, "properties": { "stage": { "type": "string", "minLength": 1 }, "reason": { "type": "string", "minLength": 1 } } } },
+        "overallParityClaim": { "const": false },
+        "readback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["domain", "roiEpsilon", "rawDelta"],
+          "properties": { "domain": { "const": "decoded-sRGB" }, "roiEpsilon": { "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] }, "rawDelta": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] } }
+        },
+        "errors": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["code", "detail"], "properties": { "code": { "enum": ["producer-missing", "producer-side-mismatch", "revision-missing", "revision-mismatch", "runner-missing", "resolution-mismatch", "lane-mismatch", "three-provenance-mismatch", "forgeax-provenance-mismatch", "fixture-mismatch", "renderer-config-mismatch", "stage-mapping-invalid", "readback-missing", "readback-shape-mismatch", "readback-non-finite", "raw-hash-invalid"] }, "detail": { "type": "string", "minLength": 1 } } } },
+        "status": { "enum": ["passed", "failed", "blocked"] },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "autoExposureAc27RendererConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toneMapping", "toneMappingExposure", "outputColorSpace", "lut", "temporal"],
+      "properties": { "toneMapping": { "const": "ACESFilmicToneMapping" }, "toneMappingExposure": { "const": 1 }, "outputColorSpace": { "const": "SRGBColorSpace" }, "lut": { "const": "not-applicable" }, "temporal": { "const": "not-applicable" } }
+    },
+    "autoExposureIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sha256"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+    },
+    "iblCaseReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "caseId", "required", "invocationId", "producers", "verdict", "status"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "kind": { "const": "ibl" },
+        "caseId": { "const": "ibl-constant-environment" },
+        "required": { "type": "boolean" },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "producers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["browser", "dawn"],
+          "properties": {
+            "browser": { "$ref": "#/$defs/iblProducer" },
+            "dawn": { "$ref": "#/$defs/iblProducer" }
+          }
+        },
+        "verdict": { "enum": ["passed", "failed"] },
+        "status": { "enum": ["complete", "failed"] }
+      }
+    }
+  }
+}

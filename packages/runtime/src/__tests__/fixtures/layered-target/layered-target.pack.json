@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "5899e609-2ca7-4282-92c5-606224443ccf",
+      "kind": "material",
+      "sourceKey": "layered-target.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "layered_fixture::layered_target",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          { "name": "slice", "type": "f32", "default": 0 },
+          { "name": "layer", "type": "f32", "default": 0 },
+          { "name": "mode", "type": "f32", "default": 0 },
+          { "name": "volumeTexture", "type": "texture_3d" },
+          { "name": "layerTexture", "type": "texture_2d_array" }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

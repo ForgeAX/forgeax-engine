@@ -1,0 +1,42 @@
+{
+  "plugins": {
+    "loading": "Loading",
+    "observed": "Host entries",
+    "partial": "Partial inventory",
+    "hosts": "Hosts",
+    "allHosts": "All hosts",
+    "thisFrontend": "This frontend",
+    "tags": "Tags",
+    "reset": "Reset filters",
+    "resultCount": "Entries {{count}} / {{total}}",
+    "sourceAssetGuid": "Source asset GUID",
+    "unnamed": "Unnamed plugin",
+    "sourceAssetGuidHelp": "The PluginAsset that supplied this Fiber. Child plugins can share this GUID; native plugins have no source asset GUID.",
+    "filterHelp": "Match all selected tags. API / CLI describe tool and command contributions, not separate processes.",
+    "gameUnavailable": "No game plugin entries have been reported by the connected sources. This does not mean no game is running.",
+    "tag": { "backend": "Backend", "frontend": "Frontend", "game": "Game", "asset": "Asset", "api": "API", "cli": "CLI" },
+    "tagHelp": {
+      "backend": "Entries observed on a backend Host",
+      "frontend": "Entries observed on a frontend Host",
+      "game": "Reported game sources or engine entries with World / GameHost dependencies",
+      "asset": "Native Fiber mounted from a Pack plugin asset",
+      "api": "Providers with observed Tool API contributions",
+      "cli": "Entries with a command contract or Tool API command paths"
+    },
+    "title": "Plugins",
+    "filter": "Filter plugins, modules, entries, or services",
+    "filterLabel": "Filter plugins",
+    "filterPlaceholder": "Filter plugins…",
+    "toolbar": "Plugin toolbar",
+    "refresh": "Refresh",
+    "loadedCount": "Entries {{count}}",
+    "hostHealthy": "Host healthy",
+    "emptyTitle": "No matching plugins",
+    "emptyDescription": "Adjust the Host, tags or search keywords, or reset all filters.",
+    "loadErrorTitle": "Could not load plugins",
+    "retry": "Retry",
+    "stateAll": "All states",
+    "empty": "No plugin sources",
+    "unavailable": "Plugin inspection unavailable"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "bgm-loop.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "3b298083-a2bc-496f-91fb-80e5bb8cfe48",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

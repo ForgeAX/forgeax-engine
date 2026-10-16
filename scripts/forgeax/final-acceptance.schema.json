@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/final-acceptance.schema.json",
+  "title": "ForgeaX 最终验收矩阵",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "matrixKind",
+    "source",
+    "products",
+    "distributions",
+    "cells",
+    "visualRecords"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "matrixKind": { "const": "final-acceptance" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engineCommit", "buildId"],
+      "properties": {
+        "engineCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "buildId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "products": {
+      "type": "array",
+      "const": ["empty", "game-3d", "game-capability-lab", "brotato-3d"]
+    },
+    "distributions": {
+      "type": "array",
+      "const": ["zip", "npm-carrier", "offline-store", "source-sdk"]
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 16,
+      "items": { "$ref": "#/$defs/cell" }
+    },
+    "visualRecords": {
+      "type": "array",
+      "minItems": 4,
+      "items": { "$ref": "#/$defs/visualRecord" }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": { "enum": ["chromium", "dawn"] },
+        "identity": { "type": "string", "minLength": 1 }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "product",
+        "distribution",
+        "lane",
+        "command",
+        "artifact",
+        "backend",
+        "status",
+        "log"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "product": { "enum": ["empty", "game-3d", "game-capability-lab", "brotato-3d"] },
+        "distribution": { "enum": ["zip", "npm-carrier", "offline-store", "source-sdk"] },
+        "lane": { "enum": ["browser", "dawn", "semantic"] },
+        "command": { "type": "string", "minLength": 1 },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "backend": { "$ref": "#/$defs/backend" },
+        "status": { "enum": ["pass", "blocked", "missing", "error"] },
+        "log": { "type": "string", "minLength": 1 }
+      }
+    },
+    "visualRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "distribution",
+        "artifact",
+        "backend",
+        "expected",
+        "observed",
+        "verdict",
+        "confidence"
+      ],
+      "properties": {
+        "product": { "enum": ["empty", "game-3d", "game-capability-lab", "brotato-3d"] },
+        "distribution": { "enum": ["zip", "npm-carrier", "offline-store", "source-sdk"] },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "backend": { "$ref": "#/$defs/backend" },
+        "expected": { "type": "string", "minLength": 1 },
+        "observed": { "type": "string", "minLength": 1 },
+        "verdict": { "enum": ["pass", "fail", "insufficient-evidence"] },
+        "confidence": { "enum": ["high", "medium", "low"] }
+      }
+    }
+  }
+}

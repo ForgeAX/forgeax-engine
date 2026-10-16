@@ -1,0 +1,68 @@
+{
+  "name": "@forgeax/hello-cinder-fall",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Deterministic Cinder Fall consumer for the shared Program v3 VFX baseline.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-cinder-fall smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "consumer bundle shape is downstream of the shared Engine runtime"
+      },
+      "fps": {
+        "enabled": true,
+        "sampleCount": 5,
+        "frameCount": 120
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "the deterministic phase consumer has no benchmark surface"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-cinder-fall smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "this is a consumer, not a spike package"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "jiti": "1.21.7",
+    "upng-js": "^2.1.0",
+    "vite": "8.0.16",
+    "vitest": "4.1.11",
+    "typescript": "^5.8.3",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

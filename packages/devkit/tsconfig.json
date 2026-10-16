@@ -1,0 +1,35 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../app" },
+    { "path": "../audio" },
+    { "path": "../audio-webaudio" },
+    { "path": "../project" },
+    { "path": "../fbx" },
+    { "path": "../font" },
+    { "path": "../gltf" },
+    { "path": "../host" },
+    { "path": "../mesh-io" },
+    { "path": "../image" },
+    { "path": "../physics" },
+    { "path": "../pack" },
+    { "path": "../preview" },
+    { "path": "../tool-runtime" },
+    { "path": "../shader-compiler" },
+    { "path": "../types" },
+    { "path": "../vfx-compiler" },
+    { "path": "../vite-plugin-pack" },
+    { "path": "../vite-plugin-rhi-debug" },
+    { "path": "../vite-plugin-shader" }
+  ]
+}

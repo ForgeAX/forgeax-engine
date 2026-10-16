@@ -1,0 +1,81 @@
+{
+  "name": "@forgeax/engine-fbx",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "description": "FBX importer for the forgeax engine via ufbx compiled to WebAssembly. Single parser for both browser and Node; no Autodesk FBX SDK or native addon. Emits the engine FBX POD schema (meshes, nodes, materials, skeletons, skins, clips).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./cli-fbx": {
+      "types": "./dist/cli-fbx.d.ts",
+      "node": "./dist/cli-fbx.mjs",
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "pkg",
+    "src",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "build:wasm": "node scripts/fetch-ufbx.mjs && node scripts/build-wasm.mjs",
+    "fetch-ufbx": "node scripts/fetch-ufbx.mjs",
+    "fetch-wasm": "node scripts/fetch-wasm.mjs",
+    "postinstall": "node scripts/ensure-wasm.mjs",
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@types/node": "^20.14.0"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "pkg/fbx-wasm.wasm",
+        "compression": "gzip",
+        "expected": 147043
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "parser package: no render loop; FPS is reported by the apps that consume imported FBX assets"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no hot-path bench at the FBX parse boundary yet; import cost is one-shot cook, not a per-frame path"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/engine-fbx test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; productionised browser FBX parser sized by the bundle-size MetricKind above"
+      }
+    }
+  }
+}

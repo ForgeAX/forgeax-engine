@@ -1,0 +1,52 @@
+{
+  "name": "@forgeax/app-learn-render-1-getting-started-1-hello-window",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render LearnOpenGL section 1.1 hello-window — Engine.create + clearColor demo (M5 milestone fills index.ts).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-1-getting-started-1-hello-window smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime size already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "OOS-11 fps anchor stays on hello-triangle; per-app fps drift is not gated for learn-render examples"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pixel-parity bench drives parity-forgeax vs parity-threejs; learn-render entries land as bench:pixel-parity 7-entry placeholders only"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-learn-render-1-getting-started-1-hello-window smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; baseline LearnOpenGL section-1.1 placeholder example"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@webgpu/types": "^0.1.74"
+  }
+}

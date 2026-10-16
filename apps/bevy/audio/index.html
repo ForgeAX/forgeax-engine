@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Audio</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #071018; color: #e6f1ff; font-family: ui-monospace, monospace; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #overlay {
+        position: fixed; left: 12px; top: 12px; max-width: 430px;
+        background: rgba(3, 8, 14, 0.78); padding: 10px 13px;
+        border: 1px solid rgba(159, 205, 255, 0.25); border-radius: 7px;
+        line-height: 1.6; pointer-events: none; font-size: 13px;
+      }
+      #overlay b { color: #ffe38a; }
+      #audio-status { color: #9fe3b1; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="overlay">
+      <b>Click</b> or press any key to resume Web Audio if the browser suspends autoplay.<br />
+      This scene reproduces Bevy's basic Audio example with one real looping imported clip.<br />
+      blue = AudioPlayer source &nbsp; white = playback path<br />
+      <span id="audio-status">audio=booting | active=0 | loaded=0 | playing=0</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

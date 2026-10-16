@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/ssr-fallback-browser-manifest.schema.json",
+  "title": "SSR fallback Browser evidence manifest",
+  "description": "Identity-bound Browser evidence for the fallback-only dependency fixture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "featureId",
+    "lane",
+    "status",
+    "identity",
+    "fixture",
+    "execution",
+    "readback",
+    "png",
+    "thresholds",
+    "expectations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "ssr-fallback-evidence/1" },
+    "featureId": { "type": "string", "minLength": 1 },
+    "lane": { "const": "browser" },
+    "status": {
+      "enum": ["pass", "blocked"],
+      "description": "Lane completion status; blocked evidence is not admissible."
+    },
+    "identity": { "$ref": "#/$defs/identity" },
+    "fixture": { "$ref": "#/$defs/fixture" },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "backend", "frames"],
+      "properties": {
+        "url": { "const": "http://127.0.0.1:4173/?forgeaxEvidence=reflection-fallback" },
+        "backend": { "const": "webgpu" },
+        "frames": { "type": "integer", "minimum": 60 }
+      }
+    },
+    "readback": { "$ref": "#/$defs/readback" },
+    "png": { "$ref": "#/$defs/png" },
+    "thresholds": { "$ref": "#/$defs/thresholds" },
+    "expectations": { "$ref": "#/$defs/expectations" },
+    "failures": { "type": "array", "items": { "type": "object" } }
+  },
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceHead", "sourceTree", "lockSha256", "buildSha256"],
+      "properties": {
+        "sourceHead": { "type": "string", "minLength": 1 },
+        "sourceTree": { "type": "string", "minLength": 1 },
+        "lockSha256": { "type": "string", "minLength": 1 },
+        "buildSha256": { "type": "string", "minLength": 1 }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "frames"],
+      "properties": {
+        "revision": { "type": "string", "minLength": 1 },
+        "frames": { "type": "integer", "minimum": 60 }
+      }
+    },
+    "readback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locator", "byteLength", "validationLog"],
+      "properties": {
+        "locator": { "type": "string", "minLength": 1 },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "validationLog": { "type": "string", "minLength": 1 }
+      }
+    },
+    "png": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locator", "width", "height"],
+      "properties": {
+        "locator": { "type": "string", "minLength": 1 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["linearHdrAbsErrorMax", "hdrLumaRelativeErrorMax"],
+      "properties": {
+        "linearHdrAbsErrorMax": { "const": 0.05 },
+        "hdrLumaRelativeErrorMax": { "const": 0.02 }
+      }
+    },
+    "expectations": {
+      "type": "array",
+      "minItems": 9,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "observed", "verdict", "confidence"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "observed": {},
+          "verdict": { "enum": ["pass", "fail", "blocked"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}

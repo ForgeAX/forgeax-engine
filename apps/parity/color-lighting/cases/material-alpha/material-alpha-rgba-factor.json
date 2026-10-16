@@ -1,0 +1,11 @@
+{
+  "caseId": "material-alpha-rgba-factor",
+  "required": true,
+  "colorDomain": "linearLdr",
+  "scene": { "width": 4, "height": 4, "background": [0, 0, 0, 0] },
+  "comparison": { "primaryMetric": "alpha" },
+  "budget": { "analyticMax": 0.01, "roiMax": 0.01, "byteMax": 0 },
+  "alpha": { "mode": "BLEND", "baseAlpha": 0.4 },
+  "baseColor": [0.8, 0.2, 0.1, 1],
+  "textureColor": [1, 1, 1, 0.35]
+}

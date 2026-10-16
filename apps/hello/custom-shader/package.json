@@ -1,0 +1,72 @@
+{
+  "name": "@forgeax/hello-custom-shader",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Custom material demo: a user shader and inherited MaterialAsset are loaded from a cooked pack and consumed through the runtime catalog.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:normal-slot-dawn": "node scripts/smoke-normal-slot-dawn.mjs",
+    "smoke:normal-slot-live-dawn": "node scripts/smoke-normal-slot-live-dawn.mjs",
+    "smoke:m36:dawn": "FORGEAX_MATERIAL_M36=1 node scripts/smoke-normal-slot-live-dawn.mjs",
+    "smoke:m36:browser": "node scripts/smoke-m36-browser.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:falsify": "node scripts/smoke-falsify.mjs",
+    "smoke:all": "pnpm run smoke && pnpm run smoke:browser"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-custom-shader smoke:all",
+    "_comment": "AC-14 free-end demo (custom material shader); smoke:all runs the shared cooked fixture through Dawn and browser paths. smoke:falsify independently proves missing-parent and UV-transform regressions fail with attributed evidence.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "free-end demo; bench focus stays on engine-math / pixel-parity"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "free-end demo; bench focus stays on engine-math / pixel-parity"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-custom-shader smoke:all"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; AC-14 demo source-level"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "pngjs": "^7.0.0",
+    "@webgpu/types": "^0.1.74"
+  }
+}

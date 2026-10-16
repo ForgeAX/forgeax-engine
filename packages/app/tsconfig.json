@@ -1,0 +1,94 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "@webgpu/types",
+      "node"
+    ]
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../assets-runtime"
+    },
+    {
+      "path": "../audio"
+    },
+    {
+      "path": "../audio-webaudio"
+    },
+    {
+      "path": "../debug-draw"
+    },
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../input"
+    },
+    {
+      "path": "../physics"
+    },
+    {
+      "path": "../physics-rapier2d"
+    },
+    {
+      "path": "../physics-rapier3d"
+    },
+    {
+      "path": "../plugin"
+    },
+    {
+      "path": "../profiler"
+    },
+    {
+      "path": "../remote"
+    },
+    {
+      "path": "../rhi"
+    },
+    {
+      "path": "../rhi-debug"
+    },
+    {
+      "path": "../rhi-null"
+    },
+    {
+      "path": "../runtime"
+    },
+    {
+      "path": "../state"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../tool-runtime"
+    },
+    {
+      "path": "../picking"
+    },
+    {
+      "path": "../import"
+    },
+    {
+      "path": "../platform"
+    },
+    {
+      "path": "../platform-browser"
+    }
+  ]
+}

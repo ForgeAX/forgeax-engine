@@ -1,0 +1,1687 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/packages/core/schema/jscpd.json",
+  "minLines": 30,
+  "minTokens": 50,
+  "threshold": 0,
+  "gitignore": true,
+  "output": "report",
+  "reporters": ["json", "console"],
+  "path": ["../packages", "../apps", "../scripts", "../templates"],
+  "ignore": [
+    "../packages/wgpu-wasm/pkg/**",
+    "../packages/wgpu-wasm/target/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/*.test.ts",
+    "**/__snapshots__/**"
+  ],
+  "filePairIgnore": [
+    {
+      "files": [
+        "apps/hello/foliage-transmission/src/leaf-diffuse-transmission.pack.json",
+        "apps/hello/physical-material/src/standard-clearcoat.pack.json"
+      ],
+      "rationale": "diffuse-transmission foliage: an authored Standard alias root must declare the canonical Standard parameter list (five user-region textures plus scalar fields) before its physical-layer names, so every alias pack repeats the same parameter block by contract. The foliage root differs only in its layer names and optional factor texture. Revisit if Pack gains a Standard-root inheritance form that derives the canonical block."
+    },
+    {
+      "files": [
+        "apps/hello/physical-material/src/skin-clearcoat-factor-r.pack.json",
+        "apps/hello/physical-material/src/standard-full-physical.pack.json"
+      ],
+      "rationale": "diffuse-transmission foliage: every authored Standard alias root declares the canonical Standard scalar parameter list before its physical-layer names; adding the displacement scalars to that canonical block makes the skin clearcoat roots repeat it verbatim. Revisit if Pack gains a Standard-root inheritance form that derives the canonical block."
+    },
+    {
+      "files": [
+        "apps/hello/physical-material/src/skin-clearcoat-normal-rg.pack.json",
+        "apps/hello/physical-material/src/standard-full-physical.pack.json"
+      ],
+      "rationale": "diffuse-transmission foliage: every authored Standard alias root declares the canonical Standard scalar parameter list before its physical-layer names; adding the displacement scalars to that canonical block makes the skin clearcoat roots repeat it verbatim. Revisit if Pack gains a Standard-root inheritance form that derives the canonical block."
+    },
+    {
+      "files": [
+        "apps/hello/physical-material/src/skin-clearcoat-roughness-g.pack.json",
+        "apps/hello/physical-material/src/standard-full-physical.pack.json"
+      ],
+      "rationale": "diffuse-transmission foliage: every authored Standard alias root declares the canonical Standard scalar parameter list before its physical-layer names; adding the displacement scalars to that canonical block makes the skin clearcoat roots repeat it verbatim. Revisit if Pack gains a Standard-root inheritance form that derives the canonical block."
+    },
+    {
+      "files": [
+        "apps/preview/scripts/smoke-hit-streak.mjs",
+        "apps/preview/scripts/smoke-mission-progression.mjs"
+      ],
+      "rationale": "game-default M0 progression round 20260806: both smokes keep a self-contained Preview/WebGPU browser front door so an AI user can run one player path without traversing a helper. hit-streak proves the timed combo lifecycle; mission-progression proves the ordered score-unlock-profile-reset task and its DOM contract. Revisit if a third Preview gameplay smoke repeats the same harness."
+    },
+    {
+      "files": [
+        "apps/bevy/bloom-2d/scripts/smoke-dawn.mjs",
+        "apps/bevy/transparency-2d/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260729-212017: both 2D Dawn smokes keep the self-contained WebGPU injection, mock canvas, shared-device capture, copyTextureToBuffer readback, and N-frame gate inline for AI grepability. bloom-2d is unique where it matters: it toggles Camera.bloom, compares bloom-off/on pixel readbacks, and asserts bloom pass names; transparency-2d owns its separate alpha/depth-order verdict. Revisit if a shared 2D smoke helper becomes the explicit front-door contract."
+    },
+    {
+      "files": [
+        "apps/bevy/2d-shapes/scripts/smoke-dawn.mjs",
+        "apps/bevy/transparency-3d/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260805-092728: both Dawn smokes keep the WebGPU injection, mock canvas, shared-device capture, copyTextureToBuffer readback, and 300-frame gate inline for AI grepability. 2d-shapes is unique where it matters: it renders the twelve filled/line primitives and ten ring variants and asserts colored coverage plus motion; transparency-3d owns alpha ordering and depth/blending assertions. Revisit if a shared 2D smoke helper becomes the explicit front-door contract."
+    },
+    {
+      "files": [
+        "apps/bevy/mesh2d-arcs/scripts/smoke-dawn.mjs",
+        "apps/bevy/transparency-3d/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260805-104912: both Dawn smokes keep the WebGPU injection, mock canvas, shared-device capture, copyTextureToBuffer readback, and 300-frame gate inline for AI grepability. mesh2d-arcs is unique where it matters: it renders circular-mask sectors and segments and asserts upper/lower arc coverage plus transformed 2D bounds; transparency-3d owns alpha ordering and depth/blending assertions. Revisit if a shared 2D smoke helper becomes the explicit front-door contract."
+    },
+    {
+      "files": [
+        "apps/hello-multi-uv/scripts/smoke-browser-pipeline.mjs",
+        "apps/hello-multi-uv/scripts/smoke-browser-variant.mjs"
+      ],
+      "rationale": "engine-gauntlet M3 standard/custom pipeline round 20260724-141143: both browser front-door smokes keep their adaptive PNG decoder, canvas clipping, and Playwright/WebGPU lifecycle inline so an AI user can grep each falsifiable journey in one file. The pipeline smoke is unique where it matters: it installs a user RenderGraph and asserts live standard/custom inversion plus a URP-mapped falsifier; the variant smoke asserts MaterialPassDescriptor shader-variant selection. Revisit if a third hello-multi-uv browser smoke repeats this harness."
+    },
+    {
+      "files": [
+        "apps/bevy/3d-scene/scripts/smoke-dawn.mjs",
+        "apps/bevy/3d-shapes/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-153135: the two apps/bevy dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + N-frame loop + copyTextureToBuffer readback + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the hello-* / collectathon whitelists). Per-demo verdict + scene stay inline (3d-shapes: 7-shape gallery, capsule-at-center NDC check; scene logic itself IS deduped via the shared src/shapes.ts builder both files import)."
+    },
+    {
+      "files": [
+        "apps/bevy/3d-rotation/scripts/smoke-dawn.mjs",
+        "apps/bevy/3d-shapes/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-164916: the two apps/bevy dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the 3d-scene <-> 3d-shapes whitelist above). 3d-rotation is unique where it matters: it drives stepSpin(world, dt) between draws and asserts a MOTION delta (face-on vs 45deg-corner-on frame) — the check the static demos structurally lack; scene + spin logic itself IS deduped via the shared src/rotation.ts builder both the app and this smoke import."
+    },
+    {
+      "files": [
+        "apps/bevy/translation/scripts/smoke-dawn.mjs",
+        "apps/bevy/3d-rotation/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-174912: the two apps/bevy MOTION dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + capture-early/late + motion-delta + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the 3d-rotation <-> 3d-shapes whitelist above). translation is unique where it matters: it drives stepMove(world, dt) between draws and asserts the cube SLID along its local X (origin frame vs ~2-units-later frame) — a translation-motion delta, not the 3d-rotation spin delta; scene + move logic itself IS deduped via the shared src/translation.ts builder both the app and this smoke import."
+    },
+    {
+      "files": [
+        "apps/bevy/smooth-follow/scripts/smoke-dawn.mjs",
+        "apps/bevy/translation/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-183918: the two apps/bevy MOTION dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + capture-early/late + motion-delta + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the translation <-> 3d-rotation whitelist above). smooth-follow is unique where it matters: it drives stepTarget+stepFollower(world, dt) between draws and asserts a CONVERGENCE delta (the follower's distance-to-target shrinks from the early to the late capture) — the smoothDamp chase proof, not the translation slide delta; scene + step logic itself IS deduped via the shared src/smooth-follow.ts builder both the app and this smoke import."
+    },
+    {
+      "files": [
+        "apps/bevy/iter-combinations/scripts/smoke-dawn.mjs",
+        "apps/bevy/smooth-follow/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-194533: the two apps/bevy MOTION dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + capture-early/late + brightness/motion-delta + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the smooth-follow <-> translation whitelist above). iter-combinations is unique where it matters: it drives stepInteract+stepIntegrate(world) between draws and asserts a CLUMP delta (the bodies' spread — max distance from origin — shrinks from the early to the late capture) — the queryCombinations pairwise-gravity proof, not the smooth-follow convergence delta; scene + N-body step logic itself IS deduped via the shared src/iter-combinations.ts builder both the app and this smoke import. CAPTURE_LATE is relative to SMOKE_MIN_FRAMES (LESSONS L6)."
+    },
+    {
+      "files": [
+        "apps/bevy/cubic-splines/scripts/smoke-dawn.mjs",
+        "apps/bevy/smooth-follow/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-203432: the two apps/bevy dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + brightness + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the iter-combinations <-> smooth-follow whitelist above). cubic-splines is unique where it matters: it is a STATIC demo (no motion criterion) that instead asserts a CURVE-SHAPE proof computed in-process from the shared sampleCurve — the curve PASSES THROUGH the control points (maxThroughDist) and is SMOOTH (maxTurnDeg below a kink ceiling), the vec3.catmullRom interpolation proof; scene + curve sampler itself IS deduped via the shared src/cubic-splines.ts builder both the app and this smoke import."
+    },
+    {
+      "files": [
+        "apps/bevy/cubic-splines/scripts/smoke-dawn.mjs",
+        "apps/bevy/translation/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-203432: same shared dawn-node harness boilerplate (webgpu shim + mock canvas + shared-device capture + readback + PNG dump) as the cubic-splines <-> smooth-follow whitelist above; the local dup-check pairs cubic-splines against translation specifically, so this pair is whitelisted too. cubic-splines' unique content is its in-process CURVE-SHAPE proof (maxThroughDist + maxTurnDeg over the shared sampleCurve), distinct from translation's local-X slide motion delta; both scenes are deduped via their respective shared src/*.ts builders."
+    },
+    {
+      "files": [
+        "apps/bevy/time-elapsed/scripts/smoke-dawn.mjs",
+        "apps/bevy/translation/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-212920: the two apps/bevy MOTION dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + capture-early/late + motion-delta + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the cubic-splines <-> translation whitelist above). time-elapsed is unique where it matters: it accumulates elapsed itself and asserts an ELAPSED-KEYED delta (the cube's Transform.y equals the closed-form oscillatorY(elapsed) within EPS), the Time.elapsed proof — not translation's local-X slide; scene + step logic itself IS deduped via the shared src/time-elapsed.ts builder both the app and this smoke import. CAPTURE_LATE is relative to SMOKE_MIN_FRAMES (LESSONS L6)."
+    },
+    {
+      "files": [
+        "apps/bevy/axes/scripts/smoke-dawn.mjs",
+        "apps/bevy/cubic-splines/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-222551: the two apps/bevy STATIC-scene dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + brightness + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the cubic-splines <-> translation whitelist above). axes is unique where it matters: it asserts an in-process GIZMO-CORRECTNESS proof via a capture stub (one debugDraw.axes() call per ShowAxes cube, each reading the cube's rotated LOCAL frame — >=2 non-world-aligned), distinct from cubic-splines' curve-shape proof; scene + draw logic itself IS deduped via the shared src/axes-demo.ts builder both the app and this smoke import."
+    },
+    {
+      "files": [
+        "apps/bevy/easing/scripts/smoke-dawn.mjs",
+        "apps/bevy/translation/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-233409: the two apps/bevy MOTION dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture + copyTextureToBuffer readback + capture-early/late + motion-delta + PNG-dump boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the cubic-splines <-> translation whitelist above). easing is unique where it matters: it drives stepEasing(world, u) with a swept u and asserts an EASE-SHAPE proof (the eased cube's x matches lerp(x0,x1,smoothstep(u)) AND lags the linear cube at u=0.25 / leads at u=0.75), distinct from translation's local-X slide; scene + step logic itself IS deduped via the shared src/easing-demo.ts builder both the app and this smoke import. CAPTURE_LATE is relative to SMOKE_MIN_FRAMES (LESSONS L6)."
+    },
+    {
+      "files": [
+        "apps/bevy/3d-shapes/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/7.advanced-glsl-ubo/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260713-153135: shared dawn-node loader + mock canvas + N-frame loop + onError tally boilerplate region. Charter F1 grep-anchor: each demo smoke is self-contained; per-demo verdict stays inline (same idiom as the collectathon <-> 10.anti-aliasing-msaa whitelist above)."
+    },
+    {
+      "files": [
+        "apps/collectathon/scripts/smoke-dawn.mjs",
+        "apps/hello/skin/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260626-3d-third-person-collectathon-showcase-game M2: collectathon and hello/skin dawn-node smokes share the webgpu global injection + mock GPUCanvasContext + shared-device capture boilerplate. Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the hello-* smoke-dawn whitelists below). Per-demo verdict stays inline (collectathon: Camera/DirectionalLight presence + 0 RhiError structural-only)."
+    },
+    {
+      "files": [
+        "apps/collectathon/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260626-3d-third-person-collectathon-showcase-game M2: collectathon and 10.anti-aliasing-msaa dawn-node smokes share the dawn-node loader + mock canvas + N-frame loop + onError tally boilerplate. Charter F1 grep-anchor: each demo smoke is self-contained; per-demo verdict stays inline."
+    },
+    ["packages/math/src/quat.ts", "packages/math/src/vec4.ts"],
+    ["packages/rhi-webgpu/package.json", "packages/vite-plugin-shader/package.json"],
+    [
+      "apps/hello/room/scripts/smoke-dawn.mjs",
+      "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+    ],
+    [
+      "apps/hello/cube/scripts/smoke-dawn.mjs",
+      "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+    ],
+    ["apps/hello/gltf/scripts/smoke-dawn.mjs", "apps/hello/room/scripts/smoke-dawn.mjs"],
+    [
+      "apps/hello/gltf/scripts/smoke-dawn.mjs",
+      "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+    ],
+    {
+      "files": ["apps/hello/text/scripts/smoke-dawn.mjs", "apps/hello/physics/scripts/smoke.mjs"],
+      "rationale": "feat-20260531-world-space-msdf-text-rendering M6/w26: the dawn-node smoke harness boilerplate (webgpu global injection + mock GPUCanvasContext + rAF queue + fake performance.now + N-frame loop + onError/console.error tally) is intentionally per-demo (charter F1 grep-anchor: each hello-* smoke is a single self-contained driver an AI user reads without traversing a shared helper). Same idiom as the existing hello-cube/hello-room/hello-gltf smoke-dawn whitelists above; hello-text mirrors the hello-physics createApp structural-smoke shape."
+    },
+    {
+      "files": [
+        "apps/hello/text/scripts/smoke-dawn.mjs",
+        "apps/hello/bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260531-world-space-msdf-text-rendering M6/w26: shared createApp + HDR-tonemap + bloom-camera + readPixels-via-copyTextureToBuffer boilerplate region; hello-text reuses the hello-bloom HDR smoke shape (both run the bloom-enabled camera path). Per-demo single-file driver per charter F1, same idiom as the hello-cube <-> parity-instancing-static whitelist above."
+    },
+    {
+      "files": [
+        "apps/hello/hdrp-lighting/scripts/smoke-dawn.mjs",
+        "apps/hello/text/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260608-cluster-lighting M7/w27: hello-hdrp-lighting smoke reuses the dawn-node createApp + rAF queue + fake performance.now + readback-via-copyTextureToBuffer boilerplate from hello-text. Per-demo single-file driver per charter F1; the unique surface here is the HDRP installPipeline + 256-light spawn block, not the dawn-node webgpu shim."
+    },
+    {
+      "files": ["apps/hello/text/scripts/smoke-dawn.mjs", "apps/hello/audio/scripts/smoke.mjs"],
+      "rationale": "feat-20260531-world-space-msdf-text-rendering M6/w26: shared createApp + component-register + frame-loop structural-smoke boilerplate; hello-text mirrors the hello-audio createApp structural smoke (no pixel readback in the gated default). Per-demo single-file driver per charter F1."
+    },
+    {
+      "files": [
+        "apps/hello/text/scripts/smoke-dawn.mjs",
+        "apps/hello/picking/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260531-world-space-msdf-text-rendering M6/w26: shared dawn-node webgpu-injection preamble; hello-text reuses the canonical hello-picking smoke setup block. Per-demo single-file driver per charter F1, same idiom as the existing smoke-dawn whitelists above."
+    },
+    [
+      "scripts/grep/check-asset-registry-instanced-removed.mjs",
+      "scripts/grep/check-no-entity-array-literal.mjs"
+    ],
+    [
+      "packages/ecs/scripts/grep-no-string-view-import.mjs",
+      "packages/ecs/scripts/grep-no-set-managed-ref-store.mjs"
+    ],
+    {
+      "files": [
+        "packages/ecs/scripts/check-fallback-helper-ssot.mjs",
+        "packages/ecs/scripts/grep-no-string-view-import.mjs"
+      ],
+      "rationale": "feat-20260517-spawn-default-fallback M1 t2: the layer-3 typeDefault SSOT grep gate reuses the same scan-source-tree skeleton as the StringView import gate (sibling at packages/ecs/scripts/grep-no-string-view-import.mjs). Both share `walk(dir)` recursive traversal + ASCII signature regex matching + structured `[reason]/[rerun]/[hint]` triple emission - this is the AC-05 grep-gate idiom locked by plan-strategy section 8.4 (grep-anchor: each gate file self-contains the scan logic so AI users can read one file without traversing helpers). Extracting a shared `_grep-walk.mjs` helper would split the scan loop away from the per-gate signature regex, violating the same charter F1 single-file consumption that the existing string-view <-> set-managed-ref-store whitelist above acknowledges."
+    },
+    [
+      "scripts/grep/check-no-managed-array-error-code.mjs",
+      "scripts/grep/check-no-managed-array-view-import.mjs"
+    ],
+    [
+      "scripts/grep/check-no-entity-array-literal.mjs",
+      "scripts/grep/check-no-managed-array-view-import.mjs"
+    ],
+    [
+      "scripts/grep/check-no-buffer-colon-keyword.mjs",
+      "scripts/grep/check-no-entity-array-literal.mjs"
+    ],
+    [
+      "scripts/grep/check-no-array-stride-option.mjs",
+      "scripts/grep/check-no-managed-array-view-import.mjs"
+    ],
+    [
+      "scripts/grep/check-asset-registry-instanced-removed.mjs",
+      "scripts/grep/check-no-managed-array-error-code.mjs"
+    ],
+    [
+      "scripts/grep/check-no-managed-array-view-import.mjs",
+      "scripts/grep/check-no-result-reproject-cast.mjs"
+    ],
+    [
+      "scripts/grep/check-no-managed-array-error-code.mjs",
+      "scripts/grep/check-no-result-reproject-cast.mjs"
+    ],
+    [
+      "scripts/grep/check-no-entity-array-literal.mjs",
+      "scripts/grep/check-no-result-reproject-cast.mjs"
+    ],
+    [
+      "scripts/grep/check-no-buffer-colon-keyword.mjs",
+      "scripts/grep/check-no-result-reproject-cast.mjs"
+    ],
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/6.coordinate-systems/src/index.ts",
+        "apps/learn-render/1.getting-started/7.camera/src/index.ts"
+      ],
+      "rationale": "feat-20260515 V-1: GLM camera-uniform setup (perspective + view + model + 4x4 mat chain) is the SoA-friendly mat4 chain each example must teach self-contained. Charter F1 grep-anchor: AI users grep one example folder and see the entire MVP recipe inline; extracting a `_shared/setup-camera-uniforms.ts` would split the LO narrative across two folders and break charter F1 single-file consumption. plan-strategy section 5 line 501 OOS-07 cash-out path b."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/4.textures/scripts/smoke-dawn.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: dawn-node 300-frames + pixel-readback boilerplate (createCanvas + dawn loader + frame loop + RGB sample + 4-criteria assert + JSON progress emit) is intentionally per-example; charter F1 grep-anchor + plan-strategy section 5.5 lines 591-592 lock both as smoke-gate entries. Sharing a `_shared/smoke-dawn-helper.mjs` would force one filter dance across the helper + 300-frame loop, blocking charter F2 text-channel single-file evidence path. Same idiom as hello-cube/smoke-dawn.mjs <-> parity-instancing-static/smoke-dawn.mjs already whitelisted above."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/4.textures/scripts/smoke-dawn.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260515 V-1 (second clone region 373-454 / 428-509): same per-example smoke-dawn boilerplate covering the second large block (dawn loader + ndcCenter sampling + close-down). Listed as a separate object with the same files because the clone-detector reports two regions per file-pair; the wrapper canonicalises by unordered file-pair so the second entry is functionally redundant but kept for AI-user traceability (one line per detected clone region, one rationale per region). See first entry for full justification."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/4.textures/scripts/smoke-dawn.mjs",
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: textures smoke-dawn.mjs and parity-instancing-static smoke-dawn.mjs share the same hello-cube range-of-tested-codepoints idiom (plan-strategy section 5 reference roster). Same rationale as the existing hello-room/smoke-dawn.mjs <-> parity-instancing-static/smoke-dawn.mjs whitelist above; charter F1 dictates each example owns its own smoke driver."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: camera smoke-dawn.mjs reuses the same parity-instancing-static reference shape for the dawn-node 300-frame loop. Sibling entry to the textures pair above; charter F1 single-file consumption."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: hello-cube is the canonical smoke-dawn template; camera example mirrors its 4-criteria + RGB readback structure. Same idiom as the existing hello-cube <-> parity-instancing-static smoke-dawn whitelist; charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: hello-room and camera examples share the multi-mesh + first-person dawn-node smoke shape (plan-strategy section 5 cross-reference). charter F1 single-file consumption mandates per-example smoke driver."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/3.shaders/scripts/bench-screenshot.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/bench-screenshot.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: bench-screenshot.mjs is intentionally per-example (each example needs its own playwright capture pipeline grep-anchored alongside its README + index.ts). Extracting a shared helper would split the capture pipeline across `_shared/` and break charter F1 single-grep-locates-everything contract. plan-strategy section 5 line 501 OOS-07 cash-out path b."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/4.textures/scripts/bench-screenshot.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/bench-screenshot.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: same per-example playwright capture pipeline rationale as 3.shaders <-> 7.camera above. charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/5.transformations/scripts/bench-screenshot.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/bench-screenshot.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: per-example playwright capture pipeline (charter F1)."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/6.coordinate-systems/scripts/bench-screenshot.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/bench-screenshot.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: per-example playwright capture pipeline (charter F1)."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/1.hello-window/scripts/bench-screenshot.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/bench-screenshot.mjs"
+      ],
+      "rationale": "feat-20260515 V-1: 1.hello-window placeholder still uses the same playwright capture pipeline shape; per-example single-file consumption (charter F1)."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/hello/room/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260518 M5: hello-gltf-instancing smoke-dawn.mjs reuses the canonical hello-room dawn-node 300-frame loop boilerplate (createCanvas + dawn loader + 4-criteria assert + RGB readback). Same per-example F1 grep-anchor rationale as the hello-gltf <-> hello-room whitelist above. Each demo owns its own smoke driver so AI users grep one folder and see the full smoke recipe inline."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260518 M5: hello-gltf-instancing and parity-instancing-static smoke drivers share the same 300-frame readback boilerplate. Sibling whitelist to hello-gltf <-> parity-instancing-static above; charter F1 grep-anchor (each demo's smoke is self-contained)."
+    },
+    {
+      "files": [
+        "apps/hello/gltf/scripts/smoke-dawn.mjs",
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260518 M5: hello-gltf-instancing was forked from hello-gltf's smoke-dawn.mjs (same dawn-node + parseGltf + bridge IR -> POD pipeline). Charter F1 grep-anchor: each demo's smoke driver stays self-contained alongside its assets/ + main.ts so AI users grep one folder for the full recipe; extracting a shared `_smoke-dawn-helper.mjs` would split the 4-criteria gate logic across the helper + per-demo wiring and break F1 single-file consumption."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260519 M4: hello-tonemap smoke-dawn.mjs reuses the dawn-node loader + mock canvas + offscreen render-target boilerplate that already lives in every other hello-* / learn-render smoke driver. Charter F1 grep-anchor: each demo's smoke is self-contained so AI users grep one folder and see the full 300-frame recipe inline; extracting a shared helper would split the verdict logic across files. The hello-tonemap-specific verdict (AC-07 mass burn scan + AC-08 highlight-band assert + AC-09 reference-png byte-equivalence) lives entirely inside hello-tonemap/scripts/smoke-dawn.mjs."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260519 M4: hello-tonemap smoke-dawn.mjs shares the dawn-node 300-frame loop + RGBA readback shape with parity-instancing-static (same canonical pattern as the hello-room <-> parity-instancing-static + hello-cube <-> parity-instancing-static + hello-gltf <-> parity-instancing-static whitelist entries above). Charter F1 grep-anchor preserved: hello-tonemap-specific verdict criteria stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: three 2.lighting smoke drivers share the dawn-node loader + mock canvas + offscreen render-target + 4-criteria assert boilerplate (same shape as every other learn-render smoke). Charter F1 grep-anchor: each tutorial example's smoke script is self-contained alongside its src/index.ts so AI users grep one folder and see the full recipe inline; extracting a shared helper would split the verdict logic and break F1 single-file consumption."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same charter F1 grep-anchor rationale as the 1.colors <-> 2.basic-lighting pair above. Each 2.lighting example owns its own complete smoke recipe."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same charter F1 grep-anchor rationale as the 1.colors <-> 2.basic-lighting pair above."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/1.colors smoke shares the dawn-node loader + mock canvas boilerplate with 1.getting-started/7.camera. Charter F1 grep-anchor preserved: each example's smoke verdict (pixel sites, threshold, frame count) is example-specific and lives inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same charter F1 grep-anchor rationale as the 7.camera <-> 1.colors pair above."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same charter F1 grep-anchor rationale as the 7.camera <-> 1.colors pair above."
+    },
+    {
+      "files": [
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/3.materials smoke shares the dawn-node loader boilerplate with parity-instancing-static. Same F1 grep-anchor rationale: each example's smoke is self-contained so AI users grep one folder for the full recipe."
+    },
+    {
+      "files": [
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/1.colors smoke shares the dawn-node loader boilerplate. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/2.basic-lighting smoke shares the dawn-node loader boilerplate. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/3.materials smoke shares the dawn-node loader + mock canvas boilerplate with hello-tonemap. Charter F1 grep-anchor preserved."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same rationale as hello-tonemap <-> 3.materials above."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same rationale as hello-tonemap <-> 3.materials above."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/3.materials smoke shares the pixel-readback boilerplate with hello-room. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same rationale as hello-room <-> 3.materials above."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same rationale as hello-room <-> 3.materials above."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: 2.lighting/3.materials smoke shares the 4-criteria pixel readback shape with hello-cube. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same rationale as hello-cube <-> 3.materials above."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-1-3: same rationale as hello-cube <-> 3.materials above."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/5.light-casters/src/index.ts",
+        "apps/learn-render/2.lighting/6.multiple-lights/src/index.ts"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-4-6: demos 5 and 6 intentionally share the same camera bootstrap, cube roster, and multi-light wiring shape because LearnOpenGL chapter 2.5 feeds directly into 2.6 with texture treatment layered on top. Charter F1 grep-anchor: each demo keeps its full scene recipe inline under its own folder so AI users can grep one example and copy-adapt it without chasing a shared helper."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/4.lighting-maps/src/index.ts",
+        "apps/learn-render/2.lighting/6.multiple-lights/src/index.ts"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-4-6: demos 4 and 6 intentionally reuse the same textured material bootstrap and camera/light setup fragments. Demo 6 is specified as demo 5's multi-light scene plus demo 4's diffuse+specular texture treatment, so the duplicate regions are the deliberate teaching bridge. Charter F1 still wins: keep each example self-contained instead of splitting the texture path into a shared helper."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/src/index.ts",
+        "apps/learn-render/2.lighting/2.basic-lighting/src/index.ts"
+      ],
+      "rationale": "post-merge fix for issue #181 (commit 75cd0b73 [ai-write] learn-render align 2.1-2.3 to LO): demos 1.colors and 2.basic-lighting intentionally share the object-cube + lamp-cube + DirectionalLight spawn boilerplate because LearnOpenGL chapter 2.1 feeds directly into 2.2 — 2.2 adds ambient/diffuse/specular Phong split on top of the same scene. Same charter F1 grep-anchor rationale as the existing 5.light-casters <-> 6.multiple-lights + 4.lighting-maps <-> 6.multiple-lights entries above: each tutorial example keeps its full scene recipe inline under its own folder so AI users can grep one example and copy-adapt without chasing a shared helper."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/src/index.ts",
+        "apps/learn-render/2.lighting/4.lighting-maps/src/index.ts"
+      ],
+      "rationale": "post-merge fix for issue #181 (commit 75cd0b73 [ai-write] learn-render align 2.1-2.3 to LO): demos 2.basic-lighting and 4.lighting-maps share the standard cube + lamp spawn boilerplate. Same charter F1 grep-anchor rationale as the 1.colors <-> 2.basic-lighting entry above and the existing 4 <-> 6 / 5 <-> 6 src/index.ts whitelist entries: each example keeps its scene recipe inline for AI single-folder consumption."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/6.coordinate-systems/src/index.ts",
+        "apps/learn-render/2.lighting/6.multiple-lights/src/index.ts"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-4-6: demo 6 intentionally reuses the established camera/view matrix setup shape from 1.getting-started/6.coordinate-systems. That bridge is part of the tutorial progression, and keeping the matrix setup inline inside demo 6 preserves charter F1 single-file discoverability for AI users."
+    },
+    {
+      "files": [
+        "apps/learn-render/6.pbr/2.ibl-irradiance/src/index.ts",
+        "apps/learn-render/6.pbr/3.ibl-specular/src/index.ts"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5: IBL irradiance and specular demos intentionally share the same camera bootstrap, HDR generation, sphere-matrix scene setup, and capture-hook shape. LearnOpenGL chapters 6.2.1 and 6.2.2 are contiguous; the specular demo extends the irradiance one with split-sum (prefilter + BRDF LUT). Charter F1 grep-anchor: each demo keeps its full recipe inline under its own folder so AI users can grep one example and copy-adapt it without chasing a shared helper."
+    },
+    {
+      "files": [
+        "apps/learn-render/6.pbr/2.ibl-irradiance/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5: the two IBL demo smoke drivers share the same dawn-node loader + mock canvas + offscreen render-target + 4-criteria pixel readback boilerplate (same shape as every other learn-render smoke driver already whitelisted above). Charter F1 grep-anchor: each example's smoke driver is self-contained alongside its src/index.ts. The per-example difference (HDR color gradient + material parameters) lives inline inside the scene-build section."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: the 6.pbr/3.ibl-specular smoke driver carries the same dawn-node 4-criteria loader + mock canvas + pixel readback boilerplate as the 2.lighting/3.materials smoke (and as every other learn-render smoke driver already whitelisted above). Per-example difference (split-sum prefilter + BRDF LUT in the scene-build section) stays inline. Charter F1 grep-anchor: each example owns its full smoke recipe."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: same shared dawn-node 4-criteria boilerplate as the 3.materials <-> 3.ibl-specular pair above. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: same shared dawn-node 4-criteria boilerplate as the 3.materials <-> 3.ibl-specular pair above. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: 6.pbr/3.ibl-specular smoke reuses the 7.camera dawn-node loader + RGB readback shape (sibling to 7.camera <-> 1.colors / 2.basic-lighting / 3.materials whitelist entries above). Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: 6.pbr/3.ibl-specular smoke shares the dawn-node loader boilerplate with parity-instancing-static (sibling to parity-instancing-static <-> 2.lighting/* whitelist entries above). Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: 6.pbr/3.ibl-specular smoke shares the dawn-node loader + mock canvas boilerplate with hello-tonemap (sibling to hello-tonemap <-> 7.camera / 2.lighting/* whitelist entries above). Per-example IBL split-sum verdict stays inline. Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: 6.pbr/3.ibl-specular smoke shares the multi-mesh + dawn-node 300-frame loop shape with hello-room (sibling to hello-room <-> 2.lighting/* whitelist entries above). Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "feat-20260520-skylight-ibl-cubemap M5 t67: 6.pbr/3.ibl-specular smoke shares the 4-criteria pixel readback shape with hello-cube (sibling to hello-cube <-> 2.lighting/* whitelist entries above). Charter F1 grep-anchor."
+    },
+    {
+      "files": [
+        "apps/shared/src/learn-render-first-person.ts",
+        "apps/shared/src/learn-render-first-person.ts"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-cleanup L-1 (implement-decisions.md): the shared module's addFirstPersonSystem has two query-narrowing branches (with-flashlight + without-flashlight) whose math cores (forward / right / displacement / quat composition) jscpd reports as a 40-line clone at lines 139-178 vs 219-258. ImplementReviewer round 1 verdict=minor-edit (F-1 carried): packages/ecs/src/world.ts:395 addSystem<const Qs extends ReadonlyArray<QueryDescriptor>> requires queries to be inline const tuples for the TS bundle type inference that lets the system fn body see narrowed bundle types per query — extracting a `stepFirstPersonFrame()` helper for the math core is tractable per reviewer Step 4.5 (queries narrowing decouples from forward/right math) but constitutes its own focused tweak rather than expanding this tweak's scope beyond AC-08 (which targets cross-FILE first-person-controls.ts dedupe across 4/5/6 — achieved 100%). Follow-up loop trigger: shared module gains a 4th consumer, or anyone touches the with-flashlight branch."
+    },
+    {
+      "files": [
+        "apps/shared/src/learn-render-first-person.ts",
+        "apps/learn-render/1.getting-started/7.camera/src/first-person-controls.ts"
+      ],
+      "rationale": "tweak-20260520-learn-render-2-lighting-cleanup L-4 (implement-decisions.md): 32-line clone between the new shared module (apps/shared/src/learn-render-first-person.ts:68-99 — WASD displacement helper + scroll-fov accumulator) and the pre-existing local copy in 1.getting-started/7.camera/src/first-person-controls.ts:77-108. The cross-chapter clone is OUT OF SCOPE for this tweak — 1.getting-started is not in `requirements.md` scope; research D-R2 explicitly flagged 7.camera as a future absorption target. Follow-up loop trigger: open `tweak-*-learn-render-camera-share-1-7` to wire 7.camera to the shared module, after which this entry can be deleted."
+    },
+    {
+      "files": [
+        "apps/hello/sprite/scripts/smoke-dawn.mjs",
+        "apps/hello/sprite-atlas/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260521-sprite-atlas-animation M6 T-36: hello-sprite-atlas and hello-sprite smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate (~41 lines: adapter/device capture, canvas mock, render-target config). Charter F1 grep-anchor: each demo's smoke driver is self-contained alongside its src/main.ts so AI users grep one folder and see the full recipe inline. The PNG codec is no longer duplicated (extracted to apps/shared/png-codec.mjs); the remaining clone is structural dawn-node setup that cannot be shared without breaking F1 single-file consumption."
+    },
+    {
+      "files": ["apps/hello/sprite/src/main.ts", "apps/hello/sprite-atlas/src/main.ts"],
+      "rationale": "feat-20260521-sprite-atlas-animation M6 T-34: hello-sprite-atlas/src/main.ts reuses the hello-sprite camera bootstrap + MeshFilter/MeshRenderer entity spawn boilerplate (~36 lines: ortho cam Transform, Camera component data, mesh entity with HANDLE_QUAD). Both demos are sibling sprite-pipeline consumers; charter F1 grep-anchor mandates each demo keeps its full recipe inline under its own folder so AI users can grep one example and copy-adapt it without chasing a shared helper."
+    },
+    {
+      "files": [
+        "apps/hello/sprite/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "pre-existing historical clone: hello-sprite and 2.lighting/3.materials smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate (same shape as every other smoke driver already whitelisted in this file). Charter F1 grep-anchor: each example's smoke script is self-contained alongside its src/index.ts."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs",
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs"
+      ],
+      "rationale": "feat-20260522-learn-render-3-1-sponza-model-loading-with-multi-l M6 T-M6-01: 3.1 Sponza demo smoke shares the dawn-node loop boilerplate with 2.lighting/3.materials. Per-demo verdict criteria stay inline (Sponza is run-without-error per user q7+q9 vs 2.materials' permissive sampling). Charter F1 grep-anchor: each demo folder owns its complete smoke driver; extracting a 4th-consumer shared helper would split per-demo intent across two folders."
+    },
+    {
+      "files": [
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs",
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs"
+      ],
+      "rationale": "feat-20260522-learn-render-3-1-sponza-model-loading-with-multi-l M6 T-M6-01: 3.1 Sponza demo smoke shares the IBL HDR loader + 4-criteria-pixel-readback skeleton with 6.pbr/_shared/ibl-smoke-shared.mjs. Sponza demo runs run-without-error mode (no pixel readback per q7+q9), but the structural Engine.create + scene instantiation prelude is byte-similar. Per-demo verdict criteria stay inline (q7 decision)."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs"
+      ],
+      "rationale": "feat-20260522-learn-render-3-1-sponza-model-loading-with-multi-l M6 T-M6-01: 3.1 Sponza demo smoke shares the dawn-node mock canvas + Engine.create boilerplate with hello-tonemap (sibling to hello-tonemap whitelist entries above). Sponza demo verdict criterion is run-without-error per user q7+q9 decision; per-demo intent stays inline. Charter F1 grep-anchor: single-folder demo consumption preserved."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs"
+      ],
+      "rationale": "feat-20260522-learn-render-3-1-sponza-model-loading-with-multi-l M6 T-M6-01: 3.1 Sponza demo smoke shares the multi-mesh dawn-node loop shape with hello-room (the closest structural cousin: both load a multi-mesh GLTF + multi-light scene). Sponza demo verdict is run-without-error per user q7+q9; hello-room verdict is meshed sites + 4 criteria. Per-demo intent stays inline. Charter F1 grep-anchor preserved."
+    },
+    {
+      "files": [
+        "apps/hello/custom-shader/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260523-shader-template-instance-split M9-T06: hello-custom-shader visible-pulse smoke shares the dawn-node bootstrap + mock canvas + offscreen render-target setup with 2.lighting/3.materials (sibling to existing hello-room <-> 2.lighting/* + ibl-smoke-shared.mjs <-> 2.lighting/* whitelist entries above). Per-demo verdict criteria diverge: 3.materials checks meshed-sites distance to clear color; custom-shader checks per-T brightness delta against the analytic sin(time*speed) pulse curve. Per-demo intent stays inline. Charter F1 grep-anchor preserved: each demo carries its own complete smoke recipe."
+    },
+    {
+      "files": [
+        "scripts/grep/check-no-array-stride-option.mjs",
+        "scripts/grep/check-no-result-reproject-cast.mjs"
+      ],
+      "rationale": "feat-20260522-sponza M6 T-M6-06: jscpd version drift 4.1.1 -> 4.2.3 in worktree (pnpm install during M5 T-M5-01 refreshed lockfile) surfaces a 39-line clone between 2 grep-gate scripts that share the same boilerplate (read source files, scan for forbidden token, exit 0/1). Both gates were ship'd separately by feat-20260514-ci-jscpd-duplication-gate (T-M6-04) and earlier feat-* loops; main repo's jscpd 4.1.1 did not flag them. Extracting a shared `scripts/grep/_lib/grep-gate-runner.mjs` helper is the right move when consumer #4 lands, not at consumer #2. Follow-up loop trigger: any 3rd grep-gate script with same shape; open `tweak-future-grep-gate-shared-runner` then. Charter F1 grep-anchor preserved: each gate is self-contained for AI users."
+    },
+    {
+      "files": ["packages/math/src/quat.ts", "packages/math/src/quat.ts"],
+      "rationale": "feat-20260522-sponza M6 T-M6-06: jscpd 4.2.3 (new in worktree post-M5 lockfile refresh) surfaces a 31-line self-clone in quat.ts:383-399 vs 448-478 (math kernel: quat composition / Hamilton product / normalization shared between slerp + multiply paths). Pre-existing in main repo since feat-20260518-pbr-direct-lighting-mvp; main's jscpd 4.1.1 did not flag the self-clone. Extracting a `quatHamilton()` helper at consumer #N>=3 is tractable but would split a hot-path math kernel; the explicit duplication is the lower-cost stance per plan-strategy guideline #2. Follow-up loop trigger: add a 3rd quat product variant (e.g. quat-quat conjugate path); open `tweak-future-quat-hamilton-helper` then."
+    },
+    {
+      "files": ["apps/hello/gltf/src/main.ts", "apps/hello/gltf-instancing/src/main.ts"],
+      "rationale": "bug-20260523-mesh-upload-floats-per-vertex-fail-fast-and-cascadi M2 t5/t6: the two demo meshIrToPod functions share the same 12F interleaving loop (position+normal+uv+tangent) because both load Tier-B box.gltf (POSITION-only) and must produce canonical 12F MeshAsset. Charter F1 grep-anchor: each demo folder is self-contained so AI users grep one folder and see the full meshIrToPod recipe inline; extracting a shared `apps/shared/mesh-ir-to-pod.ts` would split the IR->POD bridge across folders and break F1 single-file consumption. plan-strategy D-4: the three demo meshIrToPod tasks are independent and parallelizable; shared helper extraction is rejected under OOS-3 (no construction-contract reshape)."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/src/main.ts",
+        "apps/learn-render/3.model-loading/1.model-loading/src/main.ts"
+      ],
+      "rationale": "bug-20260523-mesh-upload-floats-per-vertex-fail-fast-and-cascadi M2 t6/t7: gltf-instancing and Sponza demo meshIrToPod functions share the same 12F interleaving loop shape. Same charter F1 grep-anchor rationale as the gltf <-> gltf-instancing pair above: each demo folder is self-contained. Sponza differs from gltf-instancing in that it carries full attributes (POSITION+TEXCOORD_0+NORMAL+TANGENT) from the gltf source rather than Tier-B defaults, but the interleaving loop structure is identical. plan-strategy D-4: shared helper extraction is OOS-3; each demo's meshIrToPod is independently reviewable."
+    },
+    {
+      "files": [
+        "apps/hello/skin/scripts/smoke-dawn.mjs",
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs"
+      ],
+      "rationale": "feat-20260523-skin-skeleton-animation M4: hello-skin smoke shares the dawn-node loader + mock canvas boilerplate with 3.1 Sponza smoke. Charter F1 grep-anchor: each demo folder owns its complete smoke driver; per-demo verdict criteria (skin: mesh sites + NaN check; Sponza: run-without-error) stay inline."
+    },
+    {
+      "files": ["apps/hello/room/scripts/smoke-dawn.mjs", "apps/hello/skin/scripts/smoke-dawn.mjs"],
+      "rationale": "feat-20260523-skin-skeleton-animation M4: hello-skin smoke shares dawn-node 300-frames + 4-criteria boilerplate with hello-room. Charter F1 grep-anchor: each demo's complete smoke recipe lives inline; skin-specific synthetic fixture + Skin/AnimationPlayer wiring stays in hello-skin."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/hello/skin/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260523-skin-skeleton-animation M4: hello-skin smoke shares dawn-node mock canvas + render-target boilerplate with hello-gltf-instancing. Same charter F1 grep-anchor rationale as hello-room pair above."
+    },
+    {
+      "files": ["apps/hello/gltf/scripts/smoke-dawn.mjs", "apps/hello/skin/scripts/smoke-dawn.mjs"],
+      "rationale": "feat-20260523-skin-skeleton-animation M4: hello-skin smoke shares the parseGltf-style 4-criteria readback pattern with hello-gltf. Charter F1 grep-anchor preserved: hello-skin's synthetic skeleton/skin pipeline wiring stays inline."
+    },
+    {
+      "files": ["packages/gltf/src/parse-animation.ts", "packages/gltf/src/parse-skin.ts"],
+      "rationale": "feat-20260523-skin-skeleton-animation M0: parse-animation.ts and parse-skin.ts share the accessor-data resolution + Float32Array decoding boilerplate (accessorView helper, fill identity matrix, element count validation). The two submodules are intentionally mirror-shaped because both parse a distinct glTF top-level array (skins[] vs animations[]) into the same IR record shape; extracting a third shared module would add a thin 3-line 1-2-wrapper abstraction that the remaining 30-line difference (animation sampler vs skin jointPaths) does not justify. Charter F1 grep-anchor: AI users can read parse-skin.ts or parse-animation.ts in isolation and see each full parse-array pipeline without chasing a shared decode-helper module."
+    },
+    {
+      "files": [
+        "packages/shader/src/default-standard-pbr-skin.wgsl.meta.json",
+        "packages/shader/src/default-standard-pbr.wgsl.meta.json"
+      ],
+      "rationale": "feat-20260528-material-shader-registration-unification M2 w3: default-standard-pbr and default-standard-pbr-skin share the same 8-entry paramSchema (baseColor, metallicRoughnessTexture, metallicRoughnessSampler, normalTexture, normalSampler, metallic, roughness, ao) because pbr-skin extends pbr with skeletal animation but uses the same material uniform interface. The duplication is intentional — each sidecar self-contains its full paramSchema so the vite-plugin-shader buildStart can validate each entry independently without cross-referencing (architecture principle #3 schema-as-contract + #4 pipeline isolation)."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260528-material-shader-registration-unification: gltf-instancing smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with 2.lighting/3.materials. Same charter F1 grep-anchor rationale as all existing smoke-dawn whitelist entries: each demo keeps its full smoke recipe inline under its own folder so AI users can grep one example without chasing a shared helper."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/src/index.ts",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/src/index.ts"
+      ],
+      "rationale": "pre-existing clone: depth-testing and face-culling demos share the same cube spawn + camera setup boilerplate (34 lines). LearnOpenGL chapter 4.1 and 4.4 use the same scene foundation; charter F1 grep-anchor: each tutorial example keeps its full recipe inline."
+    },
+    {
+      "files": [
+        "packages/shader/src/unlit.wgsl",
+        "apps/learn-render/4.advanced-opengl/3.blending/src/alpha-test.wgsl"
+      ],
+      "rationale": "pre-existing clone: alpha-test.wgsl is a custom user shader that intentionally mirrors the engine unlit.wgsl structure (vertex output struct + fragment entry point skeleton). LearnOpenGL 4.3 blending/alpha-test extends the unlit model with discard; the structural overlap (38 lines) is the teaching progression, not extractable duplication."
+    },
+    {
+      "files": [
+        "packages/physics-rapier2d/src/rapier-physics-world-2d.ts",
+        "packages/physics-rapier3d/src/rapier-physics-world-3d.ts"
+      ],
+      "rationale": "bug-20260529-physics-tick-systems-no-op-stub-demo-frozen M1/M2: the 2D and 3D rapier backends are intentionally mirror-shaped per constraint C-3 (dual-impl symmetry). ensureBody (ECS->Rapier desc construction) and the three-phase tick systems (physicsSyncBackend/physicsStepSimulation/physicsWriteback) are structurally identical across both packages but bind distinct Rapier WASM modules (@dimforge/rapier2d-compat vs rapier3d-compat) with dimension-specific APIs (Vec2 {x,y} + scalar rotation vs Vec3 {x,y,z} + Quat; cuboid 2-arg vs 3-arg half-extents; no z-axis in 2D). Extracting a shared abstract base would require generics over the two incompatible Rapier module types + type-level dispatch on dimension, adding complexity beyond the cost of two dimension-adapted implementations. Same mirror-shaped-by-design idiom as the existing packages/gltf/src/parse-animation.ts <-> parse-skin.ts whitelist entry above. ImplementReviewer round-1 mechanicalSelfChecks documented this duplication as deliberately kept (C-3)."
+    },
+    {
+      "files": [
+        "packages/physics-rapier2d/src/simulation-participant.ts",
+        "packages/physics-rapier3d/src/simulation-participant.ts"
+      ],
+      "rationale": "feat-20260807-simulation-record-restore-seam M4 follow-up: the 2D and 3D simulation participants intentionally keep the same entity-reference validation walk beside their dimension-specific state DTOs. The walk covers bodies, joints, kinematic controllers, teleports, collision pairs, and pending/history events; extracting it into an ECS generic would hide the backend-owned field map and weaken the single-file participant contract. This is the same dual-implementation symmetry already whitelisted for the Rapier world adapters above."
+    },
+    {
+      "files": [
+        "packages/physics-rapier2d/src/rapier-physics-world-2d.ts",
+        "packages/runtime/src/systems/advance-animation-player.ts"
+      ],
+      "rationale": "bug-20260529-physics-tick-systems-no-op-stub-demo-frozen M2 (plan-strategy D-1): the rapier physics tick systems deliberately replicate the advanceAnimationPlayer ECS-system registration idiom -- closure over `world`, empty query tuple, archetype-graph manual traversal (graph.byId loop + componentIds.includes guards + column-view extraction + per-row entity re-encode). This is the engine's already-proven system-authoring pattern; D-1 explicitly chose to copy it rather than invent a new one, so the archetype-traversal skeleton is byte-similar by design. Extracting a shared `_archetype-walk` helper would couple the physics backend package to runtime internals it intentionally accesses only through the thin InternalWorldSurface shim. Charter F1: each system file reads top-to-bottom as a self-contained tick recipe."
+    },
+    {
+      "files": [
+        "apps/hello/app/scripts/smoke.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-app and hello-transform-hierarchy smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate (same shape as every other hello-* smoke driver already whitelisted above). Charter F1 grep-anchor: each demo's smoke driver is self-contained alongside its src/main.ts; extracting a shared helper would split the verdict logic across files and break F1 single-file consumption."
+    },
+    {
+      "files": ["apps/hello/audio/scripts/smoke.mjs", "apps/hello/bloom/scripts/smoke-dawn.mjs"],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-audio (createApp structural smoke) and hello-bloom (declarative bloom pipeline smoke) share the dawn-node createApp boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; audio-specific Web Audio API wiring and bloom-specific per-frame graph pass verification stay inline."
+    },
+    {
+      "files": ["apps/hello/bloom/scripts/smoke-dawn.mjs", "apps/hello/physics/scripts/smoke.mjs"],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-bloom and hello-physics smoke drivers share the createApp + dawn-node loop boilerplate (same shape as every other hello-* smoke driver already whitelisted). Charter F1 grep-anchor: each demo's smoke is self-contained; bloom-specific declarative pipeline assertion and physics-specific rapier backend boot stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/hello/culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-cube (canonical smoke template) and hello-culling (frustum-culling demo) share the dawn-node 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; per-demo verdict sites (cube's meshed sites vs culling's visibility assertion) diverge and stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/cube/scripts/smoke-dawn.mjs",
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-cube and hello-tonemap smoke drivers share the dawn-node 4-criteria pixel readback shape. Charter F1 grep-anchor: each demo's smoke is self-contained; tonemap-specific AC-07 mass-burn scan + AC-08 highlight-band assert + AC-09 reference-png byte-equivalence stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/culling/scripts/smoke-dawn.mjs",
+        "apps/hello/skin/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-culling and hello-skin smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; culling-specific frustum-visibility assertion and skin-specific synthetic fixture + Skin/AnimationPlayer wiring stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/custom-shader/scripts/smoke-dawn.mjs",
+        "apps/hello/skin/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-custom-shader (free-end user-material demo) and hello-skin (skeleton-animation demo) share the dawn-node bootstrap + mock canvas + offscreen render-target setup. Charter F1 grep-anchor: each demo's smoke is self-contained; custom-shader-specific per-T brightness delta against analytic sin() curve and skin-specific synthetic fixture + skeleton pipeline wiring stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/fxaa/scripts/smoke-dawn.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-fxaa (dual-pass pixel-diff FXAA demo) and hello-transform-hierarchy (parent-child hierarchy demo) share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; fxaa-specific dual-World pixel-diff assertion and transform-hierarchy-specific parent-child world-matrix readback stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-gltf-instancing and hello-tonemap smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; gltf-instancing-specific glTF instanced-draw readback and tonemap-specific mass-burn + highlight-band verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/picking/scripts/smoke-dawn.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-picking and hello-transform-hierarchy smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; picking-specific ray-cast center-hit/corner-miss assertion and transform-hierarchy-specific parent-child world-matrix readback stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-room and hello-tonemap smoke drivers share the dawn-node multi-mesh pixel-readback boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; room-specific meshed-sites 4-criteria assert and tonemap-specific mass-burn + highlight-band verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/room/scripts/smoke-dawn.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-room (multi-mesh GLTF scene) and hello-transform-hierarchy (parent-child hierarchy demo) share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; room-specific meshed-sites readback and transform-hierarchy-specific world-matrix readback stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-tonemap and hello-transform-hierarchy smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; tonemap-specific HDR mass-burn + highlight-band verdict and transform-hierarchy-specific parent-child world-matrix readback stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/topology/scripts/smoke-dawn.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: hello-topology (line-list wireframe smoke) and hello-transform-hierarchy (parent-child hierarchy demo) share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; topology-specific line-pixel discriminating readback (foreground-band) and transform-hierarchy-specific world-matrix readback stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 1.getting-started/7.camera and 4.advanced-opengl/4.face-culling smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate (same shape as every other learn-render smoke driver already whitelisted). Charter F1 grep-anchor: each tutorial example's smoke recipe is self-contained; per-example verdict criteria stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 2.lighting/1.colors and 4.advanced-opengl/3.blending smoke drivers share the dawn-node loader + 4-criteria assert boilerplate. Charter F1 grep-anchor: each tutorial example's smoke recipe is self-contained alongside its src/index.ts."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 2.lighting/1.colors and 4.advanced-opengl/4.face-culling smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-example verdict criteria diverge and stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 2.lighting/2.basic-lighting and 4.advanced-opengl/3.blending smoke drivers share the dawn-node loader + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained alongside its src/index.ts."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 2.lighting/2.basic-lighting and 4.advanced-opengl/4.face-culling smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-example verdict criteria diverge and stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 2.lighting/3.materials and 4.advanced-opengl/3.blending smoke drivers share the dawn-node loader + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained alongside its src/index.ts."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 2.lighting/3.materials and 4.advanced-opengl/4.face-culling smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-example verdict criteria diverge and stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 3.model-loading/1.model-loading (Sponza run-without-error smoke) and 4.advanced-opengl/4.face-culling share the dawn-node Engine.create + structural smoke boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; Sponza-specific run-without-error verdict and face-culling-specific pixel-readback criteria stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/1.depth-testing and 2.stencil-testing smoke drivers share the dawn-node loader + first-person-camera helper + 4-criteria pixel-readback boilerplate. LearnOpenGL chapters 4.1 and 4.2 are contiguous; each example's smoke is self-contained per charter F1 grep-anchor. Same idiom as the existing 2.lighting/* <-> 2.lighting/* whitelist entries above."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/1.depth-testing and 4.face-culling smoke drivers share the dawn-node loader + first-person-camera helper + pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained alongside its src/index.ts; per-example verdict sites stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/2.stencil-testing and 3.blending smoke drivers share the dawn-node loader + first-person-camera helper + pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained alongside its src/index.ts."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/2.stencil-testing and 4.face-culling smoke drivers share the dawn-node loader + first-person-camera helper + pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained alongside its src/index.ts; per-example verdict sites stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/3.blending and 4.face-culling smoke drivers share the dawn-node loader + mock canvas + pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; blending-specific alpha-test/discard verdict and face-culling-specific visibility readback stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs",
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/4.face-culling smoke shares the dawn-node loader + mock canvas boilerplate with the shared IBL smoke helper. Sibling to existing 6.pbr/_shared/ibl-smoke-shared.mjs <-> 2.lighting/* whitelist entries above. Charter F1 grep-anchor: face-culling-specific verdict criteria stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs",
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: 4.advanced-opengl/4.face-culling smoke shares the dawn-node loader boilerplate with parity-instancing-static. Sibling to existing parity-instancing-static <-> 2.lighting/* whitelist entries above. Charter F1 grep-anchor: face-culling-specific visibility readback stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/3.model-loading/1.model-loading/src/main.ts",
+        "packages/gltf/src/bridge.ts"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: the 3.1 Sponza demo's meshIrToPod interleaving loop shares the canonical bridge.ts 12F per-vertex interleave shape. The demo intentionally reimplements meshIrToPod inline for charter F1 grep-anchor (AI users read the demo folder and see the full glTF→POD recipe); the engine's packages/gltf/src/bridge.ts is the runtime import path for app-level consumers but the demo keeps its own copy for single-folder discoverability. Same idiom as the gltf <-> gltf-instancing meshIrToPod whitelist entry above."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/src/index.ts",
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/src/index.ts"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: depth-testing and stencil-testing demos intentionally share the same cube spawn + camera setup boilerplate. LearnOpenGL chapter 4.1 feeds directly into 4.2; each tutorial example keeps its full scene recipe inline for charter F1 grep-anchor (single-folder AI consumption). Same idiom as the existing 2.lighting/* <-> 2.lighting/* src/index.ts whitelist entries above."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/src/index.ts",
+        "apps/learn-render/4.advanced-opengl/3.blending/src/index.ts"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: stencil-testing and blending demos intentionally share the same cube spawn + camera setup boilerplate. LearnOpenGL chapter 4.2 feeds into 4.3; each tutorial example keeps its full scene recipe inline for charter F1 grep-anchor. Same idiom as the existing 2.lighting/* <-> 2.lighting/* src/index.ts whitelist entries above."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/src/depth-viz.wgsl",
+        "apps/learn-render/4.advanced-opengl/3.blending/src/alpha-test.wgsl"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: depth-viz.wgsl and alpha-test.wgsl are custom user shaders that intentionally mirror each other's vertex-output/fragment-entry skeleton. LearnOpenGL chapters 4.1 and 4.3 use separate custom WGSL modules; the structural overlap is the teaching progression, not extractable duplication. Same idiom as the existing unlit.wgsl <-> alpha-test.wgsl whitelist entry above."
+    },
+    {
+      "files": [
+        "packages/runtime/src/mipmap-generator.ts",
+        "packages/runtime/src/mipmap-generator.ts"
+      ],
+      "rationale": "tweak-20260606-dup-check-whitelist: mipmap-generator.ts contains a self-clone between the pre-computed downsampling path and the on-demand generation path. Both paths share the same box-filter kernel + float32↔uint8 conversion math; extracting a shared helper would add an abstraction layer on a hot GPU-upload path whose explicit duplication is the lower-cost stance (same rationale as the existing quat.ts self-clone whitelist entry above). Follow-up loop trigger: add a 3rd variant (e.g. non-box-filter kernel); open tweak-future-mipmap-subsample-helper then."
+    },
+    {
+      "files": [
+        "apps/hello/scene-nesting/scripts/smoke-dawn.mjs",
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260608-scene-nesting-ecs-fication R2/F-6: scene-nesting and transform-hierarchy smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Same idiom as every other hello-* smoke whitelist above. Charter F1 grep-anchor: each demo's smoke driver is self-contained alongside its src/index.ts; extracting a shared helper would break F1 single-file consumption and split the verdict logic across files. The scene-nesting-specific blocks (mount fixture POD construction + B-5 console.error RhiError counter + structural-only PASS criteria) and transform-hierarchy-specific blocks (parent-child world-matrix readback + ChildOf walking) stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/app/scripts/smoke.mjs",
+        "apps/hello/scene-nesting/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260608-scene-nesting-ecs-fication R2/F-6: hello-app (createApp structural smoke) and scene-nesting (dawn-node SceneInstance smoke) share the dawn-node createApp + mock canvas + N-frame loop boilerplate. Same idiom as the existing hello-app <-> hello-transform-hierarchy whitelist above. Charter F1 grep-anchor: each demo's smoke is self-contained; scene-nesting-specific SceneAsset POD + mount fixture + console.error RhiError gate + structural-only criteria, and hello-app-specific createApp lifecycle/cleanup verification stay inline."
+    },
+    {
+      "files": [
+        "packages/ecs/src/cli-ecs.ts",
+        "packages/ecs/__tests__/__fixtures__/inspect-scripts.snapshot.ts"
+      ],
+      "rationale": "feat-20260608-scene-nesting-ecs-fication R2/F-1: the cli-ecs.ts buildEntitiesScript body and the byte-identical snapshot fixture inspect-scripts.snapshot.ts ENTITIES_SCRIPT_BY_NAMES MUST share the same script-emit body — that is the test contract (cli-ecs-scripts.test.ts asserts buildEntitiesScript === ENTITIES_SCRIPT_BY_NAMES via .toBe). The fixture is the regression-locking SSOT; deduplicating it would defeat the byte-identical migration test. Same rationale as the existing self-clone whitelist for mipmap-generator.ts."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/1.advanced-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 5.1 advanced-lighting (Blinn-Phong custom shader smoke) and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each chapter-5 demo's smoke is self-contained alongside its src/index.ts so AI users grep one folder for the full recipe; per-demo verdict (Blinn-Phong: shininess vs Phong delta; normal-mapping: brick-wall pixel sites) stays inline. Same idiom as every other learn-render <-> learn-render smoke pair already whitelisted above."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/2.gamma-correction/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 5.2 gamma-correction (dual-pipeline gamma vs no-gamma diff smoke) and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each chapter-5 demo's smoke is self-contained; per-demo verdict (gamma: brightness diff between two pipelines; normal-mapping: 4-criteria readback) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/src/depth-viz.wgsl",
+        "apps/learn-render/5.advanced-lighting/1.advanced-lighting/src/blinn-phong.wgsl"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: depth-viz.wgsl (chapter 4.1 custom depth-visualization shader) and blinn-phong.wgsl (chapter 5.1 custom Blinn-Phong shader) share the WGSL vertex-output struct + fragment-entry-point skeleton (~36 lines: @location attributes, uniform group bindings, @vertex/@fragment entry stubs). LearnOpenGL chapters 4.1 and 5.1 are separate teaching topics; the structural overlap is the engine's WGSL custom-shader idiom (registerMaterialShader signature), not extractable duplication. Same idiom as the existing depth-viz.wgsl <-> alpha-test.wgsl whitelist entry above. Charter F1 grep-anchor: each chapter's WGSL stays self-contained in its demo folder."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 4.1 depth-testing and 5.4 normal-mapping smoke drivers share the dawn-node loader + first-person-camera helper + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (depth-testing: depth-buffer linear/non-linear viz; normal-mapping: tangent-space brickwall sites) stays inline. Same idiom as 4.1 <-> 4.2 whitelist above."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 4.2 stencil-testing and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + first-person-camera helper boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (stencil-testing: outline detection; normal-mapping: brickwall normal-perturbation sites) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 4.3 blending and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (blending: alpha-test discard; normal-mapping: tangent-space readback) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 4.4 face-culling and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + first-person-camera helper boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (face-culling: visibility readback; normal-mapping: brickwall sites) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/6.cubemaps/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 4.6 cubemaps and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + 4-criteria readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (cubemaps: skybox-on/off two-World diff; normal-mapping: brickwall normal sites) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 1.7 camera (canonical learn-render smoke template) and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + RGB readback shape. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (camera: first-person input + readback; normal-mapping: tangent-space brickwall) stays inline. Same idiom as existing 7.camera <-> 2.lighting/* whitelist entries above."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 2.1 colors and 5.4 normal-mapping smoke drivers share the dawn-node 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (colors: lit-vs-lamp distinction; normal-mapping: tangent-space brickwall) stays inline. Same idiom as 2.1/colors <-> 4.4/face-culling whitelist above."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 2.2 basic-lighting and 5.4 normal-mapping smoke drivers share the dawn-node loader + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (basic-lighting: ambient/diffuse/specular Phong; normal-mapping: tangent-space normal Blinn-Phong) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 2.3 materials and 5.4 normal-mapping smoke drivers share the dawn-node loader + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; per-demo verdict (materials: Phong material params; normal-mapping: tangent-space normal map) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 3.1 Sponza model-loading (run-without-error structural smoke) and 5.4 normal-mapping smoke drivers share the dawn-node Engine.create + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; Sponza-specific run-without-error verdict and normal-mapping-specific brickwall pixel verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: parity-instancing-static (canonical parity smoke driver) and 5.4 normal-mapping smoke drivers share the dawn-node 300-frame readback boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; per-demo verdict diverges and stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: 6.pbr/_shared/ibl-smoke-shared.mjs and 5.4 normal-mapping smoke share the dawn-node loader + mock canvas + RGB readback shape. Charter F1 grep-anchor: each demo owns its complete smoke recipe; the IBL shared helper covers chapter-6 IBL siblings only, while normal-mapping is chapter 5.4 with its own tangent-space verdict logic inline."
+    },
+    {
+      "files": [
+        "apps/hello/app/scripts/smoke.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-app (createApp structural smoke) and 5.4 normal-mapping smoke drivers share the dawn-node createApp + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; hello-app lifecycle verification and normal-mapping brickwall sites stay inline. Same idiom as existing hello-app <-> hello-* whitelist entries above."
+    },
+    {
+      "files": [
+        "apps/hello/culling/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-culling (frustum-culling demo) and 5.4 normal-mapping smoke drivers share the dawn-node 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; per-demo verdict diverges and stays inline."
+    },
+    {
+      "files": [
+        "apps/hello/custom-shader/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-custom-shader (free-end user-material demo) and 5.4 normal-mapping smoke drivers share the dawn-node bootstrap + mock canvas + offscreen render-target setup. Charter F1 grep-anchor: each demo's smoke is self-contained; custom-shader-specific per-T brightness pulse and normal-mapping-specific tangent-space verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/fxaa/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-fxaa (dual-pass pixel-diff FXAA demo) and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; fxaa-specific dual-World pixel-diff and normal-mapping-specific brickwall verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-gltf-instancing and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; gltf-instancing instanced-draw readback and normal-mapping tangent-space verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/picking/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-picking and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; picking ray-cast assertion and normal-mapping brickwall verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/scene-nesting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-scene-nesting and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; scene-nesting SceneInstance mount fixture and normal-mapping tangent-space verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/shadow-opt-out/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-shadow-opt-out and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; shadow-opt-out tag-driven culling and normal-mapping brickwall verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/skin/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-skin and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; skin synthetic-skeleton fixture and normal-mapping tangent-space verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/text/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-text (MSDF text rendering) and 5.4 normal-mapping smoke drivers share the dawn-node createApp + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; text MSDF readback and normal-mapping tangent-space verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-tonemap and 5.4 normal-mapping smoke drivers share the dawn-node 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; tonemap mass-burn / highlight-band verdict and normal-mapping brickwall verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/topology/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-topology (line-list wireframe) and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; topology line-discriminating readback and normal-mapping brickwall verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13: hello-transform-hierarchy and 5.4 normal-mapping smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; hierarchy parent-child world-matrix readback and normal-mapping tangent-space verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/fxaa/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): hello-fxaa (FXAA pixel-diff) and 4.10 anti-aliasing-msaa (MSAA visibility) smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Both teach AA techniques (post-process FXAA vs render-target MSAA); charter F1 grep-anchor: each demo's smoke is self-contained alongside its src/index.ts; per-demo verdict (FXAA: dual-pipeline pixel diff; MSAA: jaggy-edge softness) stays inline."
+    },
+    {
+      "files": [
+        "apps/hello/multi-material/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): hello-multi-material and 4.10 anti-aliasing-msaa smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; multi-material per-submesh BG readback and anti-aliasing-msaa jaggy-edge verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/multi-material/scripts/smoke-dawn.mjs",
+        "apps/hello/topology/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): hello-multi-material and hello-topology smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; multi-material per-submesh BG readback and topology line-list discriminating verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): hello-transform-hierarchy and 4.10 anti-aliasing-msaa smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; hierarchy parent-child world-matrix readback and anti-aliasing jaggy-edge verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/skin/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): hello-skin and 4.4 face-culling smoke drivers share the dawn-node loader + first-person-camera helper boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained; skin synthetic-skeleton fixture and face-culling visibility verdict stay inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/5.framebuffers/src/shaders/edge-detection.wgsl",
+        "apps/learn-render/4.advanced-opengl/5.framebuffers/src/shaders/sharpen.wgsl"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): edge-detection.wgsl and sharpen.wgsl in 4.5 framebuffers chapter both implement 3x3 convolution post-process kernels (~31 lines: kernel coefficients, 9-tap sample, accumulator, output). LearnOpenGL chapter 4.5 teaches per-kernel post-process variants; the structural overlap is the kernel-based teaching idiom (each WGSL is a standalone kernel for AI users to grep one file and see the full convolution recipe). Charter F1 grep-anchor: kernel-specific coefficients (edge-detection vs sharpen vs blur) stay inline per file."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/5.framebuffers/src/shaders/blur.wgsl",
+        "apps/learn-render/4.advanced-opengl/5.framebuffers/src/shaders/sharpen.wgsl"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): blur.wgsl and sharpen.wgsl in 4.5 framebuffers chapter both implement 3x3 convolution post-process kernels (~42 lines: kernel coefficients, 9-tap sample, accumulator, output). Same charter F1 grep-anchor rationale as edge-detection.wgsl <-> sharpen.wgsl pair above; kernel-specific coefficients stay inline per file for single-folder AI consumption."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/5.framebuffers/scripts/smoke-dawn.mjs",
+        "apps/learn-render/4.advanced-opengl/7.advanced-glsl-ubo/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): 4.5 framebuffers and 4.7 advanced-glsl-ubo smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained; framebuffers offscreen-RT verdict and ubo dual-camera UBO verdict stay inline."
+    },
+    {
+      "files": [
+        "packages/ecs/__tests__/__fixtures__/inspect-scripts.snapshot.ts",
+        "packages/ecs/src/__tests__/__fixtures__/inspect-scripts.snapshot.ts"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): the two inspect-scripts.snapshot.ts files (legacy __tests__ path + canonical src/__tests__ path) carry the byte-identical ENTITIES_SCRIPT_BY_NAMES fixture used by cli-ecs-scripts.test.ts. Same regression-locking-SSOT rationale as the existing src/cli-ecs.ts <-> __tests__/inspect-scripts.snapshot.ts whitelist entry above; deduplicating the snapshot copies would defeat the byte-identical migration test contract."
+    },
+    {
+      "files": [
+        "packages/ecs/src/__tests__/__fixtures__/inspect-scripts.snapshot.ts",
+        "packages/ecs/src/cli-ecs.ts"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): cli-ecs.ts buildEntitiesScript body and the src/__tests__ snapshot fixture carry the byte-identical script-emit body asserted by cli-ecs-scripts.test.ts. Same regression-locking-SSOT rationale as the existing cli-ecs.ts <-> __tests__/inspect-scripts.snapshot.ts whitelist entry above; the fixture is the SSOT for the migration test."
+    },
+    {
+      "files": [
+        "scripts/grep/check-no-result-reproject-cast.mjs",
+        "scripts/grep/check-no-shader-manifest-url-literal.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): two grep-gate scripts share the scan-source-tree boilerplate (walk dir, regex match, exit 0/1, structured [reason]/[rerun]/[hint] triple). Same charter F1 grep-anchor + AC-05 idiom as the existing 6+ grep<->grep whitelist entries above (string-view <-> set-managed-ref-store, no-array-stride-option <-> no-managed-array-view-import, etc); each gate is self-contained for AI users to grep one file and see the full scan recipe."
+    },
+    {
+      "files": [
+        "scripts/grep/check-no-managed-array-view-import.mjs",
+        "scripts/grep/check-no-shader-manifest-url-literal.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): same grep-gate idiom rationale as the check-no-result-reproject-cast pair above; each gate self-contains the scan logic for charter F1 single-file consumption."
+    },
+    {
+      "files": [
+        "scripts/grep/check-no-managed-array-error-code.mjs",
+        "scripts/grep/check-no-shader-manifest-url-literal.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): same grep-gate idiom rationale as the check-no-result-reproject-cast pair above; each gate self-contains the scan logic for charter F1 single-file consumption."
+    },
+    {
+      "files": [
+        "scripts/grep/check-no-buffer-colon-keyword.mjs",
+        "scripts/grep/check-no-shader-manifest-url-literal.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): same grep-gate idiom rationale as the check-no-result-reproject-cast pair above; each gate self-contains the scan logic for charter F1 single-file consumption."
+    },
+    {
+      "files": [
+        "scripts/grep/check-no-array-stride-option.mjs",
+        "scripts/grep/check-no-shader-manifest-url-literal.mjs"
+      ],
+      "rationale": "feat-20260611-learn-render-5-blinn-gamma-normal-parallax M6/t13 (pre-existing baseline drift, hygiene cleanup): same grep-gate idiom rationale as the check-no-result-reproject-cast pair above; each gate self-contains the scan logic for charter F1 single-file consumption."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom and 4.normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained alongside its src/index.ts. Same idiom as the existing 5.1/2.gamma-correction <-> 4.normal-mapping smoke pair whitelist entries above; per-demo verdict (7.bloom: bloom pass names + Camera.bloom readback; normal-mapping: brickwall normal sites) stays inline."
+    },
+    {
+      "files": [
+        "apps/hello/app/scripts/smoke.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node createApp + mock canvas + N-frame loop boilerplate with hello-app. Charter F1 grep-anchor: each demo's smoke is self-contained; 7.bloom-specific bloom pass names + Camera.bloom readback stay inline."
+    },
+    {
+      "files": [
+        "apps/hello/culling/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-culling. Charter F1 grep-anchor: each demo's smoke is self-contained; per-demo verdict stays inline."
+    },
+    {
+      "files": [
+        "apps/hello/custom-shader/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node bootstrap + mock canvas + offscreen render-target setup with hello-custom-shader. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/fxaa/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-fxaa. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/gltf-instancing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas boilerplate with hello-gltf-instancing. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/multi-material/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-multi-material. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/picking/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-picking. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/scene-nesting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + N-frame loop boilerplate with hello-scene-nesting. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/shadow-opt-out/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas boilerplate with hello-shadow-opt-out. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/skin/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + N-frame loop boilerplate with hello-skin. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/sprite/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-sprite. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/sprite-atlas/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-sprite-atlas. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/text/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node createApp + mock canvas boilerplate with hello-text. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/tonemap/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node 4-criteria pixel-readback boilerplate with hello-tonemap. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/topology/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + offscreen render-target boilerplate with hello-topology. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 7.bloom smoke shares dawn-node loader + mock canvas + N-frame loop boilerplate with hello-transform-hierarchy. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/6.coordinate-systems/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 1.6 coordinate-systems and 7.bloom smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 1.7 camera and 7.bloom smoke drivers share the dawn-node loader + mock canvas + RGB readback shape. Sibling to existing 7.camera <-> 5.4/normal-mapping whitelist above. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/1.colors/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 2.1 colors and 7.bloom smoke drivers share the dawn-node 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/2.basic-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 2.2 basic-lighting and 7.bloom smoke drivers share the dawn-node loader + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 2.3 materials and 7.bloom smoke drivers share the dawn-node loader + 4-criteria pixel-readback boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/4.lighting-maps/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 2.4 lighting-maps and 7.bloom smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/2.lighting/5.light-casters/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 2.5 light-casters and 7.bloom smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/3.model-loading/1.model-loading/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 3.1 Sponza and 7.bloom smoke drivers share the dawn-node Engine.create + mock canvas boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/1.depth-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 4.1 depth-testing and 7.bloom smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/2.stencil-testing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 4.2 stencil-testing and 7.bloom smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 4.3 blending and 7.bloom smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 4.4 face-culling and 7.bloom smoke drivers share the dawn-node loader + mock canvas + N-frame loop boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/6.cubemaps/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 4.6 cubemaps and 7.bloom smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/9.instancing/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 4.9 instancing and 7.bloom smoke drivers share the dawn-node loader + mock canvas boilerplate. Charter F1 grep-anchor: each tutorial example's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/1.advanced-lighting/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 5.1 advanced-lighting and 7.bloom smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each chapter-5 demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/2.gamma-correction/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 5.2 gamma-correction and 7.bloom smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate. Charter F1 grep-anchor: each chapter-5 demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/6.pbr/_shared/ibl-smoke-shared.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: 6.pbr/_shared/ibl-smoke-shared.mjs and 7.bloom smoke share the dawn-node loader + mock canvas + RGB readback shape. Charter F1 grep-anchor: each demo owns its complete smoke recipe."
+    },
+    {
+      "files": [
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M2/t6: parity-instancing-static and 7.bloom smoke drivers share the dawn-node 300-frame readback boilerplate. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/6.hdr/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/7.bloom/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M3/t14: 6.hdr (custom RenderPipeline + rgba16float offscreen + LO exposure tonemap) and 7.bloom (URP default + Camera.bloom field-driven) smoke drivers share the dawn-node loader + mock canvas + texture-decode + N-frame loop boilerplate region. The two demos diverge on the API surface they teach (custom RenderPipeline vs Camera-field opt-in) but share the bootstrap shape; per-demo verdict (6.hdr: perFramePassNames === ['main','postHdr']; 7.bloom: bloom + tonemap pass-name set + Camera.bloom readback) stays inline. Charter F1 grep-anchor: each demo's smoke is self-contained."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/6.hdr/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/4.normal-mapping/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M3/t14: 6.hdr and 4.normal-mapping smoke drivers share the dawn-node loader + mock canvas + offscreen render-target boilerplate (sibling chapter-5 demos with the canonical structural-only smoke shape). Charter F1 grep-anchor: each demo's smoke is self-contained alongside its src/index.ts; per-demo verdict (6.hdr: perFramePassNames pinned to ['main','postHdr'] + FALSIFY mode; normal-mapping: 4-criteria brickwall pixel readback) stays inline. Same idiom as the existing 7.bloom <-> 4.normal-mapping pair from M2/t6 above."
+    },
+    {
+      "files": [
+        "apps/learn-render/4.advanced-opengl/4.face-culling/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/6.hdr/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260612-learn-render-5-6-7-hdr-bloom-demos M3/t14: 4.face-culling and 6.hdr smoke drivers share the dawn-node loader + mock canvas + first-person-camera-flavoured ECS spawn block. Charter F1 grep-anchor: each demo's smoke is self-contained; per-demo verdict (face-culling: visibility readback; 6.hdr: pinned perFramePassNames + FALSIFY mode) stays inline."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/3.3.csm/scripts/smoke.mjs",
+        "apps/learn-render/5.advanced-lighting/3.1.shadow-mapping/3.full/scripts/smoke.mjs"
+      ],
+      "rationale": "feat-20260621-learn-render-5-3-production-shadow-demos M5: 3.3.csm (CSM) and 3.1.shadow-mapping/3.full (directional) dawn smokes share the dawn-node loader + mock canvas + wood-texture-catalog + floor/cube ECS spawn boilerplate (sibling 5.3 shadow demos with the canonical structural-only smoke shape). Charter F1 grep-anchor: each demo's smoke is self-contained alongside its src/main.ts; per-demo verdict stays inline (3.3.csm: 4 shadowCascade passes + post-effect pass via perFramePassNames + FALSIFY overlay-off / no-shadow controls; 3.1: shadowPresent + 4-criteria gate)."
+    },
+    {
+      "files": [
+        "apps/learn-render/5.advanced-lighting/3.3.csm/scripts/smoke-browser.mjs",
+        "apps/learn-render/5.advanced-lighting/3.1.shadow-mapping/3.full/scripts/smoke-browser.mjs"
+      ],
+      "rationale": "feat-20260621-learn-render-5-3-production-shadow-demos M5: 3.3.csm and 3.1.shadow-mapping/3.full Playwright browser smokes share the vite-spawn + Chrome-WebGPU launch + createRenderPipeline-capture harness (canonical browser-smoke shape from 8.deferred-shading). Charter F1 grep-anchor: each demo's browser smoke is self-contained; per-demo assertion stays inline (3.3.csm additionally asserts the overlay fullscreen post-process pipeline composed on top of URP)."
+    },
+    {
+      "files": [
+        "apps/hello/custom-importer/scripts/smoke-dawn.mjs",
+        "apps/learn-render/5.advanced-lighting/2.gamma-correction/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260629-importer-self-declared-fold-contract M5: the host-custom-importer acceptance smoke shares the dawn-node webgpu-global injection + mock GPUCanvasContext + offscreen render-target readback boilerplate with the gamma-correction demo smoke (canonical structural-plus-pixel smoke shape). Charter F1 grep-anchor: each demo smoke is a single self-contained driver an AI user reads without traversing a shared helper (same idiom as the hello-* / learn-render smoke-dawn whitelists above). Per-demo verdict stays inline (custom-importer: pack-index reel-game-blob row + loadByGuid typed blob + scene maxDist + 0 RhiError, 6 criteria)."
+    },
+    {
+      "files": [
+        "apps/hello/custom-importer/scripts/smoke-dawn.mjs",
+        "apps/parity/instancing-static/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "feat-20260629-importer-self-declared-fold-contract M5: the host-custom-importer acceptance smoke shares the dawn-node loader + mock canvas + pixel-sampling readback tail with the instancing-static parity smoke (canonical smoke shape). Charter F1 grep-anchor: each demo smoke is self-contained alongside its src/main.ts; the custom-importer per-demo verdict (host {key,import} importer end-to-end -> pack-index kind:reel-game-blob -> loadByGuid -> scene render) stays inline."
+    },
+    {
+      "files": [
+        "packages/shader/src/sprite.wgsl.meta.json",
+        "packages/shader/src/sprite-lit.wgsl.meta.json"
+      ],
+      "rationale": "feat-20260624-sprite-lit-shading-model-pure-2d-lighting M1' / AC-07: sprite-lit.wgsl.meta.json paramSchema mirrors sprite.wgsl.meta.json byte-identically by design — BGL JSON byte-identical contract is the SSOT compression axis (plan-strategy D-1: materialShaderId routing without union extension). Diverging the two would break AC-07 and waste the BGL cache."
+    },
+    {
+      "files": [
+        "apps/hello-multi-uv/scripts/smoke-browser-composed.mjs",
+        "apps/hello-multi-uv/scripts/smoke-browser-variant.mjs"
+      ],
+      "rationale": "solo engine-gauntlet M3 round 20260724-131329: both browser smokes intentionally keep the adaptive Playwright PNG decoder inline for AI grepability, while their assertions are different (combined variant+post+resize+RHI versus standalone variant selection). Extracting a shared decoder at the second consumer would add a traversal concept; revisit only when a third browser PNG smoke needs the same decoder."
+    },
+    {
+      "files": [
+        "apps/bevy/keyboard-input/scripts/smoke-dawn.mjs",
+        "apps/bevy/mouse-input/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260729-163604: keyboard_input and mouse_input are sibling frame-start input examples, so they intentionally keep the canonical Dawn global injection and mock-canvas recipe inline for AI grepability. Their input backends, phase schedules, state proofs, and verdicts are distinct; extract only if a third raw-input smoke repeats the same bootstrap."
+    },
+    {
+      "files": [
+        "apps/bevy/gamepad-input/scripts/smoke-dawn.mjs",
+        "apps/bevy/mouse-input/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260729-182540: gamepad_input and mouse_input are sibling frame-start input examples, so they intentionally keep the canonical Dawn global injection and mock-canvas recipe inline for AI grepability. Their backend fixtures, state proofs, and verdicts are distinct; extract only if a third raw-input smoke repeats the same bootstrap."
+    },
+    {
+      "files": [
+        "apps/bevy/touch-input/scripts/smoke-dawn.mjs",
+        "apps/bevy/keyboard-input/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260729-191752: touch_input and keyboard_input are sibling frame-start input examples, so they intentionally keep the canonical Dawn global injection and mock-canvas recipe inline for AI grepability. Their pointer fixtures, state proofs, and verdicts are distinct; extract only if a third raw-input smoke repeats the same bootstrap."
+    },
+    {
+      "files": [
+        "apps/bevy/touch-input/scripts/smoke-dawn.mjs",
+        "apps/bevy/mouse-input/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260729-191752: touch_input and mouse_input are sibling frame-start input examples, so they intentionally keep the canonical Dawn global injection and mock-canvas recipe inline for AI grepability. Their pointer fixtures, state proofs, and verdicts are distinct; extract only if a third raw-input smoke repeats the same bootstrap."
+    },
+    {
+      "files": [
+        "apps/bevy/touch-input/scripts/smoke-dawn.mjs",
+        "apps/bevy/gamepad-input/scripts/smoke-dawn.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260729-191752: touch_input and gamepad_input are sibling frame-start input examples, so they intentionally keep the canonical Dawn global injection and mock-canvas recipe inline for AI grepability. Their pointer fixtures, state proofs, and verdicts are distinct; extract only if a third raw-input smoke repeats the same bootstrap."
+    },
+    {
+      "files": [
+        "apps/bevy/component-hooks/scripts/smoke-browser.mjs",
+        "apps/bevy/system-closure/scripts/smoke-browser.mjs"
+      ],
+      "rationale": "solo bevy-examples round 20260813-210615: both ECS browser admissions keep the low-level RHI tape buffer decoder inline so an AI user can inspect one demo's material and scene proof without traversing a helper. The assertions remain demo-specific: component_hooks proves two lifecycle marker slices; system_closure proves three closure tracks and their movement bands. Revisit if a third Bevy RHI browser admission needs the same decoder."
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>ForgeaX TAA</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      body { margin: 0; padding: 18px; background: #080b14; color: #d8e1ff; }
+      main { width: 1920px; margin: 0 auto; }
+      canvas { display: block; width: 1920px; height: 1080px; border: 1px solid #27324d; background: #03050b; }
+      #legend { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px 6px; font-size: 12px; color: #aab8df; }
+      #legend strong { color: #f4f7ff; }
+      #controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 4px; }
+      button { border: 1px solid #40527f; border-radius: 4px; padding: 7px 10px; background: #111a31; color: #d8e1ff; font: inherit; font-size: 12px; cursor: pointer; }
+      button:hover { background: #192746; }
+      button[aria-pressed="true"] { border-color: #7ea6ff; color: #ffffff; }
+      #control-status { min-height: 16px; padding: 3px 2px 6px; color: #aab8df; font-size: 11px; }
+      #color-grading-proof { margin: 8px 0 12px; padding: 10px 12px; border: 1px solid #38588e; border-radius: 5px; background: #0d1830; color: #bcd2ff; white-space: pre-wrap; font-size: 11px; line-height: 1.45; }
+      pre { max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: 10px; line-height: 1.35; color: #94a4cc; }
+      @media (max-width: 1100px) {
+        main { width: 100%; }
+        canvas { max-width: 100%; height: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <canvas id="app" width="1920" height="1080"></canvas>
+      <div id="legend"><strong id="legend-left">TOP | SHARP REFERENCE</strong><span id="legend-right">BOTTOM | REAL MOTION BLUR</span></div>
+      <div id="controls" aria-label="Demo controls">
+        <button id="pause-toggle" type="button" aria-pressed="false">Pause</button>
+        <button id="taa-toggle" type="button" aria-pressed="true">TAA: On</button>
+        <button id="dynamic-resolution-toggle" type="button" aria-pressed="false">Dynamic Resolution: Off</button>
+        <button id="motion-blur-toggle" type="button" aria-pressed="false">Motion Blur: Off</button>
+        <button id="renderer-retry" type="button">Retry renderer</button>
+        <label for="shutter-angle">Shutter <input id="shutter-angle" type="range" min="0" max="360" step="30" value="180" /> <output id="shutter-angle-value">180°</output></label>
+      </div>
+      <div id="control-status" role="status" aria-live="polite">Running | TAA On | Dynamic Resolution Off | Motion Blur Off</div>
+      <pre id="color-grading-proof" hidden aria-label="Color grading proof">loading</pre>
+      <pre id="inspection">loading</pre>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

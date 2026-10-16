@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:," />
+  <title>hello-fbx-skin</title>
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #fbx-skin-hud {
+      position: absolute; top: 16px; left: 16px; color: #eef; font: 14px monospace;
+      background: rgba(0,0,0,0.6); padding: 12px 16px; border-radius: 6px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="app"></canvas>
+  <div id="fbx-skin-hud">Loading...</div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

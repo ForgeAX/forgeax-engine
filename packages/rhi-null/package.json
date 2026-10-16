@@ -1,0 +1,58 @@
+{
+  "name": "@forgeax/engine-rhi-null",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Headless no-op RHI backend for structural unit tests — implements @forgeax/engine-rhi with zero GPU/DOM dependency.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "headless no-op backend has no runtime canvas; no fps to report"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no-op backend has no hot path; bench focus stays on real backends"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no standalone binary gate; structural assertions provided by runtime dogfood unit tests consuming RhiNull via Channel 1"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# packages/wgpu-wasm/.cargo/config.toml — deterministic symbol mangling.
+#
+# Problem: the committed wasm-bindgen JS glue (pkg/wgpu_wasm.js) is read by
+# vite at preview boot (zero-binary invariant: .wasm is gitignored, .js glue
+# IS committed). With Rust's default *legacy* mangling, closure-shim symbols
+# are named `..._invoke__h<16-hex>` where the suffix is the crate's Strict
+# Version Hash (SVH) — which folds in the exact compiler build. So rustc
+# 1.93.0 vs 1.93.1 (rust-toolchain.toml pins the `1.93` channel, not the
+# patch) or a different host produces a different set of hashes, rewriting
+# the committed glue on every real rebuild even when no source changed. That
+# surfaced as a perpetual `M pkg/wgpu_wasm.js` dirt after any build.sh run.
+#
+# Fix: force the `v0` symbol mangling scheme. v0 names are *deterministic* —
+# derived from the symbol path, not the SVH — so the same source compiled by
+# any 1.93.x on any host yields byte-identical glue. The dirt stops at the
+# root. wasm-bindgen fully supports v0; only the cosmetic symbol names change,
+# no runtime behaviour.
+[build]
+rustflags = ["-C", "symbol-mangling-version=v0"]

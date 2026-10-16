@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../codec" },
+    { "path": "../ddc" },
+    { "path": "../fbx" },
+    { "path": "../gltf" },
+    { "path": "../image" },
+    { "path": "../pack" },
+    { "path": "../types" },
+    { "path": "../import" },
+    { "path": "../ui" },
+    { "path": "../vfx-compiler" },
+    { "path": "../vfx-render" }
+  ]
+}

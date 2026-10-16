@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/engine-shader-compiler",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Build-time WGSL → wgsl/glsl/bindings 三件套 + reflection 派生 (BindGroupLayoutDescriptor[]) — 纯函数 compileShader API，AI 用户独立可复用。",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-naga": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0",
+    "@webgpu/types": "^0.1.74"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "build-time tool; physical wasm size measured via @forgeax/engine-naga → @forgeax/engine-wgpu-wasm workspace baseline (D-P9). JS dist bundle size is not enforced here."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "build-time compiler core, no runtime canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "naga parse / validate / emit_reflection timing is shader-compile-time bench; pending feat-future-shader-compile-time"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "physical-isolation grep gates (check-shader-no-naga-in-dist + check-shader-runtime-deps + check-shader-no-compiler-import) are repo-root scripts wired into ci.yml lint job, not a per-package gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

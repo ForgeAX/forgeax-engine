@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "cd16a32c-0fd2-4c02-861d-a5537baaa793",
+      "kind": "material",
+      "execution": "cooked",
+      "payload": {
+        "kind": "material",
+        "staticSwitches": { "clearcoat": true },
+        "passes": [
+          {
+            "name": "forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "cullMode": "none",
+              "depthCompare": "less-equal",
+              "depthWriteEnabled": true,
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.58,
+            0.68,
+            0.92,
+            1
+          ],
+          "metallic": 0.88,
+          "roughness": 0.1,
+          "emissive": [
+            0.06,
+            0.28,
+            0.72
+          ],
+          "emissiveIntensity": 1.15,
+          "clearcoat": 1,
+          "clearcoatRoughness": 0.035
+        }
+      },
+      "refs": []
+    }
+  ]
+}

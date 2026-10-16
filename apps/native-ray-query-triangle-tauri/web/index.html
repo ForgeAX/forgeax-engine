@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeaX Native Ray Query</title>
+    <style>
+      :root {
+        color: #e7edf7;
+        background: #10151d;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 32px;
+      }
+      main {
+        max-width: 560px;
+      }
+      code {
+        color: #81d4fa;
+      }
+      .status {
+        margin-top: 24px;
+        padding: 16px;
+        border: 1px solid #2d3a4b;
+        border-radius: 8px;
+        background: #151d28;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Native Ray Query route</h1>
+      <p>
+        The companion viewport is a native Tauri window backed by Rust wgpu. It is not an HTML
+        canvas.
+      </p>
+      <div class="status">
+        <strong>Renderer:</strong> <code>packages/rhi-wgpu-native</code><br />
+        <strong>Required backend:</strong> Metal on macOS; Vulkan on Windows/Linux<br />
+        <strong>Required feature:</strong> EXPERIMENTAL_RAY_QUERY
+      </div>
+    </main>
+  </body>
+</html>

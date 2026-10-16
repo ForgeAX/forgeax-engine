@@ -1,0 +1,11 @@
+{
+  "texture": {
+    "empty": "打开纹理资产",
+    "unavailable": "纹理检查不可用",
+    "inspectFailed": "Engine asset.inspect 没有返回该 GUID 的纹理事实。",
+    "previewUnavailable": "纹理预览不可用",
+    "previewCapabilityMissing": "Engine 没有为该纹理返回预览目标。",
+    "previewEmpty": "没有纹理预览",
+    "facts": "纹理事实"
+  }
+}

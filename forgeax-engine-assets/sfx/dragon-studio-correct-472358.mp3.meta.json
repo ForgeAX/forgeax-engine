@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "dragon-studio-correct-472358.mp3",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019e7535-5e5e-75fe-a328-0b08e3a72744",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

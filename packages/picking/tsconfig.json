@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.dawn.test.ts"],
+  "references": [
+    { "path": "../assets-runtime" },
+    { "path": "../ecs" },
+    { "path": "../math" },
+    { "path": "../pack" },
+    { "path": "../runtime" },
+    { "path": "../skinning" },
+    { "path": "../shader" },
+    { "path": "../types" }
+  ]
+}

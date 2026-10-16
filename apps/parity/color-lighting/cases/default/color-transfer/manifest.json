@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "colorDomain": "linearLdr",
+  "scene": { "width": 4, "height": 4, "background": [0, 0, 0, 0] },
+  "budget": { "analyticMax": 0.01, "roiMax": 0.01, "byteMax": 0 },
+  "caseIds": [
+    "default-scalar-srgb",
+    "default-srgb-texture",
+    "default-linear-input",
+    "default-factor-texture",
+    "default-channel-ramp"
+  ]
+}

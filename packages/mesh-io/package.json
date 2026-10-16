@@ -1,0 +1,68 @@
+{
+  "name": "@forgeax/engine-mesh-io",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Build-time OBJ/STL/SVG import and static mesh scene export through canonical MeshAsset values.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/index.mjs",
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "three": "0.184.0",
+    "linkedom": "0.18.13",
+    "@forgeax/engine-gltf": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/three": "0.184.0",
+    "@types/node": "^20.14.0",
+    "@webgpu/types": "^0.1.74",
+    "gltf-validator": "2.0.0-dev.3.10"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Build-time format adapters; correctness and performance are verified by the mesh-io acceptance probe."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Build-time format adapters; correctness and performance are verified by the mesh-io acceptance probe."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Build-time format adapters; correctness and performance are verified by the mesh-io acceptance probe."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Build-time format adapters; correctness and performance are verified by the mesh-io acceptance probe."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Build-time format adapters; correctness and performance are verified by the mesh-io acceptance probe."
+      }
+    }
+  }
+}

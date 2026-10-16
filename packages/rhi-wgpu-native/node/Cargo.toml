@@ -1,0 +1,40 @@
+[package]
+name = "forgeax-rhi-wgpu-native-node"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Node-API binding: a WebGPU-shaped GPU over native wgpu with the Ray Query extension."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+raw-window-handle = "0.6"
+pollster = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wgpu = { version = "=30.0.1", path = "../../../third_party/wgpu/wgpu", default-features = false, features = ["std", "parking_lot", "wgsl", "serde"] }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../third_party/wgpu/wgpu", default-features = false, features = ["metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../third_party/wgpu/wgpu", default-features = false, features = ["dx12", "static-dxc"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../third_party/wgpu/wgpu", default-features = false, features = ["vulkan"] }
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+# rustc's default release `strip = "debuginfo"` emits a dylib that macOS 27 dyld rejects
+# ("mis-aligned LINKEDIT string pool"); keep the linker's layout intact.
+strip = "none"

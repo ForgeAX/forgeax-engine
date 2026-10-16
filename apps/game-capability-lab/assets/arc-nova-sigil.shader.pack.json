@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-1000-7000-8000-000000000109",
+  "assets": {
+    "arc-nova-sigil.wgsl": {
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "particle-billboard",
+            "program": {
+              "module": "boss_lightning_vfx::arc_nova_sigil",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main",
+              "bindings": "group-0-resource",
+              "sceneDepth": "read-only"
+            },
+            "renderState": {
+              "cullMode": "none",
+              "depthCompare": "always",
+              "depthWriteEnabled": false,
+              "queue": 4000,
+              "blend": {
+                "color": {
+                  "srcFactor": "one",
+                  "dstFactor": "one",
+                  "operation": "add"
+                },
+                "alpha": {
+                  "srcFactor": "one",
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add"
+                }
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.025,
+            0.18,
+            1,
+            1
+          ],
+          "metallic": 0.18,
+          "roughness": 0.12,
+          "emissive": [
+            0.015,
+            0.32,
+            1
+          ],
+          "emissiveIntensity": 2.8,
+          "clearcoat": 0.9,
+          "clearcoatRoughness": 0.06
+        }
+      },
+      "refs": []
+    }
+  }
+}

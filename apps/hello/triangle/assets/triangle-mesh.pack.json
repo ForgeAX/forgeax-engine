@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "22592f07-d967-5116-b29c-fa9781929ba8",
+      "kind": "mesh",
+      "payload": {
+        "geometry": "procedural-triangle",
+        "note": "triangle geometry pre-baked in @forgeax/engine-runtime; BUILTIN_HANDLE_TRIANGLE"
+      },
+      "refs": []
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "colorDomain": "linearHdr",
+  "scene": { "width": 4, "height": 4, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.02, "roiMax": 0.02, "byteMax": 4 },
+  "exposure": 1.0,
+  "modes": ["linear", "reinhard", "cineon", "aces-filmic", "agx", "neutral"],
+  "samples": [
+    [0.18, 0.18, 0.18],
+    [1.0, 0.5, 0.25],
+    [4.0, 2.0, 0.5],
+    [16.0, 8.0, 2.0]
+  ]
+}

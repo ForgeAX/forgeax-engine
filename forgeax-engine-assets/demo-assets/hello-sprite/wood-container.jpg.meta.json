@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "wood-container.jpg",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e2cc6-0c86-79da-aa76-b0984c86d45c",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

@@ -1,0 +1,2044 @@
+{
+  "schema": "forgeax-ui-blitz/2",
+  "upstreamBase": "74fe1abf090732524c86d96e6cdb6f95d8f8d6dc",
+  "forkRevision": "2174b77da947ad9cec9a8bb957f4669d82a4b17a",
+  "forkDirty": false,
+  "rust": "cargo 1.99.0 (5f94df478 2026-08-27)",
+  "wasmBindgen": "0.2.129",
+  "paint": "vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference",
+  "profile": "release",
+  "sourceDigest": "8d6cd46923ec0e93d67e686f143383c1cdc2fb8e05b3e3a64da54d6c7e4055ed",
+  "inputs": {
+    "packages/ui-blitz/Cargo.lock": "3a9346a23cb4616ac6967fcbf41d34c7d034a107693c1acac656db99e707d817",
+    "packages/ui-blitz/Cargo.toml": "4d384538a114de44a0e853de270434f1dac82ed4d6762c4eb409853c0b4f20e7",
+    "packages/ui-blitz/rust/GPU-ABI.md": "2bf971b80d7ab2606a517faed7522430f7659f4d0643c093817bb51cd5b6a0c6",
+    "packages/ui-blitz/rust/control_tests.rs": "f6dca194ef5391447897736303bd67789248b5b28da62d81796a80a1d52b13ee",
+    "packages/ui-blitz/rust/focus_tests.rs": "edb3359f2b921a6f032c64aa924759479a472e24a84a4825b30b66a8bff9ec52",
+    "packages/ui-blitz/rust/form_tests.rs": "29f0e6be07dcea666437a24d5396e81e7a94ca0952e7b5e33507b0180363001b",
+    "packages/ui-blitz/rust/gpu.rs": "f51f309ff4071e79092648c302c98688201b2beeb0b60fbf14a00f9d2ae916f0",
+    "packages/ui-blitz/rust/image_tests.rs": "0e6ffe0862c70043338c965757ae05bbce9f07e69c7fe2adf6472560bfde7c01",
+    "packages/ui-blitz/rust/lib.rs": "8bb447d97fb52ddc1a582002afb950b05692fe80e8ed16cf1e9614f957edf47f",
+    "packages/ui-blitz/rust/resources.rs": "6b5a99190e2308a6535441139761a5eae9c7d05e22620bc8116af9d65a0f4564",
+    "packages/ui-blitz/rust/scroll_tests.rs": "bad72d5586ce760630cac0d33b11e32ad04aecc347d5453c7646ac2e7250459e",
+    "packages/ui-blitz/rust/test-assets/aspect-pattern.txt": "c9f46a837298d171e114a9b636266b453315b8e5b4d7527fa360559bc5886d98",
+    "packages/ui-blitz/scripts/build-wasm.mjs": "dbdd78e349c6e5ede08d21270c05bbe291d312d1637f4ab30ef971e55124b79e",
+    "packages/ui-blitz/scripts/content-key.mjs": "9844eb3aa7c41b27e37ae4f329c07f7b589c0ef10875f747fff9a7d831e62811",
+    "packages/ui-blitz/scripts/ensure-wasm.mjs": "3086afdc1be6ad5a247b03fee526adb5e8bc08bbdd3c1bc83ad0803ab1a77fc4",
+    "packages/ui-blitz/scripts/fetch-wasm.mjs": "52e8e503831130ad8a537e44f5e41f8634037574adcf9676927268667d69c598",
+    "packages/ui-blitz/scripts/native-init.js": "a439f694b820270930c51a66253ed75411402a412c963501e59ebfd053b6be7d",
+    "packages/ui-blitz/scripts/provenance.mjs": "2442c40fc617533b71dd184c4295915e0ac16feaa488d96f50ad83b8cec9eff3",
+    "packages/ui-blitz/scripts/verify-current.mjs": "d7d252de7046aeb5ce1d3ca0adb626cf978476603339b851a2fe896db47a5ab3",
+    "packages/ui-blitz/vendor/README.md": "f1012dba21667be04e0e4275f2347dfeb51903b27df71c9c841952eaba76d780",
+    "packages/ui-blitz/vendor/UPSTREAM.json": "3f9b75ca55191160dc587eaa2455cc2f1a5d209f220314b22386be523848b2ed",
+    "packages/ui-blitz/vendor/shaders/blend.wgsl": "31fa789fc76bc5889154b6237a621af66655ff3a257fc75156598df15cda1bc6",
+    "packages/ui-blitz/vendor/shaders/clear.wgsl": "b875fb67b3f509279f6f83cb251e928cacb60b4cbf7a909ce477e67f75903d70",
+    "packages/ui-blitz/vendor/shaders/copy.wgsl": "efd1000924e21200157aca0f955c6a244ccd32b80a91c2a83cd88e4e9e072814",
+    "packages/ui-blitz/vendor/shaders/filter.wgsl": "9565bf556dce2dc609f41767ac7b6a44ff92374fae503404d4750a2a4e42b518",
+    "packages/ui-blitz/vendor/shaders/render.wgsl": "739825c03cdaae05ff230a381974f4c2e11169c2650cd6eb50ca10ce70f73c40",
+    "packages/ui-blitz/vendor/vello_common/CHANGELOG.md": "18111ea21d498f3578376b89448096dd2d4b7db67e7eeae1c11a72cba5d4d391",
+    "packages/ui-blitz/vendor/vello_common/Cargo.toml": "ff2ce240ba2f218ca8e224176e0d6e8b9309ab95d01529a00111e3346c27af9f",
+    "packages/ui-blitz/vendor/vello_common/Cargo.toml.orig": "7090d3a0b1c0d976e183ac8db91b32cc003e82c6cf2d4f83a1916d65cf908a47",
+    "packages/ui-blitz/vendor/vello_common/LICENSE-APACHE": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+    "packages/ui-blitz/vendor/vello_common/LICENSE-MIT": "adf157330f722fe7cfd5964a2a6974eff851b718228c6735724a11706e6f4dec",
+    "packages/ui-blitz/vendor/vello_common/README.md": "200f50897df09fa3fdcf1c93798118bba212f97b0e67d8f881298a1db083d089",
+    "packages/ui-blitz/vendor/vello_common/src/blurred_rounded_rect.rs": "80275afb51ba116bf30729b6301e05d8722139ad4178987e940106df349f5803",
+    "packages/ui-blitz/vendor/vello_common/src/clip.rs": "ad0ccfcfb918ccb1eda8376b74db7e3b8f9990baf69c497385526b169a6b56dd",
+    "packages/ui-blitz/vendor/vello_common/src/encode.rs": "73fe768e17cd5ee786886dae0b1f15eaaff156a088d8128e6c1e7eaad43562b9",
+    "packages/ui-blitz/vendor/vello_common/src/filter/drop_shadow.rs": "486688e5c88707b09627157ba5649ee11d6902f1f3b97736976ee225d2489e84",
+    "packages/ui-blitz/vendor/vello_common/src/filter/flood.rs": "d2de6b01bb14a52b244584ad7a9ca8496c2426eadda2c114767c31039c7b0991",
+    "packages/ui-blitz/vendor/vello_common/src/filter/gaussian_blur.rs": "655c3a15b2468aad8526ab734370476000ac0cc4e89f708af4191ead678b7b4e",
+    "packages/ui-blitz/vendor/vello_common/src/filter/mod.rs": "cf433f77174800acb04691707d530031b54bf40aaf46a6e12e79fe2aa15f2bf6",
+    "packages/ui-blitz/vendor/vello_common/src/filter/offset.rs": "15558fc242c8accfed10d2fc69f55f679c6e0d73a97be2a654ee4fa468dd68e8",
+    "packages/ui-blitz/vendor/vello_common/src/filter_effects.rs": "ad0b0ed5856d4ce0565df6d72e323cad5168752ddaf2f7ff749ed4d99ca92eea",
+    "packages/ui-blitz/vendor/vello_common/src/flatten.rs": "2c82b35e5e8f4a19966378d0d35f84c151eeb22317dd53f63dcc3375d2b6369d",
+    "packages/ui-blitz/vendor/vello_common/src/flatten_simd.rs": "90424cdf38b981f7d9a7800677c77636f81792c1e0b7b214cba4960e2d2080ba",
+    "packages/ui-blitz/vendor/vello_common/src/geometry.rs": "41430c9d530cf345f5e5309c7f7d9be3335c7730fdd2507eaa5ec4373874e454",
+    "packages/ui-blitz/vendor/vello_common/src/image_cache.rs": "40e319d091c37bcce946bc136e2fd879f7635c86c31b0ee68eacdca348442a15",
+    "packages/ui-blitz/vendor/vello_common/src/lib.rs": "3b4d908cbce01d2824bd5d9876d0a2e4ca7fe3489a6c25027817016cfdffe530",
+    "packages/ui-blitz/vendor/vello_common/src/mask.rs": "21009573525ffb34b08df9d57c2e0ed3e5e67595ba62545eb341c25969148cb4",
+    "packages/ui-blitz/vendor/vello_common/src/math.rs": "cfd3ba70977d8a7c26725d31a61c36d15ac9c365152eafd880e9dd34eb031354",
+    "packages/ui-blitz/vendor/vello_common/src/multi_atlas.rs": "429350204cce66b88ada9cb38517085b169eccc30cbcbb7c0ab25beee3ea7451",
+    "packages/ui-blitz/vendor/vello_common/src/paint.rs": "9f0b6debd2e8ee37bcfb66f2c4b1e40561197433562091afe3e488522154f08c",
+    "packages/ui-blitz/vendor/vello_common/src/pico_svg.rs": "298eff080ea256e4fa2b2794f2946614a3279199e93c71b0f945c796478da515",
+    "packages/ui-blitz/vendor/vello_common/src/pixmap.rs": "e503f7a99fb980970a0708b0878d85a90a76d5b13eda319777b598149ffd4b9d",
+    "packages/ui-blitz/vendor/vello_common/src/record.rs": "11f3acc1e6cc69f8e2f29b910c6c75ba5900b8503f53bd47656fce4c8f69e8e6",
+    "packages/ui-blitz/vendor/vello_common/src/rect.rs": "ad71efae6633eaba228bfe340d3180eeea4f2ec2daad379b89e8711898211a8e",
+    "packages/ui-blitz/vendor/vello_common/src/render_state.rs": "47525725c1afa5183d80c5e6587397610bc14ca41f872b330de7ab66f4577338",
+    "packages/ui-blitz/vendor/vello_common/src/simd.rs": "a623631da1289383ea8a34f157ad305bbe3c65bb2a261325db93b14a9b41b088",
+    "packages/ui-blitz/vendor/vello_common/src/strip.rs": "7a5f0215782246f548c7a0a2b88d37d2400c448019e2e67087da362f3b63ae24",
+    "packages/ui-blitz/vendor/vello_common/src/strip_generator.rs": "2be4ba182584d99eb9a70ed4d8b0152cbfe2c33c634ef90d1bc18225eb5b24f2",
+    "packages/ui-blitz/vendor/vello_common/src/target.rs": "d3b74bc8121b0ac9b45b03bf5da5500125757da7433119b3b75b4d84f0bde591",
+    "packages/ui-blitz/vendor/vello_common/src/tile.rs": "e3c7b1f8828aff152fc8b25902b0cda1c69b9026bcaeff53b68514d3d1928d3e",
+    "packages/ui-blitz/vendor/vello_common/src/transforms.rs": "79e59138ac9bca07f7e71b6ec8ed0d293a53c6b5f8e9c267b6684cb53a213b32",
+    "packages/ui-blitz/vendor/vello_common/src/util.rs": "3743e67ba938ee4693f343fa9058a67ce297cda90d6ae4bec659b1461e34be99",
+    "packages/ui-blitz/vendor/vello_common/src/viewport.rs": "bd744feb1ff53d1020ea11f3692518456261fb167241d80818252d17512b8336",
+    "packages/ui-blitz/vendor/vello_gpu/.cargo_vcs_info.json": "b4abccd851f96252b1a8750ec0515e3bcde2ec318dc3a10a2bdd260dd09bee63",
+    "packages/ui-blitz/vendor/vello_gpu/CHANGELOG.md": "b520df97870c144b288176e5fd1c440adc4a6681ff5ffda39c659db0305b7924",
+    "packages/ui-blitz/vendor/vello_gpu/Cargo.lock": "b70876f26b411b15ac8a8994e52c0cd8a5f0c1167ffa37fffc6f657f75d843c2",
+    "packages/ui-blitz/vendor/vello_gpu/Cargo.toml": "956f3d7c66153e5775d0fd96e124740d66f74175a6b4c1dc5476564a1d5491c8",
+    "packages/ui-blitz/vendor/vello_gpu/Cargo.toml.orig": "aa32b9f590dc1e1a78bb404ca03fc425d2db9a946a6ff6381751427e75434ea7",
+    "packages/ui-blitz/vendor/vello_gpu/LICENSE-APACHE": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+    "packages/ui-blitz/vendor/vello_gpu/LICENSE-MIT": "adf157330f722fe7cfd5964a2a6974eff851b718228c6735724a11706e6f4dec",
+    "packages/ui-blitz/vendor/vello_gpu/README.md": "03d86a21da9a50dcbb806f4d5b0c2cfd7e27270767c93b62a985492052144f0a",
+    "packages/ui-blitz/vendor/vello_gpu/examples/render_to_file.rs": "cb5516fe5faaf426f6c4b2aa540f4adc4b12e32c08d8fc8725aba667aa6000bc",
+    "packages/ui-blitz/vendor/vello_gpu/src/blend.rs": "53dcf515752b8b51f6c84ee3603c153e51fb82ca04c52d718dc0ffeb2c819e08",
+    "packages/ui-blitz/vendor/vello_gpu/src/copy.rs": "554123d3a46ffe0eac29a1e30b47076dfabc776ad2508965a827bbdc0e36ae92",
+    "packages/ui-blitz/vendor/vello_gpu/src/draw.rs": "57def496ec174dea9c5f88efae833853c7497604083d314bb2d2a75a721e072a",
+    "packages/ui-blitz/vendor/vello_gpu/src/filter.rs": "e62dbdfc6ab00acdb11923ac4b20cf25e8dadf146d11de78f9314f471f319f79",
+    "packages/ui-blitz/vendor/vello_gpu/src/gradient_cache.rs": "e2a6c5f08ea03d8de377412c0f45367c5784ce2fbcb8891422bd900d240d436e",
+    "packages/ui-blitz/vendor/vello_gpu/src/lib.rs": "9eae82acab1bd3975479ad87ea268b50dc35d8cff5ea8302e3aa13c52bc84828",
+    "packages/ui-blitz/vendor/vello_gpu/src/paint.rs": "cc4ae037f107150bcf814febe2a077f221796531b3bfd159d8bf24e8ee2f067e",
+    "packages/ui-blitz/vendor/vello_gpu/src/portable.rs": "7d08010805d332b27ab35f77514c4e8cf705a6d07759b9e9a84d53e993f5810e",
+    "packages/ui-blitz/vendor/vello_gpu/src/rect.rs": "c31471f32bdaa189294e3da3ac578203298d9b065a3bc64e0160a92df93bbfd3",
+    "packages/ui-blitz/vendor/vello_gpu/src/render/common.rs": "c500dc80acb3f27151d29037f76164e5bb325bf104d3a32b090c8822963aca7a",
+    "packages/ui-blitz/vendor/vello_gpu/src/render/mod.rs": "2ff675d3338b15f5dd18753f0dac2540cd7c302d035d002148e6b53db3140c30",
+    "packages/ui-blitz/vendor/vello_gpu/src/render/webgl/error.rs": "b05a52fe1f2967ae417455bdd6ff4baf7e6b783e278c79bc79f811e82ca9831b",
+    "packages/ui-blitz/vendor/vello_gpu/src/render/webgl/mod.rs": "b030b4655597f2698ddd8d9a9851e52f82d9b3debe633ce691a41bc0db3072b3",
+    "packages/ui-blitz/vendor/vello_gpu/src/render/webgl/resource.rs": "a556e49bf30e1cd93b6741df9b01a005c47e3216451550d84cfe0a6353c83d2a",
+    "packages/ui-blitz/vendor/vello_gpu/src/render/wgpu/mod.rs": "332afe46567bed370e8d2991e1196ec47d8cf5886551f966e63e88a2e8d4456d",
+    "packages/ui-blitz/vendor/vello_gpu/src/resources.rs": "91ac036e036e1068d62cd740fc368d211de80cd7afc36226ca86430e491ff6db",
+    "packages/ui-blitz/vendor/vello_gpu/src/scene.rs": "daf7b7429a14ae998c94b4d88daa1d860038c2cbd33b8477999644f5b37cafd8",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/allocate.rs": "ba68da587865356081163516e7a962d4c81d6070a56ccbb0a8ed56e6edb9994f",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/cursor.rs": "56341f4c264a4dd844c526a3914fbe75844e1af43497f864762cfaa0725d9031",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/execute.rs": "2080d57926c43dd6a3275f97b2b07c4c05002d1b49c8f6969aff55205b7a52d0",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/mod.rs": "af6eb86745ad87d97dce660671139298cad101806202c3f940de9b4212b2bab7",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/round.rs": "b6fe1f96b581c8164bca51e68c4366e728a388f987234d1426445ca47292bea3",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/schedule_tests.rs": "12327b3eae5b4be8d2f2c26ced293320b763bbb673a14521f9631b0a8ad22da1",
+    "packages/ui-blitz/vendor/vello_gpu/src/schedule/test_support.rs": "2de2a7f5e3274061820c05b53acc90acb660a5a8b20852b061e47c8303bb5e33",
+    "packages/ui-blitz/vendor/vello_gpu/src/target.rs": "c35b8d452d287b1036c28830f0b34f3c51de278038fff8625de7b3bdecc50dff",
+    "packages/ui-blitz/vendor/vello_gpu/src/text.rs": "56c45c46f2728b6e23778a6a16be3c1fe2c4be96c671aa7248edffce09617cd7",
+    "packages/ui-blitz/vendor/vello_gpu/src/util.rs": "be7a516d3127e3f17c2918e6c24f947c712ddfb408e17014da44fea027ff537c",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/.cargo_vcs_info.json": "16c6fafa5bf24bd75f6f26f7657e3ff6dcdb13eba7a4c50838674bb3e78bcf5f",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/.gitignore": "e14a53049ffa6b6dedcdb2ca0bce9e495158a97473688c4da8c845dd426ebbdb",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/Cargo.lock": "c021181144cff2b4f214ca02ebb78cd86ee611004377c33ed27fbf44115eaa62",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/Cargo.toml": "7215e60c55fed4dd73f16a0940719a001d52ec96126461696fd78fb42901eb74",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/Cargo.toml.orig": "82923d264bb6dabf4e256783b2f2fcbfb590024341e36f94e0fee03f06b30b27",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/LICENSE-APACHE": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/LICENSE-MIT": "adf157330f722fe7cfd5964a2a6974eff851b718228c6735724a11706e6f4dec",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/README.md": "5c0fd0b7e9277744587a3acbae381611cc3fe61409f74af1a2e9980565a7c85f",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/build.rs": "9a118b36ef01db996505b9057ce715dd3e6e3564be4fdaa0246a2cd1c0f9ec76",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/examples/export.rs": "0ba16a77c115b15d362b8f71b87081797b08674e8a33f62395845843f68130ac",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/blend.wesl": "c285643db3f4679221b55c122777ba3fe12f8ece4140b68ee8ad5d244fd56804",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/clear.wesl": "ad765a23eb33e715390c4e651800bc863877f589a11cd3def7f2807d3347428c",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/copy.wesl": "2b90346a93143be1caea31df0ba4fb2914ed59ec6fcef2553f92ab2c39103b0f",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/filter.wesl": "0641cdc95050a29530b3c33620aba298574335aa6f1eff3cf2ae1622c485878c",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/filters/blur.wesl": "22753ad7dff9941341cd1a0c6351a4b299f871f5c0be7cf881ce0451ed1424d3",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/filters/drop_shadow.wesl": "22fd05d72359b08ddcc541080e9c55f0975386a6cc485770c16b752a92dbf7f4",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/filters/scale.wesl": "98f4f72255791ccdca5f854961bb57201df6c4c15520f248db6577d752a96ded",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/alpha.wesl": "ff4e2eb597fd6abeef888753d5fef70397b592bf9bbb033c5056a0f8537c2ec4",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/blend.wesl": "edb36e862b092b1e6ec83938e522349c0075924e6c8190d9c7080c6119ef39be",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/blurred_rounded_rect.wesl": "f47ac61163e6a1884b44127b4ddc2113946aeee60de2a24b08be0792b10bcda7",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/extend.wesl": "c4caf3dbbdcdc752c569f37e919f450f06f86f82bf233e9f9b2176fb7b8f0729",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/external_texture.wesl": "a7cc0ac3a5901f405db0423e82cbed6ccc817da7d3918f16acd238dbaa9ca7e2",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/geometry.wesl": "db9157d084e7a62b311ad2c28a3966f887c8533f8fa4440b6e71f5daa520ed5d",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/gradient.wesl": "75a7ffd44c627300ab82949eef5c05ad4d753d79e6be6f2099c519b5120fd49c",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/image.wesl": "fe84e3faef1824d7cd3eba3c503a60da4a56565962a40867ddcc5ac53f3c1b3c",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/math.wesl": "2b40d639ae84d833c899c4ae8c4b9467d2bc53467615e129fc200c18e7368102",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/texture.wesl": "65502cae4d2ac341357e9892e7450bc9b0a8c6c4ac7049aca7804ae30ae24a5d",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/helpers/util.wesl": "9f30eee7eb5566b7b83669a92dfb6167bb35a4d40de9f1da2620fe4b1923f190",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/shaders/render.wesl": "c0545546c0feb53061ae13647e660195ccde140cb016c0f2161d74d2f2309bea",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/compile.rs": "36d00a5f3862ca5c3b8fa2d5f36d84a41f58cae0da9312f7ed0e6e6b51973e96",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/lib.rs": "c18addcef201c1cadb747bef13b3c02886f04af378006305c76e73f3f502e3e8",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/lint/mod.rs": "05110219b1e7d37e02303644735f0ad5a727c1277a10a9d1b07cffe048c6ad2d",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/lint/no_dynamic_indexing.rs": "2f7eb786882b36e222b6ec3efb3178b6fccc0744a341b8e693a2f2ca03f15329",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/lint/no_structs_in_fragment.rs": "0e7c2ecd38f8a7508f809cf0423f85cf84ab02efa65e732e4f131f8c9f8dd592",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/main.rs": "c66297c9b5efc881dfe12a9ce8e193d79fa9a2bcd589bbb31536c5551b6a1278",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/minify.rs": "dfe6e632216ff6cc128fe2cc4941888a5b0eae38703ff43f932603c638b2e8d2",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/src/types.rs": "93a84e3b3f2c392f5473409fa6b3e0d9335a396492a05c7c25672c87356e0121",
+    "packages/ui-blitz/vendor/vello_gpu_shaders/wesl.toml": "28b93a1a17419fa4851d891824cc317715b1e8889c134b8d51eef044948c5890",
+    "scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
+    "third_party/blitz/Cargo.toml": "a46496139b06c8a90ed12d39864ec3270d3420540ecb3524c1ca75cd27248ef3",
+    "third_party/blitz/packages/accesskit_xplat/CHANGELOG.md": "8779805db4370a4716e450e48223e06ce4bd658a71c9240c54a4e5fd6a08b91d",
+    "third_party/blitz/packages/accesskit_xplat/Cargo.toml": "db66073147c1ca517bb48b800fb60d56a04386b0f0f24a2b757a40e8d60fa4dc",
+    "third_party/blitz/packages/accesskit_xplat/README.md": "c01b7a1d38a2f47c28b091556e2cc441ecf3f9dd18689e560c7ecac273e1a2ea",
+    "third_party/blitz/packages/accesskit_xplat/src/lib.rs": "0cae5071f84da2620ca820985f6ddb31e58629c7a5401e6b1bd48c55329f834a",
+    "third_party/blitz/packages/accesskit_xplat/src/platform_impl/android.rs": "4b9b40085c71c3afac74edf33b217a24114b36c6ec72104b451be32dd8c65b39",
+    "third_party/blitz/packages/accesskit_xplat/src/platform_impl/macos.rs": "25db5328dc9f610da913a213ef5182f72c5127b2ec46693d37272bac01ea2bc0",
+    "third_party/blitz/packages/accesskit_xplat/src/platform_impl/mod.rs": "7bd9ce32dbdd50903add37e53af398d876d6d570f8b563aaeb57f2b728031aa7",
+    "third_party/blitz/packages/accesskit_xplat/src/platform_impl/null.rs": "e423fae86b221bbe86b9e3d1cd6a911dfeb712bd3169bff0ebcef3b3a6b061ad",
+    "third_party/blitz/packages/accesskit_xplat/src/platform_impl/unix.rs": "f01b4cacdb3c35f30f0863cf5cc51cb5c84564bc3c24f9075af49ac8c6af17f9",
+    "third_party/blitz/packages/accesskit_xplat/src/platform_impl/windows.rs": "34385fe08e270a2ee573980961d445f54b82917dba60a32be764d88eac5cb08b",
+    "third_party/blitz/packages/blitz-dom/Cargo.toml": "8da69c57076f6812e566e9dda36bccc2138d8990e1901df9f356444623b45c5f",
+    "third_party/blitz/packages/blitz-dom/assets/default.css": "7ca79372ba57e215323b52a0072cec06a48e7cf7bab2f5e518bd995562769623",
+    "third_party/blitz/packages/blitz-dom/assets/moz-bullet-font.otf": "0e0ac9d92203fe07d5dda97af40f1c38ce974e0c89d7f9718c92f73656d69aad",
+    "third_party/blitz/packages/blitz-dom/src/accessibility.rs": "d3dac36aacfdbff7ea400b4d8380fda6a118c61d1f4cd77324933d0598e82e4a",
+    "third_party/blitz/packages/blitz-dom/src/config.rs": "1afd231ae9b973b2ebd6d83cc0d5b0835df64e5852edaa91ebfa4d5f38bbebf3",
+    "third_party/blitz/packages/blitz-dom/src/cssom.rs": "139f26fd97a442c78dc65fd70190cfa26142545909437c73afa534f047567059",
+    "third_party/blitz/packages/blitz-dom/src/debug.rs": "d92479478dc66189055f7fda5ef6c02569ff9436d9d80028712adf633d444151",
+    "third_party/blitz/packages/blitz-dom/src/document.rs": "48f7d1fae392a6a0eb32edd7b7bcd57759bf1aca859477d61204e72f623d0ed2",
+    "third_party/blitz/packages/blitz-dom/src/events/driver.rs": "e5786bfa2d0519aeb04d48757bcfc63dba051cd326eda586c855eaabe55c8824",
+    "third_party/blitz/packages/blitz-dom/src/events/focus.rs": "7228231360e017b41809b75ce1186ed2311289f096f3562ff7f807ee85282985",
+    "third_party/blitz/packages/blitz-dom/src/events/ime.rs": "449142c2c72bae26fafeb5b65d6a35963ba7f62d1c2772e303aba920c0c7a47e",
+    "third_party/blitz/packages/blitz-dom/src/events/keyboard.rs": "8d0d212f4ec925a24610f16f2f5a9d70b668fda46be4af5dcf813bce6dacdae0",
+    "third_party/blitz/packages/blitz-dom/src/events/mod.rs": "69d6bc36deeef6463f5f392dee58a08a5f0f68985ebd9117dc1d18384a17de11",
+    "third_party/blitz/packages/blitz-dom/src/events/pointer.rs": "fab0e46e4279db8f89395943c74f3782a31da696d3f50ad4632a63fc71bb7c66",
+    "third_party/blitz/packages/blitz-dom/src/focus_navigation.rs": "1c0aa4d77526073d26d0f3c2481ebdd4fd8af988225a8a43d6b42e534351a173",
+    "third_party/blitz/packages/blitz-dom/src/font_metrics.rs": "bd5801f7350a49cd17214b9c10f86abd6b4d0b48b0df393cd0deac4930c80424",
+    "third_party/blitz/packages/blitz-dom/src/form.rs": "e7b0689bac82f9ca9349cf1cb7928e3770340a6a8e39766ef5198a19f9f32f2b",
+    "third_party/blitz/packages/blitz-dom/src/html.rs": "fd92380ec7d41f2ff2beff17ced0c53ede94c4586ea70f3eb3fd8ba9534c6fae",
+    "third_party/blitz/packages/blitz-dom/src/iframe.rs": "37726c34d6a27e5b03e59f033dbf570c7af0dd8bfb93c6a0efd749fa9a17705e",
+    "third_party/blitz/packages/blitz-dom/src/layout/construct.rs": "b3dd3dd4a75958ac88da4de9db5c52d1e9bcebe701ae32752081d4794c247e37",
+    "third_party/blitz/packages/blitz-dom/src/layout/damage.rs": "00dccff326ba94d2534972e37cfbca9ce178df1584cbb7163754f126f3d65e77",
+    "third_party/blitz/packages/blitz-dom/src/layout/inline.rs": "9763be62ac82635c90eb9d3c7914841d12e5b9caa8ca177588df63ffd31408d3",
+    "third_party/blitz/packages/blitz-dom/src/layout/list.rs": "0c0fade555cb29036fc41cdc1670d1edbf4358044341b02175d70a6c7c404b69",
+    "third_party/blitz/packages/blitz-dom/src/layout/mod.rs": "6682945dd27e03c193b3fcb928ef021c593edb460df7c6dd8dfdb6ebe6be2beb",
+    "third_party/blitz/packages/blitz-dom/src/layout/paint_tree.rs": "311840ce2ef6c75edc5623a7b82cb3df5aa963a858e344b7ffe2e7311b77b0d2",
+    "third_party/blitz/packages/blitz-dom/src/layout/replaced.rs": "ec140dbe8317a40541986f1417e7f5e895c87d15bcf4ce39ac23e2d4d4f090bb",
+    "third_party/blitz/packages/blitz-dom/src/layout/table.rs": "12fd167fba4d507a74b872841bbf48695c8dd37d91a0479e4289019b3ebb26ef",
+    "third_party/blitz/packages/blitz-dom/src/layout/text_transform.rs": "81dbff8347d2312420a9402fe377ee252a1f3d8d64dc0f7ef842c3b1926868de",
+    "third_party/blitz/packages/blitz-dom/src/layout/writing_mode.rs": "cb80a4b8444ad9f8fbfa4f44975733c19047095848d228a6c77067c476b05565",
+    "third_party/blitz/packages/blitz-dom/src/lib.rs": "1548f9a64f32d7958c882f305b83a3077003d19faf714097dbaa42ce3d030d22",
+    "third_party/blitz/packages/blitz-dom/src/mutator.rs": "ebf09d6cca173fb163f460aad875bc5c4b5b882a1796a9632a30e91c03bd2748",
+    "third_party/blitz/packages/blitz-dom/src/net.rs": "8564a526e8732513cd144aac030baeed8e776ead5f0ae672da3d1a5978c49ce0",
+    "third_party/blitz/packages/blitz-dom/src/node/attributes.rs": "8f4739a62ca1eaf1f99d6cf6c981e443c4a4a46f2e07b04b3be8959f13c74fad",
+    "third_party/blitz/packages/blitz-dom/src/node/custom_widget.rs": "f3902c776c32a517db8e319a449bf969249e978a13514ac2aa3448793b5a9baa",
+    "third_party/blitz/packages/blitz-dom/src/node/element.rs": "757251b33d9080a8d82410f6c3f91ecee82e2ab630e87d801cba46aa4785f6d6",
+    "third_party/blitz/packages/blitz-dom/src/node/mod.rs": "e6c19a26fe7cc8dd57dba627ab1a88b7885b45938b0fe6a1e7b0babf21e97adf",
+    "third_party/blitz/packages/blitz-dom/src/node/node.rs": "af4529090558e3a5d94fcd518b25ea94f8102988434dcb3aeac7d307b2a8f9cf",
+    "third_party/blitz/packages/blitz-dom/src/node/range.rs": "01e73c4ed981edd0c42aaff52754c370a1f28126d1d52c3557ff1524b6d25931",
+    "third_party/blitz/packages/blitz-dom/src/node/scrollbar.rs": "a0e609c676d76083c75cca6eb137ed53775e097974e73ae6fc30a7fa11fc56ab",
+    "third_party/blitz/packages/blitz-dom/src/node/select.rs": "aed53a3fe1dba327073bdb0688661850d4107557f75c503f4ebd976e0e7dafe6",
+    "third_party/blitz/packages/blitz-dom/src/node/serialize.rs": "46ce4aa8b2abd529df54a2409682175816bee0812cb18ebd20b2e260f0739413",
+    "third_party/blitz/packages/blitz-dom/src/node/stylo_data.rs": "e9813223b5f9b62473c57323fb91031429b9e77a85efd019682756624fd97776",
+    "third_party/blitz/packages/blitz-dom/src/node/svg.rs": "aad26a348364b008c9cdb8896032a6c1087d4c7ba93235d9b6ed1ee7e9676693",
+    "third_party/blitz/packages/blitz-dom/src/node/text.rs": "e5ade42914f844b2cb67f25b635cf5939b656522e78ed4f8f8112c83f7f76cc8",
+    "third_party/blitz/packages/blitz-dom/src/query_selector.rs": "e764d8d1f6e61c1985ca3756a28a3f25d4eaa00a972ed95983c3b88aac4762e1",
+    "third_party/blitz/packages/blitz-dom/src/resolve.rs": "bdd10a7dddbb61901a3ee76f71752c406aaf06e1c6e248858e576d9311dc04a7",
+    "third_party/blitz/packages/blitz-dom/src/resolved_style.rs": "c2d8f6f1261d2acb0b97e7d791b92f0da7d34e7a993c4d808fe4326f8ea6f732",
+    "third_party/blitz/packages/blitz-dom/src/scrolling.rs": "1dc7b90f045b505e06f13e33b2989d99ae69b0ad7f5b6f9b28f0007bbfbd7939",
+    "third_party/blitz/packages/blitz-dom/src/selection.rs": "c5a0811b464d9fcdae528f271e9947b5567550ee3943779bd7e38b7bcd0d240f",
+    "third_party/blitz/packages/blitz-dom/src/shadow.rs": "110967456313d7df0e38d9397ea4498f2d285cd7cd874287751941775bb50a61",
+    "third_party/blitz/packages/blitz-dom/src/stylo.rs": "ef34468264dea5f7c05e117d2e24964b9d67c1b0c90a6cde95d84acd9929a29c",
+    "third_party/blitz/packages/blitz-dom/src/stylo_device.rs": "68ce92661686b730e97b4de1e2edcaf6854d3aee2758ac00ba15c4e56acf8b41",
+    "third_party/blitz/packages/blitz-dom/src/stylo_to_cursor_icon.rs": "14203aa3b4e44d9aba4574063720d61fb2cc8488c6f295aff95f6cd9cc201e17",
+    "third_party/blitz/packages/blitz-dom/src/stylo_to_kurbo.rs": "01c43cea3094214bed32d401700319fa6637f1c3fded19518c6b903f11a49884",
+    "third_party/blitz/packages/blitz-dom/src/stylo_to_parley.rs": "12785009238f462d5e1d67d845aac03f5dddce32e0542c7081c14c21b7874ff4",
+    "third_party/blitz/packages/blitz-dom/src/traversal.rs": "19aaef245316b556a275d9a823330ced2a026c0af95809b8e2a41a8c971f6094",
+    "third_party/blitz/packages/blitz-dom/src/tree.rs": "51014956b9bdee4d6bba2e13f78ea0de0b5e4c491f226f254480ee353df134a7",
+    "third_party/blitz/packages/blitz-dom/src/url.rs": "9c9deb95e06fc91bb654738c3309929a8ed9dcb7de04fef3312b227bba5e17df",
+    "third_party/blitz/packages/blitz-dom/src/util.rs": "1c57f63b4818c0ae0c23085c945b616907e46a79aaaf1b2783c749ae6e1b9ece",
+    "third_party/blitz/packages/blitz-dom/src/validation.rs": "2438ac2b46a68d7c2712d9eaeaf6992a6c0ff094aa1aa21454e2541d765a0b95",
+    "third_party/blitz/packages/blitz-dom/tests/fonts/LICENSE": "f88d5294af5a772f9114eb385009e3478d62b21f3e5bbc34d159d328047c8867",
+    "third_party/blitz/packages/blitz-dom/tests/fonts/README.md": "23b9eb45b2c4f47754308b1c2f8e16a52f473272a614311e11edbd973d3c43a7",
+    "third_party/blitz/packages/blitz-dom/tests/fonts/dejavu-sans-ascii.ttf": "be0b0b5e60e87d50be6bb388edee22908507be323ecbfbdd7b0640ecb62cda87",
+    "third_party/blitz/packages/blitz-html/Cargo.toml": "4d7580a760184606c185e3f13d26c2a43093db776bdcba63981a4f8a4670077a",
+    "third_party/blitz/packages/blitz-html/src/html_document.rs": "0192b4a423450f0a84f2a1428e2f2713456107b785450b6b44af7ec9f676f91b",
+    "third_party/blitz/packages/blitz-html/src/html_sink.rs": "f761c2eba3b18c8f125d7a8ef361751f066fb873c574b1fd67d4d82ef48d9e90",
+    "third_party/blitz/packages/blitz-html/src/lib.rs": "74823498a173c834df2a9e414f3ad912616a735bdb047dc1828933ee3b8a570e",
+    "third_party/blitz/packages/blitz-net/Cargo.toml": "bc5bd24ec44ea1a5ff37df8b6f4d3dae2b22c53395f06daac788b221818c2eb6",
+    "third_party/blitz/packages/blitz-net/src/lib.rs": "c4c7978bed3a86c229bbf1dd30f54daad736362317f69dd331fc19385bce3f0f",
+    "third_party/blitz/packages/blitz-paint/Cargo.toml": "e3b39c9b49ee8cf32b77fecf5227e9f6f46bf1d115cff69fe64b15e2c5a2a649",
+    "third_party/blitz/packages/blitz-paint/src/color.rs": "67a2b37cecaf9ffa92a5f62057984e097e41f772558a02f3a04b0df14630bf0f",
+    "third_party/blitz/packages/blitz-paint/src/debug_overlay.rs": "e89a0b21230d1d2fd75ac17215282885c0802d94a576d3ff3ed90401af47710b",
+    "third_party/blitz/packages/blitz-paint/src/filters.rs": "b1258ae1ffa5649bc4c1e4d9f786c0e9a2cdf9b6a01908641173a1187f6729eb",
+    "third_party/blitz/packages/blitz-paint/src/gradient.rs": "830110a337fae15b6a93511a4055d6ed479f32ae3a161a1294390feda4506670",
+    "third_party/blitz/packages/blitz-paint/src/kurbo_css/css_box.rs": "2ea64bc8a742bbdb61306a6d2109dd579f4ae8bb332abcfed227d3594cbad82b",
+    "third_party/blitz/packages/blitz-paint/src/kurbo_css/mod.rs": "e056581ebf04929b89d546956aeccc4b89249d5363f3f1a2ccf237047391fa0b",
+    "third_party/blitz/packages/blitz-paint/src/kurbo_css/non_uniform_radii.rs": "26c389367e1bb2717e796760098d241e54c00f842537ecd75260f3fea60ea73a",
+    "third_party/blitz/packages/blitz-paint/src/layers.rs": "b7c79984eeabebf150676724526f66089b2773cb3544be96518ca2e758af7d61",
+    "third_party/blitz/packages/blitz-paint/src/lib.rs": "666db25f7b40c12565ee897b3d2ae255b55fbd1efc12d36728f9d31f555daa37",
+    "third_party/blitz/packages/blitz-paint/src/render.rs": "76d2c46abe00a00ef29106a6d9c0885646ca3b190e517e7dc83cdda7d116caac",
+    "third_party/blitz/packages/blitz-paint/src/render/background.rs": "a3fd89d9401cd0e210fc657c8a4157701388eec74c78585ba934e092cc5b8568",
+    "third_party/blitz/packages/blitz-paint/src/render/border.rs": "05f5d6c42dd85de15d0422242aa7dd04109c4e27ae05f8b31ec62b217a6025d3",
+    "third_party/blitz/packages/blitz-paint/src/render/box_shadow.rs": "1dc357060cfb0c5d090a28563fb6169ef524566f2ef38e6878afa132154e45d3",
+    "third_party/blitz/packages/blitz-paint/src/render/clip_path.rs": "7463a44e1ea20db001af5fa2fd20a0142a2bd091d50a83847be457bc41c30f87",
+    "third_party/blitz/packages/blitz-paint/src/render/form_controls.rs": "1ee6d01caacd63891219d5f64337d3eb2a9dea7609ef56c5acfcb82579cb7a5b",
+    "third_party/blitz/packages/blitz-paint/src/render/mask.rs": "a2d7b3f97fdcc20a8c6d8ef3d2c325748e7863407d2035dcda62b04f64da3309",
+    "third_party/blitz/packages/blitz-paint/src/sizing.rs": "c2d284d77f7e153793e820f93da61a237c5876f496a426e54a860e90489000db",
+    "third_party/blitz/packages/blitz-paint/src/text.rs": "f59e16e33068c9638d401442982bae1774208c9a1657dc040568b6cf10e2c24f",
+    "third_party/blitz/packages/blitz-shell/Cargo.toml": "689bb0617bf69a84a90ccbf45f219e7a862403f699653be82e627a3e41a24b4d",
+    "third_party/blitz/packages/blitz-shell/src/accessibility.rs": "27f343fe224d191e778e3c2ad4d299edf0f19fe63b51636027a43c3286472d7b",
+    "third_party/blitz/packages/blitz-shell/src/application.rs": "7d45266958af1521e925287524e4cf41d0cb7d9e22c701244f8ec3a3cd053771",
+    "third_party/blitz/packages/blitz-shell/src/convert_events.rs": "856dbd4ba7b0ebd216bea10ebc8a45645fe0a60508484b324a7e1dcc1a0e5dc9",
+    "third_party/blitz/packages/blitz-shell/src/event.rs": "36786656135006d6c6cf4df78a2361177d22b808ff6c49dc4980ed104ca0eb88",
+    "third_party/blitz/packages/blitz-shell/src/lib.rs": "2c3010021bfb707fd0a0021f0a4a26d5cf82082e74b8325fe562a1e01094a463",
+    "third_party/blitz/packages/blitz-shell/src/net.rs": "adebd0353035f685b0d85ddd8fc0dfe8a3386f3c8ed651b303387f42eb33ce4e",
+    "third_party/blitz/packages/blitz-shell/src/window.rs": "bc39a19af9a66329e81420b5cdaa8482a0ae36cc8f7e5f691cc20828da0d7f63",
+    "third_party/blitz/packages/blitz-test-harness/Cargo.toml": "817594fbda69d03cebd271b8f8d3d288784f007dd7678a77cdd70cae17491cbe",
+    "third_party/blitz/packages/blitz-test-harness/src/harness.rs": "84d929f704d6c92424bd3ee9d859c375ee7a07527e5d1ccd6e2df360ebcbcd81",
+    "third_party/blitz/packages/blitz-test-harness/src/input.rs": "f8b9e65e14a832f5cd88b93dd00516cfabcc67074fe7db9ab3b6c811716de88b",
+    "third_party/blitz/packages/blitz-test-harness/src/inspect.rs": "61d798044c89b542c7a11d84d0ebddcc40601b8495d897b80e88d8bb6a3968ec",
+    "third_party/blitz/packages/blitz-test-harness/src/lib.rs": "7fd2957b8fc099b1e276e8cc51e3fae608aa7327d50802f5dc3e208a8a278eaf",
+    "third_party/blitz/packages/blitz-traits/Cargo.toml": "f8a85590c5f673ef2000c86491bb95b552554c60b98201fec908ae46eb041859",
+    "third_party/blitz/packages/blitz-traits/src/devtools.rs": "914cb460738f6ca14ae323e639d22250211b718403ea5bc884b5a494c5755861",
+    "third_party/blitz/packages/blitz-traits/src/events.rs": "98d696e2a335b0a165fa555c6d7a6e06d35c91fc216070a8a4ced29ea3d5ce43",
+    "third_party/blitz/packages/blitz-traits/src/lib.rs": "478ca81eacd94d1c0fad3bde720922f6e5c82a87cf001f041448d70f323e60ba",
+    "third_party/blitz/packages/blitz-traits/src/navigation.rs": "409c28c0eab9ba00d18a6f40c10c7f2c81afd817a1b71d0dfec4a458c0fc3e51",
+    "third_party/blitz/packages/blitz-traits/src/net.rs": "28e6f0d4170b777c758779cfa3079d2fad88771ad5fd2b89a4d0ea0c98b8bcaf",
+    "third_party/blitz/packages/blitz-traits/src/node_id.rs": "b85aa25be49e93876ade4c04f4bf23a10df25dfc8a6e389fa2670fe39dc97b80",
+    "third_party/blitz/packages/blitz-traits/src/shell.rs": "894826ab26c71c7a87e3e2ff3025f0596dea3e1f9ef4393879d2267180321f0d",
+    "third_party/blitz/packages/blitz-vibey-script/Cargo.toml": "63c386dbfc7aa4a25ccc4a017095cb35b2b47e11cbcd8158debb177cf949d923",
+    "third_party/blitz/packages/blitz-vibey-script/src/clock.rs": "777dbe061976c3a909d9f21851f537c3af7ea0148bf03e00a9cfc3b2a768099d",
+    "third_party/blitz/packages/blitz-vibey-script/src/document.rs": "01315a0e92088c663da016ea5c6869e5a68476c75ba0bec5d153d41a0c952c21",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/document.rs": "c18618d05ae3bebee38c9362dda044eef5f67e1e1f82debaa1bd950c84125b7d",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/element.rs": "751fd8ac328eff12628eea5f8fefbd50b8ff24dd35186078656aeb2755f532b5",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/event.rs": "58c41e71a78c8b478d20015786aa9062beca390a675c1b20d17279668521e69a",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/hyperlink.rs": "c50d294c9b115c877517a7b75c872eebe19928de825b491dbb8e4969a0601744",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/mod.rs": "47191b8e339c0088d1c3e445331f42c1399ccb93ec26828274343ca2f24dfc7a",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/node.rs": "e68587ccf699e06a27bd8b3f0676ffad67d64ac923f3d5cf4d3f58a83328243d",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/selection.rs": "f9ef7c427aae1523fc29f7b7306685168102718dda2e802839d728d7c413ca22",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/style.rs": "340ba93a49db2137cdfa161e0bbcc342c75ae850b694e5fe2b07c444ccfa8fd9",
+    "third_party/blitz/packages/blitz-vibey-script/src/dom/stylesheet.rs": "ffdeaa67ed5323f023b28e6f4d4c86c24f2af48147321db14ae23e5451362786",
+    "third_party/blitz/packages/blitz-vibey-script/src/event_handler.rs": "db196e880816f2d79a52c8db10c10aeec4bc25fba7298cdd9f42c32df598317e",
+    "third_party/blitz/packages/blitz-vibey-script/src/fetch.rs": "250df46ca6b30ee079902baa05d797bc68f1761b983dac8ef8e600d577d8f26f",
+    "third_party/blitz/packages/blitz-vibey-script/src/geometry.js": "6fbe14fd557b2735872bb8d5227bdc35db5311bfd27d98ef2e6a27e146b80bbf",
+    "third_party/blitz/packages/blitz-vibey-script/src/inner_text.rs": "74b735224eece23c3797707ace8dcf3997497ed501413b4aa46de99ae9460dac",
+    "third_party/blitz/packages/blitz-vibey-script/src/lib.rs": "3da7fb6c04584588223a34b15cbb828058d714e994080950fd5838d5f6e4f971",
+    "third_party/blitz/packages/blitz-vibey-script/src/runtime.rs": "8a744fb20f83ace240151882210d85ab94f79a73798d12e4da06f86507cea50b",
+    "third_party/blitz/packages/blitz-vibey-script/src/state.rs": "bb659a25990334dd3bacda7a2b857581d4924ead4bab4972d61c7a244e1ea081",
+    "third_party/blitz/packages/blitz-vibey-script/src/timers.rs": "9eda35d9bd91c111c4653c6365b68bf9d797bd881809d1879771c7b91bdf44aa",
+    "third_party/blitz/packages/blitz-vibey-script/tests/dom.rs": "eaa95fd678286944e0d9abe66cbe62e5c3ad960e53298f86987a44473ec211f2",
+    "third_party/blitz/packages/blitz-vibey-script/tests/preact.rs": "29a0f9b3f67ee32f40d38438cc81f2b463067b9f945d7a2343d9da62723be34b",
+    "third_party/blitz/packages/blitz-vibey-script/tests/selection.rs": "76d1aff8d238e4ca4e469e2b280e8846e21adc01db80dba34618d284cadf818f",
+    "third_party/blitz/packages/blitz/Cargo.toml": "29fc6d1d51d7b0858073a4e18bf1134529c3fb74aa3ab3e5ab5dca82c1a5fe17",
+    "third_party/blitz/packages/blitz/src/lib.rs": "1ab8250217d96af1db051bba8eb8f666529ff5650fb022c82fc7a15d85187997",
+    "third_party/blitz/packages/debug_timer/Cargo.toml": "7b9006eaa38efdd438b0f0e88ca72eff998251a4dc909b78ebe3638bcf5d4689",
+    "third_party/blitz/packages/debug_timer/src/lib.rs": "73abf86c5a71ed91629f587a4a4d5039906912701c503a0065a4fe7d39f42963",
+    "third_party/blitz/packages/dioxus-native-dom/Cargo.toml": "a2ae598c2ba8e84541703e8f8ea91c5628aa99fa48c04a414cf170da4ed3b5df",
+    "third_party/blitz/packages/dioxus-native-dom/src/dioxus_document.rs": "2963f564a2b6b82e7997a24b8ff9ff1bf63f98c729efc952d75fdf751d7da9c4",
+    "third_party/blitz/packages/dioxus-native-dom/src/events.rs": "e788bc7768e901075c370dc58f9ef4aa05d01e41b9bd9b07a621dec448d8c7ba",
+    "third_party/blitz/packages/dioxus-native-dom/src/lib.rs": "cedf959b65cd04fb8451083c6cfa07a00a4cd3641b31c007c6dbad5e48c4b4cc",
+    "third_party/blitz/packages/dioxus-native-dom/src/mutation_writer.rs": "11cfaaf2414623c1b2bf62c7f303c6bcc8326cab2536ab73287b6043e1a4bdf6",
+    "third_party/blitz/packages/dioxus-native-dom/src/write_once_attr.rs": "f8d6bb3ed741ea2b09315cc718d6ce2547dfe93e98bd4f39fdc93da92ea557f3",
+    "third_party/blitz/packages/dioxus-native/Cargo.toml": "50fbc074d5656f11964cbce09ebf37f474166e324c0459d34317a257627554b8",
+    "third_party/blitz/packages/dioxus-native/src/assets.rs": "7b8945589b6ccffbd5387eb31f4fcc962da5005fae05d8ef98ce4aa34a34733c",
+    "third_party/blitz/packages/dioxus-native/src/config.rs": "9b653316d840080bfab9fda30fef84186f2adb7dec82be42769b3c9f4fab8d91",
+    "third_party/blitz/packages/dioxus-native/src/contexts.rs": "8bc036d442aed8478abcc6cc53b74d33412af0434931c59492b4913cf552df79",
+    "third_party/blitz/packages/dioxus-native/src/dioxus_application.rs": "dbcd1c14b1b65d7de33b64bf08d1c14ae7b5eb316b2c3b16b96916bea6487457",
+    "third_party/blitz/packages/dioxus-native/src/dioxus_renderer.rs": "5e2a3b357a206a2e88f44558ffa837f31b936e42ddd973b962835b34842bba7f",
+    "third_party/blitz/packages/dioxus-native/src/event_handlers.rs": "df88bf48a0b58981c6c80f6c04c57b44ed35ae7824928f382940891458d4bdd3",
+    "third_party/blitz/packages/dioxus-native/src/hooks.rs": "abd1327d7fbb269c686d19523e69f28c26cc798b4d8ac1b82f535c4072ca9a7f",
+    "third_party/blitz/packages/dioxus-native/src/lib.rs": "3fa0e92f1848bcf10823fc571d1c0d918a2e2f2df98c9b4f9bc8ccf6d0efbe52",
+    "third_party/blitz/packages/dioxus-native/src/link_handler.rs": "54b2a2de9d39d78e8887caae0722286e87ab84945a05ffacb774e49a485f8087",
+    "third_party/blitz/packages/dioxus-native/src/prelude.rs": "be3e86a40f0459bc5d53b307d8b27e3ad8b8b7c9753a24da5c41628e2123ec68",
+    "third_party/blitz/packages/stylo_taffy/Cargo.toml": "0512fe835384bac55d0242b3df8f376333446b60c3d655337b3da975bc42d1f3",
+    "third_party/blitz/packages/stylo_taffy/src/convert.rs": "1ad79e938d912ddda9a919a98fba562654c2050717b4303e3f84f1c0fadc5ab9",
+    "third_party/blitz/packages/stylo_taffy/src/lib.rs": "6b85526493f297173ec5772d95459701e944ea9dbd8a6ae2dd0d888f667b9074",
+    "third_party/blitz/packages/stylo_taffy/src/wrapper.rs": "b724a832d28a8684c243b9d91bb800a9e01cca2e78dcc83dfa1064d8450c4b4b",
+    "third_party/blitz/packages/stylo_taffy/src/writing_mode.rs": "d252c4b944e36f5321d7bdbd058e69c1be92c8460f12e2f6f476ce2f22d6ac96",
+    "third_party/blitz/vendor/README.md": "ff059275442a1ef800480945a2d47c472774f778f1b78c982b23c6c234a6623d",
+    "third_party/blitz/vendor/stylo/.cargo_vcs_info.json": "e3ea451611b457482f843a0e41742ba6a6702dc9e672507aa27b3cfaa0dbc524",
+    "third_party/blitz/vendor/stylo/Cargo.lock": "37a5db8a0ff90d0c4760a2e8e05dd0da677c833932b2062f83b32c96c79a7d2b",
+    "third_party/blitz/vendor/stylo/Cargo.toml": "be949aa315a77f9ebcec1acc7dbc5bc562b89534c90e3c9a2790d69475ac6b77",
+    "third_party/blitz/vendor/stylo/Cargo.toml.orig": "bb8871c0ad264d3052fe2453d1a2832ce36a8349a24bf9a6c70a9d866e019531",
+    "third_party/blitz/vendor/stylo/LICENSE-MPL-2.0": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "third_party/blitz/vendor/stylo/README.md": "f277e108a54b08ca96ef973755ec4ec3c2781b8c2a97f040232674ea3bd9d417",
+    "third_party/blitz/vendor/stylo/applicable_declarations.rs": "2f3a499d9b5d5cac3e68df1a10c7140a51b5b9a6b9758181e2f1f9fabb0a5ab0",
+    "third_party/blitz/vendor/stylo/author_styles.rs": "797f109e65d2538691438303a788723b3927832b1f11a998a50753e14c6c9eab",
+    "third_party/blitz/vendor/stylo/bezier.rs": "8f494dc252685e25be3f86495419c00103f5cbdb52f920010ff40ddca8616632",
+    "third_party/blitz/vendor/stylo/bloom.rs": "2b4bcdfcd8bf652d41f3327229becce1a85a8c47791fa9ddcd03fd5ff08869c2",
+    "third_party/blitz/vendor/stylo/build.rs": "625c8b0c05491ff67873a7eb63f6347702830683f63b3d554ad1db3d89ad4427",
+    "third_party/blitz/vendor/stylo/build_gecko.rs": "e23172e88c8145ee797ef1e8e3caaef385301a0e5123981c5cd928c69ea9082a",
+    "third_party/blitz/vendor/stylo/color/color_function.rs": "f53e361ddcd9510d0482e864e17da1cec829ea89e8e17f05de5c4f6e3451a6bc",
+    "third_party/blitz/vendor/stylo/color/component.rs": "5d99efe73e804e8ac8daf97dc86e3923ff2f1c2dfd58c7b4ed3ca366c60a22d4",
+    "third_party/blitz/vendor/stylo/color/convert.rs": "6be373a68da6d3e99a4e81f5fe46a826b1e99bad8829447a1d80827f8232ac0d",
+    "third_party/blitz/vendor/stylo/color/gamut.rs": "2aafebf5a4065b6a2b64434cd6af21d5965429659b3b6b20d966f79822b425e4",
+    "third_party/blitz/vendor/stylo/color/gamut/raytrace.rs": "b1d1dc00b2bac3c0ccc941b0f0e112672a4a423b341397b954a86e67262c739d",
+    "third_party/blitz/vendor/stylo/color/mix.rs": "9de4c0aa50ab2e27814d1d98d2558c6a2543d886dc4210859d8c97990269b1dc",
+    "third_party/blitz/vendor/stylo/color/mod.rs": "968003bb3943058aad53ce29a677bb0fc1f22579702e7e73cbbe4dee802ec1bc",
+    "third_party/blitz/vendor/stylo/color/parsing.rs": "4429a64aeaa71408bc208106fc1e3f4e4d5026edb91d157c7a8aec8b49ec8134",
+    "third_party/blitz/vendor/stylo/color/to_css.rs": "5d699d13345575c8d32d7787e4f55927361c556790a06553cff9aaae11aba83e",
+    "third_party/blitz/vendor/stylo/context.rs": "ba9d76a67fa591111903e6da09445e7ab90e13eba9e6b04f5c8e2c5c6e737c54",
+    "third_party/blitz/vendor/stylo/counter_style/mod.rs": "66cf2c47ad0a71300bbcbf2256d363b506480757a715bab261e6bca5d8e0a355",
+    "third_party/blitz/vendor/stylo/counter_style/predefined.rs": "a134c18e9ee8c43c9e37aee4c4d6ebf54f7ca0e8f56a8059568df8385502dcb3",
+    "third_party/blitz/vendor/stylo/counter_style/update_predefined.py": "bff9c11b4e7a3f6b767d8a0a6f81cbb8d84adc98217ebc1d21cecfa4802ef876",
+    "third_party/blitz/vendor/stylo/custom_properties.rs": "6d615ec7e8c9060f0ee730476d61610b94265065285ff81335ff99382f63c0ac",
+    "third_party/blitz/vendor/stylo/custom_properties_map.rs": "0a67bbfc5d77bc023e1d927e0fd87046bc51df07f245b4a03ab04dda85abfcac",
+    "third_party/blitz/vendor/stylo/data.rs": "9841689bcfaf80e3fd0e0e9539ae871c896df8feab087028a8de1c378b77e87b",
+    "third_party/blitz/vendor/stylo/device/gecko.rs": "6b97ce514b97d7c7bd98bad9fa58d00991448ede5acf9f5e923946859df959c8",
+    "third_party/blitz/vendor/stylo/device/mod.rs": "4734f14eba2ea7b62c633654a8964980e0edf0e4665ef768c707df722de3c7fe",
+    "third_party/blitz/vendor/stylo/device/servo.rs": "e6a7a5f1f535d193927b702060cab1688a549723b4140173c13521540aa2f3e1",
+    "third_party/blitz/vendor/stylo/dom.rs": "cd55ec1d99aa2bd2cc26e7634c09e2eb8037455a3f861244a7c6f0ad78bea3a7",
+    "third_party/blitz/vendor/stylo/dom_apis.rs": "3541892dac1fb9c58007324de70dc5f7c0c62fa63c692ecf96f5b99842850558",
+    "third_party/blitz/vendor/stylo/driver.rs": "9962eec7a406fb5859ccf6f9d5696e2ac25448ef1b0ec8dc8d77fb466b2af6a0",
+    "third_party/blitz/vendor/stylo/error_reporting.rs": "dcd0ea69b3e7cadcfebaba50aff484fb0f1167e92396201b8080320dc8a1a44a",
+    "third_party/blitz/vendor/stylo/font_face.rs": "08c17ec41cc0d4e58ccbab126735bace052130e390d1002fabbda082611509fc",
+    "third_party/blitz/vendor/stylo/font_metrics.rs": "cdaa3c34f94284ad1bdbbded8fa8f3c164b1607c9da881ae9ff8f5b8ba21b8f5",
+    "third_party/blitz/vendor/stylo/gecko/anon_boxes.toml": "fa8eca47c0a0a1ed08b71c481b27648f6bd9f373e65a50c22bbbc1fa9fb22795",
+    "third_party/blitz/vendor/stylo/gecko/arc_types.rs": "4246aeea1bf6471b2ee1ed4f6612b781e85f96a049c2ca1f4526650325fbf2db",
+    "third_party/blitz/vendor/stylo/gecko/conversions.rs": "70456504e1d6b3c3f170ee32184a7690f8d3ed23bc4136f405697202d703ff5d",
+    "third_party/blitz/vendor/stylo/gecko/data.rs": "886286c9c21c50e06e1e4e0740d776c24c457b37fd4fdfbf7ff43b3b63457b90",
+    "third_party/blitz/vendor/stylo/gecko/media_features.rs": "7244e9090b801d88b85437abb3a0439420b1793b526be1652f1355225dac6494",
+    "third_party/blitz/vendor/stylo/gecko/mod.rs": "1f3054de21544736ea8d006bcad179ecf9e4556b4bc7876d64b9bd1eaf81262d",
+    "third_party/blitz/vendor/stylo/gecko/non_ts_pseudo_class_list.rs": "326bc9dddd361791f8815a02ce85c5fff87f210d29769a5ce694d072f1ff4f89",
+    "third_party/blitz/vendor/stylo/gecko/pseudo_element.rs": "28240979e61053b7b4d3ec72a70d3ea25a86dbc7e3e1e3f503de045667f61032",
+    "third_party/blitz/vendor/stylo/gecko/pseudo_element_definition.mako.rs": "2ab03375c05b478ab4eddd7fd92dff9fe8c85a3e5b146bee5cd9f7eda643432f",
+    "third_party/blitz/vendor/stylo/gecko/pseudo_elements.py": "0d28d38e2c6826d5aa5de50b8d7f3b3ff49cb5f64af60b8440fdeacc17da2728",
+    "third_party/blitz/vendor/stylo/gecko/pseudo_elements.toml": "8895f06afce4d10419f129b8dc9dee6f7ce4add3f852c654b339fd7622924d72",
+    "third_party/blitz/vendor/stylo/gecko/regen_pseudo_elements.py": "08a054fcc6c0e18f58afb81bc916e05839b0365935c03c10b836d9332c5e8f61",
+    "third_party/blitz/vendor/stylo/gecko/restyle_damage.rs": "3cf09f66946a4d8ceab7198c4961754d2ef942a7d4c27775c776cc50f91431ae",
+    "third_party/blitz/vendor/stylo/gecko/selector_parser.rs": "c28cc8aa400bac16ed318bc82970a8694c35d95ae0f9423d23a7d1a8ead55389",
+    "third_party/blitz/vendor/stylo/gecko/snapshot.rs": "3274c6a3aa18bd02701633ebde0f713ee204819617d66581ceb70ff9e4651af0",
+    "third_party/blitz/vendor/stylo/gecko/snapshot_helpers.rs": "026354427e2cf0791db5501c4685bcb0cb994e04d2dc8baf2fcec7f7186f93a1",
+    "third_party/blitz/vendor/stylo/gecko/traversal.rs": "c6bd8da7ed7f5061e579181ba002a8ce8076a2fe584e69274cb63031771ca21d",
+    "third_party/blitz/vendor/stylo/gecko/wrapper.rs": "0c9926390d4f9fb56b7c83091ab5bbaea4f367d7b4f5c7c75fed93a16c770239",
+    "third_party/blitz/vendor/stylo/gecko_bindings/mod.rs": "0cfe7a2bee36f6d0c29e13c5485a4683ad5c8d633c74244319aa90c6434f18de",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/mod.rs": "1fb6ab2654e52111e8b03d97f7ddff0bb4a15623f7173d6ed36a332a44b48f97",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/ns_com_ptr.rs": "306a7be6f21c491eea7ea766a094325f6e1d92e1a10c29875a51336eb0dbbeaf",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/ns_compatibility.rs": "161d165291428b121db090d28b2757dd4d2b8cb3c1527e478fc5063ee81ce1f7",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/ns_style_auto_array.rs": "7917daba63fb207d9e288d2c1eb78d1640ce9c7c4de59f157f07e6874eeaeacf",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/origin_flags.rs": "56b7d849749568518260562ba849335bcdf43903341f7424bed95a5c3b70ecc1",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/ownership.rs": "771244017ccfb292a58f434a9827b2194e4d3e8fbef82916d59b27c3dcf2affb",
+    "third_party/blitz/vendor/stylo/gecko_bindings/sugar/refptr.rs": "9a8e3ff4d9569c44c0a50a602fd1411e7fbb8ead9a344d0da2b6fb32bdcfcbe6",
+    "third_party/blitz/vendor/stylo/gecko_string_cache/mod.rs": "672f92ecc05870a872cf81ec608ae73134c5e0b4236f98b6b73a198dd874ad8a",
+    "third_party/blitz/vendor/stylo/gecko_string_cache/namespace.rs": "9d8d47fe7fd5c12ab37cca427c632c08760eda136b1b696189b6c32b1b010b83",
+    "third_party/blitz/vendor/stylo/global_style_data.rs": "0bbeffdef7d1766e49efcc7ec032c3f13649dae205235e0787a5c521ab29bf90",
+    "third_party/blitz/vendor/stylo/invalidation/element/document_state.rs": "3e42e1686b5677ec083db23bb2f99ab425c28d8b91441afcde1497907d97b7df",
+    "third_party/blitz/vendor/stylo/invalidation/element/element_wrapper.rs": "a067c5948666ce889d65b3f083aa44270c7a6978467af46b3508ed5c7b4e3815",
+    "third_party/blitz/vendor/stylo/invalidation/element/invalidation_map.rs": "f1504a9bcdaf9be44c3f1f427fccea632b2bc1b2c5c8fb22359bb296e59ba1aa",
+    "third_party/blitz/vendor/stylo/invalidation/element/invalidator.rs": "f21e9e778fb7b40134f6767b188f9fc806d7b86703dbd6b3cecc0472b5ec8877",
+    "third_party/blitz/vendor/stylo/invalidation/element/mod.rs": "95c17fd1a36c52060f18c020bd0225d0563c4130ec6b2aa527b479e38766c02d",
+    "third_party/blitz/vendor/stylo/invalidation/element/relative_selector.rs": "6d4ec66bedb04ba0466e40f5e2f4c1cac82efc9a3fc3a62905126d2e67858c3c",
+    "third_party/blitz/vendor/stylo/invalidation/element/restyle_hints.rs": "ea21bed14935af1bd28bbd33c80086dfcea9fe7063a73fb9efa7311f67cd14a4",
+    "third_party/blitz/vendor/stylo/invalidation/element/state_and_attributes.rs": "4ecfffa46f7ca20a7062a504d33e7e37b4696034b1709437de861832083570da",
+    "third_party/blitz/vendor/stylo/invalidation/media_queries.rs": "4979e30714dde5dca90b2ffc93321cdf7435336884ab94bb6a466fce2c981915",
+    "third_party/blitz/vendor/stylo/invalidation/mod.rs": "575f853e89377555264f7cfa22c362ef02f209362d198691a0f86f2d7fb6cd25",
+    "third_party/blitz/vendor/stylo/invalidation/stylesheets.rs": "5f8a7fdf742d4d407ddc7e9326e7f13f01dd34740065f2ea02da9983efb62e58",
+    "third_party/blitz/vendor/stylo/invalidation/viewport_units.rs": "7908bd160009fab7d31bc16494571627fef899804e93fe4e16fa9fbea498e43e",
+    "third_party/blitz/vendor/stylo/lib.rs": "06273c366fe16e1b2a23a6402869eacc369e176a1a0fc601e32c07f04bce4160",
+    "third_party/blitz/vendor/stylo/logical_geometry.rs": "ced0de3d6ebf00ba041787990cc3bf048b74c2f953157a053712aece8567ed52",
+    "third_party/blitz/vendor/stylo/macros.rs": "1d62f4f014425574e6c9dac53e03553f2be995ffc9ee86942eabe945e723ec2c",
+    "third_party/blitz/vendor/stylo/matching.rs": "edc2ae3f1beabe77769bf19349556e53a3561968a40515365a7b8afc97ce8294",
+    "third_party/blitz/vendor/stylo/media_queries/media_list.rs": "55aea5d772b0d4d7be7e5797143969d4bb35cefe51e19a3aa7b133af72adbe78",
+    "third_party/blitz/vendor/stylo/media_queries/media_query.rs": "fc1234bf04876712a59a898a8e71641c6272f82f6d24e0550eef91b10114a379",
+    "third_party/blitz/vendor/stylo/media_queries/mod.rs": "3a5af402569d17ffb5f4ea2c7aac27084c8980f2a652dcae65d158e2ab9ff978",
+    "third_party/blitz/vendor/stylo/parallel.rs": "46f9fe456876c687f576aecbc8961bdca154cbb7bce89a4046131421e0b7c7a5",
+    "third_party/blitz/vendor/stylo/parser.rs": "97ef54f4841b0193fcbe390ce8acdebb3478ba60a9dca75af51a871f533edb04",
+    "third_party/blitz/vendor/stylo/piecewise_linear.rs": "623273a1f5bc50a6cbb186cc3ebf1a72ba3b7d4940dc4531a1557e3f72fde159",
+    "third_party/blitz/vendor/stylo/prefs.rs": "f7fea7f3fee7b1106ca8b005a167daf52bd33437030dfa44faf9cc27a138ab17",
+    "third_party/blitz/vendor/stylo/properties/build.py": "5733517e8ca66a6423cd752abb35a6d816d106a7badba82ecec8ec39eb4bad48",
+    "third_party/blitz/vendor/stylo/properties/cascade.rs": "c3d290936ee076f7a3ae0a83cffa59d92fbcc6f77827fb4d950892c8769202d1",
+    "third_party/blitz/vendor/stylo/properties/computed_value_flags.rs": "88a9a6242a5944c946fe903606a9dfe62867b2ddfa1c1e97b213a1e6a8734697",
+    "third_party/blitz/vendor/stylo/properties/counted_unknown_properties.py": "ae8ae2cbdcba9234e4a66eed25f1a9d584ecbc009c4cf555dd3771abfbbe1181",
+    "third_party/blitz/vendor/stylo/properties/counter_style_descriptors.toml": "c694e0cb63a109ebc72efb4feb082adf58ce45a7f43d1fe981ac2bb02dace35b",
+    "third_party/blitz/vendor/stylo/properties/data.py": "4aa3bc02ab49a5b04b4814588545d509385c463fe591ad0f49c4629e8beec437",
+    "third_party/blitz/vendor/stylo/properties/declaration_block.rs": "34a77f5547708b7fea4152afb1d493959a0278d7c7f449c813a47a0e375e40b0",
+    "third_party/blitz/vendor/stylo/properties/font_face_descriptors.toml": "75a2d29560959aced4c27855ffbfb9a2b36732ee58febea6fbcdea7cb163277c",
+    "third_party/blitz/vendor/stylo/properties/gecko.mako.rs": "894aa4b7e761318c397777e6b9360fcc875ae980e1131102767a98c52319b335",
+    "third_party/blitz/vendor/stylo/properties/helpers.mako.rs": "5eef3226e991cf0647b8743680459971f8125f8461b431517b0c047da499c3dc",
+    "third_party/blitz/vendor/stylo/properties/helpers/animated_properties.mako.rs": "53d661dd309afee7f375025eb36cef7c32304f361c764b4467394167954a804b",
+    "third_party/blitz/vendor/stylo/properties/longhands.toml": "4bc3139425754226519868cca013d2508f16351d4d74a7f13be09d2b286540cb",
+    "third_party/blitz/vendor/stylo/properties/mod.rs": "2c0f82a3f6c93d56cf6a52b1c6e781547e7cf1e0f3ca5c7796a80d179397fe82",
+    "third_party/blitz/vendor/stylo/properties/properties.html.mako": "97246aeb9b32acae09f616d88ce62e5fd580c6f07939b7900120d1cdd63949ce",
+    "third_party/blitz/vendor/stylo/properties/properties.mako.rs": "5990df40508e435dc12132f10a69d6a1ac3897009235f5bd71a7a8452d9a40af",
+    "third_party/blitz/vendor/stylo/properties/property_descriptors.toml": "c90685126a3f30a552cc4a6ef89985b40792a77e17ba9d2ae0b158d060bf5f70",
+    "third_party/blitz/vendor/stylo/properties/shorthands.rs": "189c5cdc2bd7938889ef0e172109925f69fb4b5bbf601247eef75933a0e93d63",
+    "third_party/blitz/vendor/stylo/properties/shorthands.toml": "d12c652a4f67bbd123d48d03df75ad0016fd647e4ed13c7d950dec30766331dd",
+    "third_party/blitz/vendor/stylo/properties/vendored_python/mako-1.3.10-py3-none-any.whl": "baef24a52fc4fc514a0887ac600f9f1cff3d82c61d4d700a1fa84d597b88db59",
+    "third_party/blitz/vendor/stylo/properties/vendored_python/markupsafe/LICENSE.txt": "6baf29b91ec1ad4fce1bfd2e27abf84547d8f73e99f087ee9c63d3ae3296c7b2",
+    "third_party/blitz/vendor/stylo/properties/vendored_python/markupsafe/__init__.py": "13d7034c5c70cf23c6e2200e3e7bdb05f5218a4953c99243da0ee00876519d40",
+    "third_party/blitz/vendor/stylo/properties/vendored_python/toml-0.10.2-py2.py3-none-any.whl": "806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b",
+    "third_party/blitz/vendor/stylo/properties/view_transition_descriptors.toml": "26ea729cd45ff856487c0c451f0ebccd25ac182f92ebb85c3bf2c187c8cbbc17",
+    "third_party/blitz/vendor/stylo/properties_and_values/mod.rs": "201b10003f5fd773f62f350e1d6235c179c2c4bc8be103dadcb9f0d127b91570",
+    "third_party/blitz/vendor/stylo/properties_and_values/registry.rs": "7574934a37fe6ce825eed26e78471340fe9431f8547920044925dac4eb7a77a0",
+    "third_party/blitz/vendor/stylo/properties_and_values/rule.rs": "5489f554a164dcb03122587fec6d76f36c06c4d4bf490ccca6f6431a697be91b",
+    "third_party/blitz/vendor/stylo/properties_and_values/syntax/ascii.rs": "fbf8ce2c94e0324654fefdbb7761e055928dbfa982ef492b4263a54f1da1aee3",
+    "third_party/blitz/vendor/stylo/properties_and_values/syntax/data_type.rs": "693d50115368ec1bc5742306c7c145c8a731cd1fadebf4f44884a17efe0bc0e9",
+    "third_party/blitz/vendor/stylo/properties_and_values/syntax/mod.rs": "32bc06e329abc17023d34f6fe2c551043b3522bab3cf3f23dac6b4629caab671",
+    "third_party/blitz/vendor/stylo/properties_and_values/value.rs": "055e8c7360b0e6f3033685d3accae21c2a8d69f4ffcdcb011a5cf9dfacf5462c",
+    "third_party/blitz/vendor/stylo/queries/condition.rs": "5ef3e191de6ac7258f590debb1bed175b7d7fef7fd1a8d29129c4e1b47be6e26",
+    "third_party/blitz/vendor/stylo/queries/feature.rs": "c7ecdef01170b21881e9f16b64a9609df9a8c5f27285afbfc57f0dc600c68a79",
+    "third_party/blitz/vendor/stylo/queries/feature_expression.rs": "edf33d75599aa5fdbe9cbe4424fd1ba5dae4a4f81b1b951a42d81ecfbcd10910",
+    "third_party/blitz/vendor/stylo/queries/mod.rs": "7738cf70fed404cadbe07542567c8e36596c3b8910ac29a84a7f32dde101541b",
+    "third_party/blitz/vendor/stylo/queries/values.rs": "cfbf383b7af355f5a9dc4e8be66236fab95933ae774a3dbb7edde9778126a4cf",
+    "third_party/blitz/vendor/stylo/rule_cache.rs": "3a1dae0a0c4f38d289789c5fd371cf4b81bc582b231ac06995047d188497e534",
+    "third_party/blitz/vendor/stylo/rule_collector.rs": "0e58b60d12e32065b2a14cc3f1fd92f5d420ce1567e55cb9c3bfd2140c187f74",
+    "third_party/blitz/vendor/stylo/rule_tree/core.rs": "3e17013f5bc51701e7cfd0672641cb3f332a09c4afecf99ad3b5467908a96197",
+    "third_party/blitz/vendor/stylo/rule_tree/level.rs": "3bf09d2c5a6e8bd1dfe577c57aefc9aad9c50f85bb6815bd0a557d763ab2dea9",
+    "third_party/blitz/vendor/stylo/rule_tree/map.rs": "09cdeb8e2fa47281134688dc562a16134313728e6ddc3ea23716e76e778c564d",
+    "third_party/blitz/vendor/stylo/rule_tree/mod.rs": "5c1880279c4d9c46c2b5cff1d69386abef661e97a1e7ff2fdc2d1a42573508de",
+    "third_party/blitz/vendor/stylo/rule_tree/source.rs": "9096ba92cf60607e5482748b8b85911cc8148d8fd83092607084e4063c4e28c9",
+    "third_party/blitz/vendor/stylo/rule_tree/unsafe_box.rs": "bb1758828604a732d9071c72c3775b552b3430c933cd57739e6dc9fae13b8e5c",
+    "third_party/blitz/vendor/stylo/scoped_tls.rs": "dad1a18d82c6aa4228a853787a2172d7eea135fcb0415ff50a1ac91bc9f7af28",
+    "third_party/blitz/vendor/stylo/selector_map.rs": "7d496a66d0fe35c8de70c55cc23c9c5d8641c8ea1062bb6dafe54b874e5a2ab2",
+    "third_party/blitz/vendor/stylo/selector_parser.rs": "5a4693348b920c60c445287266f75b0640b990b642c78edd19a9fc78c26c4175",
+    "third_party/blitz/vendor/stylo/servo/animation.rs": "9f20b35291125ce431974f94ee13ca00d22788cf7a2f88d67c00ebadea8aa9a4",
+    "third_party/blitz/vendor/stylo/servo/attr.rs": "c49cdbeea7d15f13140dfa872229de7414095adbad7fe0b85e6b5f451b6f9304",
+    "third_party/blitz/vendor/stylo/servo/encoding_support.rs": "646959aea68582c3f6941a0cd46079d8d8315c2c8ce011c8366ed10dc053c8fc",
+    "third_party/blitz/vendor/stylo/servo/media_features.rs": "1e6bbea33f07e29f9a722a9ca214cc1174533cdae9d363c0e77b3fab42618574",
+    "third_party/blitz/vendor/stylo/servo/mod.rs": "cd8cd23baeb19b5dc2d873f556bc135a14ee2ee3c09fd361631add6dad3452ba",
+    "third_party/blitz/vendor/stylo/servo/restyle_damage.rs": "7a52367a9a8a6baaf6cc0c698fd9dfcc70cb90f0dce716fb3d4310c338b01e3e",
+    "third_party/blitz/vendor/stylo/servo/selector_parser.rs": "633a35bfdbc02ee8889e76b973c1df691028ab7363f772f1414b522cb4be90d1",
+    "third_party/blitz/vendor/stylo/servo/shadow_parts.rs": "0290dff2e7ff90031aabeb4c4cd80ed1c69c7ee97ed23ff77a6cff42a81be637",
+    "third_party/blitz/vendor/stylo/shared_lock.rs": "61933dd2b2d3d40129909b4e57b7f275784af6c34a507deace700143d43d90a0",
+    "third_party/blitz/vendor/stylo/sharing/checks.rs": "77b8d5d56f48f73119220a4fb102846bc18fd9ae9489fc5624347b73f639124d",
+    "third_party/blitz/vendor/stylo/sharing/mod.rs": "40012599a121d28d15bf4b0c7f0f35c3515bc03f30765ec460b911d74dd84fae",
+    "third_party/blitz/vendor/stylo/simple_buckets_map.rs": "ef1e585e0ea59042274a83d01c3d66d1d852463e9d48c9362962d2037ffcee6a",
+    "third_party/blitz/vendor/stylo/str.rs": "aa01b1b33d66afab2720a9bbc2719c61638b853aef830460a1160f261d95be31",
+    "third_party/blitz/vendor/stylo/style_adjuster.rs": "8d8e6777cee7856bc7b46c8ecdb3cf2ae23ad93c6e633ca22d62fc7b8f544a0f",
+    "third_party/blitz/vendor/stylo/style_resolver.rs": "ea308dd7acd8d59a397bae36da4577afaeb2ad9a0d45353e7e37bad2e57e657a",
+    "third_party/blitz/vendor/stylo/stylesheet_set.rs": "2c2004047010d1136bdd433fc85c5df538c4cb94e53c4bbea000d374acdb21a5",
+    "third_party/blitz/vendor/stylo/stylesheets/appearance_base_rule.rs": "8c9a4d15cd94343cacf1f3c0c5d68b6669053aaee7fb2df689eea371cb97d847",
+    "third_party/blitz/vendor/stylo/stylesheets/container_rule.rs": "3f6e45eed96b220f7f2ad3cf5c4f18e8c18ffa1efe474fe529969a84239dd5df",
+    "third_party/blitz/vendor/stylo/stylesheets/counter_style_rule.rs": "d3f8b8040baa644fd85558835dfc6b32d40b4ab94a0434208092f2aad0789ecf",
+    "third_party/blitz/vendor/stylo/stylesheets/document_rule.rs": "23423c9587b8be6f452a5353bbda4aa421c664048f783bdcbbef401d7fb76bb7",
+    "third_party/blitz/vendor/stylo/stylesheets/font_face_rule.rs": "4128f3c595024f9ef301778d8fe30077889917033f2c4f33a50c964b270bf26e",
+    "third_party/blitz/vendor/stylo/stylesheets/font_feature_values_rule.rs": "dd72aad437230ed58e9d3a3daf01cf365b040a73d656fa2385797e4c81bfe5e2",
+    "third_party/blitz/vendor/stylo/stylesheets/font_palette_values_rule.rs": "6411cfec8bfbc5d44e2ef3576b0f04840d979a49ef83f86646cd3d673e3af5b2",
+    "third_party/blitz/vendor/stylo/stylesheets/import_rule.rs": "c2838e79d5949b82d772188c599a1e4b1a8255f462a5df86ce6ad244f37ed969",
+    "third_party/blitz/vendor/stylo/stylesheets/keyframes_rule.rs": "2febb6010ddf2e5de7802506018ad63ebc14fa1f213ea7c03b5920cfc5061026",
+    "third_party/blitz/vendor/stylo/stylesheets/layer_rule.rs": "af86c51f3694e786196666a468755a385df2db9723f937458c5c0838eef95284",
+    "third_party/blitz/vendor/stylo/stylesheets/loader.rs": "c724e609071205a3adfc88a3839e3a8357ed910476a6be34069913c88a867646",
+    "third_party/blitz/vendor/stylo/stylesheets/margin_rule.rs": "d1830d244aa93ceef07aa1127f7f175f4e6c0b607c13ef13f62a28355b4a9b0b",
+    "third_party/blitz/vendor/stylo/stylesheets/media_rule.rs": "4b433b6a398684a725533b2733e3b8856a6f59fa5d505cee47fa14e8bb4135e3",
+    "third_party/blitz/vendor/stylo/stylesheets/mod.rs": "1c917c2c71ab817b5964b3c687fb0be3e46aceefa53a9c93f000e9d990804498",
+    "third_party/blitz/vendor/stylo/stylesheets/namespace_rule.rs": "bcf1693f5355f9798a9def715e4afc9ca090dbbd85d5f19e96db216689affdc7",
+    "third_party/blitz/vendor/stylo/stylesheets/nested_declarations_rule.rs": "2922db45c0cb0f7706244d3dd9acb1eb0548ee59c8a1072e0afef0584e016e0a",
+    "third_party/blitz/vendor/stylo/stylesheets/origin.rs": "a238901ac1068977ca24d3a443923ec0c8c036500d47a27de6d0caf23c37f694",
+    "third_party/blitz/vendor/stylo/stylesheets/page_rule.rs": "f573cc2fdb643f84574983e43c66ebbc90d9699d2b928bbe1d09e59b466146b0",
+    "third_party/blitz/vendor/stylo/stylesheets/position_try_rule.rs": "9472d8d2da9dae14ea287edb9e36b8bcaccf4b7d309a8b25eb95aa3e5ec57589",
+    "third_party/blitz/vendor/stylo/stylesheets/property_rule.rs": "65dd43c2d370de05f3eaebafa26a520ca98370b550eae70e1e3ff93f38f459ff",
+    "third_party/blitz/vendor/stylo/stylesheets/rule_list.rs": "534e1b09b49f0951fe50e5919459180c3e12f580f06d7689cb7ac3e51f0e7a47",
+    "third_party/blitz/vendor/stylo/stylesheets/rule_parser.rs": "8297edf9b7b9a9a453a7a9f4ad84eecde84c1c6a79817e1b4679558e607aeb73",
+    "third_party/blitz/vendor/stylo/stylesheets/rules_iterator.rs": "865f355a47aaac12286de0d165aef43f04ff657f13b68578e8a6b88fa9041d2f",
+    "third_party/blitz/vendor/stylo/stylesheets/scope_rule.rs": "54b3f2d02b6944aab8cc37aa19602fd9437a591944e1bd424667d0c4fb130b3a",
+    "third_party/blitz/vendor/stylo/stylesheets/starting_style_rule.rs": "09a4ae785be462cf6a8973c4e6c4120bc92ce6a375e64e5941e49bf01a2c9fea",
+    "third_party/blitz/vendor/stylo/stylesheets/style_rule.rs": "011f532c73471ba261fa3092c64d7f450faae36e94fb312aa8e438919c8ec49a",
+    "third_party/blitz/vendor/stylo/stylesheets/stylesheet.rs": "0475853ef03381ed85cb868f196d0abab449ea02cc00b68878e4e9efa70c8fc3",
+    "third_party/blitz/vendor/stylo/stylesheets/supports_rule.rs": "e04032326ba93672b32fe6e1b955b80cfcb8edbc2638fd3538d751f22c689139",
+    "third_party/blitz/vendor/stylo/stylesheets/view_transition_rule.rs": "81e3aa0a1ceb1edd14da5eef2b829a4aae897107eb5753b942d548b4490029a2",
+    "third_party/blitz/vendor/stylo/stylist.rs": "bdd8663ee1f01386fb8745c9d9e7e6349a35282384ca515a2a30b1f10e79e454",
+    "third_party/blitz/vendor/stylo/thread_state.rs": "589e56a1ae2b736032b92be279971e1cbac9e3153f1bca731ae1e420da1d8982",
+    "third_party/blitz/vendor/stylo/traversal.rs": "740d81fb5f49be6a0463d71b4ffe2ab2287f7cdc1d0398235de434cd4d6efdcc",
+    "third_party/blitz/vendor/stylo/traversal_flags.rs": "98c40059bcfce0c66d3a4ba7f1d04c243c0792f5c120c9069015969fddc92cca",
+    "third_party/blitz/vendor/stylo/typed_om/mod.rs": "e14b682820c5677844830c6b5ee523956885e79d4ceb883668d53c833b89c3c9",
+    "third_party/blitz/vendor/stylo/typed_om/numeric.rs": "726027356dba784132fa3c7b453d4f8ea3249612f7dfa174318feffd389aec90",
+    "third_party/blitz/vendor/stylo/typed_om/numeric_declaration.rs": "dda170c724ae857c17c5c411f267cb55e57705165a52c6515758461a7c700dbc",
+    "third_party/blitz/vendor/stylo/typed_om/numeric_type.rs": "b2f52bf13b9a9842bdec2b43aadad505127337e2d9318401e0b5fc7854fcd517",
+    "third_party/blitz/vendor/stylo/typed_om/sum_value.rs": "5e225f6f5be2d5401daa0303e8d7a2068e98cd2972f1a6174bc8adf65cbf69c0",
+    "third_party/blitz/vendor/stylo/url/gecko.rs": "3932e109beb6b4c72aa34268b52edeb266138f9d95649d7672ab82b8162bed6e",
+    "third_party/blitz/vendor/stylo/url/mod.rs": "d2a88c2c37024ecf704b21f389a61b63b7a0ace403713b9df96e4fb7a33ccbe6",
+    "third_party/blitz/vendor/stylo/url/servo.rs": "9d723e7a7c0a30d1cb4308275f9378a53d49b20e0c23597ce3b9a478a07fa73d",
+    "third_party/blitz/vendor/stylo/use_counters/mod.rs": "2ffb508b526f96e1b141ca6128f5fb0925fec093b7ef6cac9f2e3f63be46b429",
+    "third_party/blitz/vendor/stylo/values/animated/color.rs": "79613bc39ba3e17b0c8a3a871e3d7f1793a944e06b4cdce6c0470eee52421f84",
+    "third_party/blitz/vendor/stylo/values/animated/effects.rs": "1430118e44abc254e7c17a82908ba8324e191bd65d68873bae2d9f176030587f",
+    "third_party/blitz/vendor/stylo/values/animated/font.rs": "734dcb3c7c20a27bea6945805866432215d0ab02b2c099fb966ddec9aca0d949",
+    "third_party/blitz/vendor/stylo/values/animated/grid.rs": "0b913d9adc644000f76634ce37224efa75f7ab3cb15ca653befa88b2d921851e",
+    "third_party/blitz/vendor/stylo/values/animated/lists.rs": "54c8c58da67ad8651d4200f1f5cb7dc746a39e0bf0b5a633d85bfa29674f3048",
+    "third_party/blitz/vendor/stylo/values/animated/mod.rs": "32bad880b3691227fc66971d84725b7b5b69364df8d9cf1f7b335e12f195ccd7",
+    "third_party/blitz/vendor/stylo/values/animated/svg.rs": "282dec95e4c80936a0464d5f313e6daf6b6f3dec718477f1813e59e14188fd69",
+    "third_party/blitz/vendor/stylo/values/animated/text.rs": "cfb6ec4df9f0f6124cc9c7e272d8dd32c885609793984161183b045317ca53c7",
+    "third_party/blitz/vendor/stylo/values/animated/transform.rs": "bd195a13cdc7acaacec2330b76eb79cf64c21140c90165261d90b884886c12de",
+    "third_party/blitz/vendor/stylo/values/computed/align.rs": "bc98f0888be50e961bc92fb9d6f4ed56256c622609bceffcf0be7bcb22e72af1",
+    "third_party/blitz/vendor/stylo/values/computed/angle.rs": "7b5d100a88c2a65503f76cc5f35237ca7b7b5da74314f980fb66aedc4f3f5b08",
+    "third_party/blitz/vendor/stylo/values/computed/animation.rs": "f7f5e291525f200c3f0400346d3fe8fbcb7623a216f2e2ef3647d039f369fdca",
+    "third_party/blitz/vendor/stylo/values/computed/background.rs": "9debde74bc8cb41fadef897fbcc933c5097a41ad795deca491b9c660cf293e37",
+    "third_party/blitz/vendor/stylo/values/computed/basic_shape.rs": "795eaae50c1ee5d5de2cf87fee5807f847b436b7f098e612e41446ce3479eb3e",
+    "third_party/blitz/vendor/stylo/values/computed/border.rs": "2101104383b340d018139727e93dcab3506a3b70412638902fa4b130effc6299",
+    "third_party/blitz/vendor/stylo/values/computed/box.rs": "f13235b453a2bb8da18e991473641ed5e19fba7fb53cc9c1c97f9727a965d1a1",
+    "third_party/blitz/vendor/stylo/values/computed/calc.rs": "2dc0006a5f0cd50dfbdece92cda040075ee2dfeb1677b740c6f5400f13a18699",
+    "third_party/blitz/vendor/stylo/values/computed/color.rs": "f2266bcc0b917f2fc89ad69d9bbd1d1343d82187613edd7c80776ab9b92e31d6",
+    "third_party/blitz/vendor/stylo/values/computed/column.rs": "0721939e83e8fa9643c3aac69d85d1914f4effc975dc7fc7dff8c2092069d9c8",
+    "third_party/blitz/vendor/stylo/values/computed/corner_shape.rs": "02adc1d2a7f2e78efe1ee4ace3f281e0667bc65ee07e543a0dabe0e4bbd54779",
+    "third_party/blitz/vendor/stylo/values/computed/counters.rs": "59c09b7674d85016e9f77a7323c957d0ef2f50f36d04d4b4c85d0f29f451e6a9",
+    "third_party/blitz/vendor/stylo/values/computed/easing.rs": "2efcb2145cb8cbdb0d62071627205d1d3c1e714f04eba60f71c7405136d785d3",
+    "third_party/blitz/vendor/stylo/values/computed/effects.rs": "fe927a9962340e40ae7a265b955b4b42cf3878ba918ed0fb12634905a13dd41e",
+    "third_party/blitz/vendor/stylo/values/computed/flex.rs": "db12b0e5a9a0302e9f4657a69a9816774b5f95ad64cfbed1e2b8501b23aaa878",
+    "third_party/blitz/vendor/stylo/values/computed/font.rs": "280fd8cdbd099dc6876e2b94849f4ef4756e6472b080a83f5088cf720d1acd0e",
+    "third_party/blitz/vendor/stylo/values/computed/image.rs": "d9b2bb257b488eac59768d049cc8bce7e05ba16934d64cec41429c006209fffa",
+    "third_party/blitz/vendor/stylo/values/computed/length.rs": "8d4e321f65b21108d98c9f83071390da366965ba9d8c30a8b6110cdc5dcce56a",
+    "third_party/blitz/vendor/stylo/values/computed/length_percentage.rs": "0c22167bbc6392d355472f957d3aba855c6fbc21a434cf25f99672eef7815ec7",
+    "third_party/blitz/vendor/stylo/values/computed/list.rs": "da2fdd0e800e0f33d8e8d317cf5a086628cccbd5aabec912bb83bf3aefad8cef",
+    "third_party/blitz/vendor/stylo/values/computed/mod.rs": "d180ee952dfad0993da63908e9981e357ec5f9f33d204ccef7721be53385a404",
+    "third_party/blitz/vendor/stylo/values/computed/motion.rs": "e271feb2ff2e0960ee767f0125509bf21833ca6104869c5573e9487ec0ea7daf",
+    "third_party/blitz/vendor/stylo/values/computed/outline.rs": "adceff66eaa7668d8062489ad5b888dda36a0254317f227a563f60c78487874a",
+    "third_party/blitz/vendor/stylo/values/computed/page.rs": "27e24613e6a76831791f2a97362568f8d26732e7f022b7ab3bd3605d5f370442",
+    "third_party/blitz/vendor/stylo/values/computed/param.rs": "a5370dc6d73319b3630f254b0f9f402272e5c6f20b59aedb85dcd5f2ca90c307",
+    "third_party/blitz/vendor/stylo/values/computed/percentage.rs": "03b0930c93a345708cee8fcdcb3ee7feb2c5f9d83ff9fbf3c5d4dd14ea1fa053",
+    "third_party/blitz/vendor/stylo/values/computed/position.rs": "3a981330a46895eeabd4f6967f3d7a27e28d52f45825448196cdd49e9ded2625",
+    "third_party/blitz/vendor/stylo/values/computed/ratio.rs": "408e9fcf69dc965f08f7df3e9b78f2d39e71dd5ae48f5cc1ef78997ce39be947",
+    "third_party/blitz/vendor/stylo/values/computed/rect.rs": "c50f6b732a75a7d51608a65f29027fef973ce80fb32921a8852424eed0507f09",
+    "third_party/blitz/vendor/stylo/values/computed/resolution.rs": "7c71577377d7c9dbda529489b061d44867971ebcdeb1e76cc6968b80a8f8ca11",
+    "third_party/blitz/vendor/stylo/values/computed/svg.rs": "c344ac2afc0b5c247903f067e544a3ce2979d7280216e8bc73c4a3ab8c99206b",
+    "third_party/blitz/vendor/stylo/values/computed/table.rs": "26bee527a6c0c3f998fe196f8a89b1b8d40355f6a1ca92dca5e69cee56e2b151",
+    "third_party/blitz/vendor/stylo/values/computed/text.rs": "39702e74418c5cf1dd7d889860568884896f85c3a8693ae5f10c1f477f0892a4",
+    "third_party/blitz/vendor/stylo/values/computed/time.rs": "475e96be9fcfa6295d5df31c38ffda0007e3b9c7dc14db1181fe52bd9d88d20e",
+    "third_party/blitz/vendor/stylo/values/computed/transform.rs": "45ffc884b34680fdb69bc1d0a95dd0a60a51326f4c29c1044604edeb7071d3aa",
+    "third_party/blitz/vendor/stylo/values/computed/tree_counting.rs": "74aac81fd0d05a55b1cc1dc990438cf8f3f8ea011e337053da3f923437fa5419",
+    "third_party/blitz/vendor/stylo/values/computed/ui.rs": "d2faa391abd04fb5641ae178088abd0f4512cba379a79b3975a8e746c3af2592",
+    "third_party/blitz/vendor/stylo/values/computed/url.rs": "9ba46226b51e4f16878f2994231f6bcd34a95dcd1d33f838d528113f16cb0115",
+    "third_party/blitz/vendor/stylo/values/distance.rs": "898eef69e36c4693d0f6aea2885953b1246489b8cb89b1853424fc81dc9d0121",
+    "third_party/blitz/vendor/stylo/values/generics/animation.rs": "9d5877bac9fd498f226292d1ed44f0eda8ef9a5d0f08a7cfe0a3ce1529713f23",
+    "third_party/blitz/vendor/stylo/values/generics/background.rs": "202eaa88774f23d9ecb3ac4a384a38f8dde60d0f957cd751e297231ba319c083",
+    "third_party/blitz/vendor/stylo/values/generics/basic_shape.rs": "83f0ff210f74dd81eadf0b3c5741a94af8323231e922825e858f12fadb42cc11",
+    "third_party/blitz/vendor/stylo/values/generics/border.rs": "ea67c0c87058afd6f1e134697c47889313c486778c9ad45d238934be9302859d",
+    "third_party/blitz/vendor/stylo/values/generics/box.rs": "cad1d9ab5b31a1ce52825332450c504834d56d1799d78f406fccd0c58ae8aac2",
+    "third_party/blitz/vendor/stylo/values/generics/calc.rs": "5766c8ff1a1ab06d69c2e1ba245ea08807aa94434e6cd096ab78ab9e80fdc24f",
+    "third_party/blitz/vendor/stylo/values/generics/color.rs": "c750f956febde451a5a92491115c65755cde1ae9628716fdb11022ae4738e0db",
+    "third_party/blitz/vendor/stylo/values/generics/column.rs": "2f2dbf9ddfcc40930f9738ce68c64e8fff5aacce9732d6f43ab9b2d0ee85552d",
+    "third_party/blitz/vendor/stylo/values/generics/counters.rs": "4ee396c02930f4f20fc3cf9327a64148bfcc7d38649ea67601f137a77f6155ed",
+    "third_party/blitz/vendor/stylo/values/generics/easing.rs": "dd33bcc74e3733271959518804423d263e6ab970fe75fd135ec0d11dc6abf459",
+    "third_party/blitz/vendor/stylo/values/generics/effects.rs": "34c2ff612129f2ab9c4aa5effc5d987570775077a4ee5693ebcdb7b5513dad7f",
+    "third_party/blitz/vendor/stylo/values/generics/flex.rs": "113cace083d30af9479c945bf66808b45a785ac5e469e02fdc29d6da81aa0486",
+    "third_party/blitz/vendor/stylo/values/generics/font.rs": "f07a5a7eb3a57254127d50374fbd47655ead252ff08455d8544565e6003c0b41",
+    "third_party/blitz/vendor/stylo/values/generics/grid.rs": "e2dc8acd6886faa0fb5803fb508c7d534ea6a619ed34fb8207f1f303acb6f8b3",
+    "third_party/blitz/vendor/stylo/values/generics/image.rs": "bed252159255b83d47a1c2040310989824272e49073b6761815f54113e99074f",
+    "third_party/blitz/vendor/stylo/values/generics/length.rs": "de04920798efcb6d9b1c8e6fa0c6ead21004d21a7d378ffff642237df43952a7",
+    "third_party/blitz/vendor/stylo/values/generics/mod.rs": "83e2eabdcfc11078b463d20c10481fd213432caf6b81931703841be351a444e5",
+    "third_party/blitz/vendor/stylo/values/generics/motion.rs": "0e864655809cd32ff20c4155f92aa7378b8592c90a950b3dd11612fd1dd445ea",
+    "third_party/blitz/vendor/stylo/values/generics/page.rs": "cf96a1a6b3bf3e5c6f982ab6211598f695bd7549a5b115c4a9df437fac739763",
+    "third_party/blitz/vendor/stylo/values/generics/position.rs": "516dbeac94ff113d58e2231eb110954eac57c7db178cfa8499d9262fb3a4fb99",
+    "third_party/blitz/vendor/stylo/values/generics/ratio.rs": "b1cc31be9d0794d3219b840e3bcd9deb49f3cda850efb28552607a52e345d312",
+    "third_party/blitz/vendor/stylo/values/generics/rect.rs": "c24058d0379577234013adb5656be82da38b2e5010062ff097ad6af68b9b555c",
+    "third_party/blitz/vendor/stylo/values/generics/size.rs": "e4090c0253c00013bdecae43d7c7925b10166dedfc00300592a0092382436c37",
+    "third_party/blitz/vendor/stylo/values/generics/svg.rs": "2f6b5908818ee8b4caf69569fc572120673610e4acd3c524f2f8889902113db7",
+    "third_party/blitz/vendor/stylo/values/generics/text.rs": "f8d3b5b72f9aadec4b45c03afd844e8c98bd4c5dbb18ff94bfb5d45773e7bd70",
+    "third_party/blitz/vendor/stylo/values/generics/transform.rs": "f3c5cf01734696f4db2ec2663f628c655c65c0d5b0de25208aec810821797e76",
+    "third_party/blitz/vendor/stylo/values/generics/ui.rs": "cc93a8f47b397923a9ad190e5275e3ca0d1f754e2cbad945e255b842ee89ba44",
+    "third_party/blitz/vendor/stylo/values/generics/url.rs": "156ca361b4929147af924305457210abf2d4b770d84d07043339a2f60bfdd192",
+    "third_party/blitz/vendor/stylo/values/mod.rs": "77c00fb6efa36a0436e9a50b2b19361fc22fa77ceaa4e8f1fbced4737a65f945",
+    "third_party/blitz/vendor/stylo/values/resolved/animation.rs": "245fbfe10bf012fb59e71b0a8fb61fda0cd7d43eea105c617597042142ac05a5",
+    "third_party/blitz/vendor/stylo/values/resolved/color.rs": "c54471662e30d7fcca0a7644b1d9a3d591b6c734fc687b26a4773d4d58836d4c",
+    "third_party/blitz/vendor/stylo/values/resolved/counters.rs": "681fa6b03eef640eeba0eccd994578a9c7b01738bf50972c2f56b601f7640605",
+    "third_party/blitz/vendor/stylo/values/resolved/mod.rs": "4f66b91275af97c1371f68099343355276ae0cb7a10c557152cbc6cdb59e1f1f",
+    "third_party/blitz/vendor/stylo/values/specified/align.rs": "4d6d124061e921d85cff10c7f1e489002bfe412e2317bfae22691fe8180a9c8f",
+    "third_party/blitz/vendor/stylo/values/specified/angle.rs": "387249f486de0afb7d688a4cdccd13be7564578e43372220a11c0d4c7410e88f",
+    "third_party/blitz/vendor/stylo/values/specified/animation.rs": "05f313e072d15ebc888957ee9c104afe658d85aef703d38537fe16600d124c32",
+    "third_party/blitz/vendor/stylo/values/specified/background.rs": "08a0f23e784fccb3e456dd2d44e60e955f359a95683b53c7ca63d7816615ec0b",
+    "third_party/blitz/vendor/stylo/values/specified/basic_shape.rs": "2aac794aef7d1f4bac2a0f1d128cb80151b75bb2f11303465f58ecdb1876b83f",
+    "third_party/blitz/vendor/stylo/values/specified/border.rs": "f106df6dee3f3b2b3fd86ecd5ac8d2922a459c15a55d37ae2922462ea3dc600b",
+    "third_party/blitz/vendor/stylo/values/specified/box.rs": "3ed5067e841f550df6addc7f7b5cc127399c0bda8d9a1d2f6b9bb751e8ac4a92",
+    "third_party/blitz/vendor/stylo/values/specified/calc.rs": "a3e0a584623374c90c5c8844406cc57b767b0d9f1f3a7a67e2ce5f25df1be199",
+    "third_party/blitz/vendor/stylo/values/specified/color.rs": "3c5312198168df7e444e4cd506c549d3592091551932210c9aecfcbb8643d17b",
+    "third_party/blitz/vendor/stylo/values/specified/column.rs": "35bd6be9db5a630e30d8917bfdc53a9eca79c2f0cc7de497640a97fecda5247c",
+    "third_party/blitz/vendor/stylo/values/specified/corner_shape.rs": "975f4a957fdaaf30a392ff18712abef8eb5042f537f82ae72941a6cd4bab6b91",
+    "third_party/blitz/vendor/stylo/values/specified/counters.rs": "7bf59dae34025429d0f824e46e4133251dbf5589a7e735a8df58b6207ccb89db",
+    "third_party/blitz/vendor/stylo/values/specified/easing.rs": "0e7be97cb6817541e4a4840158b916fd5541e3babc10306bc8c28b3f1b190180",
+    "third_party/blitz/vendor/stylo/values/specified/effects.rs": "69317616b3c0340adae8a00cf12f3997b9a761afeb2e2960d0a4e7cbcb621234",
+    "third_party/blitz/vendor/stylo/values/specified/flex.rs": "46fed084b09afcabe04838ce2b7ecd47532dc072e667461c5c37c78f97f8a152",
+    "third_party/blitz/vendor/stylo/values/specified/font.rs": "d09910a8d9ffd97d6dcdb489eb7df0d6d3115f01569d5ff8676faa17228b2d86",
+    "third_party/blitz/vendor/stylo/values/specified/frequency.rs": "08f9db21ece77ff5f47bb348523faf8a9df5320563261f836c1162bc54c6446c",
+    "third_party/blitz/vendor/stylo/values/specified/grid.rs": "ef92d5191fb6a4f9bf36808817e248f53afaf346c2e3943a975e7e190a07533b",
+    "third_party/blitz/vendor/stylo/values/specified/image.rs": "ea16b41d9a5f7fba567d64e33ccf7c27baf02d197ec0f8a7d11b52a8e265d859",
+    "third_party/blitz/vendor/stylo/values/specified/intersection_observer.rs": "8cef62ec91497b26138145bb96eb9121e02bfc85eedc87f4f3ac6ebcdd765781",
+    "third_party/blitz/vendor/stylo/values/specified/length.rs": "ff873d0d5b0b13e381c6dba218e2d9b6a3cf07f25205bf117a21f852c556c090",
+    "third_party/blitz/vendor/stylo/values/specified/list.rs": "451bd5df6a52ce78090b3b2d2dcf809da1922037116f46cb10934c99749d5fff",
+    "third_party/blitz/vendor/stylo/values/specified/mod.rs": "f6e42021218f416f153e63ea7290c1b3ca79e8116119c9a83b20ed84ea7ab8e5",
+    "third_party/blitz/vendor/stylo/values/specified/motion.rs": "935a54541f2a6756d6485ff8005dd7c05e26ca55428facf841fa29b725244704",
+    "third_party/blitz/vendor/stylo/values/specified/number.rs": "fbc49e1da9755d3eb29cd23f3407a324e4b59ef62e66c4271e6f370ab40b77f3",
+    "third_party/blitz/vendor/stylo/values/specified/outline.rs": "c957718cfa51aa08382d23494c311e5adae8caad474bb898b2089f14081c9aac",
+    "third_party/blitz/vendor/stylo/values/specified/page.rs": "94cb3618fcc06ebd0d7b38d1fcd32f7a73e4bd346a5a12947b44782e63eb52c2",
+    "third_party/blitz/vendor/stylo/values/specified/param.rs": "d18ca5f6c2cec20ed73b9d2245e9b1bf071efe6c1d1fa86d23e24b2c17d4bcc1",
+    "third_party/blitz/vendor/stylo/values/specified/percentage.rs": "43bd2126f5ad3e619a9fbc460b86bb7e157d1f547a0ca3d9d2609a4ed8e7f004",
+    "third_party/blitz/vendor/stylo/values/specified/position.rs": "b5d0451adb78e068bb9836f81c13c4889e2d536b6de384b6fc4dfe12d7c58623",
+    "third_party/blitz/vendor/stylo/values/specified/ratio.rs": "e398ea7a91794454c5d9ced888e60e36d5a3f592e688e6aecee4a4056d4b0d3d",
+    "third_party/blitz/vendor/stylo/values/specified/rect.rs": "84ad25be4140fe97ce3c46ccf2f16ccf8c455848471519ef401848de236f251f",
+    "third_party/blitz/vendor/stylo/values/specified/resolution.rs": "429536000e38e266774c55369905fcfcaf5c21271e2c78e5f2df887d6b05d271",
+    "third_party/blitz/vendor/stylo/values/specified/source_size_list.rs": "e7edfc109e97ab7592819ed2eed49180f7472f35f05f6c5ece189e82c5f1bb6b",
+    "third_party/blitz/vendor/stylo/values/specified/svg.rs": "ad569f47345e1cba3394068b60146cd4499f257c39e551464b0576e78d2287a3",
+    "third_party/blitz/vendor/stylo/values/specified/svg_path.rs": "e239925efc3e600557fa933f62048425c097ccf28847e7d981fdc19848d335fa",
+    "third_party/blitz/vendor/stylo/values/specified/table.rs": "29dfbbf7fa321e440f0f2fba46163caacae664f68b69f99a78cb67c5e5b1be18",
+    "third_party/blitz/vendor/stylo/values/specified/text.rs": "2b2db9d1ce2c17f6a2663a99883a9b952040adc1132b3eb6cc9f69a5af0ef5df",
+    "third_party/blitz/vendor/stylo/values/specified/time.rs": "68c3cbd303969b873ea95eebc5edef2021b476848466eeb1a4ff9b4d11e5397c",
+    "third_party/blitz/vendor/stylo/values/specified/transform.rs": "1825a8824f83cd4d957a580b2f4a31cc9040567daf5b7389696c8e118abc920a",
+    "third_party/blitz/vendor/stylo/values/specified/tree_counting.rs": "4f4e55a9b3732f09e56c1428a0c26daa9a176a0ea10f81a4c6ecd8eae3e29ab2",
+    "third_party/blitz/vendor/stylo/values/specified/ui.rs": "da80cdc7e1f5567791f422f9ecbc76b1264c7e3cc22826624fdc433604cb40d0",
+    "third_party/blitz/vendor/stylo/values/specified/url.rs": "48434f7ecea64e96f51e493de553164366062de7ce9bd8ab050396fc0be6d61c",
+    "third_party/blitz/vendor/stylo/values/tagged_numeric.rs": "3d58d27fcf1a8d6f8ed098c58d205343b8f5030e3eacb335c8f2722c031dad89"
+  },
+  "resolved": [
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#alloc-no-stdlib@2.0.4",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#anyrender@0.14.0",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#anyrender_vello_cpu@0.18.0",
+      "features": [
+        "filters"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#app_units@0.7.8",
+      "features": [
+        "default",
+        "num-traits",
+        "num_traits",
+        "serde",
+        "serde_serialization"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#arrayvec@0.7.8",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#atomic_refcell@0.1.14",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.2",
+      "features": [
+        "serde",
+        "serde_core"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#borsh@1.8.1",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#brotli-decompressor@5.0.3",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#bumpalo@3.20.3",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.2",
+      "features": [
+        "bytemuck_derive",
+        "derive",
+        "extern_crate_alloc",
+        "min_const_generics"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#bytemuck_derive@1.12.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#byteorder@1.5.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#byteorder-lite@0.1.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#bytes@1.12.1",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.5",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cfg_aliases@0.2.2",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#color@0.3.3",
+      "features": [
+        "bytemuck",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#core_detect@1.0.0",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#core_maths@0.1.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#crc32fast@1.5.2",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#crossbeam-deque@0.8.8",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#crossbeam-epoch@0.9.21",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#crossbeam-utils@0.8.23",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cssparser@0.38.0",
+      "features": [
+        "default",
+        "fast_match_byte",
+        "fast_match_color",
+        "serde"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cssparser-macros@0.7.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#cursor-icon@1.2.0",
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#darling@0.20.11",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#darling_core@0.20.11",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#darling_macro@0.20.11",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#data-url@0.3.2",
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#debug_timer@0.1.3",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#derive_more@2.1.1",
+      "features": [
+        "add",
+        "add_assign",
+        "default",
+        "deref",
+        "deref_mut",
+        "from",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#derive_more-impl@2.1.1",
+      "features": [
+        "add",
+        "add_assign",
+        "default",
+        "deref",
+        "deref_mut",
+        "from"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#displaydoc@0.2.7",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#dtoa@1.0.11",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#dtoa-short@0.3.5",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#either@1.19.0",
+      "features": [
+        "std",
+        "use_std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#encoding_rs@0.8.42",
+      "features": [
+        "alloc",
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#equivalent@1.0.2",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#euclid@0.22.14",
+      "features": [
+        "default",
+        "serde",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fdeflate@0.3.7",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fearless_simd@0.7.0",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#flate2@1.1.10",
+      "features": [
+        "any_impl",
+        "default",
+        "miniz_oxide",
+        "runtime_detection",
+        "rust_backend"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fnv@1.0.7",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#foldhash@0.2.0",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#font-types@0.12.6",
+      "features": [
+        "bytemuck",
+        "std"
+      ]
+    },
+    {
+      "id": "git+https://github.com/linebender/parley?rev=62790943af982ad3388a3ff96cef6f90ac80a8bb#fontique@0.11.0",
+      "features": [
+        "bytemuck",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#form_urlencoded@1.2.2",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#futures-core@0.3.34",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#futures-task@0.3.34",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#futures-util@0.3.34",
+      "features": [
+        "alloc",
+        "slab",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#glifo@0.4.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#guillotiere@0.7.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#harfrust@0.12.0",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#hashbrown@0.17.1",
+      "features": [
+        "default-hasher",
+        "raw-entry"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#hermit-abi@0.5.3",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#html-escape@0.2.15",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#html5ever@0.40.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#http@1.5.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_collections@2.3.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_locale_core@2.3.0",
+      "features": [
+        "alloc",
+        "zerovec"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_locale_fallback@2.3.0",
+      "features": [
+        "compiled_data"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_locale_fallback_data@2.3.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer@2.3.0",
+      "features": [
+        "compiled_data"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_normalizer_data@2.3.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_properties@2.3.0",
+      "features": [
+        "compiled_data"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_properties_data@2.3.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_provider@2.3.1",
+      "features": [
+        "alloc",
+        "baked"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_segmenter@2.3.0",
+      "features": [
+        "auto",
+        "compiled_data",
+        "lstm"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#icu_segmenter_data@2.3.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#ident_case@1.0.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
+      "features": [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#idna_adapter@1.2.2",
+      "features": [
+        "compiled_data"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#image@0.25.10",
+      "features": [
+        "jpeg",
+        "png",
+        "webp"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#image-webp@0.2.4",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#indexmap@2.14.2",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#itertools@0.14.0",
+      "features": [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#js-sys@0.3.106",
+      "features": [
+        "default",
+        "std",
+        "unsafe-eval"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#keyboard-types@0.7.0",
+      "features": [
+        "default",
+        "serde",
+        "unicode-segmentation",
+        "webdriver"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#kurbo@0.13.1",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.190",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#libm@0.2.16",
+      "features": [
+        "arch",
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#linebender_resource_handle@0.1.1",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#litemap@0.8.3",
+      "features": [
+        "alloc"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#lock_api@0.4.14",
+      "features": [
+        "atomic_usize",
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#log@0.4.34",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#malloc_size_of_derive@0.1.3",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#markup5ever@0.40.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3",
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.11",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#mime@0.3.17",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#miniz_oxide@0.8.9",
+      "features": [
+        "default",
+        "simd",
+        "simd-adler32",
+        "with-alloc"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#miniz_oxide@0.9.1",
+      "features": [
+        "default",
+        "simd",
+        "simd-adler32",
+        "with-alloc"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#moxcms@0.8.1",
+      "features": [
+        "avx",
+        "avx_luts",
+        "avx_shaper_fixed_point_paths",
+        "avx_shaper_paths",
+        "default",
+        "lut",
+        "neon",
+        "neon_luts",
+        "neon_shaper_fixed_point_paths",
+        "neon_shaper_paths",
+        "sse",
+        "sse_luts",
+        "sse_shaper_fixed_point_paths",
+        "sse_shaper_paths"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#multiversion_no_op@1.0.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#new_debug_unreachable@1.0.6",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#num-derive@0.4.2",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.47",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+      "features": [
+        "default",
+        "i128",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#num_cpus@1.17.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#objc2@0.6.5",
+      "features": [
+        "alloc",
+        "default",
+        "disable-encoding-assertions",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#objc2-encode@4.1.0",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
+      "features": [
+        "alloc",
+        "race"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#parking_lot@0.12.5",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#parking_lot_core@0.9.12",
+      "features": []
+    },
+    {
+      "id": "git+https://github.com/linebender/parley?rev=62790943af982ad3388a3ff96cef6f90ac80a8bb#parlance@0.1.0",
+      "features": [
+        "bytemuck",
+        "std"
+      ]
+    },
+    {
+      "id": "git+https://github.com/linebender/parley?rev=62790943af982ad3388a3ff96cef6f90ac80a8bb#0.11.0",
+      "features": [
+        "bytemuck",
+        "std"
+      ]
+    },
+    {
+      "id": "git+https://github.com/linebender/parley?rev=62790943af982ad3388a3ff96cef6f90ac80a8bb#parley_data@0.11.0",
+      "features": [
+        "baked"
+      ]
+    },
+    {
+      "id": "git+https://github.com/linebender/parley?rev=62790943af982ad3388a3ff96cef6f90ac80a8bb#parley_emoji@0.11.0",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "git+https://github.com/linebender/parley?rev=62790943af982ad3388a3ff96cef6f90ac80a8bb#parley_engine@0.11.0",
+      "features": [
+        "bytemuck",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#peniko@0.6.1",
+      "features": [
+        "bytemuck",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#phf@0.14.0",
+      "features": [
+        "default",
+        "macros",
+        "phf_macros",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#phf_codegen@0.14.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#phf_generator@0.14.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#phf_macros@0.14.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#phf_shared@0.14.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pin-project-lite@0.2.17",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#png@0.18.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#polycool@0.4.0",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#potential_utf@0.1.6",
+      "features": [
+        "alloc",
+        "writeable",
+        "zerovec"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#precomputed-hash@0.1.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
+      "features": [
+        "default",
+        "proc-macro"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pxfm@0.1.30",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#quick-error@2.0.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
+      "features": [
+        "default",
+        "proc-macro"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#raw-window-handle@0.6.2",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#rayon@1.12.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#rayon-core@1.13.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#read-fonts@0.41.0",
+      "features": [
+        "experimental_font_api",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#redox_syscall@0.5.18",
+      "features": [
+        "default",
+        "userspace"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#rustc_version@0.4.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.23",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#scopeguard@1.2.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#selectors@0.41.0",
+      "features": [
+        "to_shmem"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#semver@1.0.28",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+      "features": [
+        "alloc",
+        "default",
+        "derive",
+        "serde_derive",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde-wasm-bindgen@0.6.5",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde_bytes@0.11.19",
+      "features": [
+        "alloc"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
+      "features": [
+        "alloc",
+        "result",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229",
+      "features": [
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde_spanned@1.1.2",
+      "features": [
+        "alloc",
+        "serde",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#servo_arc@0.5.0",
+      "features": [
+        "default",
+        "serde",
+        "servo",
+        "track_alloc_size"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#simd-adler32@0.3.10",
+      "features": [
+        "const-generics",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#simdutf8@0.1.5",
+      "features": [
+        "aarch64_neon",
+        "public_imp"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#siphasher@1.0.4",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#skrifa@0.44.0",
+      "features": [
+        "autohint_shaping",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#slab@0.4.12",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#slotmap@1.1.1",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#smallbitvec@2.6.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.16.3",
+      "features": [
+        "const_generics",
+        "const_new"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#smol_str@0.3.6",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stable_deref_trait@1.2.1",
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#static_assertions@1.1.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#string_cache@0.11.0",
+      "features": [
+        "default",
+        "serde",
+        "serde_support"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#string_cache_codegen@0.11.2",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#strum@0.28.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#strum_macros@0.28.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stylo_atoms@0.22.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stylo_derive@0.22.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stylo_dom@0.22.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stylo_malloc_size_of@0.22.0",
+      "features": [
+        "servo",
+        "string_cache"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stylo_static_prefs@0.22.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#stylo_traits@0.22.0",
+      "features": [
+        "default",
+        "servo",
+        "stylo_atoms",
+        "url"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.119",
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.7",
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#synstructure@0.13.2",
+      "features": [
+        "default",
+        "proc-macro"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#synstructure@0.14.0",
+      "features": [
+        "default",
+        "proc-macro"
+      ]
+    },
+    {
+      "id": "git+https://github.com/ForgeaXGame/taffy?rev=04bf97605e250b6dce0146efe1e07e1f494dde9c#0.14.0",
+      "features": [
+        "block_layout",
+        "calc",
+        "content_size",
+        "detailed_layout_info",
+        "flexbox",
+        "flexbox_balance",
+        "grid",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tendril@0.5.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#thin-vec@0.2.21",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.21",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.21",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#thread_local@1.1.10",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.8.4",
+      "features": [
+        "alloc",
+        "zerovec"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#to_shmem@0.6.0",
+      "features": [
+        "cssparser",
+        "servo",
+        "servo_arc",
+        "smallbitvec",
+        "smallvec",
+        "string_cache",
+        "thin-vec"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#to_shmem_derive@0.2.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#toml@1.1.8+spec-1.1.0",
+      "features": [
+        "default",
+        "display",
+        "parse",
+        "serde",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#toml_datetime@1.1.2+spec-1.1.0",
+      "features": [
+        "alloc",
+        "serde",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#toml_parser@1.1.5+spec-1.1.0",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#toml_writer@1.1.3+spec-1.1.0",
+      "features": [
+        "alloc",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#uluru@3.1.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.26",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-segmentation@1.13.3",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+      "features": [
+        "default",
+        "serde",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#utf8_iter@1.0.4",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#vello_cpu@0.3.0",
+      "features": [
+        "std",
+        "text",
+        "u8_pipeline"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#version_check@0.9.5",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#void@1.0.2",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#walkdir@2.5.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen@0.2.129",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro@0.2.129",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-macro-support@0.2.129",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#wasm-bindgen-shared@0.2.129",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#web-time@1.1.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#web_atoms@0.3.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#winapi-util@0.1.11",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#windows-link@0.2.1",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2",
+      "features": [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_Console",
+        "Win32_System_SystemInformation",
+        "default"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.4",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#writeable@0.6.4",
+      "features": [
+        "alloc"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#wuff@0.2.9",
+      "features": [
+        "brotli",
+        "default",
+        "z"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#xml5ever@0.40.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#yoke@0.8.3",
+      "features": [
+        "alloc",
+        "derive",
+        "zerofrom"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#yoke-derive@0.8.4",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerofrom@0.1.8",
+      "features": [
+        "alloc",
+        "derive"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerofrom-derive@0.1.8",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerotrie@0.2.5",
+      "features": [
+        "alloc",
+        "yoke",
+        "zerofrom"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.11.8",
+      "features": [
+        "alloc",
+        "derive",
+        "yoke"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zerovec-derive@0.11.6",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.8",
+      "features": [
+        "rust-allocator",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zune-core@0.5.3",
+      "features": [
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zune-jpeg@0.5.15",
+      "features": [
+        "default",
+        "neon",
+        "std",
+        "x86"
+      ]
+    }
+  ],
+  "outputs": {
+    "ui_blitz_bg.wasm": {
+      "bytes": 15694722,
+      "sha256": "6d9c1708be0b208608ed0c27f43173c35469492dadf597230800c9c5278b50ec"
+    },
+    "ui_blitz_bg.wasm.d.ts": {
+      "bytes": 8798,
+      "sha256": "cb091bac3820edc8e673454f74c7f17575c678a2f0536c22626607b518fcb50b"
+    },
+    "ui_blitz.js": {
+      "bytes": 45563,
+      "sha256": "ceef45a1f310d612e8f7573d03ee9b2fa91743834e61c9affe12ddae5359e561"
+    },
+    "ui_blitz.d.ts": {
+      "bytes": 14922,
+      "sha256": "a5f99aeabc3b64085a61f31fc88c89b72120c68c990cc79ffa1a76e2be49a100"
+    },
+    "ui-native.mjs": {
+      "bytes": 44084,
+      "sha256": "db5ffb01bc0df51380134f74c74ef16306f94ae7dc345985cfdab7acf2b39965"
+    },
+    "ui-native.d.mts": {
+      "bytes": 5281,
+      "sha256": "bea6cff41e3802897ef07b5972596699c930e25f747390fc67d571a906f203db"
+    }
+  }
+}

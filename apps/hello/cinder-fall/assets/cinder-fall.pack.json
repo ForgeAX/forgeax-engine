@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "c1de0000-0000-7000-8000-000000000000",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "cinder.travel",
+            "capacity": 64,
+            "backend": { "required": "gpu" },
+            "space": "world",
+            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 64 },
+            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 8 }] },
+            "program": { "module": "cinder-travel.vfx.wgsl" },
+            "channels": [
+              { "id": "impact", "payload": "impact", "capacity": 8, "overflow": "drop-newest" }
+            ],
+            "events": [
+              { "id": "travel-impact", "channel": "impact", "subEmitter": "cinder.impact", "fanOut": 1, "recursionDepth": 1 }
+            ],
+            "renderers": [
+              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "95730fd2-9846-5f84-8658-0b3c971eb263", "lighting": "standard", "castShadows": true, "receiveShadows": true },
+              { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-ascending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
+              { "kind": "billboard", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
+              { "kind": "trail", "material": "c1de0000-0000-7000-8000-000000000002", "historyLength": 6, "capacity": 32, "width": 0.034, "taper": 0.9 }
+            ]
+          },
+          {
+            "id": "cinder.impact",
+            "capacity": 128,
+            "backend": { "required": "gpu" },
+            "space": "world",
+            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 16 },
+            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 16 }] },
+            "program": { "module": "cinder-impact.vfx.wgsl" },
+            "channels": [
+              { "id": "burn", "payload": "impact", "capacity": 8, "overflow": "drop-newest" }
+            ],
+            "events": [
+              { "id": "impact-burn", "channel": "burn", "subEmitter": "cinder.burn", "fanOut": 1, "recursionDepth": 1 }
+            ],
+            "renderers": [
+              { "kind": "mesh", "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "95730fd2-9846-5f84-8658-0b3c971eb263", "lighting": "standard", "castShadows": true, "receiveShadows": true },
+              { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
+              { "kind": "ribbon", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "stripKey": "alive-index", "capacity": 32, "facing": "velocity", "width": 0.008 },
+              { "kind": "beam", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "endpointField": "velocity", "capacity": 16, "width": 0.01 }
+            ]
+          },
+          {
+            "id": "cinder.burn",
+            "capacity": 64,
+            "backend": { "required": "gpu" },
+            "space": "world",
+            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 12 },
+            "schedule": { "rate": 1.5, "bursts": [{ "time": 0, "count": 8 }] },
+            "program": { "module": "cinder-burn.vfx.wgsl" },
+            "renderers": [
+              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000003", "mesh": "95730fd2-9846-5f84-8658-0b3c971eb263", "lighting": "standard", "receiveShadows": true },
+              { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000003", "sorting": "view-depth" },
+              { "kind": "billboard", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] }
+            ]
+          }
+        ]
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "name": "@forgeax/parity-urp-vs-hdrp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Standard direct-vs-clustered pixel-parity fixture. Renders the same scene (≤4 PointLight) twice through one Standard pipeline with different closed lighting lanes and exposes window.__captureLeft / __captureRight for scripts/bench/pixel-parity.mjs. AC-22: ε ≤ 0.001 ≤4 lights subset.",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "import": "./src/main.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke:zero-light": "node scripts/smoke-dawn-zero-light.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "fixture-only bundle; size variance is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "static-frame fixture (one renderer.draw per capture, no rAF loop). FPS measurement is hello-cube / hello-room territory"
+      },
+      "bench": {
+        "enabled": true,
+        "reportPath": "../../../report/pixel-parity-standard-lanes.json",
+        "pixelDiff": {
+          "threshold": 0,
+          "perPixelThreshold": 0.001
+        }
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; AC-22 ε ≤ 0.001 enforced via scripts/bench/pixel-parity.mjs Standard lanes target"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the Standard lighting-lane parity fixture"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16"
+  }
+}

@@ -1,0 +1,1 @@
+world.query({ read: [Position] });

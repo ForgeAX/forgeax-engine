@@ -1,0 +1,66 @@
+{
+  "name": "@forgeax/hello-volumetric-fog",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "bench": "node scripts/bench.mjs",
+    "bench:browser": "node scripts/bench-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-volumetric-fog smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "MVD app bundle follows the Engine runtime package budget"
+      },
+      "fps": {
+        "enabled": true,
+        "sampleCount": 5,
+        "frameCount": 60
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "qualified GPU timestamp receipt uses the dedicated MVD bench, not the generic Vitest bench reporter"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-volumetric-fog smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "MVD acceptance is a product smoke, not a spike"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.56.1",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "external-asset-package",
+  "source": "room.gltf",
+  "importer": "gltf",
+  "importSettings": {
+    "defaultSceneIndex": 0
+  },
+  "subAssets": [
+    {
+      "guid": "01a0e4fa-a485-746f-bd13-4cb31acc40d0",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh:0"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-333a0d43a07e",
+      "kind": "mesh",
+      "sourceIndex": 1,
+      "sourceKey": "mesh:1"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-333bc5e92fe3",
+      "kind": "mesh",
+      "sourceIndex": 2,
+      "sourceKey": "mesh:2"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-333c6280aa9c",
+      "kind": "mesh",
+      "sourceIndex": 3,
+      "sourceKey": "mesh:3"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-333d7dfd9e69",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material:0"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-333e914a4914",
+      "kind": "material",
+      "sourceIndex": 1,
+      "sourceKey": "material:1"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-333f0dd60be5",
+      "kind": "material",
+      "sourceIndex": 2,
+      "sourceKey": "material:2"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-334076b08e37",
+      "kind": "material",
+      "sourceIndex": 3,
+      "sourceKey": "material:3"
+    },
+    {
+      "guid": "01a0e4fa-a486-7f09-a9f5-33415b3c48b3",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene:0"
+    }
+  ]
+}

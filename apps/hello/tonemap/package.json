@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/hello-tonemap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reinhard-extended tonemap opt-in exemplar (feat-20260519-tonemap-reinhard-mvp / M4 / T-M4.1).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "tonemapping",
+      "category": "3D Rendering",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-tonemap smoke",
+    "_comment": "smokeInvocation = self-contained SSOT (mirrors hello-cube / hello-room). hello-tonemap exercises Camera tonemap='reinhard-extended' end-to-end (HDR rgba16float target -> fullscreen tonemap pass -> swap-chain) + AC-07 (no integer-white burn) + AC-08 (highlight readback in (0.3, 1.0)).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "tonemap MVP exemplar; fps no-regression covered by hello-cube/hello-room/hello-app gates that run the default zero-overhead path. AC-15 OOS: explicit hello-tonemap fps baseline deferred until additional tonemap modes (ACES / AgX) ship and a per-mode regression panel becomes meaningful."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "tonemap exemplar; bench focus stays on @forgeax/engine-math + pixel-parity"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-tonemap smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M4 hello-tonemap opt-in exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Tile Strip (atlas debug)</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1a1a22; color: #e8e8ef; font-family: ui-monospace, monospace; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+      #status {
+        position: fixed; left: 12px; top: 12px;
+        background: rgba(0,0,0,0.65); padding: 8px 12px;
+        border-radius: 6px; font-size: 12px; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app" width="1280" height="720"></canvas>
+    <div id="status">loading...</div>
+    <script type="module" src="/src/tile-strip.ts"></script>
+  </body>
+</html>

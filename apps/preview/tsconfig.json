@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "../..",
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "@webgpu/types",
+      "vite/client",
+      "node"
+    ]
+  },
+  "include": [
+    "src/**/*",
+    "__tests__/**/*.browser.test.ts",
+    "../../apps/game-capability-lab/**/*.ts",
+    "../../apps/showcase/brotato-3d/**/*.ts",
+    "../../templates/empty/**/*.ts"
+  ]
+}

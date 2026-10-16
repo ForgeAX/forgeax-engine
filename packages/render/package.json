@@ -1,0 +1,67 @@
+{
+  "name": "@forgeax/engine-render",
+  "version": "0.0.0",
+  "description": "Canonical ECS render schemas and renderer boundary.",
+  "private": false,
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.mjs" },
+    "./authoring": { "types": "./dist/authoring.d.ts", "import": "./dist/authoring.mjs" },
+    "./internal": { "types": "./dist/internal.d.ts", "import": "./dist/internal.mjs" },
+    "./internal/temporal": { "types": "./dist/temporal/index.d.ts", "import": "./dist/temporal/index.mjs" },
+    "./package.json": "./package.json",
+    "./internal/construct-renderer": {
+      "types": "./dist/construct-renderer.d.ts",
+      "import": "./dist/construct-renderer.mjs"
+    }
+  },
+  "files": ["dist", "src", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "bench": "vitest bench --run",
+    "bench:json": "FORGEAX_BENCH=fast vitest bench --run --outputJson bench-result.json"
+  },
+  "dependencies": {
+    "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:^",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-render-graph": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@forgeax/engine-rhi-null": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*"
+  },
+  "forgeax": { "metrics": {
+    "bundle-size": { "enabled": true, "path": "dist/index.mjs", "compression": "gzip", "expected": 10000 },
+    "fps": { "enabled": false, "reason": "render package has no host loop" },
+    "bench": {
+      "enabled": true,
+      "reportPath": "bench-result.json",
+      "suite": "@forgeax/engine-render",
+      "baseline": { "source": "inline", "threshold": 15000000 }
+    },
+    "gate": { "enabled": true, "reason": "render boundary checks" },
+    "spike-report": { "enabled": false, "reason": "not a spike package" }
+  } }
+}

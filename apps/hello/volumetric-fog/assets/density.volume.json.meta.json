@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "volumetric-density",
+  "revision": {
+    "digest": "volumetric-density-v128",
+    "observedAt": 1,
+    "rootId": "volumetric-density"
+  },
+  "source": "density.volume.json",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019f0000-0000-7000-8000-0000000003f1",
+      "sourceIndex": 0,
+      "sourceKey": "volumetric-fog/density.raw",
+      "name": "volumetric-density",
+      "kind": "volumetric-density"
+    }
+  ]
+}

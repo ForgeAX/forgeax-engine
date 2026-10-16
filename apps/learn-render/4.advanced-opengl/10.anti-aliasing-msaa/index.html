@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - learn-render section-4.advanced-opengl 10.anti-aliasing-msaa</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+      canvas#app { display: block; }
+      #msaa-hud {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        color: #0f0;
+        font: 18px monospace;
+        background: rgba(0,0,0,0.5);
+        padding: 6px 12px;
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="msaa-hud">MSAA: OFF</div>
+    <script>
+      var canvas = document.getElementById('app');
+      function resizeCanvas() {
+        var dpr = window.devicePixelRatio || 1;
+        var w = window.innerWidth;
+        var h = window.innerHeight;
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+      }
+      window.addEventListener('resize', resizeCanvas);
+      resizeCanvas();
+    </script>
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

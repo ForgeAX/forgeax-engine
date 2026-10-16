@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/engine-debug-draw",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Immediate-mode debug-draw convenience layer on top of RHI — line / sphere / aabb / frustum shape API with per-frame CPU staging and single-PSO line-list rendering.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "library package, no runtime canvas; fps reported by hello-debug-draw app"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "bench focus stays on @forgeax/engine-math; debug-draw correctness verified by unit tests"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; smoke gate covered by hello-debug-draw app"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; spike artefacts archived in feat-20260615-debug-draw M4 baseline PNGs"
+      }
+    }
+  }
+}

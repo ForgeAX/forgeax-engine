@@ -1,0 +1,11 @@
+{
+  "name": "@fixture/app-a",
+  "private": true,
+  "forgeax": {
+    "bevyExample": {
+      "name": "sprite",
+      "category": "2D Rendering",
+      "status": "implemented"
+    }
+  }
+}

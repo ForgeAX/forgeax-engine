@@ -1,0 +1,97 @@
+{
+  "name": "@forgeax/engine-gltf",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Runtime glTF 2.0 importer and build-time producer. Pure-function parseGlb / parseGltf / toAssetPack is invoked by the unified ForgeaX asset command and writes <source>.meta.json for runtime loadByGuid<SceneAsset>.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./node": {
+      "types": "./dist/node-file-entry.d.ts",
+      "import": "./dist/node-file-entry.mjs"
+    },
+    "./importer": {
+      "types": "./dist/importer-entry.d.ts",
+      "import": "./dist/importer-entry.mjs"
+    },
+    "./cli-gltf": {
+      "types": "./dist/cli-gltf.d.ts",
+      "node": "./dist/cli-gltf.mjs",
+      "default": null
+    },
+    "./package.json": "./package.json",
+    "./node-importer": {
+      "types": "./dist/node-importer-entry.d.ts",
+      "node": "./dist/node-importer-entry.mjs",
+      "default": null
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "meshoptimizer": "^0.20.0",
+    "draco3dgltf": "1.5.7",
+    "@types/draco3d": "1.4.10"
+  },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@types/node": "^20.14.0"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip",
+        "expected": 5865,
+        "baseline": {
+          "source": ".forgeax-harness/forgeax-loop/feat-20260515-gltf-loader-via-asset-system/plan-strategy.md#R3",
+          "threshold": 102400
+        }
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "build-time importer pure-function pipeline; no runtime canvas. fps reported by hello-gltf app (M5)."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Tier-B importer is one-shot build-time work (not a hot path); bench focus stays on @forgeax/engine-math."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no per-package binary gate; runtime parsing is consumed by @forgeax/engine-runtime + cli-gltf only, no separate enforcement scope."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package."
+      }
+    }
+  }
+}

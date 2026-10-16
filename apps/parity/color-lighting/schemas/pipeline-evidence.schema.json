@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/color-lighting/pipeline-evidence.schema.json",
+  "title": "Color lighting parity pipeline evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "invocationId", "caseId", "sceneCase", "sourceHash", "semanticHash", "pipelineId", "runtimeId", "backendId", "frameId", "copySrc", "lifetime", "semantic", "source", "provenance", "normalization", "linearHdr", "finalDisplay"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "invocationId": { "type": "string", "minLength": 1 },
+    "caseId": { "type": "string", "minLength": 1 },
+    "sceneCase": { "type": "object", "minProperties": 1 },
+    "sourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "semanticHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "pipelineId": { "const": "forgeax::standard" },
+    "runtimeId": { "enum": ["browser", "dawn"] },
+    "backendId": { "type": "string", "minLength": 1 },
+    "frameId": { "type": "integer", "minimum": 0 },
+    "copySrc": { "const": true },
+    "lifetime": { "const": "active" },
+    "semantic": { "const": "linear-hdr" },
+    "source": { "const": "live-producer" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "normalization": { "$ref": "#/$defs/normalization" },
+    "linearHdr": { "$ref": "#/$defs/observation" },
+    "finalDisplay": { "$ref": "#/$defs/observation" }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "version", "renderer", "adapterId"],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "renderer": { "type": "string", "minLength": 1 },
+        "adapterId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "intensityScale", "rangeModel", "coneModel"],
+      "properties": {
+        "authorityId": { "const": "threeR184SquaredWindow" },
+        "intensityScale": { "const": 1 },
+        "rangeModel": { "const": "squared-finite" },
+        "coneModel": { "const": "radians-to-degrees" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "bytes", "format", "size", "rawHash", "frameId", "pipelineId", "backendId"],
+      "properties": {
+        "kind": { "enum": ["linearHdr", "finalDisplay"] },
+        "status": { "const": "ready" },
+        "bytes": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+        "format": { "type": "string", "minLength": 1 },
+        "size": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "rawHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "frameId": { "type": "integer", "minimum": 0 },
+        "pipelineId": { "const": "forgeax::standard" },
+        "backendId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

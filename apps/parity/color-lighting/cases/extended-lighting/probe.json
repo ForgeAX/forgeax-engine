@@ -1,0 +1,28 @@
+{
+  "caseId": "probe",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "extendedLighting": {
+    "topology": "extendedLighting",
+    "carrier": "probe",
+    "iesSliceCount": 0,
+    "cookieSliceCount": 0,
+    "cookieMatrixCount": 0,
+    "expectedComposition": "brdf*range*cone*ies*cookie*shadow",
+    "cookieColorDomain": "linear",
+    "evidencePlan": {
+      "expectations": ["probe-diffuse-only", "generation-lkg-recovery", "lighting-owner-coexistence"],
+      "identity": { "fixtureId": "probe", "sourceKey": "parity/extended-lighting/probe" },
+      "numericRoi": { "analyticMax": 0.000001, "roiMax": 0.05, "epsilon": 0.000001, "colorDomain": "linearHdr" },
+      "recordReceipt": { "status": "not-run", "byteLength": 160, "maxBytes": 160 },
+      "resourceReceipt": { "status": "not-run", "topology": "extendedLighting" },
+      "falsifiers": [
+        { "id": "sky-not-contributor", "expectedFailure": "Sky must not enter probe Q or alpha" },
+        { "id": "no-nearest-no-top-k", "expectedFailure": "nearest or top-K behavior must fail the continuous blend ROI" }
+      ]
+    }
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.000001, "roiMax": 0.05, "byteMax": 65536 }
+}

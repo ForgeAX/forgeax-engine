@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../math"
+    },
+    {
+      "path": "../physics"
+    },
+    {
+      "path": "../scene"
+    },
+    {
+      "path": "../types"
+    }
+  ]
+}

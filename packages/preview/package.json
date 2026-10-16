@@ -1,0 +1,48 @@
+{
+  "name": "@forgeax/engine-preview",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Focused Engine preview host capability and typed binding primitives.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./material": { "types": "./dist/material.d.ts", "import": "./dist/material.mjs" },
+    "./mesh": { "types": "./dist/mesh.d.ts", "import": "./dist/mesh.mjs" },
+    "./vfx": { "types": "./dist/vfx.d.ts", "import": "./dist/vfx.mjs" },
+    "./texture": { "types": "./dist/texture.d.ts", "import": "./dist/texture.mjs" },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "assets/canonical-kit", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "node scripts/build-canonical-kit.mjs && tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": { "enabled": true, "path": "dist/index.mjs", "compression": "gzip" },
+      "fps": { "enabled": false, "reason": "Preview sessions are bounded operations, not an application frame loop" },
+      "bench": { "enabled": false, "reason": "Preview host owns no domain-specific hot loop" },
+      "gate": { "enabled": true, "command": "pnpm test", "cwd": "packages/preview" },
+      "spike-report": { "enabled": false, "reason": "Focused production package" }
+    }
+  }
+}

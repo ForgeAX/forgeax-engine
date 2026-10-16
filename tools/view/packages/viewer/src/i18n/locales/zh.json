@@ -1,0 +1,160 @@
+{
+  "view": {
+    "appTitle": "ForgeaX View",
+    "language": "语言",
+    "theme": "主题",
+    "themeLight": "白天",
+    "themeDark": "夜晚",
+    "traceExport": "导出视口诊断日志",
+    "traceExportHint": "下载视口交互诊断（点击画布、拖拽、按 Esc 后导出）",
+    "close": "关闭",
+    "localeShort": {
+      "zh": "中",
+      "en": "EN"
+    },
+    "activityRail": {
+      "label": "工具面板"
+    },
+    "dock": {
+      "close": "关闭",
+      "closeOthers": "关闭其他",
+      "showTitleBar": "显示面板标题栏",
+      "hideTitleBar": "隐藏面板标题栏",
+      "restoreTitleBar": "显示面板标题栏",
+      "pinTab": "固定标签页",
+      "unpinTab": "取消固定"
+    },
+    "connection": {
+      "ariaLabel": "ForgeaX Host 连接状态",
+      "connectingTitle": "正在连接 ForgeaX Host",
+      "connectingDescription": "正在连接已有的 Engine 后端…",
+      "failedTitle": "ForgeaX Host 未连接",
+      "failedLeadPre": "ForgeaX Host 是由 ",
+      "failedLeadPost": " 启动的本地常驻进程，负责连接 Engine、装载插件并向 View 提供工作区服务。",
+      "failedHint": "请在工作区目录依次运行 forgeax backend start 和 forgeax view start，再打开返回的 URL。",
+      "retry": "重新连接",
+      "retryBusy": "正在重新连接…",
+      "unconfigured": "ForgeaX Host 尚未配置 Viewer 前端连接。",
+      "errors": {
+        "invalidBootstrap": "连接地址未返回 Host 配置，通常表示本地 Host 尚未启动。",
+        "network": "无法访问本地 Host 服务。"
+      }
+    },
+    "projectRecovery": {
+      "restoringTitle": "正在恢复项目工作区",
+      "restoringDescription": "正在创建新的编辑目标，准备好后会自动打开项目。",
+      "title": "Engine 工作区需要重新连接",
+      "short": "工作区需要重新连接",
+      "description": "当前页面没有可用的编辑目标。请重新连接以创建新的工作区目标。",
+      "action": "重新连接",
+      "busy": "正在重新连接…"
+    },
+    "projectOpen": {
+      "title": "打开项目",
+      "description": "编辑器需要先指定项目目录。请输入绝对路径后继续。",
+      "pathLabel": "项目路径",
+      "pathPlaceholder": "项目目录的绝对路径",
+      "action": "打开项目",
+      "busy": "正在打开…"
+    },
+    "hostConnection": {
+      "connecting": "正在连接 ForgeaX Host",
+      "connectingHint": "正在连接已有的 Engine 后端，请稍候。",
+      "connected": "ForgeaX Host 已连接",
+      "connectedHint": "工作区、插件与 Engine 服务已通过本地 Host 就绪。",
+      "failed": "ForgeaX Host 未连接",
+      "notConnected": "未连接 ForgeaX Host",
+      "unconfiguredTitle": "未配置 ForgeaX Host",
+      "disconnectedShort": "Host 未连接",
+      "failedHint": "请在工作区目录依次运行 forgeax backend start 和 forgeax view start，再打开返回的 URL。",
+      "wsClosed": "与 ForgeaX Host 的 WebSocket 连接已断开。"
+    },
+    "pageTabs": {
+      "openPages": "已打开的页面",
+      "newPage": "新建页面",
+      "allPages": "全部页面",
+      "noOpenableTypes": "没有可新建的类型",
+      "closeTab": "关闭标签页",
+      "empty": "无页面",
+      "placeholder": "页面类型「{{typeId}}」的内容区域（待接入 Page 平台）",
+      "context": {
+        "close": "关闭",
+        "closeOthers": "关闭其他",
+        "closeToRight": "关闭右侧"
+      }
+    },
+    "pages": {
+      "editor": "Scene",
+      "display": "运行时截图",
+      "plugins": "插件",
+      "material": "材质",
+      "mesh": "网格",
+      "texture": "纹理",
+      "asset": "资产",
+      "html": "HTML 界面"
+    },
+    "slots": {
+      "plugins": "插件",
+      "display": "显示",
+      "viewport": "视口",
+      "contentBrowser": "内容浏览器",
+      "sceneTree": "场景树",
+      "inspector": "检查器",
+      "material": "材质",
+      "materialPreview": "材质预览",
+      "materialProperties": "材质属性",
+      "meshPreview": "网格预览",
+      "meshProperties": "网格属性",
+      "texturePreview": "纹理预览",
+      "textureProperties": "纹理属性",
+      "assetProperties": "资产属性",
+      "htmlPreview": "HTML 预览",
+      "htmlInspector": "HTML 源码"
+    },
+    "plugins": {
+      "title": "Host 插件",
+      "filter": "筛选插件、模块、条目或服务",
+      "stateAll": "全部状态",
+      "empty": "无插件来源",
+      "unavailable": "插件检查不可用"
+    },
+    "inspector": {
+      "title": "检查器",
+      "empty": "选择资产或场景节点",
+      "unavailable": "检查不可用"
+    },
+    "contentBrowser": {
+      "title": "资产",
+      "search": "搜索资产",
+      "empty": "无资产",
+      "unavailable": "工作区不可用"
+    },
+    "sceneTree": {
+      "title": "场景树",
+      "empty": "无层级数据",
+      "unavailable": "场景树不可用"
+    },
+    "material": {
+      "title": "材质",
+      "empty": "选择材质资产",
+      "unavailable": "材质检查不可用"
+    },
+    "display": {
+      "idle": "View 就绪（空闲）",
+      "running": "运行中 {{service}}:{{run}}",
+      "error": "View 连接错误：{{message}}"
+    },
+    "html": {
+      "file": "文件", "path": "路径", "size": "大小", "modified": "修改时间", "viewport": "视口", "device": "设备预设", "phone": "手机", "tablet": "平板", "desktop": "桌面", "width": "宽度", "height": "高度", "rotate": "交换方向", "zoom": "缩放", "fit": "适配", "refresh": "刷新预览", "status": "状态", "idle": "未打开文件", "loading": "正在加载 HTML…", "ready": "就绪", "error": "资源问题", "failed": "预览不可用", "empty": "打开 HTML 文件", "issueCount": "{{count}} 个资源问题"
+    },
+    "commandError": {
+      "title": "工作区命令失败",
+      "titleWithOperation": "工作区命令失败（{{operation}}）",
+      "close": "关闭错误提示",
+      "details": "详细信息",
+      "copy": "复制详细信息",
+      "copied": "已复制"
+    },
+    "themeSystem": "跟随系统（默认）"
+  }
+}

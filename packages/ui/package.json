@@ -1,0 +1,82 @@
+{
+  "name": "@forgeax/engine-ui",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./importer": {
+      "types": "./dist/importer/index.d.ts",
+      "import": "./dist/importer/index.mjs"
+    },
+    "./authoring": {
+      "types": "./dist/authoring/index.d.ts",
+      "import": "./dist/authoring/index.mjs"
+    },
+    "./preview": {
+      "types": "./dist/preview/index.d.ts",
+      "import": "./dist/preview/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./localization": {
+      "types": "./dist/localization/index.d.ts",
+      "import": "./dist/localization/index.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*",
+    "css-tree": "^3.2.1",
+    "i18next": "26.0.10",
+    "parse5": "^7.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "jsdom": "^26.0.0"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip",
+        "baseline": {
+          "source": "m2-c1",
+          "threshold": 50000
+        }
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "UI package has no frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "No performance-critical benchmark in MVP"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Package gates are declared in CI"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Not a spike package"
+      }
+    }
+  }
+}

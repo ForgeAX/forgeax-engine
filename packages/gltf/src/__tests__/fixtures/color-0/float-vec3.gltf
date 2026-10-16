@@ -1,0 +1,13 @@
+{
+  "asset": { "version": "2.0" },
+  "buffers": [{ "byteLength": 48, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAD8AAIA/AACAPwAAgD4AAAAA" }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 24 },
+    { "buffer": 0, "byteOffset": 24, "byteLength": 24 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3" },
+    { "bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3" }
+  ],
+  "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0, "COLOR_0": 1 } }] }]
+}

@@ -1,0 +1,46 @@
+[package]
+name = "forgeax-rhi-wgpu-native"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+description = "Private native wgpu owner for ForgeaX desktop hosts and the Ray Query route proof."
+license = "Apache-2.0"
+
+[features]
+default = []
+conformance = ["dep:serde_json"]
+reference = ["dep:serde_json"]
+
+[[bin]]
+name = "ray-reference"
+path = "src/bin/ray_reference.rs"
+required-features = ["reference"]
+
+[[bin]]
+name = "ray-query-conformance"
+path = "src/bin/ray_query_conformance.rs"
+required-features = ["conformance"]
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = "0.30"
+png = "0.18"
+pollster = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+thiserror = "2"
+wgpu = { version = "=30.0.1", path = "../../third_party/wgpu/wgpu", default-features = false, features = ["std", "parking_lot", "wgsl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../third_party/wgpu/wgpu", default-features = false, features = ["metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../third_party/wgpu/wgpu", default-features = false, features = ["dx12", "static-dxc"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../third_party/wgpu/wgpu", default-features = false, features = ["vulkan"] }
+
+[dev-dependencies]
+naga = { version = "=30.0.1", path = "../../third_party/wgpu/naga", features = ["wgsl-in"] }
+serde_json = "1"

@@ -1,0 +1,84 @@
+{
+  "name": "@forgeax/engine-ddc",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Node-only v2 immutable derived data cache with project-local lifecycle evidence.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": { "import": "./dist/index.mjs" },
+      "default": null
+    },
+    "./key": {
+      "types": "./dist/key.d.ts",
+      "node": { "import": "./dist/key.mjs" },
+      "default": null
+    },
+    "./entry-store": {
+      "types": "./dist/entry-store.d.ts",
+      "node": { "import": "./dist/entry-store.mjs" },
+      "default": null
+    },
+    "./layout": {
+      "types": "./dist/layout.d.ts",
+      "node": { "import": "./dist/layout.mjs" },
+      "default": null
+    },
+    "./status": {
+      "types": "./dist/status.d.ts",
+      "node": { "import": "./dist/status.mjs" },
+      "default": null
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "node": { "import": "./dist/errors.mjs" },
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "src", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Node-only build-time cache package; no runtime frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "DDC transaction correctness is covered by integration tests; no benchmark contract is declared"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "No package-level binary gate; workspace CI owns cache audit and type gates"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Not a spike package"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.8.3",
+    "vitest": "4.1.11"
+  }
+}

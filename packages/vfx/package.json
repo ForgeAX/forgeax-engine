@@ -1,0 +1,66 @@
+{
+  "name": "@forgeax/engine-vfx",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Runtime-safe code-first GPU VFX source, asset loading, player intent, and fixed-tick GPU work contracts.",
+  "keywords": [
+    "vfx",
+    "gpu-particles",
+    "particle-effect-player",
+    "wgsl",
+    "fixed-update"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "runtime contract package; no frame loop or canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "GPU performance requires an adapter-qualified renderer benchmark, not the runtime contract package"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "public contract covered by package tests and workspace gates"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

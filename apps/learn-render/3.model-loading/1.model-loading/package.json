@@ -1,0 +1,64 @@
+{
+  "name": "@forgeax/app-learn-render-3-model-loading-1-model-loading",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render LearnOpenGL section 3.1 model-loading -- Sponza atrium with 4 PointLight + DirectionalLight + Skylight IBL via @forgeax/engine-runtime PBR pipeline.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "visual": "node scripts/visual.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-3-model-loading-1-model-loading smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "learn-render demo; bundle-size tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "learn-render demo; fps anchor stays on hello-triangle"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "learn-render demo; bench focus stays on pixel-parity"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "user q7+q9 decision: run-without-error only, not in CI smoke gate / metrics gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; render demo"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-remote": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

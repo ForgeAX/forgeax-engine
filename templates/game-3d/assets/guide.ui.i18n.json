@@ -1,0 +1,66 @@
+{
+  "fallbackLng": "en",
+  "defaultNS": "guide",
+  "resources": {
+    "en": {
+      "guide": {
+        "title": "3C starter",
+        "lock": "Camera locked · mouse look active",
+        "unlock": "Click to lock camera, or hold right mouse to look",
+        "touch": "Left stick to move · right pad to look",
+        "touchControls": "Tap Jump · hold Run · release to stop",
+        "controls": "Mouse look · WASD move · Space jump · Shift run · Esc release",
+        "touchUnavailable": "Touch controls need a connected game",
+        "move": "Move",
+        "look": "Look",
+        "lookHint": "Drag to turn",
+        "jump": "Jump",
+        "run": "Hold Run",
+        "openVase": "Shape a vase",
+        "closeVase": "Close vase",
+        "vase": {
+          "label": "Runtime vase",
+          "description": "Change the shape, then generate it in this scene.",
+          "generate": "Generate vase",
+          "fields": { "height": "Height", "radius": "Radius", "sides": "Sides" },
+          "preparing": "Preparing vase...",
+          "busy": "Generating...",
+          "error": "Could not generate. Previous vase kept; check the values and retry.",
+          "generated_one": "{{count}} vertex · Generated in game",
+          "generated_other": "{{count}} vertices · Generated in game",
+          "unavailable": "Vase generation is unavailable in this host."
+        }
+      }
+    },
+    "fr": {
+      "guide": {
+        "title": "Prototype 3C",
+        "lock": "Caméra verrouillée · vue souris active",
+        "unlock": "Cliquez pour verrouiller, ou maintenez le bouton droit",
+        "touch": "Stick gauche : avancer · pavé droit : regarder",
+        "touchControls": "Sauter · courir en maintenant · relâcher pour arrêter",
+        "controls": "Souris · WASD déplacer · Espace sauter · Maj courir · Esc libérer",
+        "touchUnavailable": "Les commandes tactiles nécessitent un jeu connecté",
+        "move": "Avancer",
+        "look": "Regarder",
+        "lookHint": "Glisser pour tourner",
+        "jump": "Sauter",
+        "run": "Courir",
+        "openVase": "Créer un vase",
+        "closeVase": "Fermer le vase",
+        "vase": {
+          "label": "Vase généré dans le jeu",
+          "description": "Modifiez la forme, puis générez-la dans cette scène.",
+          "generate": "Générer le vase",
+          "fields": { "height": "Hauteur", "radius": "Rayon", "sides": "Côtés" },
+          "preparing": "Préparation du vase...",
+          "busy": "Génération...",
+          "error": "Échec de la génération. Le vase précédent est conservé ; vérifiez les valeurs puis réessayez.",
+          "generated_one": "{{count}} sommet · Généré dans le jeu",
+          "generated_other": "{{count}} sommets · Généré dans le jeu",
+          "unavailable": "La génération de vase est indisponible sur cet hôte."
+        }
+      }
+    }
+  }
+}

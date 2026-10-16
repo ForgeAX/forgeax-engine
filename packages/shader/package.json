@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/engine-shader",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Runtime shader registry \u2014 content-addressable manifest lookup \u2192 rhi.createShaderModule. Physically isolated from the build-time triple @forgeax/engine-shader-compiler / @forgeax/engine-naga / @forgeax/engine-wgpu-wasm (AC-06 \u4e09\u91cd\u95f8\u95e8 grep \u5b88\u62a4).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "@noble/hashes": "^2.2.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "runtime registry without canvas; fps reported by hello-triangle / hello-cube apps that consume the registry"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "manifest-lookup path is not perf-critical; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "physical-isolation grep gates (check-shader-no-naga-in-dist + check-shader-runtime-deps + check-shader-no-compiler-import) are repo-root scripts wired into ci.yml lint job, not a per-package gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

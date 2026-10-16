@@ -1,0 +1,73 @@
+{
+  "name": "@forgeax/engine-types",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "POD types, union aliases, and the project-wide Result<T, E> SSOT (with `ok` / `err` factories) shared by @forgeax/engine-rhi / ecs / naga / image / gltf / console / render-graph / shader / future renderer packages (math-free).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./inspector-client": {
+      "types": "./dist/inspector-client.d.ts",
+      "node": {
+        "import": "./dist/inspector-client.mjs"
+      },
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@webgpu/types": "^0.1.74"
+  },
+  "peerDependencies": {
+    "ws": "^8.20.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "type-only package; tsup emits dist/index.mjs as a side-effect-free re-export shell (zero runtime constants per package description)"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "type-only package, no runtime canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "type-only package, nothing to bench"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; closed union evolution covered by AGENTS.md error-model contract review"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

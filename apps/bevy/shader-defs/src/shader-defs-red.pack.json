@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "3ce70155-2b31-580d-b0e3-520ebb4b0ae9",
+      "kind": "material",
+      "sourceKey": "shader-defs-red.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "bevy::shader_defs_red",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            },
+            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+          }
+        ],
+        "parameters": [
+          { "name": "baseColor", "type": "color", "default": [1, 1, 1, 1] },
+          { "name": "time", "type": "f32", "default": 0 },
+          { "name": "speed", "type": "f32", "default": 1 },
+          { "name": "baseColorTexture", "type": "texture" }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

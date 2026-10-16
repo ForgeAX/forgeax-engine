@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "12890bac-9063-4088-92a3-6069882daaf7",
+  "assets": {
+    "plugin/main": {
+      "kind": "plugin",
+      "payload": {
+        "module": { "specifier": "./dist/modules/plugin.mjs" },
+        "toolContract": { "specifier": "./dist/modules/commands.mjs", "export": "contract" }
+      }
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/bevy-physics-fixed-loop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reproduce Bevy's physics_in_fixed_timestep example with fixed simulation and visual interpolation.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "physics_in_fixed_timestep",
+      "category": "Movement",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/bevy-physics-fixed-loop smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle is downstream of engine-runtime"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fixed-step behavior is covered by the demo smoke"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "not a benchmark app"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/bevy-physics-fixed-loop smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "implemented Bevy reproduction"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-input": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

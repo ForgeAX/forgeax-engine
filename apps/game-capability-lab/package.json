@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/app-game-capability-lab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Default native Cordis gameplay plugin template with an authored scene, movable player, and asset-resident feature modules.",
+  "scripts": {
+    "smoke:geometry": "node scripts/smoke-geometry.mjs",
+    "smoke:rotation": "node scripts/smoke-rotation.mjs"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "template bundle is downstream of the host app (apps/preview)"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "template has no independent smoke gate"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "template scaffold; bench focus stays on engine packages"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "CI acceptance is owned by the apps/preview host; the template has no standalone runner"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-audio": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-state": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74"
+  }
+}

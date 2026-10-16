@@ -1,0 +1,61 @@
+{
+  "name": "@forgeax/hello-topology",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Line-list primitive topology demo (feat-20260604-mesh-topology-debug-draw): a vertex-only MeshAsset with topology='line-list' renders a unit-cube wireframe as 12 discrete line segments through the non-indexed draw path.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-topology smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape is downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "topology demo is a correctness exemplar; fps anchored by hello-triangle / hello-cube"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "line-list topology correctness exemplar; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-topology smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M6 hello-topology line-list exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "playwright": "^1.50.0",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "material-witness-receipt/1",
+  "kind": "material-witness-receipt",
+  "sourceKind": "gltf",
+  "materialGuid": "019f0000-0000-7000-8000-000000000103",
+  "rootGuid": "be94bbad-4b1f-5f05-a24a-e1c05a324c9a",
+  "rootPublication": {
+    "guid": "be94bbad-4b1f-5f05-a24a-e1c05a324c9a",
+    "format": "ts",
+    "path": "templates/game-3d/assets/materials.pack.ts",
+    "sourceKey": "material/standard-root"
+  },
+  "child": {
+    "authoredKeys": ["kind", "parent", "values"],
+    "forbiddenFields": []
+  },
+  "receipt": {
+    "identity": {
+      "artifactDigest": "sha256:63612a071372a27cd6122d26c3c5e4ae9e98a5674ad020e7e34ff720b5f02795",
+      "compilerFingerprint": "sha256-47b9f294fcc1550dc87c174c7d259697eda4700a3e6c5836bdccaca38d4f4ab1",
+      "cookGeneration": 1,
+      "cookIdentity": "sha256:a78beb20c4b70c671b57f54cceeba7539d982e38e09557f1dc1c474a2485d31f",
+      "dependencyGeneration": 1,
+      "layoutIdentity": "sha256-6c22ea44b3871022e9b907c8a04c77c1a4b202667c658d348a691d85a2e79424",
+      "materialContractDigest": "sha256:8e62bd948bd69c92a7c0d3c123516e6d6a561819348a06c72fa96e4c03828ea7",
+      "materialPublicationIdentity": "sha256:7657c50ae8b099b2cf3cb90fba2a46d4b2753de697898dd767c43885786d01ce",
+      "pipelineIdentity": "sha256:0e232c5f98174526bf98b4f338b4424b2dd0b0b70844e9f214e2681b9a7e62f7",
+      "programIdentity": "sha256:3869ffeac9b2ee67dae911179f5cb7428cd1d7a25f50463d7e548e38b95df1d4",
+      "sourceClosureDigest": "sha256:5f33609b5411e7aa6662ad447a62d999d9bb9688b8f7c527880bfea4243238b1",
+      "sourceRevision": "sha256:5f33609b5411e7aa6662ad447a62d999d9bb9688b8f7c527880bfea4243238b1",
+      "valueGeneration": 1,
+      "wasm": {
+        "artifactBytes": 6500381,
+        "artifactSha256": "45cce46ff159dad8ce4737d1382c38cfecedb5437c7f1778270ddddea08a9bbd",
+        "compilerFingerprint": "sha256-47b9f294fcc1550dc87c174c7d259697eda4700a3e6c5836bdccaca38d4f4ab1",
+        "dependencies": {
+          "naga": "29.0.3",
+          "nagaOil": "0.22.0",
+          "wasmBindgen": "0.2.121",
+          "wgpu": "29.0.3"
+        },
+        "glueBytes": 140146,
+        "glueSha256": "01d22cf1609d40f8b25bc3f7a86c8408ab2edef58fb87e0e66ec5a0b352849be",
+        "schemaVersion": "wgpu-wasm-provenance/1",
+        "sourceContentKey": "sha256-b88cc3fbeb3888d0af07d9ab6b7f41202f77a6ae20bef1804073b7a7450b90c7",
+        "toolchain": {
+          "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+          "wasmBindgen": "unavailable",
+          "wasmPack": "wasm-pack 0.14.0"
+        }
+      }
+    }
+  },
+  "artifactDigest": "sha256:63612a071372a27cd6122d26c3c5e4ae9e98a5674ad020e7e34ff720b5f02795",
+  "sourceClosure": [
+    "packages/shader/src/default-standard-pbr.wgsl",
+    "forgeax_material::default_standard_surface",
+    "forgeax_material::parameters",
+    "forgeax_material::standard",
+    "forgeax_material::surface_v1",
+    "forgeax_pbr::anisotropy",
+    "forgeax_pbr::brdf",
+    "forgeax_pbr::clearcoat",
+    "forgeax_pbr::ibl_sampling",
+    "forgeax_pbr::ibl_shared",
+    "forgeax_pbr::iridescence",
+    "forgeax_pbr::lighting_attenuation",
+    "forgeax_pbr::lighting_directional",
+    "forgeax_pbr::lighting_probe",
+    "forgeax_pbr::lighting_punctual",
+    "forgeax_pbr::lighting_rect_area",
+    "forgeax_pbr::lighting_spot_modifiers",
+    "forgeax_pbr::lighting_spot_projector",
+    "forgeax_pbr::shadow_pcf",
+    "forgeax_pbr::sheen",
+    "forgeax_pbr::tbn",
+    "forgeax_pbr::temporal",
+    "forgeax_scene_temporal",
+    "forgeax_standard::cluster",
+    "forgeax_view::common"
+  ]
+}

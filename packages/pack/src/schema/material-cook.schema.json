@@ -1,0 +1,627 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ForgeaX cooked material record",
+  "type": "object",
+  "required": ["schemaVersion", "guid", "resolved", "refs", "programs", "receipt"],
+  "properties": {
+    "schemaVersion": {
+      "const": "material-cook/4"
+    },
+    "guid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "materialGuid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publicationGeneration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "specializationKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifactDigest": {
+      "type": "string",
+      "pattern": "^sha256:"
+    },
+    "sourceClosure": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "parameterContract": {
+      "type": "object",
+      "required": ["parameters", "values"],
+      "properties": {
+        "parameters": {
+          "type": "array"
+        },
+        "values": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "authored": {
+      "type": "object",
+      "required": ["kind"]
+    },
+    "resolved": {
+      "type": "object",
+      "required": ["passes", "parameters", "values"],
+      "properties": {
+        "staticSwitches": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        },
+        "surface": {
+          "type": "object",
+          "required": ["model", "module"],
+          "properties": {
+            "model": {
+              "enum": ["standard", "single-layer-medium"]
+            },
+            "module": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dynamicInput": {
+              "type": "object",
+              "required": [
+                "name",
+                "fields",
+                "maxRecords",
+                "maxDomains",
+                "maxPageBytes",
+                "maxBindings",
+                "maxEventsPerSample"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                "fields": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "type"],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                      },
+                      "type": {
+                        "enum": ["f32", "u32", "vec2<f32>", "vec3<f32>", "vec4<f32>"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "maxRecords": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxDomains": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxPageBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxBindings": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxEventsPerSample": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "refs": {
+      "type": "object",
+      "required": ["parent", "textures", "samplers", "modules"],
+      "properties": {
+        "parent": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "textures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "samplers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "sourceClosure",
+        "profile",
+        "compilerVersion",
+        "identity",
+        "derivedInterface"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "material-cook/4"
+        },
+        "sourceClosure": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "profile": {
+          "type": "string"
+        },
+        "compilerVersion": {
+          "type": "string"
+        },
+        "identity": {
+          "type": "object",
+          "required": [
+            "materialContractDigest",
+            "sourceRevision",
+            "sourceClosureDigest",
+            "layoutIdentity",
+            "programIdentity",
+            "pipelineIdentity",
+            "materialPublicationIdentity",
+            "cookIdentity",
+            "compilerFingerprint",
+            "wasm",
+            "artifactDigest",
+            "valueGeneration",
+            "dependencyGeneration",
+            "cookGeneration"
+          ],
+          "properties": {
+            "materialContractDigest": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceClosureDigest": {
+              "type": "string",
+              "minLength": 1
+            },
+            "layoutIdentity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "programIdentity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pipelineIdentity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "materialPublicationIdentity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cookIdentity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "compilerFingerprint": {
+              "type": "string",
+              "minLength": 1
+            },
+            "wasm": {
+              "type": "object",
+              "required": ["sourceContentKey", "artifactSha256", "glueSha256"],
+              "properties": {
+                "sourceContentKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "artifactSha256": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "glueSha256": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "artifactDigest": {
+              "type": "string",
+              "minLength": 1
+            },
+            "valueGeneration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "dependencyGeneration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cookGeneration": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "derivedInterface": {
+          "type": "object",
+          "required": ["layoutIdentity"],
+          "properties": {
+            "layoutIdentity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "layerPlanIdentity": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "publicationGeneration": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "programs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["specializationKey", "artifact", "selections"],
+        "properties": {
+          "specializationKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifact": {
+            "type": "object",
+            "required": ["mediaType", "path", "digest", "bytes"],
+            "properties": {
+              "mediaType": {
+                "const": "text/wgsl"
+              },
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:"
+              },
+              "bytes": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "selections": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["pass", "context"],
+              "properties": {
+                "pass": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "address": {
+                  "enum": ["direct", "scene-index"]
+                },
+                "entry": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "abi": {
+                  "type": "object",
+                  "required": [
+                    "directEntry",
+                    "materialRow",
+                    "resourceSlots",
+                    "uvSets",
+                    "vertexInputs",
+                    "alphaMask",
+                    "reflection",
+                    "receiptIdentity",
+                    "generation"
+                  ],
+                  "properties": {
+                    "directEntry": { "type": "string", "minLength": 1 },
+                    "sceneIndexEntry": { "type": "string", "minLength": 1 },
+                    "materialRow": {
+                      "type": "object",
+                      "required": ["byteLength", "fields"],
+                      "properties": {
+                        "byteLength": { "type": "integer", "minimum": 16, "multipleOf": 16 },
+                        "fields": { "type": "array", "items": { "type": "string" } },
+                        "addressUnitBytes": { "const": 16 }
+                      },
+                      "additionalProperties": false
+                    },
+                    "resourceSlots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["name", "parameter", "kind", "group", "binding"],
+                        "properties": {
+                          "name": { "type": "string", "minLength": 1 },
+                          "parameter": { "type": "string", "minLength": 1 },
+                          "kind": { "enum": ["sampler", "texture", "storage-buffer"] },
+                          "group": { "type": "integer", "minimum": 0 },
+                          "binding": { "type": "integer", "minimum": 0 }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "uvSets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["parameter", "set"],
+                        "properties": {
+                          "parameter": { "type": "string", "minLength": 1 },
+                          "set": { "type": "integer", "minimum": 0 }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "vertexInputs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["semantic", "location", "format"],
+                        "properties": {
+                          "semantic": { "type": "string", "minLength": 1 },
+                          "location": { "type": "integer", "minimum": 0 },
+                          "format": { "type": "string", "minLength": 1 }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "alphaMask": {
+                      "type": "object",
+                      "required": ["cutoff", "source"],
+                      "properties": {
+                        "cutoff": { "type": "string" },
+                        "source": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    },
+                    "skinPaletteAddress": {
+                      "type": "object",
+                      "required": ["group", "binding", "stride"],
+                      "properties": {
+                        "group": { "type": "integer", "minimum": 0 },
+                        "binding": { "type": "integer", "minimum": 0 },
+                        "stride": { "type": "integer", "minimum": 1 }
+                      },
+                      "additionalProperties": false
+                    },
+                    "reflection": {
+                      "type": "object",
+                      "required": ["layoutIdentity", "resourceSlots", "vertexInputs"],
+                      "properties": {
+                        "layoutIdentity": { "type": "string", "minLength": 1 },
+                        "resourceSlots": { "type": "array" },
+                        "vertexInputs": { "type": "array" }
+                      },
+                      "additionalProperties": false
+                    },
+                    "receiptIdentity": { "type": "string", "minLength": 1 },
+                    "generation": { "type": "integer", "minimum": 1 }
+                  },
+                  "allOf": [
+                    {
+                      "if": { "required": ["sceneIndexEntry"] },
+                      "then": {
+                        "properties": {
+                          "materialRow": { "required": ["addressUnitBytes"] }
+                        }
+                      }
+                    }
+                  ],
+                  "additionalProperties": false
+                },
+                "context": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "backend",
+                        "capability",
+                        "pipeline",
+                        "geometry",
+                        "pass",
+                        "profile",
+                        "toolchain",
+                        "instrumentation"
+                      ],
+                      "properties": {
+                        "backend": {
+                          "enum": ["webgpu", "webgl2", "wgpu-native"]
+                        },
+                        "capability": {
+                          "enum": [
+                            "storage-buffer",
+                            "storage-buffer-atmosphere",
+                            "storage-buffer-minimum",
+                            "storage-buffer-projector",
+                            "uniform-fallback"
+                          ]
+                        },
+                        "pipeline": {
+                          "enum": ["forward", "deferred"]
+                        },
+                        "geometry": {
+                          "enum": ["mesh", "skinned", "sprite", "sprite-instances"]
+                        },
+                        "pass": {
+                          "enum": ["forward", "shadow", "depth"]
+                        },
+                        "profile": {
+                          "enum": ["forgeax-material-wgsl-v1"]
+                        },
+                        "toolchain": {
+                          "enum": ["naga-oil"]
+                        },
+                        "instrumentation": {
+                          "enum": ["none", "validation"]
+                        },
+                        "visibleSurface": {
+                          "const": true
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "backend",
+                        "capability",
+                        "pipeline",
+                        "geometry",
+                        "pass",
+                        "profile",
+                        "toolchain",
+                        "instrumentation"
+                      ],
+                      "properties": {
+                        "backend": {
+                          "enum": ["webgpu", "wgpu-native"]
+                        },
+                        "capability": {
+                          "enum": ["storage-buffer"]
+                        },
+                        "pipeline": {
+                          "enum": ["ray"]
+                        },
+                        "geometry": {
+                          "enum": ["mesh"]
+                        },
+                        "pass": {
+                          "enum": ["ray-hit", "card-capture"]
+                        },
+                        "profile": {
+                          "enum": ["forgeax-material-ray-v1"]
+                        },
+                        "toolchain": {
+                          "enum": ["naga-oil"]
+                        },
+                        "instrumentation": {
+                          "enum": ["none"]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "context": {
+                        "properties": {
+                          "pipeline": {
+                            "const": "ray"
+                          }
+                        },
+                        "required": ["pipeline"]
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": ["entry"],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": ["address"]
+                        },
+                        {
+                          "required": ["abi"]
+                        }
+                      ]
+                    },
+                    "if": {
+                      "properties": {
+                        "context": {
+                          "properties": {
+                            "pass": {
+                              "const": "ray-hit"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "entry": {
+                          "const": "cs_surface"
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "entry": {
+                          "const": "vs_card"
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

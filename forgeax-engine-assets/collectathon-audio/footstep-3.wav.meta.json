@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "footstep-3.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "724242e6-5df8-44b8-9b41-0e430d1acc2c",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

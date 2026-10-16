@@ -1,0 +1,54 @@
+{
+  "name": "@forgeax/hello-m2-content-pipeline",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M2 content-pipeline gauntlet: project manifest, sidecar scan, host importer delivery, GUID reimport, and codec round-trip.",
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:m28-recovery": "node scripts/smoke.mjs --m28-recovery",
+    "smoke:source-reimport": "node scripts/source-reimport.mjs",
+    "smoke:browser-catalog-recovery": "node scripts/smoke-browser-catalog-recovery.mjs",
+    "smoke:browser-font": "node scripts/smoke-browser-font.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m2-content-pipeline smoke",
+    "gauntletScenario": {
+      "id": "hello-m2-content-pipeline",
+      "script": "smoke",
+      "domains": ["Asset schemas, import, and delivery", "World and host contract", "Inspection, debugging, and development bridges"],
+      "packages": ["@forgeax/engine-codec", "@forgeax/engine-fbx", "@forgeax/engine-font", "@forgeax/engine-image", "@forgeax/engine-pack", "@forgeax/engine-project"],
+      "risks": ["baseline", "content", "build", "delivery", "fault", "recovery", "behavioral", "manifest-recovery"],
+      "phaseInputs": ["baseline", "content", "build", "delivery", "fault", "recovery", "manifest-recovery"],
+      "evidence": {
+        "frontDoors": ["node-app", "vite-pack", "browser-hmr", "browser-font-worker", "node-font-worker", "project-manifest", "content-catalog"],
+        "legs": ["semantic", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": ["[m2-content] project manifest: PASS", "[m28-project] PASS", "[m2-content] sidecar scan: PASS", "[m2-content] host importer delivery: PASS", "[smoke-browser] PASS - browser HMR reloaded changed host asset content", "[m2-content] browser HMR delivery: PASS", "[m2-catalog-recovery] PASS - baseline stable GUID, valid revision HMR, malformed LKG retention, same-process repair, pageLoads=1", "[m2-content] browser catalog recovery: PASS", "[m2-content] image source reimport: PASS", "[m2-content] gltf source reimport: PASS", "[m2-content] FBX source reimport: PASS", "[m2-content] source reimport: PASS image+gltf+fbx semantic mutation with stable GUIDs", "[m2-content] FBX fixture reimport: PASS", "[m2-content] font fixture delivery: PASS", "[m2-content] font + FBX fixture delivery: PASS", "[m2-content] browser Worker font bake: PASS", "[m2-content] plain Node font bake + structured recovery: PASS", "[m2-content] GUID reimport: PASS", "[m2-content] codec round-trip: PASS", "[m2-content] PASS - M2 partial content pipeline gates GREEN"]
+      }
+    },
+    "metrics": {
+      "bundle-size": {"enabled": false, "reason": "content audit has no dedicated browser bundle; Vite pack delivery is delegated to the host importer scenario"},
+      "fps": {"enabled": false, "reason": "content pipeline scenario has no frame-rate claim"},
+      "bench": {"enabled": false, "reason": "codec round-trip is a correctness gate, not a performance benchmark"},
+      "gate": {"enabled": true, "command": "pnpm --filter @forgeax/hello-m2-content-pipeline smoke"},
+      "spike-report": {"enabled": false, "reason": "not a spike app"}
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-project": "workspace:*"
+  },
+  "devDependencies": {
+    "@zappar/msdf-generator": "1.2.4",
+    "playwright": "^1.50.0",
+    "upng-js": "^2.1.0"
+  }
+}

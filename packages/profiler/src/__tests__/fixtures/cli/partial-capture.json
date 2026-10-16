@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0",
+  "captureId": "capture-0043",
+  "timeUnit": "microseconds",
+  "frameLimit": 4,
+  "eventLimit": 8,
+  "phaseCatalog": {
+    "app": ["input", "update"],
+    "render": ["prepare", "submit"]
+  },
+  "records": [
+    {
+      "kind": "phase",
+      "source": "app",
+      "frameId": 1,
+      "phase": "input",
+      "startMicros": 1000,
+      "endMicros": 1015,
+      "durationMicros": 15
+    }
+  ],
+  "completeness": {
+    "status": "partial",
+    "retainedEventCount": 1,
+    "droppedEventCount": 0,
+    "incompleteReason": "stopped-during-frame"
+  }
+}

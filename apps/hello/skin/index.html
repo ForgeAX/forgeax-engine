@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Hello Skin</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #skin-hud {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        background: rgba(0, 0, 0, 0.55);
+        color: #e0e6f8;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid #2a2f48;
+        pointer-events: none;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="skin-hud">
+      Mode: hardcut  State: Playing<br />
+      slot[0]: clips[0]=invalid  weights[0]=0.000  times[0]=0.00<br />
+      slot[1]: clips[1]=invalid  weights[1]=0.000  times[1]=0.00<br />
+      slot[2]: clips[2]=invalid  weights[2]=0.000  times[2]=0.00<br />
+      slot[3]: clips[3]=invalid  weights[3]=0.000  times[3]=0.00<br />
+      <span style="color:#8a90a8;">[1] Survey  [2] Walk  [3] Run  [4] Walk-&gt;Run blend  [5] 3-way  [Space] Pause</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

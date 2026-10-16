@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "../../../../forgeax-engine-assets/demo-assets/palace/caihua.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": true,
+    "addressMode": "repeat",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "01a097b9-28cd-7a1a-98de-0ba786fd061c",
+      "sourceIndex": 0,
+      "kind": "texture",
+      "sourceKey": "texture"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "shader",
+  "source": "animated-target.wgsl",
+  "importSettings": {
+    "materialShaderIdentifier": "game_default::animated_target"
+  },
+  "subAssets": [
+    {
+      "guid": "01935b00-7d8c-4c4e-9f12-345678abcd12",
+      "sourceIndex": 0,
+      "kind": "material-shader"
+    }
+  ],
+  "paramSchema": [
+    { "name": "baseColor", "type": "color" },
+    { "name": "time", "type": "f32", "default": 0.0 }
+  ]
+}

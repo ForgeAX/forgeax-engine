@@ -1,0 +1,53 @@
+{
+  "name": "@forgeax/app-learn-render-1-getting-started-2-hello-triangle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render LearnOpenGL section 1.2 hello-triangle — Engine.create + world.spawn + HANDLE_TRIANGLE demo.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-1-getting-started-2-hello-triangle smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime size already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "OOS-11 fps anchor stays on hello-triangle; this app redirects to apps/hello/triangle which is the fps anchor"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pixel-parity bench drives parity-forgeax vs parity-threejs; learn-render entry baseline is copied from apps/hello/triangle"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-learn-render-1-getting-started-2-hello-triangle smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; redirect to apps/hello/triangle"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@webgpu/types": "^0.1.74"
+  }
+}

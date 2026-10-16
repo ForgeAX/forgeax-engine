@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Shadow Biases</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #status { position: fixed; top: 12px; left: 12px; margin: 0; color: #fff; font: 13px/1.4 monospace; text-shadow: 0 1px 2px #000; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <pre id="status"></pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

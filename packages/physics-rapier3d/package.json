@@ -1,0 +1,84 @@
+{
+  "name": "@forgeax/engine-physics-rapier3d",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Rapier 3D WASM backend for forgeax-engine — compat WASM loader, three-phase tick pipeline (syncBackend / stepSimulation / writeback), transform sync, collision event translation, raycast, teleport, despawn cleanup.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./wasm-runtime": {
+      "types": "./dist/wasm-browser.d.ts",
+      "forgeax-native": "./dist/native.mjs",
+      "default": "./dist/wasm-browser.mjs"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "pkg",
+    "scripts",
+    "patches"
+  ],
+  "scripts": {
+    "build": "node scripts/build-wasm.mjs --ensure && tsup",
+    "test": "vitest run",
+    "build:wasm": "node scripts/build-wasm.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-terrain": "workspace:*",
+    "esbuild": "0.28.2",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "WASM binary loaded via dynamic import() — not counted in first-frame bundle; bundle-size reflects thin TS shell only"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "physics step time is negligible relative to render; fps tracked by consumer app / demo"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Manual native collision measurements are available; no stable CI regression baseline or thresholds are declared."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; test surface coverage runs as part of pnpm test:unit"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; production MVP backend per plan-strategy D-4"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "chromiumSandbox": true,
+      "headless": false,
+      "args": [
+        "--disable-features=MacAppCodeSignClone",
+        "--enable-unsafe-webgpu",
+        "--ignore-gpu-blocklist",
+        "--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer",
+        "--use-vulkan=swiftshader",
+        "--use-angle=swiftshader",
+        "--disable-gpu-driver-bug-workarounds",
+        "--disable-dawn-features=disallow_unsafe_apis"
+      ]
+    }
+  }
+}

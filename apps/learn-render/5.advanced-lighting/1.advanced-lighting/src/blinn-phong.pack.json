@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "cc1beeb0-5b8e-5720-96e6-d7e6064f2c20",
+      "kind": "material",
+      "sourceKey": "blinn-phong.wgsl",
+      "execution": "cooked",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "learn_render::5_1_blinn_phong",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/**/__tests__/**"
+  ],
+  "references": [
+    { "path": "../animation" },
+    { "path": "../assets-runtime" },
+    { "path": "../audio-webaudio" },
+    { "path": "../codec" },
+    { "path": "../debug-draw" },
+    { "path": "../font" },
+    { "path": "../math" },
+    { "path": "../ecs" },
+    { "path": "../geometry" },
+    { "path": "../graphics-extras" },
+    { "path": "../image" },
+    { "path": "../types" },
+    { "path": "../rhi" },
+    { "path": "../rhi-debug" },
+    { "path": "../rhi-webgpu" },
+    { "path": "../rhi-wgpu" },
+    { "path": "../rhi-null" },
+    { "path": "../shader" },
+    { "path": "../render-graph" },
+    { "path": "../pack" },
+    { "path": "../profiler" },
+    { "path": "../plugin" },
+    { "path": "../state" },
+    { "path": "../vfx" },
+    { "path": "../vite-plugin-shader" },
+    { "path": "../import" },
+    { "path": "../render" },
+    { "path": "../scene" },
+    { "path": "../skinning" }
+  ]
+}

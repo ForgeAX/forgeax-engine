@@ -1,0 +1,214 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019e9c00-0000-7000-8000-000000000101",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "lightning-ribbon",
+            "capacity": 32,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.5
+            },
+            "schedule": {
+              "rate": 24,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 12
+                }
+              ],
+              "loopDuration": 0.6
+            },
+            "program": {
+              "module": "lightning-ribbon.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "ribbon",
+                "material": "d8c45043-90f3-58d5-b6d4-55a5b3f7e05e",
+                "stripKey": "alive-index",
+                "capacity": 32,
+                "overflow": "drop-oldest",
+                "width": 0.025
+              }
+            ]
+          },
+          {
+            "id": "lightning-trail",
+            "capacity": 16,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.5
+            },
+            "schedule": {
+              "rate": 5,
+              "bursts": [
+                {
+                  "time": 0.08,
+                  "count": 3
+                }
+              ],
+              "loopDuration": 0.8
+            },
+            "program": {
+              "module": "lightning-trail.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "trail",
+                "material": "25d167cc-3937-5bfc-a5e9-c5773e65d645",
+                "historyLength": 8,
+                "capacity": 16,
+                "overflow": "drop-oldest",
+                "width": 0.018
+              }
+            ]
+          },
+          {
+            "id": "lightning-beam",
+            "capacity": 8,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.5
+            },
+            "schedule": {
+              "rate": 3,
+              "bursts": [
+                {
+                  "time": 0.16,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 0.8
+            },
+            "program": {
+              "module": "lightning-beam.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "beam",
+                "material": "74679f70-682c-5d0b-9c47-03922f8d6261",
+                "endpointField": "velocity",
+                "capacity": 8,
+                "overflow": "drop-newest",
+                "width": 0.018
+              }
+            ]
+          },
+          {
+            "id": "release-axis-lance",
+            "capacity": 4,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 0.6,
+              "bursts": [
+                {
+                  "time": 0.42,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 3.2
+            },
+            "program": {
+              "module": "arc-nova-lance.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "92d59402-ff1d-5ab4-bf22-6550d047e75b",
+                "mesh": "0b99d972-63b9-5217-a9ba-dc6b8d0f412e",
+                "submesh": 0
+              }
+            ]
+          },
+          {
+            "id": "release-radial-blades",
+            "capacity": 16,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 2.5,
+              "bursts": [
+                {
+                  "time": 0.46,
+                  "count": 7
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 3.2
+            },
+            "program": {
+              "module": "arc-nova-burst.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "92d59402-ff1d-5ab4-bf22-6550d047e75b",
+                "mesh": "a3088c54-423d-5e1b-b135-21055d568ef5",
+                "submesh": 0
+              }
+            ]
+          }
+        ]
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "baselineCommit": "148ef3f2ff4954584ecc44d5f8027a1a33951e62",
+  "candidateChange": "Reuse canonical primitive tokens only after immutable string value equality",
+  "fixture": "packages/render/bench/render-feature-signature.bench.ts",
+  "platform": "linux-x64",
+  "node": "24.19.0",
+  "v8": "13.6.233.17-node.51",
+  "cpu": "AMD EPYC 9754 128-Core Processor",
+  "vitest": "4.1.11",
+  "warmupMs": 200,
+  "samplingMs": 1000,
+  "timingUnit": "milliseconds per native host signature and graph evidence check",
+  "workload": {
+    "emitters": 18,
+    "shaderBytesPerEmitter": 65536,
+    "resources": 72,
+    "passes": 18,
+    "prebuiltPlans": 2
+  },
+  "cases": [
+    {
+      "name": "buffer uploads only",
+      "before": {
+        "mean": 3.161055914826505,
+        "median": 3.0836839999999484,
+        "p99": 4.107552000000055,
+        "rme": 0.967745951020601,
+        "sampleCount": 317
+      },
+      "after": {
+        "mean": 0.10796531350534282,
+        "median": 0.10110799999995379,
+        "p99": 0.19186600000011822,
+        "rme": 0.39985515979614383,
+        "sampleCount": 9263
+      }
+    },
+    {
+      "name": "one buffer capacity and dispatch change",
+      "before": {
+        "mean": 3.1932409331210234,
+        "median": 3.1289070000000265,
+        "p99": 3.8258190000001377,
+        "rme": 0.6540152584679987,
+        "sampleCount": 314
+      },
+      "after": {
+        "mean": 0.12896259355254794,
+        "median": 0.11386799999991126,
+        "p99": 0.23130499999979293,
+        "rme": 0.6178671035984427,
+        "sampleCount": 7755
+      }
+    },
+    {
+      "name": "one shader source change",
+      "before": {
+        "mean": 3.432895020547936,
+        "median": 3.3471185000000787,
+        "p99": 4.778797000000395,
+        "rme": 1.1748472670115655,
+        "sampleCount": 292
+      },
+      "after": {
+        "mean": 0.35801505082319374,
+        "median": 0.33671250000020336,
+        "p99": 0.6115669999999227,
+        "rme": 0.6162361025307582,
+        "sampleCount": 2794
+      }
+    }
+  ]
+}

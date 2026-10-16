@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Atlas Viewer</title>
+    <style>
+      html, body {
+        margin: 0; padding: 16px; background: #111; color: #eee;
+        font-family: ui-monospace, monospace; font-size: 12px;
+      }
+      h1 { margin: 0 0 12px; font-size: 14px; color: #aaa; }
+      .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+      .atlas { display: flex; flex-direction: column; gap: 6px; }
+      .atlas label { color: #88aaff; font-weight: bold; }
+      .atlas span { color: #888; }
+      .atlas img {
+        image-rendering: pixelated;
+        border: 1px solid #333;
+        background: repeating-conic-gradient(#222 0% 25%, #2a2a2a 0% 50%) 0 0 / 16px 16px;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>ASI World - Atlas Viewer</h1>
+    <div class="row" id="row"></div>
+    <script type="module" src="/src/atlas-viewer.ts"></script>
+  </body>
+</html>

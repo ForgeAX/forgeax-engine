@@ -1,0 +1,10 @@
+{
+  "package": "math",
+  "member": "packages/math",
+  "kind": "bundle-size",
+  "enabled": true,
+  "status": "ok",
+  "value": 4096,
+  "threshold": 102400,
+  "details": { "compression": "gzip" }
+}

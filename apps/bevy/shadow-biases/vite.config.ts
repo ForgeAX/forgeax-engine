@@ -1,0 +1,14 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
+import { defineConfig } from 'vite';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const monorepoRoot = resolve(here, '..', '..', '..');
+
+export default defineConfig({
+  // Bevy point lights cast shadows; the cube-array lane is a build-time opt-in.
+  plugins: [forgeaxShader({ engineEntries: { pointShadows: true } }) as never],
+  server: { fs: { allow: [monorepoRoot] } },
+  build: { target: 'esnext', rollupOptions: { input: { main: resolve(here, 'index.html') } } },
+});

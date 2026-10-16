@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "guardian.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "49c2c8b1-8091-4e9e-b782-f658ee4e31b0",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

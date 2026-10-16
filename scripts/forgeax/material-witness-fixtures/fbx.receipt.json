@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "material-witness-receipt/1",
+  "kind": "material-witness-receipt",
+  "sourceKind": "fbx",
+  "materialGuid": "019f0000-0000-7000-8000-000000000104",
+  "rootGuid": "01a065d4-47dd-789f-96b4-36b9326abc02",
+  "rootPublication": {
+    "guid": "01a065d4-47dd-789f-96b4-36b9326abc02",
+    "format": "json",
+    "path": "forgeax-engine-assets/vendor/fbx-test/standard-material-root.pack.json",
+    "sourceKey": "material/standard-root"
+  },
+  "child": {
+    "authoredKeys": ["kind", "parent", "values"],
+    "forbiddenFields": []
+  },
+  "receipt": {
+    "identity": {
+      "artifactDigest": "sha256:f9416c9ffe118c4623eb0a4bc3e0641118fa226603ee2df71008496b27aef3c1",
+      "compilerFingerprint": "sha256-9f591ef710fa91e28c457d3ae311859eda5b97df331c15e8c39e899697a8b8f2",
+      "cookGeneration": 1,
+      "cookIdentity": "sha256:741d24eabfbd5968af5e92e1127f068c75cc14b2e8d2f57e61eebb4d7bc80544",
+      "dependencyGeneration": 1,
+      "layoutIdentity": "sha256-e1c55086c9d6dafd0ec57144d7a61221c43b753a27fca86c27769d92655e79b4",
+      "materialContractDigest": "sha256:c33ac3ac88ef480421d6b36e62f3d7f760f91bd38897c3f86cf3c382bcd8b6bb",
+      "materialPublicationIdentity": "sha256:f5986f0c1d65a6f718260b64dbcd1373cc93a1b847e87c728b21cf4d13bad445",
+      "pipelineIdentity": "sha256:5350866a92fd62ee5b3d4aa7374cdf0e4e94e6b0e275c168217c26177503dcfa",
+      "programIdentity": "sha256:3efea66d4dab728ab139b5578e7b0b9d0e6593797e796300633c9c765f1de4aa",
+      "sourceClosureDigest": "sha256:20a0933bc2c61df30e8be25c397332846b9c651382f2b3721dbe41ad99eff094",
+      "sourceRevision": "sha256:20a0933bc2c61df30e8be25c397332846b9c651382f2b3721dbe41ad99eff094",
+      "valueGeneration": 1,
+      "wasm": {
+        "artifactBytes": 6499613,
+        "artifactSha256": "55616a467138ae0ea6cd487a813936262c506dfe19b0f7620b58de8b5d01dab0",
+        "compilerFingerprint": "sha256-9f591ef710fa91e28c457d3ae311859eda5b97df331c15e8c39e899697a8b8f2",
+        "dependencies": {
+          "naga": "29.0.3",
+          "nagaOil": "0.22.0",
+          "wasmBindgen": "0.2.121",
+          "wgpu": "29.0.3"
+        },
+        "glueBytes": 140146,
+        "glueSha256": "01d22cf1609d40f8b25bc3f7a86c8408ab2edef58fb87e0e66ec5a0b352849be",
+        "schemaVersion": "wgpu-wasm-provenance/1",
+        "sourceContentKey": "sha256-df32567927a4ad6312a9d1c32c7efb99a16d3b7af3f9e63d0cd6f86caa7aceb8",
+        "toolchain": {
+          "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+          "wasmBindgen": "unavailable",
+          "wasmPack": "wasm-pack 0.14.0"
+        }
+      }
+    }
+  },
+  "artifactDigest": "sha256:f9416c9ffe118c4623eb0a4bc3e0641118fa226603ee2df71008496b27aef3c1",
+  "sourceClosure": [
+    "packages/shader/src/default-standard-pbr.wgsl",
+    "forgeax_material::default_standard_surface",
+    "forgeax_material::parameters",
+    "forgeax_material::surface_v1",
+    "forgeax_pbr::brdf",
+    "forgeax_pbr::ibl_sampling",
+    "forgeax_pbr::ibl_shared",
+    "forgeax_pbr::lighting_attenuation",
+    "forgeax_pbr::lighting_directional",
+    "forgeax_pbr::lighting_probe",
+    "forgeax_pbr::lighting_punctual",
+    "forgeax_pbr::lighting_rect_area",
+    "forgeax_pbr::lighting_spot_modifiers",
+    "forgeax_pbr::shadow_pcf",
+    "forgeax_pbr::tbn",
+    "forgeax_pbr::temporal",
+    "forgeax_scene_temporal",
+    "forgeax_standard::cluster",
+    "forgeax_view::common"
+  ]
+}

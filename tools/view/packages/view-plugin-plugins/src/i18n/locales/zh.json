@@ -1,0 +1,42 @@
+{
+  "plugins": {
+    "loading": "Loading",
+    "observed": "Host entries",
+    "partial": "Partial inventory",
+    "hosts": "Hosts",
+    "allHosts": "All hosts",
+    "thisFrontend": "This frontend",
+    "tags": "Tags",
+    "reset": "Reset filters",
+    "resultCount": "Entries {{count}} / {{total}}",
+    "sourceAssetGuid": "来源资产 GUID",
+    "unnamed": "未命名插件",
+    "sourceAssetGuidHelp": "提供此 Fiber 的插件资产；子插件可能共用该 GUID，原生插件没有来源资产 GUID。",
+    "filterHelp": "Match all selected tags. API / CLI describe tool and command contributions, not separate processes.",
+    "gameUnavailable": "No game plugin entries have been reported by the connected sources. This does not mean no game is running.",
+    "tag": { "backend": "Backend", "frontend": "Frontend", "game": "Game", "asset": "资产", "api": "API", "cli": "CLI" },
+    "tagHelp": {
+      "backend": "Entries observed on a backend Host",
+      "frontend": "Entries observed on a frontend Host",
+      "game": "Reported game sources or engine entries with World / GameHost dependencies",
+      "asset": "从 Pack 插件资产挂载的原生 Fiber",
+      "api": "Providers with observed Tool API contributions",
+      "cli": "Entries with a command contract or Tool API command paths"
+    },
+    "title": "插件",
+    "filter": "筛选插件、模块、条目或服务",
+    "filterLabel": "筛选插件",
+    "filterPlaceholder": "筛选插件…",
+    "toolbar": "插件工具栏",
+    "refresh": "刷新",
+    "loadedCount": "条目 {{count}}",
+    "hostHealthy": "Host 正常",
+    "emptyTitle": "没有匹配的插件",
+    "emptyDescription": "请调整搜索关键词后重试。",
+    "loadErrorTitle": "无法载入插件",
+    "retry": "重试",
+    "stateAll": "全部状态",
+    "empty": "无插件来源",
+    "unavailable": "插件检查不可用"
+  }
+}

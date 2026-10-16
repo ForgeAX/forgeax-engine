@@ -1,0 +1,9 @@
+{
+  "name": "no-drift-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bug-20260514 M4 T-015 minimal workspace where package.json + pnpm-lock.yaml + bun.lock are all in sync; check-drift must early-exit 0 (AC-07 no-op) and the dryrun pipeline must exit 0 without surfacing the marker.",
+  "dependencies": {
+    "example-pkg": "1.2.3"
+  }
+}

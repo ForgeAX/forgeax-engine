@@ -1,0 +1,66 @@
+{
+  "name": "@forgeax/hello-sprite",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "2D sprite + Layer + transparent-sort double-scene demo (feat-20260520-2d-sprite-layer-mvp / M-4 / w28..w33).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "sprite",
+      "category": "2D Rendering",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-sprite smoke",
+    "_comment": "smokeInvocation = self-contained SSOT (mirrors hello-tonemap / hello-cube). hello-sprite exercises the sprite material pipeline end-to-end (HANDLE_QUAD + SpriteMaterialAsset + Layer/SortKey components + transparent-sort + sprite.wgsl + alpha-blend pipeline) across 2 scenes (mode=0 horizontal-z + mode=1 JRPG Y-sort) crossed with 2 tonemap paths (none + reinhard-extended). 4 reference PNGs gate AC-13 (D-5 wood-container reuse via local assets/ copy when the forgeax-engine-assets submodule is not initialised; commit copies are 1.4 KB).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) is downstream of @forgeax/engine-runtime + @forgeax/engine-app + @forgeax/engine-rhi-webgpu sizes already tracked at the package level; demo workspace declares no separate bundle-size baseline"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression covered by hello-cube / hello-room / hello-app gates that run the default zero-overhead path; sprite transparent-bucket cost is gated by render bench (packages/render/bench/transparent-sort.bench.ts) instead"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "perf-critical bench (transparent-sort 10k entities) is anchored at @forgeax/engine-runtime#forgeax.metrics.bench, not at the demo workspace; demo gates on smoke + 4 reference PNG byte-equivalence eps<=0.05"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-sprite smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M-4 double-scene 2D-sprite-layer demo (feat-20260520 AC-12 / AC-13)"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-pack": "workspace:^",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

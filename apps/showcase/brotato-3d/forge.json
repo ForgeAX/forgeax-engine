@@ -1,0 +1,8 @@
+{
+  "id": "brotato-3d",
+  "name": "Brotato 3D",
+  "schemaVersion": "3.0.0",
+  "roots": {
+    "engine": "603dfb72-cbbc-5c19-8f44-3468ebdfee20"
+  }
+}

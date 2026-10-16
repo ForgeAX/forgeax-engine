@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "material-witness-receipt/1",
+  "kind": "material-witness-receipt",
+  "sourceKind": "builtin",
+  "materialGuid": "019f0000-0000-7000-8000-000000000102",
+  "rootGuid": "019f0000-0000-7000-8000-000000000102",
+  "rootPublication": null,
+  "child": {
+    "authoredKeys": ["kind", "parameters", "passes", "values"],
+    "forbiddenFields": ["passes", "parameters"]
+  },
+  "receipt": {
+    "identity": {
+      "artifactDigest": "sha256:00d6c0b6a8b40bc47fc9a04475a129689d95466d6337f2a5e496b781f01d3f25",
+      "compilerFingerprint": "sha256-9f591ef710fa91e28c457d3ae311859eda5b97df331c15e8c39e899697a8b8f2",
+      "cookGeneration": 1,
+      "cookIdentity": "sha256:14cc35a8dd1e93beaad30cd74c4295fbca787c1566c9c93810c17fd737926acb",
+      "dependencyGeneration": 1,
+      "layoutIdentity": "sha256-0346126f27c0e01e3bf379e844bc84a71e5297db0b69da8926eaf1e7fce41b60",
+      "materialContractDigest": "sha256:b510d8e987ee9448a4b1f3ecadbe525e3ec2ed2d97f45c1ba6b5c80bdc15379e",
+      "materialPublicationIdentity": "sha256:915bb8b515f997955baff521545afd3c35209b8b3fa9c590b75bf78d318122ff",
+      "pipelineIdentity": "sha256:5e61db02d0aded4e645bdd16c7ec811174095b6bdd9ac90909f04497cdfc28f8",
+      "programIdentity": "sha256:d1524809cbabfa8e8e7d29d57207f3fe99e1e0ecbe6b6d5357633d772f4da365",
+      "sourceClosureDigest": "sha256:db96b95640e095f63a03b9c4caae9a2bf76d99a897860af024bf0f8930005845",
+      "sourceRevision": "sha256:db96b95640e095f63a03b9c4caae9a2bf76d99a897860af024bf0f8930005845",
+      "valueGeneration": 1,
+      "wasm": {
+        "artifactBytes": 6499613,
+        "artifactSha256": "55616a467138ae0ea6cd487a813936262c506dfe19b0f7620b58de8b5d01dab0",
+        "compilerFingerprint": "sha256-9f591ef710fa91e28c457d3ae311859eda5b97df331c15e8c39e899697a8b8f2",
+        "dependencies": {
+          "naga": "29.0.3",
+          "nagaOil": "0.22.0",
+          "wasmBindgen": "0.2.121",
+          "wgpu": "29.0.3"
+        },
+        "glueBytes": 140146,
+        "glueSha256": "01d22cf1609d40f8b25bc3f7a86c8408ab2edef58fb87e0e66ec5a0b352849be",
+        "schemaVersion": "wgpu-wasm-provenance/1",
+        "sourceContentKey": "sha256-df32567927a4ad6312a9d1c32c7efb99a16d3b7af3f9e63d0cd6f86caa7aceb8",
+        "toolchain": {
+          "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+          "wasmBindgen": "unavailable",
+          "wasmPack": "wasm-pack 0.14.0"
+        }
+      }
+    }
+  },
+  "artifactDigest": "sha256:00d6c0b6a8b40bc47fc9a04475a129689d95466d6337f2a5e496b781f01d3f25",
+  "sourceClosure": [
+    "packages/shader/src/unlit.wgsl",
+    "forgeax_material::parameters",
+    "forgeax_scene_temporal",
+    "forgeax_view::common"
+  ]
+}

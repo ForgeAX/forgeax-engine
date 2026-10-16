@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "reel-game-blob",
+  "revision": {
+    "digest": "level-1-reel-v1",
+    "observedAt": 1,
+    "rootId": "level-1-reel"
+  },
+  "source": "level-1.reel.json",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "8215d398-8120-4ffa-baf2-4496216cd4f6",
+      "sourceIndex": 0,
+      "name": "reel-game-level-1",
+      "kind": "reel-game-blob"
+    }
+  ]
+}

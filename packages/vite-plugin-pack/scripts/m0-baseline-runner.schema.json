@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forgeax://vite-plugin-pack/m0-baseline-runner.schema.json",
+  "title": "M0 identity-bound baseline",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "featureId",
+    "generatedAt",
+    "identity",
+    "structural",
+    "behavior",
+    "coldWarmDdcP95",
+    "closeDrain",
+    "staleDistClassification",
+    "sourceFailureClassification",
+    "distIdentity",
+    "protocolAnomalies",
+    "provenance",
+    "baselineConflicts",
+    "deletionLedger",
+    "sourceFailureAndStaleOutputAreDistinct"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "featureId": { "type": "string", "minLength": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "identity": { "type": "object" },
+    "structural": { "type": "object" },
+    "behavior": { "type": "object" },
+    "coldWarmDdcP95": { "type": "object" },
+    "closeDrain": { "type": "object" },
+    "staleDistClassification": { "type": "object" },
+    "sourceFailureClassification": { "type": "object" },
+    "distIdentity": { "type": "object" },
+    "protocolAnomalies": { "type": "object" },
+    "provenance": { "type": "object" },
+    "baselineConflicts": { "type": "object" },
+    "deletionLedger": {
+      "type": "object",
+      "properties": {
+        "revisionMode": {
+          "enum": ["commit-range", "checked-out-worktree"]
+        }
+      }
+    },
+    "sourceFailureAndStaleOutputAreDistinct": { "const": true },
+    "cohesion": {
+      "$ref": "#/$defs/m0CohesionReport"
+    }
+  },
+  "$defs": {
+    "m0CohesionReport": {
+      "type": "object",
+      "required": ["schemaVersion", "milestone", "before", "after", "comparison", "gates"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "milestone": { "const": "M0" },
+        "before": { "type": "object" },
+        "after": { "type": "object" },
+        "comparison": { "type": "object" },
+        "gates": { "type": "array" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

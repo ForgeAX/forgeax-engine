@@ -1,0 +1,104 @@
+{
+  "name": "@forgeax/hello-transform-hierarchy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "ChildOf hierarchy parent-moves-child-follows visual exemplar (feat-20260531-render-consume-global-transform-hierarchy / M3 / w12).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:gauntlet": "node scripts/smoke-gauntlet.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-transform-hierarchy smoke",
+    "gauntletScenario": {
+      "id": "hello-transform-hierarchy-diagnostic-repair",
+      "script": "smoke:gauntlet",
+      "domains": [
+        "World and host contract",
+        "Rendering and shader construction"
+      ],
+      "packages": [
+        "@forgeax/engine-ecs",
+        "@forgeax/engine-scene",
+        "@forgeax/engine-render",
+        "@forgeax/engine-runtime"
+      ],
+      "risks": [
+        "baseline",
+        "fault",
+        "behavioral",
+        "recovery",
+        "cleanup"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "fault",
+        "recovery",
+        "cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "ecs-world",
+          "dawn-node",
+          "browser-app"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m23] Dawn structured hierarchy recovery: PASS",
+          "[m23] Browser structured hierarchy recovery: PASS"
+        ]
+      }
+    },
+    "_comment": "smokeInvocation = self-contained SSOT. hello-transform-hierarchy exercises GlobalTransform.world + registerPropagateTransforms so a ChildOf child follows its parent's runtime world-space displacement; the dual-frame pixel-diff smoke moves the parent between two readbacks and asserts the child moved (diffCount > threshold) while a static reference frame stays stable.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression covered by hello-cube / hello-room / hello-app gates that run the default zero-overhead path; the hierarchy consume path adds no per-frame cost beyond the already-tracked propagateTransforms system"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "hierarchy consume exemplar; vitest bench focus stays on @forgeax/engine-math + @forgeax/engine-runtime, and the dual-frame smoke covers parent-moves-child-follows correctness"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-transform-hierarchy smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M3 hello-transform-hierarchy visual-evidence exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

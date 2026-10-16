@@ -1,0 +1,75 @@
+{
+  "name": "@forgeax/hello-ssr",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Screen-space reflection with producer-owned probe, Skylight, and neutral fallback evidence.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "node scripts/smoke-composite.mjs",
+    "smoke:cube": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs && node scripts/smoke-probe-updates-browser.mjs && node scripts/smoke-probe-atmosphere-browser.mjs",
+    "smoke:falsify": "node scripts/smoke-falsify.mjs",
+    "smoke:performance": "node scripts/smoke-performance.mjs",
+    "smoke:performance:sequence": "node scripts/smoke-performance-sequence.mjs",
+    "smoke:performance:cpu-overhead": "node scripts/smoke-performance-cpu-overhead.mjs",
+    "smoke:paired": "node scripts/smoke-paired.mjs",
+    "smoke:probe-updates": "node scripts/smoke-probe-updates-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-ssr smoke",
+    "rhiDebug": {
+      "riskFamilies": [
+        "materials-textures",
+        "render-targets",
+        "temporal"
+      ]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "The carrier bundle is downstream of shared engine packages."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The carrier uses a fixed-frame correctness smoke; GPU timing is reported by the app-owned performance smoke."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "SSR GPU timing is an app-owned smoke report, not a generic Vitest bench metric."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-ssr smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This is a production-path SSR carrier, not a spike."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.56.1",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "name": "@forgeax/engine-rhi-debug-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "AI-readable read-only v7 RHI tape viewer with linked workIndex panels, viewer-private shader preview, and no-WebGPU structural fallback",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-browser.mjs",
+    "smoke:browser:no-webgpu": "node scripts/smoke-browser-no-webgpu.mjs"
+  },
+  "forgeax": {
+    "rhiDebug": {
+      "riskFamilies": [
+        "programmable-pipelines",
+        "raster-state"
+      ]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "viewer app bundle shape is tracked by the application build gate rather than a standalone performance target"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps anchors are hello-triangle / hello-cube; viewer is a tape inspection tool, not a render perf target"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "bench focus stays on @forgeax/engine-math and engine internals; viewer is a UI app"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/engine-rhi-debug-viewer build"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "spike artefacts live under .forgeax-harness/forgeax-loop/; viewer is the consumer app, not a spike"
+      }
+    }
+  },
+  "dependencies": {
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/state": "^6.7.0",
+    "@codemirror/view": "^6.43.4",
+    "@forgeax/engine-naga": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/view-components": "workspace:*",
+    "@lezer/highlight": "^1.2.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "dockview-react": "^7.0.2",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^20.14.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.3",
+    "jsdom": "^26.0.0",
+    "@webgpu/types": "^0.1.74",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.7.0",
+    "vite": "8.0.16"
+  }
+}

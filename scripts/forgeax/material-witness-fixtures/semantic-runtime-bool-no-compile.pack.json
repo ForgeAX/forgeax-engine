@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019f0000-0000-7000-8000-000000000201",
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "cooked": {
+          "artifact": {
+            "bytes": [
+              115, 116, 114, 117, 99, 116, 32, 79, 117, 116, 112, 117, 116, 32, 123, 10, 32, 32, 32,
+              32, 64, 98, 117, 105, 108, 116, 105, 110, 40, 112, 111, 115, 105, 116, 105, 111, 110,
+              41, 32, 112, 111, 115, 105, 116, 105, 111, 110, 58, 32, 118, 101, 99, 52, 60, 102, 51,
+              50, 62, 44, 10, 32, 32, 32, 32, 64, 108, 111, 99, 97, 116, 105, 111, 110, 40, 48, 41,
+              32, 99, 111, 108, 111, 114, 58, 32, 118, 101, 99, 52, 60, 102, 51, 50, 62, 44, 10,
+              125, 10, 10, 102, 110, 32, 108, 105, 103, 104, 116, 105, 110, 103, 95, 99, 111, 108,
+              111, 114, 88, 95, 110, 97, 103, 97, 95, 111, 105, 108, 95, 109, 111, 100, 95, 88, 79,
+              78, 83, 87, 50, 89, 76, 79, 79, 82, 85, 87, 71, 79, 82, 50, 78, 82, 85, 87, 79, 50,
+              68, 85, 78, 70, 88, 71, 79, 88, 51, 88, 77, 70, 90, 71, 50, 88, 40, 41, 32, 45, 62,
+              32, 118, 101, 99, 52, 60, 102, 51, 50, 62, 32, 123, 10, 32, 32, 32, 32, 114, 101, 116,
+              117, 114, 110, 32, 118, 101, 99, 52, 60, 102, 51, 50, 62, 40, 48, 46, 50, 53, 102, 44,
+              32, 48, 46, 49, 102, 44, 32, 48, 46, 50, 102, 44, 32, 49, 102, 41, 59, 10, 125, 10,
+              10, 64, 118, 101, 114, 116, 101, 120, 32, 10, 102, 110, 32, 118, 115, 95, 109, 97,
+              105, 110, 40, 64, 98, 117, 105, 108, 116, 105, 110, 40, 118, 101, 114, 116, 101, 120,
+              95, 105, 110, 100, 101, 120, 41, 32, 105, 110, 100, 101, 120, 58, 32, 117, 51, 50, 41,
+              32, 45, 62, 32, 79, 117, 116, 112, 117, 116, 32, 123, 10, 32, 32, 32, 32, 118, 97,
+              114, 32, 111, 117, 116, 112, 117, 116, 58, 32, 79, 117, 116, 112, 117, 116, 59, 10,
+              10, 32, 32, 32, 32, 108, 101, 116, 32, 112, 111, 115, 105, 116, 105, 111, 110, 115,
+              32, 61, 32, 97, 114, 114, 97, 121, 60, 118, 101, 99, 50, 60, 102, 51, 50, 62, 44, 32,
+              51, 62, 40, 118, 101, 99, 50, 60, 102, 51, 50, 62, 40, 45, 49, 102, 44, 32, 45, 49,
+              102, 41, 44, 32, 118, 101, 99, 50, 60, 102, 51, 50, 62, 40, 51, 102, 44, 32, 45, 49,
+              102, 41, 44, 32, 118, 101, 99, 50, 60, 102, 51, 50, 62, 40, 45, 49, 102, 44, 32, 51,
+              102, 41, 41, 59, 10, 32, 32, 32, 32, 111, 117, 116, 112, 117, 116, 46, 112, 111, 115,
+              105, 116, 105, 111, 110, 32, 61, 32, 118, 101, 99, 52, 60, 102, 51, 50, 62, 40, 112,
+              111, 115, 105, 116, 105, 111, 110, 115, 91, 105, 110, 100, 101, 120, 93, 44, 32, 48,
+              102, 44, 32, 49, 102, 41, 59, 10, 32, 32, 32, 32, 108, 101, 116, 32, 95, 101, 49, 56,
+              32, 61, 32, 108, 105, 103, 104, 116, 105, 110, 103, 95, 99, 111, 108, 111, 114, 88,
+              95, 110, 97, 103, 97, 95, 111, 105, 108, 95, 109, 111, 100, 95, 88, 79, 78, 83, 87,
+              50, 89, 76, 79, 79, 82, 85, 87, 71, 79, 82, 50, 78, 82, 85, 87, 79, 50, 68, 85, 78,
+              70, 88, 71, 79, 88, 51, 88, 77, 70, 90, 71, 50, 88, 40, 41, 59, 10, 32, 32, 32, 32,
+              111, 117, 116, 112, 117, 116, 46, 99, 111, 108, 111, 114, 32, 61, 32, 95, 101, 49, 56,
+              59, 10, 32, 32, 32, 32, 108, 101, 116, 32, 95, 101, 49, 57, 32, 61, 32, 111, 117, 116,
+              112, 117, 116, 59, 10, 32, 32, 32, 32, 114, 101, 116, 117, 114, 110, 32, 95, 101, 49,
+              57, 59, 10, 125, 10, 10, 64, 102, 114, 97, 103, 109, 101, 110, 116, 32, 10, 102, 110,
+              32, 102, 115, 95, 109, 97, 105, 110, 40, 105, 110, 112, 117, 116, 58, 32, 79, 117,
+              116, 112, 117, 116, 41, 32, 45, 62, 32, 64, 108, 111, 99, 97, 116, 105, 111, 110, 40,
+              48, 41, 32, 118, 101, 99, 52, 60, 102, 51, 50, 62, 32, 123, 10, 32, 32, 32, 32, 114,
+              101, 116, 117, 114, 110, 32, 105, 110, 112, 117, 116, 46, 99, 111, 108, 111, 114, 59,
+              10, 125, 10
+            ],
+            "digest": "sha256:33180b5a10c7de38819afd2ce6b5ae77b6e2f8b4104c78d14a7955a21b3381e1",
+            "mediaType": "text/wgsl",
+            "path": "materials/019f0000-0000-7000-8000-000000000201/shader.wgsl"
+          },
+          "artifactDigest": "sha256:33180b5a10c7de38819afd2ce6b5ae77b6e2f8b4104c78d14a7955a21b3381e1",
+          "authored": {
+            "kind": "material",
+            "parameters": [
+              {
+                "name": "enabled",
+                "type": "bool"
+              }
+            ],
+            "passes": [
+              {
+                "name": "Forward",
+                "program": {
+                  "module": "semantic::root",
+                  "moduleSlots": {
+                    "lighting": "semantic::lighting_warm"
+                  }
+                }
+              }
+            ],
+            "values": {
+              "enabled": true
+            }
+          },
+          "guid": "019f0000-0000-7000-8000-000000000201",
+          "materialGuid": "019f0000-0000-7000-8000-000000000201",
+          "parameterContract": {
+            "parameters": [
+              {
+                "name": "enabled",
+                "type": "bool"
+              }
+            ],
+            "values": {
+              "enabled": true
+            }
+          },
+          "publicationGeneration": 1,
+          "receipt": {
+            "compilerVersion": "forgeax-material-cooker/1",
+            "derivedInterface": {
+              "layoutIdentity": "sha256-5aa426f256788bd82c58f3aa2c60eaa872ed947794a8ad758ef5a1c5e23b4010"
+            },
+            "identity": {
+              "artifactDigest": "sha256:33180b5a10c7de38819afd2ce6b5ae77b6e2f8b4104c78d14a7955a21b3381e1",
+              "compilerFingerprint": "sha256-315cb7d98e978da90ccf5bc8b410fa66d1cd22f0868a4797fcad2a5e3e77e6bd",
+              "cookGeneration": 1,
+              "cookIdentity": "sha256:69306422864c87183ea44ad2b1cecd3d460ed597da11c1161d4dd3776f38f41e",
+              "dependencyGeneration": 1,
+              "layoutIdentity": "sha256-5aa426f256788bd82c58f3aa2c60eaa872ed947794a8ad758ef5a1c5e23b4010",
+              "materialContractDigest": "sha256:7ed45aea209e2932f49fd7137eff07d6c73644625372474f8376a0f4432684d9",
+              "materialPublicationIdentity": "sha256:004e170af0ada49dfb9ac0a36b9c962c1c84cbdf756f237e388fa0a5851e81dc",
+              "pipelineIdentity": "sha256:da003a6ad9a752a5afe6bf4518ec2cf2c495026cf8c3a5114f4223047338e2d4",
+              "programIdentity": "sha256:58609de025005200cdbf97f7aed461308110d6e90e73c4caf3f9b1bb0c198a28",
+              "sourceClosureDigest": "sha256:90fbaa4fbdc6d3c2a3d32bb1d72ead53b6d5e44e680a1984e916dc00919890a0",
+              "sourceRevision": "sha256:90fbaa4fbdc6d3c2a3d32bb1d72ead53b6d5e44e680a1984e916dc00919890a0",
+              "valueGeneration": 1,
+              "wasm": {
+                "artifactBytes": 6501567,
+                "artifactSha256": "37f65f2ddcc6b34f13e854aec465ad49cf3b6c7b64923a159cd67738dad8b287",
+                "compilerFingerprint": "sha256-315cb7d98e978da90ccf5bc8b410fa66d1cd22f0868a4797fcad2a5e3e77e6bd",
+                "dependencies": {
+                  "naga": "29.0.3",
+                  "nagaOil": "0.22.0",
+                  "wasmBindgen": "0.2.121",
+                  "wgpu": "29.0.3"
+                },
+                "glueBytes": 140441,
+                "glueSha256": "a4554a3ce15dc611742eef723f51386dbad29e39e9d8524c999544d84281b33b",
+                "schemaVersion": "wgpu-wasm-provenance/1",
+                "sourceContentKey": "sha256-31f6100e755c0e2395924e73331fd1518675c7312110da790cc7267461c84fcc",
+                "toolchain": {
+                  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+                  "wasmBindgen": "unavailable",
+                  "wasmPack": "wasm-pack 0.14.0"
+                }
+              }
+            },
+            "profile": "webgpu/v1",
+            "schemaVersion": "material-cook/3",
+            "sourceClosure": [
+              "/var/folders/cr/gl6fbh8n3dvdyktlp93mfyj80000gn/T/forgeax-material-semantic-VpTDaa/warm/root.wgsl",
+              "forgeax_material::parameters",
+              "semantic::lighting_warm"
+            ]
+          },
+          "refs": {
+            "modules": ["semantic::root"],
+            "parent": [],
+            "samplers": [],
+            "textures": []
+          },
+          "resolved": {
+            "parameters": [
+              {
+                "name": "enabled",
+                "type": "bool"
+              }
+            ],
+            "passes": [
+              {
+                "name": "Forward",
+                "program": {
+                  "module": "semantic::root",
+                  "moduleSlots": {
+                    "lighting": "semantic::lighting_warm"
+                  }
+                }
+              }
+            ],
+            "values": {
+              "enabled": true
+            }
+          },
+          "schemaVersion": "material-cook/3",
+          "sourceClosure": [
+            "/var/folders/cr/gl6fbh8n3dvdyktlp93mfyj80000gn/T/forgeax-material-semantic-VpTDaa/warm/root.wgsl",
+            "forgeax_material::parameters",
+            "semantic::lighting_warm"
+          ],
+          "specializationKey": "1b8d078f6c6f685ec5c805dbb88f9d64917b08c006b747cb5118d63aa265cb9d"
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

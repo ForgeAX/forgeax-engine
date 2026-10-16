@@ -1,0 +1,74 @@
+{
+  "name": "@forgeax/mesh-io-parity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Real asset-format Catalog, browser rendering and RHI replay acceptance.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "verify": "node --test scripts/__tests__/srgb-oracle.test.mjs && node scripts/verify.mjs && node scripts/analyze.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "analyze": "node scripts/analyze.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/mesh-io-parity build",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Evidence producer UI is not a shipped engine bundle."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Visual evidence is correctness-focused; no performance claim is made."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Machine-dependent import/export measurements are opt-in diagnostics; correctness uses the browser acceptance gate."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/mesh-io-parity build"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This is a feature-owned evidence producer, not a spike."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-mesh-io": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "draco3dgltf": "1.5.7",
+    "@types/draco3d": "1.4.10",
+    "playwright": "^1.56.1",
+    "three": "0.184.0",
+    "upng-js": "^2.1.0",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-import": "workspace:*"
+  }
+}

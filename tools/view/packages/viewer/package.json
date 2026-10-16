@@ -1,0 +1,80 @@
+{
+  "name": "@forgeax/view-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./catalog": "./src/catalog.ts",
+    "./catalog/shared": "./src/catalog-shared.ts",
+    "./catalog/backend": "./src/backend-catalog.ts",
+    "./catalog/frontend": "./src/frontend-catalog.ts",
+    "./cli": "./src/cli/index.ts",
+    "./host": "./src/host/index.ts",
+    "./host/frontend": "./src/host/frontend.ts",
+    "./frontend-root": "./src/frontend-root.ts",
+    "./host/page-registry": "./src/host/page-registry.ts",
+    "./host/slot-registry": "./src/host/slot-registry.ts",
+    "./panels": "./src/panels-entry.tsx",
+    "./config": "./src/config.ts",
+    "./application": "./src/application.tsx"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "node ../../scripts/dev-viewer.mjs",
+    "dev:ui": "node ../../scripts/dev-viewer.mjs --fixture",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/view-workspace-core": "workspace:*",
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/view-components": "workspace:*",
+    "@forgeax/view-plugin-content-browser": "workspace:*",
+    "@forgeax/view-plugin-display": "workspace:*",
+    "@forgeax/view-plugin-inspector": "workspace:*",
+    "@forgeax/view-plugin-material": "workspace:*",
+    "@forgeax/view-plugin-mesh": "workspace:*",
+    "@forgeax/view-plugin-html": "workspace:*",
+    "@forgeax/view-plugin-texture": "workspace:*",
+    "@forgeax/view-plugin-asset": "workspace:*",
+    "@forgeax/view-plugin-plugins": "workspace:*",
+    "@forgeax/view-plugin-scene": "workspace:*",
+    "@forgeax/view-plugin-scene-tree": "workspace:*",
+    "@forgeax/view-plugin-viewport": "workspace:*",
+    "dockview": "^6.6.1",
+    "lucide-react": "^0.460.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "8.0.10"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  }
+}

@@ -1,0 +1,369 @@
+{
+  "schemaVersion": "3.0",
+  "types": {
+    "路灯": {
+      "name": "路灯",
+      "category": "decoration",
+      "graphic": 0,
+      "graphicSize": {
+        "cols": 2,
+        "rows": 8
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "水稻": {
+      "name": "水稻",
+      "category": "decoration",
+      "graphic": 1,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "小麦": {
+      "name": "小麦",
+      "category": "decoration",
+      "graphic": 2,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "树__v5": {
+      "name": "树",
+      "category": "decoration",
+      "graphic": 7,
+      "graphicSize": {
+        "cols": 5,
+        "rows": 5
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "树__v1": {
+      "name": "树",
+      "category": "decoration",
+      "graphic": 3,
+      "graphicSize": {
+        "cols": 2,
+        "rows": 3
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "树__v2": {
+      "name": "树",
+      "category": "decoration",
+      "graphic": 4,
+      "graphicSize": {
+        "cols": 3,
+        "rows": 5
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "树__v4": {
+      "name": "树",
+      "category": "decoration",
+      "graphic": 6,
+      "graphicSize": {
+        "cols": 4,
+        "rows": 5
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "树__v3": {
+      "name": "树",
+      "category": "decoration",
+      "graphic": 5,
+      "graphicSize": {
+        "cols": 5,
+        "rows": 6
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "树桩": {
+      "name": "树桩",
+      "category": "decoration",
+      "graphic": 8,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "石头": {
+      "name": "石头",
+      "category": "decoration",
+      "graphic": 9,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "绿草__v1": {
+      "name": "绿草",
+      "category": "decoration",
+      "graphic": 10,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "绿草__v2": {
+      "name": "绿草",
+      "category": "decoration",
+      "graphic": 11,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 2
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "绿草__v3": {
+      "name": "绿草",
+      "category": "decoration",
+      "graphic": 12,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    },
+    "玉米": {
+      "name": "玉米",
+      "category": "decoration",
+      "graphic": 13,
+      "graphicSize": {
+        "cols": 1,
+        "rows": 1
+      },
+      "graphicOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "objectHeight": 0,
+      "collisionMask": [],
+      "passability": {
+        "blocksMovement": false,
+        "blocksLineOfSight": false,
+        "provideCover": null
+      },
+      "interaction": {
+        "type": "none",
+        "range": 1
+      },
+      "interactionLegacy": "none",
+      "variants": {}
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# Unified patches have literal context prefixes; the imported Cargo template retains upstream whitespace.
+patches/*.patch -whitespace
+scripts/bindings.Cargo.toml -whitespace

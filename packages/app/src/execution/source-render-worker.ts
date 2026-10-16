@@ -1,0 +1,746 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { FixedTime, type World } from '@forgeax/engine-ecs';
+import {
+  createDynamicGeometryLifecycle,
+  createRenderPublisher,
+  type GpuPassTimingObservation,
+  type RenderFeature,
+  type RenderPublicationTargetOwner,
+  type RenderSceneBounds,
+  renderPublicationAssetTransfers,
+  renderPublicationTransfers,
+} from '@forgeax/engine-render';
+import { createDynamicGeometrySourceHost } from '@forgeax/engine-render/internal';
+import {
+  type CaptureFrameOptions,
+  createRhiDebugError,
+  tapeArtifact,
+} from '@forgeax/engine-rhi-debug';
+import { err, ok } from '@forgeax/engine-types';
+import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
+import type { EngineToHostMessage, ExecutionFrameMessage, ExecutionInitMessage } from './protocol';
+import {
+  MESH_RESIDENCY_REQUEST_LIMIT,
+  type RenderWorkerInput,
+  type RenderWorkerOutput,
+} from './render-worker-protocol';
+import { rendererInspectionFailure } from './renderer-inspection';
+import { SourceMeshResidency } from './source-mesh-residency';
+import type { ExecutionRendererInspectionResult } from './types';
+import { workerError } from './worker-error';
+import { shutdownWorker } from './worker-shutdown';
+
+type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
+
+/** Two sealed publications; Host admission bounds simulation to the same capacity. */
+export class SourceRenderWorker {
+  private worker: Worker | undefined;
+  private publisher: ReturnType<typeof createRenderPublisher> | undefined;
+  private deadline: ReturnType<typeof setTimeout> | undefined;
+  private epoch = 1;
+  private initializationSent = false;
+  private preloadFailure:
+    | { readonly kind: 'constructor'; readonly cause: unknown }
+    | { readonly kind: 'module'; readonly cause: string }
+    | undefined;
+  private readonly source = crypto.randomUUID();
+  private disposed = false;
+  private inspectionReady = false;
+  private readonly inspectionRequests = new Map<
+    number,
+    { finish(result: ExecutionRendererInspectionResult): void }
+  >();
+  private disposal: Promise<void> | undefined;
+  private readyWait: Promise<void> = Promise.resolve();
+  private resolveReady: (() => void) | undefined;
+  private replacementsWithoutFrame = 0;
+  private nextRequestId = 0;
+  private latestCompletedTerrainFrame: number | undefined;
+  private readonly boundsRequests = new Map<
+    number,
+    {
+      finish(bounds: RenderSceneBounds | undefined): void;
+      fail(cause: Error): void;
+    }
+  >();
+  private readonly terrainRequests = new Map<
+    number,
+    {
+      finish(
+        result: import('@forgeax/engine-types').Result<
+          number | undefined,
+          import('@forgeax/engine-types').TerrainError
+        >,
+      ): void;
+    }
+  >();
+  private captureRequest: { id: number; finish(result: CaptureResult): void } | undefined;
+  private latestGpuPassTiming:
+    | { readonly frameId: number; readonly observation: GpuPassTimingObservation }
+    | undefined;
+  private deviceGeneration: number | undefined;
+  private readonly publishedFrames = new Map<number, { frameId: number; fixedStep: number }>();
+  private readonly meshResidency: SourceMeshResidency;
+  readonly dynamicGeometry: ReturnType<typeof createDynamicGeometrySourceHost>;
+  constructor(
+    private readonly world: World,
+    private readonly assets: AssetRegistry,
+    private readonly init: ExecutionInitMessage,
+    private readonly post: (message: EngineToHostMessage) => void,
+    private readonly features: readonly RenderFeature<unknown>[] = [],
+    private readonly targets?: RenderPublicationTargetOwner,
+  ) {
+    this.meshResidency = new SourceMeshResidency(world, () => {
+      const worker = this.worker,
+        epoch = this.epoch,
+        generation = this.deviceGeneration;
+      if (
+        this.disposed ||
+        !this.inspectionReady ||
+        worker === undefined ||
+        generation === undefined
+      )
+        return undefined;
+      return {
+        source: this.source,
+        epoch,
+        generation,
+        post: (message, transfers) => {
+          if (this.worker !== worker || this.epoch !== epoch)
+            throw new Error('Render mesh session ended');
+          if (transfers === undefined) worker.postMessage(message);
+          else worker.postMessage(message, [...transfers]);
+        },
+      };
+    });
+    this.dynamicGeometry = createDynamicGeometrySourceHost({
+      lifecycle: createDynamicGeometryLifecycle(
+        MESH_RESIDENCY_REQUEST_LIMIT,
+        init.dynamicGeometryMeshBudgetBytes,
+      ),
+      attachedWorlds: new Set([world]),
+      currentGeneration: () => this.deviceGeneration,
+      residency: this.meshResidency,
+      isConsumedByRenderFrame: (candidate) =>
+        this.meshResidency.recordStageLane(candidate) !== undefined,
+      recordStageLane: (candidate) => this.meshResidency.recordStageLane(candidate),
+      publishedFixedStep: (world) => this.meshResidency.publishedFixedStep(world),
+    });
+  }
+
+  /** Load only this worker's module; initialization remains owned by start(). */
+  preloadModule(): void {
+    if (this.disposed || this.worker !== undefined || this.preloadFailure !== undefined) return;
+    try {
+      const worker = new Worker(new URL('./render-worker-runtime.mjs', import.meta.url), {
+        type: 'module',
+        name: 'forgeax-render',
+      });
+      this.worker = worker;
+      worker.onerror = (event) => {
+        // Staged errors remain owned here, including queued events after disposal.
+        event.preventDefault();
+        if (this.worker === worker && this.preloadFailure === undefined)
+          this.preloadFailure = { kind: 'module', cause: event.message };
+      };
+    } catch (cause) {
+      this.preloadFailure = { kind: 'constructor', cause };
+    }
+  }
+  async start(canvas: OffscreenCanvas): Promise<void> {
+    if (this.disposed) return;
+    const epoch = this.epoch;
+    const preloadFailure = this.preloadFailure;
+    if (preloadFailure?.kind === 'constructor') throw preloadFailure.cause;
+    const worker =
+      this.worker ??
+      new Worker(new URL('./render-worker-runtime.mjs', import.meta.url), {
+        type: 'module',
+        name: 'forgeax-render',
+      });
+    this.worker = worker;
+    await new Promise<void>((resolve, reject) => {
+      let ready = false;
+      const failure = (
+        cause: unknown,
+        failure?: Extract<RenderWorkerOutput, { kind: 'failed' }>,
+        recoverable = failure?.recoverable ?? true,
+      ): void => {
+        const error = failure?.error ?? workerError(cause);
+        const detail = {
+          ...error,
+          stage: failure?.stage ?? 'transport',
+          publication: failure?.publication,
+        };
+        if (this.worker !== worker) return;
+        const meshReleaseUnconfirmed = this.meshResidency.hasUnreleasedMeshes;
+        this.clear();
+        if (!ready) {
+          reject(Object.assign(new Error(typeof cause === 'string' ? cause : error.code), error));
+          return;
+        }
+        // A lost transport cannot attest that remote allocations were released.
+        // Keep the paired World faulted and use the existing fatal/rebuild path.
+        if (!recoverable || meshReleaseUnconfirmed || ++this.replacementsWithoutFrame > 1) {
+          this.post({
+            kind: 'fault',
+            source: 'runtime',
+            worldIdentity: this.world.identity,
+            ...error,
+            detail: {
+              cause: error.detail,
+              stage: detail.stage,
+              publication: detail.publication,
+              ...(meshReleaseUnconfirmed ? { meshReleaseUnconfirmed: true } : {}),
+              ...(failure?.renderer === undefined ? {} : { renderer: failure.renderer }),
+            },
+            partialWrite: false,
+            retryable: false,
+          });
+          return;
+        }
+        this.readyWait = new Promise((resolve) => {
+          this.resolveReady = resolve;
+        });
+        this.epoch++;
+        this.post({ kind: 'render-lost', epoch: this.epoch, detail: JSON.stringify(detail) });
+      };
+      if (this.init.startupTimeoutMs !== null) {
+        this.deadline = setTimeout(
+          () => failure('Render Worker initialization timed out'),
+          this.init.startupTimeoutMs,
+        );
+      }
+      worker.onerror = (event) => failure(event.message);
+      worker.onmessage = (event: MessageEvent<RenderWorkerOutput>) => {
+        if (this.worker !== worker || this.epoch !== epoch) return;
+        const message = event.data;
+        if (message.kind === 'mesh-ready' || message.kind === 'mesh-released') {
+          this.meshResidency.receive(message);
+          return;
+        }
+        if (this.disposed) return;
+        if (message.kind === 'inspect-result') {
+          if (
+            message.identity.source === this.source &&
+            message.identity.epoch === epoch &&
+            message.worldIdentity === this.world.identity
+          )
+            this.inspectionRequests.get(message.requestId)?.finish(message.result);
+          return;
+        }
+        if (message.kind === 'terrain-height-result') {
+          this.terrainRequests
+            .get(message.requestId)
+            ?.finish(message.result.ok ? ok(message.result.value) : err(message.result.error));
+          return;
+        }
+        if (message.kind === 'bounds-result') {
+          this.boundsRequests.get(message.requestId)?.finish(message.bounds);
+          return;
+        }
+        if (message.kind === 'capture-result') {
+          if (this.captureRequest?.id === message.requestId)
+            this.captureRequest.finish(
+              message.result.ok
+                ? ok(toArtifact(tapeArtifact([message.result.value.bytes])))
+                : err(message.result.error),
+            );
+          return;
+        }
+        if (message.kind === 'renderer-error') {
+          if (
+            this.disposed ||
+            message.identity.source !== this.source ||
+            message.identity.epoch !== epoch
+          )
+            return;
+          if (!ready) {
+            failure(message.error, undefined, false);
+            return;
+          }
+          this.post({
+            kind: 'render-error',
+            identity: message.identity,
+            worldIdentity: this.world.identity,
+            error: message.error,
+            ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
+          });
+          return;
+        }
+        if (message.kind === 'failed') {
+          failure(message.error, message);
+          return;
+        }
+        if (message.kind === 'ready') {
+          if (ready) return;
+          clearTimeout(this.deadline);
+          this.deviceGeneration = message.deviceGeneration;
+          this.publisher = createRenderPublisher(
+            this.world,
+            this.assets,
+            {
+              source: this.source,
+              epoch,
+            },
+            message.capabilities,
+            this.features,
+            this.targets,
+            message.limits,
+          );
+          ready = true;
+          this.inspectionReady = true;
+          this.resolveReady?.();
+          this.resolveReady = undefined;
+          const maxStorageBuffersPerShaderStage = message.limits?.maxStorageBuffersPerShaderStage;
+          this.post({
+            kind: 'render-ready',
+            epoch,
+            capabilities: {
+              backendKind: message.capabilities.backendKind,
+              compute: message.capabilities.compute,
+              storageBuffer: message.capabilities.storageBuffer,
+            },
+            ...(maxStorageBuffersPerShaderStage === undefined
+              ? {}
+              : { limits: { maxStorageBuffersPerShaderStage } }),
+          });
+          resolve();
+        } else if (message.kind === 'submitted') {
+          try {
+            const accepted = this.publisher?.acknowledgeFeatures(
+              message.revision,
+              message.features,
+            );
+            if (accepted?.ok !== true) {
+              failure(
+                accepted?.error ?? new Error('Invalid feature acknowledgment'),
+                undefined,
+                false,
+              );
+              return;
+            }
+          } catch (cause) {
+            failure(cause, undefined, false);
+            return;
+          }
+          this.post({ kind: 'render-submitted', epoch, frame: message.frame });
+        } else if (message.kind === 'completed') {
+          clearTimeout(this.deadline);
+          const submitted = this.publishedFrames.get(message.revision);
+          const recycled = this.publisher?.recycle(message.revision, message.buffers);
+          if (recycled?.ok !== true) {
+            failure(
+              recycled?.error ?? new Error('Invalid Render Worker buffer return'),
+              undefined,
+              false,
+            );
+            return;
+          }
+          this.publishedFrames.delete(message.revision);
+          const proof = message.meshConsumption;
+          if (proof !== undefined) {
+            if (
+              submitted === undefined ||
+              submitted.frameId !== message.frame.frameId ||
+              submitted.fixedStep !== proof.sourceFixedStep ||
+              proof.deviceGeneration !== this.deviceGeneration ||
+              proof.deviceGeneration !== message.frame.deviceGeneration ||
+              !Number.isSafeInteger(proof.frameId)
+            ) {
+              failure(
+                new Error('Mesh completion differs from its submitted publication'),
+                undefined,
+                false,
+              );
+              return;
+            }
+            this.meshResidency.complete(proof);
+            if (message.frame.presentation === 'ready')
+              this.dynamicGeometry.publishDynamicGeometry(
+                Object.freeze({
+                  frameId: proof.frameId,
+                  deviceGeneration: proof.deviceGeneration,
+                }),
+                [this.world],
+                proof.sourceFixedStep,
+              );
+          }
+          this.replacementsWithoutFrame = 0;
+          if (
+            message.frame.presentation === 'ready' &&
+            (this.latestCompletedTerrainFrame === undefined ||
+              message.frame.frameId > this.latestCompletedTerrainFrame)
+          )
+            this.latestCompletedTerrainFrame = message.frame.frameId;
+          if (message.gpuPassTiming !== undefined) {
+            this.latestGpuPassTiming = {
+              frameId: message.frame.frameId,
+              observation: message.gpuPassTiming,
+            };
+          }
+          this.post({ kind: 'render-complete', epoch, frame: message.frame });
+          if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
+        }
+      };
+      if (preloadFailure?.kind === 'module') {
+        failure(preloadFailure.cause);
+        return;
+      }
+      this.initializationSent = true;
+      worker.postMessage(
+        {
+          kind: 'init',
+          worldIdentity: this.world.identity,
+          ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
+          ...(this.init.diagnostics?.gpuPassTiming === undefined
+            ? {}
+            : { gpuPassTiming: this.init.diagnostics.gpuPassTiming }),
+          ...(this.init.diagnostics?.geometryLane === undefined
+            ? {}
+            : { geometryLane: this.init.diagnostics.geometryLane }),
+          ...(this.init.outputColorSpace === undefined
+            ? {}
+            : { outputColorSpace: this.init.outputColorSpace }),
+          ...(this.init.dynamicGeometryMeshBudgetBytes === undefined
+            ? {}
+            : { dynamicGeometryMeshBudgetBytes: this.init.dynamicGeometryMeshBudgetBytes }),
+          bootstrapUrl: this.init.bootstrapUrl,
+          ...(this.init.bootstrapData === undefined
+            ? {}
+            : { bootstrapData: this.init.bootstrapData }),
+          canvas,
+          identity: { source: this.source, epoch },
+          ...(this.init.shaderManifestUrl === undefined
+            ? {}
+            : { shaderManifestUrl: this.init.shaderManifestUrl }),
+          ...(this.init.build === undefined ? {} : { build: this.init.build }),
+        } satisfies RenderWorkerInput,
+        [canvas],
+      );
+      // The same failure owner handles a GPU queue that never completes.
+      this.armFrameDeadline = () => {
+        this.deadline = setTimeout(() => failure('Render Worker frame timed out'), 30_000);
+      };
+    });
+  }
+  private armFrameDeadline: () => void = () => {};
+  async waitUntilReady(): Promise<boolean> {
+    await this.readyWait;
+    return !this.disposed;
+  }
+  get hasPublicationCapacity(): boolean {
+    return this.publishedFrames.size < 2;
+  }
+  publish(frame: ExecutionFrameMessage, sampleTimeSeconds: number): void {
+    const publisher = this.publisher,
+      worker = this.worker;
+    if (publisher === undefined || worker === undefined)
+      throw new Error('Render Worker is not ready');
+    const geometryFault = this.dynamicGeometry.dynamicGeometryFault(this.world);
+    if (geometryFault !== undefined) throw geometryFault;
+    const wasIdle = !publisher.inspect().inFlight;
+    const candidate = publisher.prepare(sampleTimeSeconds, frame.temporalReset === true).unwrap();
+    const sourceFixedStep = this.world.getResource(FixedTime).tick;
+    this.publishedFrames.set(candidate.packet.revision, {
+      frameId: frame.frameId,
+      fixedStep: sourceFixedStep,
+    });
+    try {
+      worker.postMessage(
+        {
+          kind: 'draw',
+          worldIdentity: this.world.identity,
+          frameId: frame.frameId,
+          width: frame.canvasWidth,
+          height: frame.canvasHeight,
+          publication: candidate.packet,
+          sourceFixedStep,
+        } satisfies RenderWorkerInput,
+        [
+          ...renderPublicationTransfers(candidate.packet),
+          ...renderPublicationAssetTransfers(candidate.packet),
+        ],
+      );
+      candidate.accept();
+      if (wasIdle) this.armFrameDeadline();
+    } catch (cause) {
+      this.publishedFrames.delete(candidate.packet.revision);
+      candidate.discard();
+      throw cause;
+    }
+  }
+  queryLatestSubmittedTerrainHeight(
+    request: import('@forgeax/engine-render').SubmittedTerrainHeightRequest,
+  ) {
+    const frameId = this.latestCompletedTerrainFrame;
+    if (frameId === undefined)
+      return Promise.resolve(
+        err({
+          code: 'terrain-query-unavailable' as const,
+          expected: 'a completed ready picture in the current Render Worker session',
+          hint: 'keep dependent gameplay isolated until the new terrain has rendered',
+          detail: { field: 'FrameReceipt' },
+        }),
+      );
+    return this.querySubmittedTerrainHeight(frameId, request);
+  }
+  querySubmittedTerrainHeight(
+    frameId: number,
+    request: import('@forgeax/engine-render').SubmittedTerrainHeightRequest,
+  ): Promise<
+    import('@forgeax/engine-types').Result<
+      number | undefined,
+      import('@forgeax/engine-types').TerrainError
+    >
+  > {
+    const unavailable = (cause: string) =>
+      err({
+        code: 'terrain-query-unavailable' as const,
+        expected: 'a retained successful frame in the active Render Worker session',
+        hint: 'wait for frame completion and query its exact frame ID',
+        detail: { field: 'Worker', actual: cause },
+      });
+    const worker = this.worker;
+    if (worker === undefined || this.terrainRequests.size >= 32)
+      return Promise.resolve(unavailable('session ended or request budget exhausted'));
+    const requestId = ++this.nextRequestId;
+    return new Promise((resolve) => {
+      const finish = (
+        result: import('@forgeax/engine-types').Result<
+          number | undefined,
+          import('@forgeax/engine-types').TerrainError
+        >,
+      ) => {
+        clearTimeout(deadline);
+        this.terrainRequests.delete(requestId);
+        resolve(result);
+      };
+      const deadline = setTimeout(() => finish(unavailable('query deadline exceeded')), 30_000);
+      this.terrainRequests.set(requestId, { finish });
+      try {
+        worker.postMessage({
+          kind: 'terrain-height',
+          requestId,
+          frameId,
+          request,
+        } satisfies RenderWorkerInput);
+      } catch (cause) {
+        finish(unavailable(String(cause)));
+      }
+    });
+  }
+  bounds(entity: number): Promise<RenderSceneBounds | undefined> {
+    const worker = this.worker;
+    if (worker === undefined) return Promise.reject(new Error('Render Worker session ended'));
+    const requestId = ++this.nextRequestId;
+    return new Promise((resolve, reject) => {
+      const remove = () => {
+        clearTimeout(deadline);
+        this.boundsRequests.delete(requestId);
+      };
+      const fail = (cause: Error) => {
+        remove();
+        reject(cause);
+      };
+      const deadline = setTimeout(
+        () => fail(new Error('Render Worker bounds request timed out')),
+        30_000,
+      );
+      this.boundsRequests.set(requestId, {
+        finish: (bounds) => {
+          remove();
+          resolve(bounds);
+        },
+        fail,
+      });
+      try {
+        worker.postMessage({ kind: 'bounds', requestId, entity } satisfies RenderWorkerInput);
+      } catch (cause) {
+        fail(cause instanceof Error ? cause : new Error(String(cause)));
+      }
+    });
+  }
+  /** This read never consumes publication credit or starts another Renderer. */
+  inspectRenderer(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ExecutionRendererInspectionResult> {
+    const worker = this.worker,
+      epoch = this.epoch,
+      worldIdentity = this.world.identity;
+    if (options.signal?.aborted) return Promise.resolve(rendererInspectionFailure('cancelled'));
+    if (this.disposed || !this.inspectionReady || worker === undefined)
+      return Promise.resolve(rendererInspectionFailure('not-ready'));
+    if (this.inspectionRequests.size >= 32)
+      return Promise.resolve(rendererInspectionFailure('request-limit'));
+    const requestId = ++this.nextRequestId;
+    return new Promise((resolve) => {
+      const finish = (result: ExecutionRendererInspectionResult) => {
+        if (!this.inspectionRequests.has(requestId)) return;
+        this.inspectionRequests.delete(requestId);
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', cancel);
+        const current =
+          this.worker === worker &&
+          this.epoch === epoch &&
+          this.world.identity === worldIdentity &&
+          !this.disposed;
+        resolve(result.ok && !current ? rendererInspectionFailure('stale-session') : result);
+      };
+      const cancel = () => finish(rendererInspectionFailure('cancelled'));
+      // New inspection read bound follows existing child-read policy; caller abort may close sooner.
+      const timer = setTimeout(() => finish(rendererInspectionFailure('timeout')), 30_000);
+      this.inspectionRequests.set(requestId, { finish });
+      options.signal?.addEventListener('abort', cancel, { once: true });
+      try {
+        worker.postMessage({
+          kind: 'inspect',
+          requestId,
+          identity: { source: this.source, epoch },
+          worldIdentity,
+        } satisfies RenderWorkerInput);
+      } catch (cause) {
+        finish(rendererInspectionFailure('transport', cause));
+      }
+    });
+  }
+  readonly upload: RhiCapture['upload'] = uploadRhiTape;
+
+  captureFrame(options: CaptureFrameOptions = {}): Promise<CaptureResult> {
+    const unavailable = (cause: string): CaptureResult =>
+      err(createRhiDebugError('capture-unavailable', { stage: 'capture', cause }));
+    const worker = this.worker;
+    if (
+      worker === undefined ||
+      this.init.diagnostics?.rhiCapture !== true ||
+      options.signal?.aborted
+    )
+      return Promise.resolve(unavailable('Render Worker capture is unavailable or cancelled'));
+    if (this.captureRequest !== undefined)
+      return Promise.resolve(
+        err(
+          createRhiDebugError('capture-busy', {
+            stage: 'capture',
+            cause: 'a Render Worker capture is active',
+          }),
+        ),
+      );
+    const id = ++this.nextRequestId;
+    return new Promise((resolve) => {
+      const cancel = () => {
+        worker.postMessage({ kind: 'capture-cancel', requestId: id } satisfies RenderWorkerInput);
+        finish(
+          unavailable(
+            'Render Worker capture was cancelled or did not complete before its deadline',
+          ),
+        );
+      };
+      const deadline = setTimeout(cancel, (options.snapshotTimeoutMs ?? 30_000) + 30_000);
+      const finish = (result: CaptureResult) => {
+        if (this.captureRequest?.id !== id) return;
+        this.captureRequest = undefined;
+        clearTimeout(deadline);
+        options.signal?.removeEventListener('abort', cancel);
+        resolve(result);
+      };
+      this.captureRequest = { id, finish };
+      options.signal?.addEventListener('abort', cancel, { once: true });
+      const { signal: _signal, ...configuration } = options;
+      try {
+        worker.postMessage({
+          kind: 'capture',
+          requestId: id,
+          options: configuration,
+        } satisfies RenderWorkerInput);
+      } catch (cause) {
+        finish(unavailable(String(cause)));
+      }
+    });
+  }
+  inspectGpuPassTiming():
+    | { readonly frameId: number; readonly observation: GpuPassTimingObservation }
+    | undefined {
+    return this.latestGpuPassTiming;
+  }
+  async replace(epoch: number, canvas: OffscreenCanvas): Promise<void> {
+    if (epoch !== this.epoch || this.worker !== undefined || this.disposed) return;
+    await this.start(canvas);
+  }
+  private clear(): void {
+    this.inspectionReady = false;
+    this.deviceGeneration = undefined;
+    try {
+      this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
+    } finally {
+      this.meshResidency.clear('Render Worker session ended');
+    }
+    this.publishedFrames.clear();
+    for (const request of this.inspectionRequests.values())
+      request.finish(rendererInspectionFailure('session-ended'));
+    for (const request of this.terrainRequests.values())
+      request.finish(
+        err({
+          code: 'terrain-query-unavailable',
+          expected: 'an active Render Worker session',
+          hint: 'query after recovery completes',
+          detail: { field: 'Worker' },
+        }),
+      );
+    for (const request of this.boundsRequests.values())
+      request.fail(new Error('Render Worker session ended'));
+    this.captureRequest?.finish(
+      err(
+        createRhiDebugError('capture-unavailable', {
+          stage: 'capture',
+          cause: 'Render Worker session ended',
+        }),
+      ),
+    );
+    clearTimeout(this.deadline);
+    this.worker?.terminate();
+    this.worker = undefined;
+    this.initializationSent = false;
+    this.preloadFailure = undefined;
+    this.latestGpuPassTiming = undefined;
+    this.latestCompletedTerrainFrame = undefined;
+    this.publisher?.dispose();
+    this.publisher = undefined;
+  }
+  dispose(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal;
+    this.disposed = true;
+    this.inspectionReady = false;
+    this.deviceGeneration = undefined;
+    this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
+    for (const request of this.inspectionRequests.values())
+      request.finish(rendererInspectionFailure('disposed'));
+    this.resolveReady?.();
+    clearTimeout(this.deadline);
+    const worker = this.worker;
+    this.disposal = (async () => {
+      let failure: unknown;
+      try {
+        // Keep mesh ACK delivery live until all receiver release fences finish.
+        try {
+          await this.meshResidency.dispose();
+        } catch (cause) {
+          failure = cause;
+        }
+        // Fence late frame/capture messages before waiting for the dedicated ACK.
+        this.worker = undefined;
+        if (worker !== undefined) {
+          try {
+            if (this.initializationSent) (await shutdownWorker(worker)).unwrap();
+            else worker.terminate();
+          } catch (cause) {
+            failure ??= cause;
+          }
+        }
+      } finally {
+        this.clear();
+      }
+      if (failure !== undefined) throw failure;
+    })();
+    return this.disposal;
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "name": "@forgeax/view-plugin-display",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ForgeaX View product plugin: Read-only AI run observation and explicit borrowed-carrier support.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./backend": "./src/backend.ts",
+    "./frontend": "./src/frontend.ts",
+    "./ui": "./src/ui/index.ts",
+    "./identity": "./src/identity.ts",
+    "./api": "./src/api.ts",
+    "./i18n": "./src/i18n/index.ts",
+    "./schema": "./src/schema.ts",
+    "./carrier": "./src/carrier-adapter.ts",
+    "./carrier-contract": "./src/carrier-contract.ts",
+    "./effects": "./src/effects.ts",
+    "./page-broker": "./src/page-broker.ts"
+  },
+  "dependencies": {
+    "@forgeax/view-workspace-core": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/view-components": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

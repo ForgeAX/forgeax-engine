@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "shader",
+  "source": "post-depth-overlay-msaa.wgsl",
+  "importSettings": {
+    "postProcessIdentifier": "hello-multi-uv::custom-render-graph-depth-msaa"
+  },
+  "subAssets": []
+}

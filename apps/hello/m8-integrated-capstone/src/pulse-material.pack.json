@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "3306d344-1d82-5f81-80c6-a296d1b45315",
+      "kind": "material",
+      "sourceKey": "pulse-material.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "my_game::pulse_material",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "metallic",
+            "type": "f32"
+          },
+          {
+            "name": "roughness",
+            "type": "f32"
+          },
+          {
+            "name": "time",
+            "type": "f32",
+            "default": 0
+          },
+          {
+            "name": "speed",
+            "type": "f32",
+            "default": 1
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

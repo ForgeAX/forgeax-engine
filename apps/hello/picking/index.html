@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Hello Picking</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+      canvas { display: block; width: 800px; height: 600px; }
+      #controls {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 1;
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        background: rgba(0, 0, 0, 0.72);
+        font: 12px/1.4 monospace;
+      }
+      #controls button { cursor: pointer; }
+      #picking-status { color: #d7e7ff; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app" width="800" height="600"></canvas>
+    <div id="controls" aria-label="Picking controls">
+      <button id="probe-vertices" type="button">Probe vertices</button>
+      <button id="mutate-transform" type="button">Move cube</button>
+      <button id="update-camera" type="button">Update camera</button>
+      <output id="picking-status">ready</output>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

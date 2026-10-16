@@ -1,0 +1,39 @@
+{
+  "contentKey": "d7e7c76707bd426138d1a9182ab8199f120a937532c66786109c9859ccc9457e",
+  "inputHashes": {
+    "package.json": "d3b03f83b5eea2983e163ef512f04618c7cd3220d26da0e5cfe0f367813d1643",
+    "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
+    "scripts/build-wasm.mjs": "6f9c51ed1deb2cd63f3017b69bbc9f19d4eebfa4c6bd1c18b3def59e0e7d135d",
+    "scripts/native-init.js": "4b48c2123433d6fe079607b7527a12b5b3791be653fd76779ab4c5c814d6c732",
+    "scripts/build-declarations.mjs": "12d720d5b612558e670259f51a9c62d0f722b9d28f5040da87779323050fd10c",
+    "scripts/bindings-2d.Cargo.toml": "7cdaff81e20df4d5e693a2dc1ea89c61184bb137461ea71862ff61984b99e69c",
+    "scripts/Cargo-2d.lock": "8aac01338ab3d24d342e5ff262718a238fbc2f98c165fe3cea0b28e5534ad361",
+    "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a"
+  },
+  "source": {
+    "rapier": {
+      "url": "https://github.com/dimforge/rapier.git",
+      "commit": "3e12c2679cb1940a876bde93af9cec0cf2f57944"
+    },
+    "parry": {
+      "url": "https://github.com/dimforge/parry.git",
+      "commit": "1be4b1a7cd0a090bd7efb1207b7bc0d453f4132e"
+    },
+    "rust": "1.93.1",
+    "wasmPack": "0.14.0"
+  },
+  "toolchain": {
+    "rustVersion": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "wasmPackVersion": "wasm-pack 0.14.0",
+    "wasmBindgen": "0.2.121",
+    "esbuildVersion": "0.28.2"
+  },
+  "artifacts": {
+    "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
+    "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
+    "rapier-native.mjs": "f15c69d4e4fd71c6dd9813287a2ab19a2d2ad4613423d92094db95f89851f0b7",
+    "rapier.d.mts": "1b1debe12b0a95abe52765446c546dd75e0f7643f919543679aa0b72b32cda5c",
+    "rapier.mjs": "6d333c149be59f4214a088d04db97613bb9d619ed58e0da668cf637cf2373487",
+    "rapier.wasm": "db873092cf78201f26a55c11959f52f7ac24b9b98a2304908c45c2289d02d160"
+  }
+}

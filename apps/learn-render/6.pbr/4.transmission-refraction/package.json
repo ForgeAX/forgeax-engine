@@ -1,0 +1,70 @@
+{
+  "name": "@forgeax/app-learn-render-6-pbr-4-transmission-refraction",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render section 6.pbr transmission and refraction carrier using Standard materials.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:features-a": "node scripts/smoke-dawn.mjs features-a",
+    "smoke:features-b": "node scripts/smoke-dawn.mjs features-b",
+    "smoke:frames": "node scripts/smoke-dawn.mjs frames",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:parity": "node scripts/smoke-backend-parity.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-6-pbr-4-transmission-refraction smoke",
+    "rhiDebug": {
+      "riskFamilies": [
+        "materials-transmission",
+        "alpha-blend"
+      ]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle is downstream of engine-runtime size already tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "learn-render examples do not own an fps gate"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "transmission Dawn ROI is the authoritative behavior gate"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-learn-render-6-pbr-4-transmission-refraction smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "production Standard transmission/refraction carrier"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

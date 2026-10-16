@@ -1,0 +1,5 @@
+# grep-gates fixtures intentionally contain `dist/` sub-trees as part of
+# the shader-no-naga-in-dist gate violation/happy-path coverage. Override
+# the repo-wide `dist/` ignore so vitest can read these files.
+!**/dist/
+!**/dist/**

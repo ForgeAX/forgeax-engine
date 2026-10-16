@@ -1,0 +1,69 @@
+{
+  "name": "@forgeax/app-learn-render-2-lighting-3-materials",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render LearnOpenGL section 2.lighting 3.materials \u2014 material response differences via @forgeax/engine-app + standard material + animated PointLight (co-located on lamp entity).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-2-lighting-3-materials smoke",
+    "rhiDebug": {
+      "riskFamilies": [
+        "materials-textures"
+      ]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime size already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "OOS-11 fps anchor stays on hello-triangle; per-app fps drift is not gated for learn-render examples"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pixel-parity bench drives parity-forgeax vs parity-threejs; learn-render entries land as bench:pixel-parity placeholders only"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-learn-render-2-lighting-3-materials smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; LearnOpenGL section-2.3 materials tutorial example"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

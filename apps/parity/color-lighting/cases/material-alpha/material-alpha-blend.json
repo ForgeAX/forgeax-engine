@@ -1,0 +1,11 @@
+{
+  "caseId": "material-alpha-blend",
+  "required": true,
+  "colorDomain": "linearLdr",
+  "scene": { "width": 4, "height": 4, "background": [0.2, 0.4, 0.6, 1] },
+  "comparison": { "primaryMetric": "alpha" },
+  "budget": { "analyticMax": 0.01, "roiMax": 0.01, "byteMax": 0 },
+  "alpha": { "mode": "BLEND", "baseAlpha": 1 },
+  "baseColor": [0.8, 0.2, 0.1, 1],
+  "textureColor": [1, 1, 1, 0.4]
+}

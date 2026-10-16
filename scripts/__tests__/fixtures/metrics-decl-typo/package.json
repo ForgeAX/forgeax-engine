@@ -1,0 +1,7 @@
+{
+  "name": "metrics-decl-typo-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

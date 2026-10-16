@@ -1,0 +1,6 @@
+{
+  "asset": { "version": "2.0" },
+  "buffers": [{ "byteLength": 32, "uri": "data:application/octet-stream;base64,AAAAAAAAgD4AAIA/AAAAAAAAgD8AAAA/AAAAAAAAAAA=" }],
+  "bufferViews": [{ "buffer": 0, "byteLength": 32, "byteStride": 16 }],
+  "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3" }]
+}

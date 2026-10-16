@@ -1,0 +1,105 @@
+{
+  "name": "@forgeax/engine-image",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Disk-to-memory image importer for forgeax-engine: parseImage / decodeImageFromFile / toAssetPack three pure functions + sub-asset-key + reimport-reuse-meta + correlated ImageError closed union.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./parse-image": {
+      "types": "./dist/parse-image.d.ts",
+      "node": {
+        "import": "./dist/parse-image.mjs"
+      },
+      "default": null
+    },
+    "./decode-image-from-file": {
+      "types": "./dist/decode-image-from-file.d.ts",
+      "node": {
+        "import": "./dist/decode-image-from-file.mjs"
+      },
+      "default": null
+    },
+    "./hdr-decoder": {
+      "types": "./dist/hdr-decoder.d.ts",
+      "import": "./dist/hdr-decoder.mjs"
+    },
+    "./image-importer": {
+      "types": "./dist/image-importer.d.ts",
+      "node": {
+        "import": "./dist/image-importer.mjs"
+      },
+      "default": null
+    },
+    "./ktx2-encode": {
+      "types": "./dist/ktx2-encode.d.ts",
+      "node": {
+        "import": "./dist/ktx2-encode.mjs"
+      },
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "jpeg-js": "^0.4.4",
+    "pako": "^1.0.11",
+    "upng-js": "^2.1.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-import": "workspace:*",
+    "@types/node": "^20.14.0",
+    "@webgpu/types": "^0.1.74"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip",
+        "expected": 2881,
+        "baseline": {
+          "source": ".forgeax-harness/forgeax-loop/feat-20260515-learn-render-getting-started/plan-strategy.md#5.4",
+          "threshold": 307200
+        }
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "library package, no runtime canvas; fps is reported by hello-* / learn-render apps that consume DecodedImage POD"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "image decode is one-shot importer-side work; bench focus stays on @forgeax/engine-math for perf-critical hot paths"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; the disk-to-memory pipeline isolation is policed by node scripts/check-image-pipeline-isolation.mjs in M2 milestoneCISweep"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; this is a production MVP per plan-strategy D-4 / D-12 (image importer + ImageErrorCode independent closed union)"
+      }
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "name": "@forgeax/engine-platform-wechat",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "WeChat Mini Game host facts and native domain adapters.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./standards": {
+      "types": "./dist/standards.d.ts",
+      "import": "./dist/standards.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "build:probe": "node scripts/build-host-probe.mjs"
+  },
+  "dependencies": {
+    "@exodus/bytes": "1.16.0",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-net": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-platform": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui-blitz": "workspace:*",
+    "@forgeax/engine-wgpu-wasm": "workspace:*",
+    "@noble/hashes": "^2.2.0",
+    "core-js-pure": "3.50.0",
+    "event-target-shim": "6.0.2"
+  },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-net-websocket": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Host bindings are measured in each target consumer bundle."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Native scheduling does not establish rendering throughput; consumer receipts own frame evidence."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Host callbacks have no independent numerical benchmark."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Contract and target consumer tests run through the existing test gates."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Production host boundary, not a research spike."
+      }
+    }
+  }
+}

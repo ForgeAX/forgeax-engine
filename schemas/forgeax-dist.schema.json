@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/forgeax-dist.schema.json",
+  "title": "ForgeaX static game distribution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "project", "base", "runtime", "artifacts"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "base": { "type": "string", "minLength": 1 },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packIndexUrl", "shaderManifestUrl"],
+      "properties": {
+        "packIndexUrl": { "type": "string", "minLength": 1 },
+        "shaderManifestUrl": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "mediaType", "bytes", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "mediaType": { "type": "string", "minLength": 1 },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

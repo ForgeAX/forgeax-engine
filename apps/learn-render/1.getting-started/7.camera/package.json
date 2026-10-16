@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/app-learn-render-1-getting-started-7-camera",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render LearnOpenGL section 1.7 camera \u2014 first-person WASD + mouse yaw/pitch via @forgeax/engine-input (M11 milestone fills index.ts + smoke).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-1-getting-started-7-camera smoke",
+    "_smokeInvocationComment": "smokeInvocation = self-contained SSOT for AC-03 (D-7): camera dawn-node smoke literal lives in this package.json#forgeax.smokeInvocation + .github/workflows/ci.yml only. M4 milestone scaffolds the script as a placeholder; M11 milestone (T-M11-04 / -05) lands the real 60-frame dawn smoke + InputSnapshot consumption.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-input sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "OOS-11 fps anchor stays on hello-triangle; per-app fps drift is not gated for learn-render examples"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pixel-parity bench drives parity-forgeax vs parity-threejs; learn-render entries land as bench:pixel-parity 7-entry placeholders only"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-learn-render-1-getting-started-7-camera smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; LearnOpenGL section-1.7 camera example with dawn-node smoke gate"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

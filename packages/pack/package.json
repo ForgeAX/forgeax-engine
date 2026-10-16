@@ -1,0 +1,158 @@
+{
+  "name": "@forgeax/engine-pack",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Disk schema, GUID tools, scanner, and fail-fast error chain for the ForgeaX asset package system. The unified ForgeaX asset command owns the public producer entry.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "node": "./dist/build.mjs",
+      "default": null
+    },
+    "./schema": {
+      "types": "./dist/schema-compiled.d.ts",
+      "import": "./dist/schema.mjs"
+    },
+    "./guid": {
+      "types": "./dist/guid.d.ts",
+      "import": "./dist/guid.mjs"
+    },
+    "./builtin": {
+      "types": "./dist/builtin.d.ts",
+      "import": "./dist/builtin.mjs"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.mjs"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "import": "./dist/bridge.mjs"
+    },
+    "./scanner": {
+      "types": "./dist/scanner.d.ts",
+      "import": "./dist/scanner.mjs"
+    },
+    "./runtime-browser": {
+      "types": "./dist/program-browser.d.ts",
+      "import": "./dist/program-browser.mjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.mjs"
+    },
+    "./artifact-path": {
+      "types": "./dist/artifact-path.d.ts",
+      "import": "./dist/artifact-path.mjs"
+    },
+    "./material-cook": {
+      "types": "./dist/material-cook.d.ts",
+      "import": "./dist/material-cook.mjs"
+    },
+    "./mesh-bin-contract": {
+      "types": "./dist/mesh-bin-contract.d.ts",
+      "import": "./dist/mesh-bin-contract.mjs"
+    },
+    "./cli-asset": {
+      "types": "./dist/cli-asset.d.ts",
+      "node": "./dist/cli-asset.mjs",
+      "default": null
+    },
+    "./name": {
+      "types": "./dist/deriveAssetName.d.ts",
+      "import": "./dist/name.mjs"
+    },
+    "./resolve": {
+      "types": "./dist/resolve-asset-source.d.ts",
+      "node": "./dist/resolve-asset-source.mjs",
+      "default": null
+    },
+    "./native-cooker": {
+      "types": "./dist/native-cooker.d.ts",
+      "node": "./dist/native-cooker.mjs",
+      "default": null
+    },
+    "./source": {
+      "types": "./dist/scriptable-pack.d.ts",
+      "import": "./dist/scriptable-pack.mjs"
+    },
+    "./source-node": {
+      "types": "./dist/scriptable-pack-node.d.ts",
+      "node": "./dist/scriptable-pack-node.mjs",
+      "default": null
+    },
+    "./package.json": "./package.json",
+    "./schema-build": {
+      "types": "./dist/schema-build.d.ts",
+      "node": "./dist/schema-build.mjs",
+      "default": null
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "schema",
+    "README.md",
+    "LICENSE",
+    "scripts"
+  ],
+  "scripts": {
+    "build": "node scripts/generate-validators.mjs && tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:no-assets-load": "node scripts/check-no-assets-load.mjs",
+    "check:pack-error-detail-narrowed": "node scripts/check-pack-error-detail-narrowed.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "ajv-formats": "^3.0.1",
+    "tsup": "^8.3.5",
+    "vitest": "4.1.11"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "build-time and CLI package; no runtime canvas or frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no perf-critical hot path bench in this package; scanner throughput not yet instrumented"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "package-level gate scripts declared in CI yaml directly; no standalone binary gate declared here"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0",
+    "acorn": "8.16.0",
+    "fast-glob": "^3.3.3",
+    "typescript": "^5.8.3",
+    "upng-js": "^2.1.0",
+    "uuidv7": "^1.2.1",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "ajv": "^8.20.0"
+  }
+}

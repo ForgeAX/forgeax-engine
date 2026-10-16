@@ -1,0 +1,48 @@
+{
+  "name": "@forgeax/native-ray-query-triangle-tauri",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Packaged Tauri proof that ForgeaX can present native Metal, DX12 or Vulkan Ray Query output in a desktop viewport.",
+  "scripts": {
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "check:native": "node scripts/generate-icons.mjs && cargo check --manifest-path src-tauri/Cargo.toml",
+    "test:native": "cargo test --manifest-path ../../packages/rhi-wgpu-native/Cargo.toml --all-targets --features conformance",
+    "test:conformance-report": "node --test ../../packages/rhi-wgpu-native/scripts/__tests__/verify-conformance-report.test.mjs",
+    "test:report": "node --test __tests__/*.test.mjs",
+    "verify:native-owner": "node scripts/verify-native-owner.mjs",
+    "verify:native-contract": "pnpm verify:native-owner && pnpm test:report && pnpm test:conformance-report && pnpm test:native && pnpm check:native",
+    "verify:report": "node scripts/verify-report.mjs",
+    "smoke:desktop": "node scripts/smoke-desktop.mjs",
+    "smoke:desktop:unsupported": "node scripts/smoke-desktop.mjs --allow-unsupported"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "The spike proves native routing and packaged execution; no stable bundle-size baseline exists."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The fixed triangle is a bounded correctness proof, not a frame-rate workload."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Equivalent raster and compute workloads are outside the native-route spike."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm verify:native-contract"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Hardware reports are runtime CI artifacts; the reviewed implementation report lives in the Engine Harness docs repository."
+      }
+    }
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "ajv": "^8.17.1"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+artifacts/
+.npmrc
+**/.vite/
+.worktrees/
+.DS_Store
+# Independent floating clone; never a submodule or a product dependency.
+.forgeax-harness/

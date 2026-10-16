@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "85f32992-6f4e-5b01-b8d0-872c874b13d5",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "parallax.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "bevy::parallax_mapping",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "heightScale",
+            "type": "f32",
+            "default": 0.1
+          },
+          {
+            "name": "algoMode",
+            "type": "f32",
+            "default": 0
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          },
+          {
+            "name": "normalTexture",
+            "type": "texture"
+          },
+          {
+            "name": "heightTexture",
+            "type": "texture"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

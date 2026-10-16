@@ -1,0 +1,267 @@
+{
+  "version": 3,
+  "extractionRoot": ".",
+  "description": "Build artifact class and consumer contract for cross-job CI transfer. File classes, consumer requirements, producer dependencies, and verified provenance.",
+  "artifactClasses": {
+    "engine-dist": {
+      "description": "Package dist outputs and declared generated browser exports (engine runtime, types, ECS, math, all packages)",
+      "fileClasses": [
+        "packages/*/dist",
+        "packages/dsh/lib/client.js",
+        "packages/preview/assets/canonical-kit",
+        "packages/ui-blitz/pkg",
+        "packages/physics-rapier2d/pkg",
+        "packages/physics-rapier3d/pkg"
+      ],
+      "producer": "core-build",
+      "transferArtifact": "core-build"
+    },
+    "wasm-runtime": {
+      "description": "wgpu-wasm runtime package (Rust-to-WASM bridge)",
+      "fileClasses": ["packages/wgpu-wasm/pkg"],
+      "producer": "core-build",
+      "transferArtifact": "core-build"
+    },
+    "wasm-fbx": {
+      "description": "FBX WASM parser package",
+      "fileClasses": ["packages/fbx/pkg"],
+      "producer": "core-build",
+      "transferArtifact": "core-build"
+    },
+    "wasm-codec": {
+      "description": "Codec WASM package (KTX2/Basis transcode)",
+      "fileClasses": ["packages/codec/pkg"],
+      "producer": "core-build",
+      "transferArtifact": "core-build"
+    },
+    "shared-asset-pack": {
+      "description": "App-neutral LearnOpenGL pack payload produced once by shared-app-inputs",
+      "fileClasses": ["shared-app-inputs/assets/catalog.json"],
+      "producer": "shared-app-inputs",
+      "transferArtifact": "shared-app-inputs"
+    },
+    "shared-engine-shaders": {
+      "description": "Engine built-in shader payload produced once by shared-app-inputs",
+      "fileClasses": ["shared-app-inputs/shaders/manifest.json"],
+      "producer": "shared-app-inputs",
+      "transferArtifact": "shared-app-inputs"
+    },
+    "app-dist-0": {
+      "description": "App-owned shader manifest deltas plus roster-declared minimal Pack closures produced by app-shard-0; the heavy Sponza smoke closure is intentionally omitted from transfer and built by the owning smoke-fleet-0 model-loading consumer; shared engine rows are restored by the consumer and payload membership is proven by its artifact inventory.",
+      "fileClasses": [
+        "apps/**/dist/shaders/manifest.json",
+        "apps/**/dist/pack-index.json",
+        "apps/**/dist/assets/*-body.bin",
+        "apps/**/dist/assets/*.pack*.json"
+      ],
+      "producer": "app-shard-0",
+      "transferArtifact": "app-dist-0"
+    },
+    "app-dist-1": {
+      "description": "App-owned shader manifest deltas plus roster-declared minimal Pack closures produced by app-shard-1; shared engine rows are restored by the consumer and payload membership is proven by its artifact inventory.",
+      "fileClasses": [
+        "apps/**/dist/shaders/manifest.json",
+        "apps/**/dist/pack-index.json",
+        "apps/**/dist/assets/*-body.bin",
+        "apps/**/dist/assets/*.pack*.json"
+      ],
+      "producer": "app-shard-1",
+      "transferArtifact": "app-dist-1"
+    },
+    "app-dist-2": {
+      "description": "App-owned shader manifest deltas plus roster-declared minimal Pack closures produced by app-shard-2; shared engine rows are restored by the consumer and payload membership is proven by its artifact inventory.",
+      "fileClasses": [
+        "apps/**/dist/shaders/manifest.json",
+        "apps/**/dist/pack-index.json",
+        "apps/**/dist/assets/*-body.bin",
+        "apps/**/dist/assets/*.pack*.json"
+      ],
+      "producer": "app-shard-2",
+      "transferArtifact": "app-dist-2"
+    }
+  },
+  "consumers": {
+    "app-shard": {
+      "description": "Core artifact inputs required before every app shard build.",
+      "requiredArtifactClasses": [
+        "engine-dist",
+        "wasm-runtime",
+        "wasm-fbx",
+        "wasm-codec",
+        "shared-asset-pack",
+        "shared-engine-shaders"
+      ]
+    },
+    "primary-pnpm": {
+      "description": "pnpm CI source of truth: unit tests, typecheck, coverage, inspector e2e",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "coverage-pnpm": {
+      "description": "Vitest coverage gate with ci-core typecheck provenance and perf-budget evidence",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "coverage-perf": {
+      "description": "Uninstrumented ECS and render performance ratio gates",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime"]
+    },
+    "vitest-browser": {
+      "description": "Browser-based vitest tests (chromium WebGPU)",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "directional-csm-browser": {
+      "description": "Directional CSM browser WebGPU producer",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "shared-inputs-browser": {
+      "description": "Preview/HMR, DevKit lifecycle, templates and multithread capability/Worker/raw-kernel browser probes",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "smoke-fleet": {
+      "description": "Dawn-node headless smoke tests (~50 demos), including app pack carriers and the consumer-built Sponza smoke app",
+      "sourceAppRoots": [
+        "apps/hello",
+        "apps/learn-render",
+        "apps/shadertoy",
+        "apps/collectathon",
+        "apps/hello-multi-uv",
+        "apps/perf/10k-cubes-lights",
+        "apps/perf/shadow-stress"
+      ],
+      "requiredArtifactClasses": [
+        "engine-dist",
+        "wasm-runtime",
+        "app-dist-0",
+        "app-dist-1",
+        "app-dist-2",
+        "shared-engine-shaders"
+      ]
+    },
+    "bevy-smoke-fleet": {
+      "description": "Bevy Dawn-node build and smoke pairs; each pair builds its own app",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "vitest-dawn": {
+      "description": "Dawn-native vitest tests",
+      "requiredArtifactClasses": [
+        "engine-dist",
+        "wasm-runtime",
+        "shared-asset-pack",
+        "shared-engine-shaders"
+      ]
+    },
+    "webkit-fallback": {
+      "description": "Chromium WebGL2 fallback verify gate (protected context compatibility key)",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "deferred-membership-corpus": {
+      "description": "Deferred membership matrix producers and exact CPU-only join",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime"]
+    },
+    "portability-bun": {
+      "description": "Bun install, package build, dev-server and Math/ECS/CLI portability",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "metrics-validate-browser": {
+      "description": "Browser and color metrics producer",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "metrics-validate-runtime": {
+      "description": "Runtime and FPS metrics producer",
+      "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
+    },
+    "publish-fbx-wasm-release": {
+      "description": "Publish the FBX WASM payload from core-build on a main push",
+      "requiredArtifactClasses": ["wasm-fbx"]
+    },
+    "publish-wgpu-wasm-release": {
+      "description": "Publish the wgpu-wasm payload from core-build on a main push",
+      "requiredArtifactClasses": ["wasm-runtime"]
+    },
+    "publish-ui-blitz-release": {
+      "description": "Publish the verified Blitz WASM/glue closure from core-build on a main push",
+      "requiredArtifactClasses": ["engine-dist"]
+    },
+    "publish-basis-wasm-release": {
+      "description": "Publish the codec WASM payload from core-build on a main push",
+      "requiredArtifactClasses": ["wasm-codec"]
+    },
+    "view-integration-shards": {
+      "description": "Pinned View consumer of the exact Engine core build.",
+      "requiredArtifactClasses": [
+        "engine-dist",
+        "wasm-runtime",
+        "wasm-fbx",
+        "wasm-codec",
+        "shared-engine-shaders",
+        "shared-asset-pack"
+      ]
+    }
+  },
+  "provenance": {
+    "producerRoster": [
+      "core-build",
+      "shared-app-inputs",
+      "app-shard-0",
+      "app-shard-1",
+      "app-shard-2"
+    ],
+    "namingTemplate": "provenance-<producerJobId>-a<runAttempt>",
+    "mergedClass": "provenance-merged",
+    "mergedWriter": "build-artifacts",
+    "payloadClasses": [
+      "engine-dist",
+      "wasm-runtime",
+      "wasm-fbx",
+      "wasm-codec",
+      "shared-asset-pack",
+      "shared-engine-shaders",
+      "app-dist-0",
+      "app-dist-1",
+      "app-dist-2"
+    ]
+  },
+  "sharedInputs": {
+    "producer": "shared-app-inputs",
+    "consumers": ["app-shard", "shared-inputs-browser"],
+    "schemaVersion": 1,
+    "manifestPath": "shared-app-inputs/manifest.json",
+    "inventory": [
+      "shared-app-inputs/assets/catalog.json",
+      "shared-app-inputs/shaders/manifest.json"
+    ],
+    "payload": {
+      "assetCatalog": "shared-app-inputs/assets/catalog.json",
+      "engineShaderManifest": "shared-app-inputs/shaders/manifest.json"
+    },
+    "payloadClasses": ["shared-asset-pack", "shared-engine-shaders"],
+    "artifactOutput": "shared_artifact_id",
+    "readOnlyConsumers": [
+      "primary-pnpm",
+      "coverage-pnpm",
+      "smoke-fleet",
+      "bevy-smoke-fleet",
+      "vitest-dawn",
+      "webkit-fallback",
+      "vitest-browser",
+      "directional-csm-browser",
+      "vitest-dawn",
+      "portability-bun",
+      "shared-inputs-browser",
+      "metrics-validate-browser",
+      "metrics-validate-runtime",
+      "view-integration-shards"
+    ]
+  },
+  "shardFamilies": [
+    {
+      "id": "app-dist",
+      "members": ["app-dist-0", "app-dist-1", "app-dist-2"],
+      "producerMapping": {
+        "app-dist-0": "app-shard-0",
+        "app-dist-1": "app-shard-1",
+        "app-dist-2": "app-shard-2"
+      },
+      "inventoryRequired": true
+    }
+  ]
+}

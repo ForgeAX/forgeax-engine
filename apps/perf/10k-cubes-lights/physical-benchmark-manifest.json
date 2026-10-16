@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "forgeax-physical-benchmark-manifest/1",
+  "workloadIdentity": "forgeax-perf-10k-cubes-lights/gpu-driven-pbr-shadow-skinning",
+  "seed": "0x010c0b35",
+  "cameraPath": "center-orbit-v1",
+  "resolution": {
+    "width": 1920,
+    "height": 1080
+  },
+  "warmupFrames": 120,
+  "minimumSamples": 30,
+  "workloads": [
+    {
+      "id": "pbr-numeric-1k",
+      "kind": "pbr-numeric",
+      "drawItems": 1000,
+      "resourceClasses": 1
+    },
+    {
+      "id": "pbr-numeric-10k",
+      "kind": "pbr-numeric",
+      "drawItems": 10000,
+      "resourceClasses": 1
+    },
+    {
+      "id": "pbr-numeric-100k",
+      "kind": "pbr-numeric",
+      "drawItems": 100000,
+      "resourceClasses": 1
+    },
+    {
+      "id": "pbr-resource-class-1-100k",
+      "kind": "pbr-resource-class",
+      "drawItems": 100000,
+      "resourceClasses": 1
+    },
+    {
+      "id": "pbr-resource-class-16-100k",
+      "kind": "pbr-resource-class",
+      "drawItems": 100000,
+      "resourceClasses": 16
+    },
+    {
+      "id": "pbr-resource-class-256-100k",
+      "kind": "pbr-resource-class",
+      "drawItems": 100000,
+      "resourceClasses": 256
+    },
+    {
+      "id": "shadow-100k-four-cascade-spot-point",
+      "kind": "shadow",
+      "drawItems": 100000,
+      "resourceClasses": 1,
+      "shadowViews": ["main", "directional-cascade-0", "directional-cascade-1", "directional-cascade-2", "directional-cascade-3", "spot-shadow", "point-shadow"]
+    },
+    {
+      "id": "skin-32j-1k",
+      "kind": "skin",
+      "drawItems": 1000,
+      "joints": 32
+    },
+    {
+      "id": "skin-64j-10k",
+      "kind": "skin",
+      "drawItems": 10000,
+      "joints": 64
+    },
+    {
+      "id": "skin-mixed-100k",
+      "kind": "skin-mixed",
+      "drawItems": 100000,
+      "joints": 64,
+      "rigidDrawItems": 90000,
+      "skinnedDrawItems": 10000
+    },
+    {
+      "id": "mixed-1k",
+      "kind": "mixed",
+      "drawItems": 1000,
+      "resourceClasses": 1
+    }
+  ]
+}

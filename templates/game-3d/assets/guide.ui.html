@@ -1,0 +1,36 @@
+<section class="guide">
+  <strong data-ui-part="guide-title">3C starter</strong>
+  <span data-ui-slot="lock">Click to lock camera, or hold right mouse to look</span>
+  <small data-ui-part="guide-controls">Mouse look · WASD move · Space jump · Shift run · Esc release</small>
+  <div class="languages">
+    <button type="button" data-ui-action="language-en">English</button>
+    <button type="button" data-ui-action="language-fr">Français</button>
+  </div>
+</section>
+<span class="crosshair" aria-hidden="true">+</span>
+
+<section class="vase-panel" aria-label="Runtime vase">
+  <button type="button" data-ui-part="vase-toggle" aria-expanded="true">Close vase</button>
+  <div class="vase-body" data-ui-part="vase-body">
+    <p data-ui-part="vase-description">Change the shape, then generate it in this scene.</p>
+    <form data-ui-part="vase-controls">
+      <button type="button">Generate vase</button>
+    </form>
+    <span data-ui-part="vase-status" role="status" aria-live="polite">Preparing vase...</span>
+  </div>
+</section>
+
+<section class="touch-controls" data-ui-part="touch-controls" aria-label="Touch game controls">
+  <div class="move-stick" data-ui-part="move-stick" role="group" aria-label="Movement joystick">
+    <span class="move-thumb" data-ui-part="move-thumb" aria-hidden="true"></span>
+    <span class="move-label" data-ui-part="move-label">Move</span>
+  </div>
+  <div class="look-pad" data-ui-part="look-pad" role="group" aria-label="Drag to look around">
+    <strong data-ui-part="look-label">Look</strong>
+    <small data-ui-part="look-hint">Drag to turn</small>
+  </div>
+  <div class="touch-actions">
+    <button type="button" data-ui-part="run" aria-pressed="false">Hold Run</button>
+    <button type="button" data-ui-part="jump" aria-pressed="false">Jump</button>
+  </div>
+</section>

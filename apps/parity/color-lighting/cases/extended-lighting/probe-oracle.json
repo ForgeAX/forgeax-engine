@@ -1,0 +1,21 @@
+{
+  "caseId": "probe-oracle",
+  "required": true,
+  "formula": {
+    "activeSet": "admitted && distance < radius",
+    "coverage": "1 - (distance / radius)^2",
+    "scaledQ": "coverage * (rStar / radius)^2",
+    "blend": "alpha = scaledQ / Q; C = 1 - product(1 - coverage); S = 1 - C",
+    "skyContribution": "S * E_sky(N)",
+    "specularOwner": "Skylight/ReflectionProbe"
+  },
+  "properties": [
+    "strict-boundary",
+    "c0-non-c1",
+    "fixed-distance-radius-sqrt2-peak",
+    "common-scale-invariance",
+    "sky-not-contributor",
+    "no-nearest-no-top-k-no-smoothstep"
+  ],
+  "epsilon": 0.000001
+}

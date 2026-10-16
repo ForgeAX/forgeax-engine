@@ -1,0 +1,959 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/asset-authority.schema.json",
+  "title": "ForgeaX asset authority audit manifest",
+  "description": "Machine-readable audit input and output contract for asset authoring authority.",
+  "type": "object",
+  "required": ["schemaVersion", "categories", "producers", "inputs"],
+  "properties": {
+    "schemaVersion": {
+      "const": "asset-authority-audit/1"
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "$ref": "#/$defs/category"
+      }
+    },
+    "producers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/producer"
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["ts", "scripts", "json"],
+      "properties": {
+        "ts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scripts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "json": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "category": {
+      "type": "object",
+      "required": [
+        "id",
+        "displayName",
+        "subject",
+        "execution",
+        "authority",
+        "runtimeSource",
+        "lifecycle",
+        "owner",
+        "catalog",
+        "sourceKeyPolicy",
+        "producerIds"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution": {
+          "enum": ["direct", "cooked"]
+        },
+        "authority": {
+          "type": "object",
+          "required": ["id", "kind", "sources"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sources": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "runtimeSource": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "lifecycle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "catalog": {
+          "enum": ["included", "excluded"]
+        },
+        "sourceKeyPolicy": {
+          "enum": ["required", "optional", "not-applicable", "diagnostic-only"]
+        },
+        "producerIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "producer": {
+      "type": "object",
+      "required": ["id", "owner", "sourceFiles", "categories", "outputs", "sourceKeyPolicy"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceFiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "categories": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "category", "sourceKey"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "category": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sourceKey": {
+                "type": ["string", "null"]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "sourceKeyPolicy": {
+          "enum": ["required", "optional", "not-applicable", "diagnostic-only"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "x-forgeax-audit": {
+    "schemaVersion": "asset-authority-audit/1",
+    "allowedOutputCategories": [
+      "material",
+      "shader-render-pipeline",
+      "scene",
+      "ui",
+      "game-config",
+      "glb",
+      "fbx",
+      "image",
+      "font",
+      "audio",
+      "supporting-producer",
+      "plugin",
+      "mesh-interchange",
+      "navigation-mesh"
+    ],
+    "aiOperations": [
+      "inspect",
+      "rebuild",
+      "cold-cook",
+      "preview-LKG",
+      "override",
+      "promote",
+      "stop-publish"
+    ],
+    "recoveryByLifecycle": {
+      "missing": ["rebuild", "cold-cook", "stop-publish"],
+      "cooking": ["inspect", "stop-publish"],
+      "current": ["inspect"],
+      "stale": ["rebuild", "cold-cook", "preview-LKG", "stop-publish"],
+      "failed": ["inspect", "cold-cook", "preview-LKG", "stop-publish"]
+    },
+    "extendedLighting": {
+      "topology": "extendedLighting",
+      "fixtureOwner": "apps/parity/color-lighting",
+      "carrierIds": ["rect-area", "spot-modifiers", "probe", "recovery"],
+      "sourceKeyPolicy": "required",
+      "runtimeOwner": "packages/render",
+      "specularOwner": "Skylight/ReflectionProbe",
+      "evidenceStates": [
+        "authored",
+        "published",
+        "admitted",
+        "accepted",
+        "lkg",
+        "recovered",
+        "verified",
+        "not-run",
+        "unavailable"
+      ]
+    },
+    "categories": [
+      {
+        "id": "material",
+        "displayName": "Material",
+        "subject": "internal-asset",
+        "execution": "cooked",
+        "authority": {
+          "id": "material-pack-authority",
+          "kind": "internal-pack-and-cook-schema",
+          "sources": [
+            "packages/types/schema/material.schema.json",
+            "packages/pack/src/schema/material-cook.schema.json"
+          ]
+        },
+        "runtimeSource": ["packages/assets-runtime/src/asset-registry.ts"],
+        "lifecycle": "catalog-derived-current-or-cook-failure",
+        "owner": "packages/pack and packages/shader",
+        "catalog": "included",
+        "sourceKeyPolicy": "not-applicable",
+        "producerIds": ["material-schema", "pack-native-cooker"]
+      },
+      {
+        "id": "shader-render-pipeline",
+        "displayName": "Shader/render-pipeline",
+        "subject": "internal-asset",
+        "execution": "cooked",
+        "authority": {
+          "id": "shader-pipeline-authority",
+          "kind": "shader-artifact-and-render-pipeline-projection",
+          "sources": [
+            "packages/shader/src/material/artifact-registry.ts",
+            "packages/assets-runtime/src/material/runtime-shader.ts",
+            "packages/render/src/assembly/material/assembly.ts"
+          ]
+        },
+        "runtimeSource": [
+          "packages/shader/src/material/artifact-registry.ts",
+          "packages/assets-runtime/src/material/runtime-shader.ts",
+          "packages/render/src/assembly/material/assembly.ts"
+        ],
+        "lifecycle": "catalog-derived-current-or-specialization-miss",
+        "owner": "packages/shader, packages/assets-runtime, and packages/render",
+        "catalog": "included",
+        "sourceKeyPolicy": "diagnostic-only",
+        "producerIds": ["shader-render-pipeline", "build-catalog"]
+      },
+      {
+        "id": "scene",
+        "displayName": "Scene",
+        "subject": "internal-asset-or-imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "scene-authority",
+          "kind": "scene-pack-or-imported-source-meta",
+          "sources": ["packages/scene/src/index.ts"]
+        },
+        "runtimeSource": [
+          "packages/scene/src/index.ts",
+          "packages/assets-runtime/src/asset-registry.ts"
+        ],
+        "lifecycle": "subject-and-catalog-derived",
+        "owner": "packages/scene",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": [
+          "scene-descriptor",
+          "gltf-importer",
+          "fbx-importer",
+          "scriptable-pack-producer"
+        ]
+      },
+      {
+        "id": "ui",
+        "displayName": "UI",
+        "subject": "imported-output-or-internal-asset",
+        "execution": "cooked",
+        "authority": {
+          "id": "ui-authority",
+          "kind": "source-or-prepared-pack-by-guid",
+          "sources": [
+            "packages/ui/src/authoring/profile.schema.json",
+            "packages/ui/src/importer/index.ts"
+          ]
+        },
+        "runtimeSource": [
+          "packages/ui/src/loader.ts",
+          "packages/assets-runtime/src/asset-registry.ts"
+        ],
+        "lifecycle": "source-validation-then-catalog-derived",
+        "owner": "packages/ui",
+        "catalog": "included",
+        "sourceKeyPolicy": "optional",
+        "producerIds": ["ui-source-importer"]
+      },
+      {
+        "id": "game-config",
+        "displayName": "game config",
+        "subject": "project-manifest",
+        "execution": "direct",
+        "authority": {
+          "id": "game-project-manifest-authority",
+          "kind": "engine-project-manifest",
+          "sources": ["packages/project/src/schema.ts"]
+        },
+        "runtimeSource": ["packages/project/src/schema.ts"],
+        "lifecycle": "manifest-validated-not-cataloged",
+        "owner": "packages/project",
+        "catalog": "excluded",
+        "sourceKeyPolicy": "not-applicable",
+        "producerIds": ["engine-project-manifest"]
+      },
+      {
+        "id": "glb",
+        "displayName": "GLB",
+        "subject": "imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "glb-source-meta-authority",
+          "kind": "external-source-and-meta",
+          "sources": ["packages/gltf/src/gltf-importer.ts"]
+        },
+        "runtimeSource": ["packages/assets-runtime/src/asset-registry.ts"],
+        "lifecycle": "source-meta-to-catalog-derived",
+        "owner": "packages/gltf and packages/import",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["gltf-importer", "import-runner"]
+      },
+      {
+        "id": "fbx",
+        "displayName": "FBX",
+        "subject": "imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "fbx-source-meta-authority",
+          "kind": "external-source-and-meta",
+          "sources": ["packages/fbx/src/fbx-importer.ts"]
+        },
+        "runtimeSource": ["packages/assets-runtime/src/asset-registry.ts"],
+        "lifecycle": "source-meta-to-catalog-derived",
+        "owner": "packages/fbx and packages/import",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["fbx-importer", "import-runner"]
+      },
+      {
+        "id": "image",
+        "displayName": "image",
+        "subject": "imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "image-source-meta-authority",
+          "kind": "external-source-and-meta",
+          "sources": ["packages/image/src/image-importer.ts"]
+        },
+        "runtimeSource": ["packages/assets-runtime/src/asset-registry.ts"],
+        "lifecycle": "source-meta-to-catalog-derived",
+        "owner": "packages/image and packages/import",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["image-importer", "import-runner"]
+      },
+      {
+        "id": "font",
+        "displayName": "font",
+        "subject": "imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "font-source-meta-authority",
+          "kind": "external-source-and-meta",
+          "sources": ["packages/font/src/font-importer.ts"]
+        },
+        "runtimeSource": ["packages/assets-runtime/src/asset-registry.ts"],
+        "lifecycle": "source-meta-to-catalog-derived",
+        "owner": "packages/font and packages/import",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["font-importer", "import-runner"]
+      },
+      {
+        "id": "navigation-mesh",
+        "displayName": "Navigation mesh",
+        "subject": "internal-asset",
+        "execution": "cooked",
+        "authority": {
+          "id": "navigation-pack-authority",
+          "kind": "pack-source-geometry-placement-and-agent-settings",
+          "sources": ["packages/types/src/navigation.ts", "packages/import/src/navigation-bake.ts"]
+        },
+        "runtimeSource": [
+          "packages/assets-runtime/src/loaders/navigation-mesh.ts",
+          "packages/navigation/src/navmesh.ts"
+        ],
+        "lifecycle": "source-and-settings-fingerprint-to-cooked-polygon-catalog",
+        "owner": "packages/import, packages/navigation and packages/assets-runtime",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["navigation-recast-producer", "scriptable-pack-producer"]
+      },
+      {
+        "id": "audio",
+        "displayName": "audio",
+        "subject": "imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "audio-source-meta-authority",
+          "kind": "external-source-and-meta",
+          "sources": ["packages/audio-webaudio/src/audio-importer.ts"]
+        },
+        "runtimeSource": ["packages/audio-webaudio/src/audio-importer.ts"],
+        "lifecycle": "source-meta-to-catalog-buffer-or-verified-stream",
+        "owner": "packages/audio-webaudio and packages/import",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["audio-webaudio-importer", "import-runner"]
+      },
+      {
+        "id": "plugin",
+        "displayName": "Plugin",
+        "subject": "internal-asset",
+        "execution": "cooked",
+        "authority": {
+          "id": "plugin-pack-authority",
+          "kind": "pack-source-module-and-config",
+          "sources": ["packages/pack/src/plugin-asset.ts", "packages/types/src/plugin-asset.ts"]
+        },
+        "runtimeSource": [
+          "packages/assets-runtime/src/loaders/plugin.ts",
+          "packages/plugin/src/asset.ts"
+        ],
+        "lifecycle": "definition-publication-independent-of-native-fiber",
+        "owner": "packages/pack, packages/import, packages/plugin and packages/devkit",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": [
+          "plugin-definition-producer",
+          "plugin-program-compiler",
+          "scriptable-pack-producer"
+        ]
+      },
+      {
+        "id": "mesh-interchange",
+        "displayName": "OBJ / STL / SVG",
+        "subject": "imported-output",
+        "execution": "cooked",
+        "authority": {
+          "id": "mesh-interchange-source-meta-authority",
+          "kind": "external-source-and-meta",
+          "sources": ["packages/mesh-io/src/node.ts", "packages/mesh-io/src/importer.ts"]
+        },
+        "runtimeSource": ["packages/assets-runtime/src/asset-registry.ts"],
+        "lifecycle": "source-meta-to-catalog-derived",
+        "owner": "packages/mesh-io and packages/import",
+        "catalog": "included",
+        "sourceKeyPolicy": "required",
+        "producerIds": ["mesh-io-importer", "import-runner"]
+      }
+    ],
+    "producers": [
+      {
+        "id": "scriptable-pack-producer",
+        "owner": "packages/pack and packages/import",
+        "sourceFiles": [
+          "packages/pack/src/scriptable-pack.ts",
+          "packages/pack/src/program.ts",
+          "packages/import/src/scriptable-pack.ts",
+          "packages/import/src/scriptable-pack-build-core.ts",
+          "packages/import/src/runtime-pack.ts",
+          "packages/import/src/runtime-pack-content.ts",
+          "packages/import/src/runtime-pack-snapshot.ts",
+          "packages/import/src/runtime-pack-data.ts",
+          "packages/pack/src/data.ts",
+          "packages/assets-runtime/src/validate-publication.ts",
+          "packages/assets-runtime/src/retain-publication.ts"
+        ],
+        "categories": ["supporting-producer", "scene", "plugin"],
+        "outputs": [
+          {
+            "name": "declared-output-closure",
+            "category": "supporting-producer",
+            "sourceKey": "build(context) output key or direct Pack assets key"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "ies-profile-importer",
+        "owner": "packages/import",
+        "sourceFiles": [
+          "packages/import/src/ies/ies-importer.ts",
+          "packages/import/src/ies/parse-lm63.ts",
+          "packages/import/src/ies/resample-type-c.ts"
+        ],
+        "categories": ["supporting-producer"],
+        "outputs": [
+          {
+            "name": "ies-profile",
+            "category": "supporting-producer",
+            "sourceKey": "ies:profile"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "pack-native-cooker",
+        "owner": "packages/pack",
+        "sourceFiles": [
+          "packages/pack/src/native-cooker-registry.ts",
+          "packages/pack/src/scanner.ts",
+          "packages/pack/src/topology.ts"
+        ],
+        "categories": ["material", "scene"],
+        "outputs": [
+          {
+            "name": "native-pack",
+            "category": "supporting-producer",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "not-applicable"
+      },
+      {
+        "id": "import-runner",
+        "owner": "packages/import",
+        "sourceFiles": [
+          "packages/import/src/import-runner.ts",
+          "packages/import/src/importer-registry.ts"
+        ],
+        "categories": ["glb", "fbx", "image", "font", "audio", "mesh-interchange"],
+        "outputs": [
+          {
+            "name": "imported-output",
+            "category": "supporting-producer",
+            "sourceKey": "declared-by-meta"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "importer-registry",
+        "owner": "packages/import",
+        "sourceFiles": ["packages/import/src/importer-registry.ts"],
+        "categories": ["glb", "fbx", "image", "font", "audio", "mesh-interchange"],
+        "outputs": [
+          {
+            "name": "registered-importer",
+            "category": "supporting-producer",
+            "sourceKey": "declared-by-meta"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "gltf-importer",
+        "owner": "packages/gltf",
+        "sourceFiles": [
+          "packages/gltf/src/gltf-importer.ts",
+          "packages/gltf/src/reimport-reuse-meta.ts",
+          "packages/gltf/src/source-key.ts"
+        ],
+        "categories": ["glb", "scene"],
+        "outputs": [
+          {
+            "name": "mesh",
+            "category": "glb",
+            "sourceKey": "gltf:mesh"
+          },
+          {
+            "name": "material",
+            "category": "glb",
+            "sourceKey": "gltf:material"
+          },
+          {
+            "name": "scene",
+            "category": "glb",
+            "sourceKey": "gltf:scene"
+          },
+          {
+            "name": "texture",
+            "category": "glb",
+            "sourceKey": "gltf:texture"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "fbx-importer",
+        "owner": "packages/fbx",
+        "sourceFiles": ["packages/fbx/src/fbx-importer.ts", "packages/fbx/src/to-asset-pack.ts"],
+        "categories": ["fbx", "scene"],
+        "outputs": [
+          {
+            "name": "mesh",
+            "category": "fbx",
+            "sourceKey": "fbx:mesh"
+          },
+          {
+            "name": "scene",
+            "category": "fbx",
+            "sourceKey": "fbx:scene"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "image-importer",
+        "owner": "packages/image",
+        "sourceFiles": [
+          "packages/image/src/image-importer.ts",
+          "packages/image/src/reimport-reuse-meta.ts"
+        ],
+        "categories": ["image"],
+        "outputs": [
+          {
+            "name": "texture",
+            "category": "image",
+            "sourceKey": "image:texture"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "font-importer",
+        "owner": "packages/font",
+        "sourceFiles": ["packages/font/src/font-importer.ts"],
+        "categories": ["font"],
+        "outputs": [
+          {
+            "name": "texture",
+            "category": "font",
+            "sourceKey": "font:texture"
+          },
+          {
+            "name": "sampler",
+            "category": "font",
+            "sourceKey": "font:sampler"
+          },
+          {
+            "name": "font",
+            "category": "font",
+            "sourceKey": "font:font"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "audio-webaudio-importer",
+        "owner": "packages/audio-webaudio",
+        "sourceFiles": ["packages/audio-webaudio/src/audio-importer.ts"],
+        "categories": ["audio"],
+        "outputs": [
+          {
+            "name": "audio",
+            "category": "audio",
+            "sourceKey": "audio:audio"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "vfx-compiler",
+        "owner": "packages/vfx-compiler",
+        "sourceFiles": [
+          "packages/vfx-compiler/src/code-program.ts",
+          "packages/vfx-compiler/src/scene-sdf.ts",
+          "packages/vfx-compiler/src/index.ts"
+        ],
+        "categories": ["supporting-producer"],
+        "outputs": [
+          {
+            "name": "particle-effect",
+            "category": "supporting-producer",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "not-applicable"
+      },
+      {
+        "id": "material-schema",
+        "owner": "packages/types and packages/pack",
+        "sourceFiles": [
+          "packages/types/schema/material.schema.json",
+          "packages/pack/src/schema/material-cook.schema.json"
+        ],
+        "categories": ["material"],
+        "outputs": [
+          {
+            "name": "material-contract",
+            "category": "material",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "not-applicable"
+      },
+      {
+        "id": "shader-render-pipeline",
+        "owner": "packages/shader, packages/assets-runtime, and packages/render",
+        "sourceFiles": [
+          "packages/shader/src/material/artifact-registry.ts",
+          "packages/assets-runtime/src/material/runtime-shader.ts",
+          "packages/render/src/assembly/material/assembly.ts"
+        ],
+        "categories": ["shader-render-pipeline"],
+        "outputs": [
+          {
+            "name": "runtime-artifact",
+            "category": "shader-render-pipeline",
+            "sourceKey": "specialization-key"
+          }
+        ],
+        "sourceKeyPolicy": "diagnostic-only"
+      },
+      {
+        "id": "scene-descriptor",
+        "owner": "packages/scene",
+        "sourceFiles": ["packages/scene/src/index.ts"],
+        "categories": ["scene"],
+        "outputs": [
+          {
+            "name": "scene-authoring",
+            "category": "scene",
+            "sourceKey": "scene-authority"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "ui-source-importer",
+        "owner": "packages/ui",
+        "sourceFiles": [
+          "packages/ui/src/importer/index.ts",
+          "packages/ui/src/authoring/profile.schema.json"
+        ],
+        "categories": ["ui"],
+        "outputs": [
+          {
+            "name": "ui-source",
+            "category": "ui",
+            "sourceKey": "ui:source"
+          }
+        ],
+        "sourceKeyPolicy": "optional"
+      },
+      {
+        "id": "engine-project-manifest",
+        "owner": "packages/project",
+        "sourceFiles": [
+          "packages/project/src/schema.ts",
+          "packages/project/src/__tests__/schema.test.ts"
+        ],
+        "categories": ["game-config"],
+        "outputs": [
+          {
+            "name": "forge.json",
+            "category": "game-config",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "not-applicable"
+      },
+      {
+        "id": "build-catalog",
+        "owner": "packages/pack",
+        "sourceFiles": ["packages/pack/src/catalog-projection.ts"],
+        "categories": ["supporting-producer"],
+        "outputs": [
+          {
+            "name": "catalog-projection",
+            "category": "supporting-producer",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "diagnostic-only"
+      },
+      {
+        "id": "vite-pack-runtime-binding",
+        "owner": "packages/types",
+        "sourceFiles": ["packages/types/src/runtime-scope.ts"],
+        "categories": ["supporting-producer"],
+        "outputs": [
+          {
+            "name": "runtime-binding",
+            "category": "supporting-producer",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "diagnostic-only"
+      },
+      {
+        "id": "catalog-docs-gate",
+        "owner": "scripts/forgeax",
+        "sourceFiles": [
+          "scripts/forgeax/check-catalog-docs.mjs",
+          "scripts/__tests__/catalog-documentation-material.test.mjs"
+        ],
+        "categories": ["supporting-producer"],
+        "outputs": [
+          {
+            "name": "documentation-evidence",
+            "category": "supporting-producer",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "diagnostic-only"
+      },
+      {
+        "id": "asset-authority-gate",
+        "owner": "scripts/forgeax",
+        "sourceFiles": [
+          "schemas/asset-authority.schema.json",
+          "scripts/forgeax/check-asset-authority-audit.mjs"
+        ],
+        "categories": ["supporting-producer"],
+        "outputs": [
+          {
+            "name": "authority-manifest",
+            "category": "supporting-producer",
+            "sourceKey": null
+          }
+        ],
+        "sourceKeyPolicy": "diagnostic-only"
+      },
+      {
+        "id": "plugin-definition-producer",
+        "owner": "packages/import",
+        "sourceFiles": ["packages/import/src/plugin-asset-producer.ts"],
+        "categories": ["plugin"],
+        "outputs": [
+          {
+            "name": "plugin-definition-with-deferred-refs",
+            "category": "plugin",
+            "sourceKey": "Pack output key"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "plugin-program-compiler",
+        "owner": "packages/devkit",
+        "sourceFiles": [
+          "packages/devkit/src/build/plugin-programs.ts",
+          "packages/devkit/src/build/plugin-assets.ts"
+        ],
+        "categories": ["plugin"],
+        "outputs": [
+          {
+            "name": "program-table-and-publication-tuple",
+            "category": "plugin",
+            "sourceKey": "logical module and export"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "navigation-recast-producer",
+        "owner": "packages/import",
+        "sourceFiles": [
+          "packages/import/src/navigation-bake.ts",
+          "packages/import/src/scriptable-pack-output-producers.ts"
+        ],
+        "categories": ["navigation-mesh"],
+        "outputs": [
+          {
+            "name": "navigation-mesh",
+            "category": "navigation-mesh",
+            "sourceKey": "Pack output key"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      },
+      {
+        "id": "mesh-io-importer",
+        "owner": "packages/mesh-io",
+        "sourceFiles": [
+          "packages/mesh-io/src/node.ts",
+          "packages/mesh-io/src/importer.ts",
+          "packages/mesh-io/src/parse.ts",
+          "packages/mesh-io/src/svg.ts"
+        ],
+        "categories": ["mesh-interchange"],
+        "outputs": [
+          {
+            "name": "mesh",
+            "category": "mesh-interchange",
+            "sourceKey": "mesh:object-name"
+          }
+        ],
+        "sourceKeyPolicy": "required"
+      }
+    ],
+    "jsonInputs": [
+      "schemas/asset-authority.schema.json",
+      "packages/types/schema/material.schema.json",
+      "packages/pack/src/schema/material-cook.schema.json",
+      "packages/ui/src/authoring/profile.schema.json",
+      "packages/pack/schema/meta.schema.json",
+      "packages/pack/schema/pack.schema.json",
+      "packages/vite-plugin-pack/schema/pack-index.schema.json",
+      "packages/vite-plugin-pack/schema/runtime-binding.schema.json",
+      "apps/hello/gltf/assets/box.gltf.meta.json",
+      "apps/hello/gltf-instancing/assets/instanced-box.gltf.meta.json"
+    ],
+    "scriptInputs": [
+      "scripts/forgeax/check-catalog-docs.mjs",
+      "scripts/forgeax/check-asset-authority-audit.mjs",
+      "scripts/__tests__/catalog-documentation-material.test.mjs"
+    ]
+  }
+}

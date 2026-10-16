@@ -1,0 +1,5 @@
+pkg/
+target/
+.pkg-build-*/
+.pkg-fetch-*/
+.pkg-previous-*/

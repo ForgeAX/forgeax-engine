@@ -1,0 +1,6 @@
+{
+  "rapier": {"url": "https://github.com/dimforge/rapier.git", "commit": "3e12c2679cb1940a876bde93af9cec0cf2f57944"},
+  "parry": {"url": "https://github.com/dimforge/parry.git", "commit": "1be4b1a7cd0a090bd7efb1207b7bc0d453f4132e"},
+  "rust": "1.93.1",
+  "wasmPack": "0.14.0"
+}

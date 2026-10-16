@@ -1,0 +1,80 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "forgeax hello-gltf BoxTextured Tier-B fork (POSITION + INDICES only)"
+  },
+  "scene": 0,
+  "scenes": [
+    { "name": "BoxScene", "nodes": [0, 1] }
+  ],
+  "nodes": [
+    {
+      "name": "Box",
+      "mesh": 0,
+      "translation": [0, 0, 0]
+    },
+    {
+      "name": "MainCamera",
+      "camera": 0,
+      "translation": [0, 0, 3]
+    }
+  ],
+  "cameras": [
+    {
+      "name": "MainCamera",
+      "type": "perspective",
+      "perspective": {
+        "yfov": 0.7853981633974483,
+        "aspectRatio": 1.7777777777777777,
+        "znear": 0.1,
+        "zfar": 100
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Box",
+      "primitives": [
+        {
+          "attributes": { "POSITION": 0 },
+          "indices": 1,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "BoxMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.7, 0.45, 0.2, 1.0]
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [-0.5, -0.5, -0.5],
+      "max": [0.5, 0.5, 0.5]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 288 },
+    { "buffer": 0, "byteOffset": 288, "byteLength": 72 }
+  ],
+  "buffers": [
+    {
+      "byteLength": 360,
+      "uri": "data:application/octet-stream;base64,AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAvwAAAL8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA"
+    }
+  ]
+}

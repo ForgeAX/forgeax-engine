@@ -1,0 +1,69 @@
+{
+  "name": "@forgeax/engine-path",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Saved Scene paths and world-distance ECS following.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "VALIDATION.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "bench": "node --expose-gc bench/path.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "CPU path evidence via pnpm bench; no FPS or spike claim."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "CPU path evidence via pnpm bench; no FPS or spike claim."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/path"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "CPU path evidence via pnpm bench; no FPS or spike claim."
+      }
+    }
+  },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "caseId": "direct-directional-urp",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "light": {
+    "authorityId": "threeR184SquaredWindow",
+    "kind": "directional",
+    "color": [1, 0.75, 0.5],
+    "intensity": 4,
+    "direction": [0, 0, -1]
+  },
+  "import": {
+    "source": "none",
+    "intensityScale": 1,
+    "rangeZero": "no-cutoff",
+    "cone": "radians-to-degrees"
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 255 }
+}

@@ -1,0 +1,72 @@
+{
+  "name": "@forgeax/view-components",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ForgeaX View design tokens, themes, and reusable React components",
+  "sideEffects": [
+    "./src/styles.css",
+    "./src/styles/*.css"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./theme": "./src/theme.tsx",
+    "./tokens": "./src/tokens.ts",
+    "./tokens.json": "./src/tokens/forgeax.tokens.json",
+    "./styles.css": "./src/styles.css",
+    "./tokens.css": "./src/styles/tokens.css",
+    "./components.css": "./src/styles/components.css",
+    "./inspector-form-model": "./src/inspector-form-model.ts",
+    "./visibility": "./src/visibility.ts"
+  },
+  "scripts": {
+    "generate:tokens": "node scripts/generate-tokens.mjs",
+    "check": "tsc --noEmit",
+    "storybook": "storybook dev -p 8006",
+    "build:storybook": "storybook build"
+  },
+  "peerDependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "shiki": "^4.4.3"
+  },
+  "devDependencies": {
+    "@storybook/addon-a11y": "10.6.0",
+    "@storybook/addon-docs": "10.6.0",
+    "@storybook/react-vite": "10.6.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "storybook": "10.6.0",
+    "typescript": "^5.9.2",
+    "vite": "8.0.10"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  }
+}

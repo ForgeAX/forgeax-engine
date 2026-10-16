@@ -1,0 +1,168 @@
+{
+  "name": "@forgeax/hello-m3-programmable-rendering",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M3 programmable rendering composition front door for custom material shaders, RenderGraph pipelines, and depth-aware post-processing.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:m10:dawn": "node scripts/smoke-m10-dawn.mjs",
+    "smoke:m10:browser": "node scripts/smoke-m10-browser.mjs"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.56.1",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.9.2",
+    "vite": "8.0.16"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m3-programmable-rendering smoke",
+    "gauntletScenario": {
+      "id": "hello-m3-programmable-rendering",
+      "script": "smoke",
+      "domains": [
+        "Rendering and shader construction",
+        "Inspection, debugging, and development bridges"
+      ],
+      "packages": [
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-shader",
+        "@forgeax/engine-shader-compiler",
+        "@forgeax/engine-render-graph",
+        "@forgeax/engine-vite-plugin-shader",
+        "@forgeax/engine-rhi-debug"
+      ],
+      "risks": ["baseline", "dynamic", "live", "fault", "recovery", "behavioral", "visual"],
+      "phaseInputs": ["baseline", "dynamic", "live", "fault", "recovery"],
+      "evidence": {
+        "frontDoors": ["node-app", "shader-build", "render-graph", "post-process", "multi-uv", "browser-variant-selection", "browser-webgpu", "browser-composed-custom-post", "custom-pipeline-rhi", "custom-pipeline-rhi-variant", "custom-pipeline-rhi-live-variant", "rhi-debug", "m10-render-feature-fault-recovery"],
+        "legs": ["live", "gpu", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m3-programmable] custom material pixel: PASS",
+          "[m3-programmable] custom material texture binding: PASS",
+          "[m3-programmable] custom material browser: PASS repeats=2",
+          "[m3-programmable] custom material browser missing-parent falsifier: PASS repeats=2",
+          "[m3-programmable] custom material browser uv-transform falsifier: PASS repeats=2",
+          "[m3-programmable] custom material browser missing-normal-resource falsifier: PASS repeats=2",
+          "[m3-programmable] custom material browser swapped-normal-binding falsifier: PASS repeats=2",
+          "[m3-programmable] custom material normal-slot visual causality: PASS repeats=2",
+          "[m3-programmable] custom material normal-slot live mutation: PASS repeats=2",
+          "[m3-programmable] custom material normal-slot resize/rebuild: PASS repeats=2",
+          "[m3-programmable] custom material two-slot live resize/rebuild: PASS repeats=2",
+          "[m3-programmable] composed inherited material no-MSAA startup-true repeatability: PASS",
+          "[m3-programmable] composed inherited material MSAA startup-false repeatability: PASS",
+          "[m3-programmable] composed inherited material MSAA startup-true repeatability: PASS",
+          "[m3-programmable] composed inherited material no-MSAA startup-false pipeline falsifier repeatability: PASS",
+          "[m3-programmable] composed inherited material no-MSAA startup-true pipeline falsifier repeatability: PASS",
+          "[m3-programmable] composed inherited material MSAA startup-false pipeline falsifier repeatability: PASS",
+          "[m3-programmable] composed inherited material MSAA startup-true pipeline falsifier repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-MSAA startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-MSAA startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post MSAA startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post MSAA startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-msaa pipeline falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-msaa pipeline falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post msaa pipeline falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post msaa pipeline falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-msaa reverse-pipeline falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-msaa reverse-pipeline falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post msaa reverse-pipeline falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post msaa reverse-pipeline falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-msaa reverse-pipeline-texture falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post no-msaa reverse-pipeline-texture falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material depth post msaa reverse-pipeline-texture falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material depth post msaa reverse-pipeline-texture falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material inversion post no-msaa startup-false repeatability: PASS",
+          "[m3-programmable] inherited material inversion post no-msaa startup-true repeatability: PASS",
+          "[m3-programmable] inherited material inversion post msaa startup-false repeatability: PASS",
+          "[m3-programmable] inherited material inversion post msaa startup-true repeatability: PASS",
+          "[m3-programmable] inherited material inversion post no-msaa param falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material inversion post no-msaa param falsifier startup-true repeatability: PASS",
+          "[m3-programmable] inherited material inversion post msaa param falsifier startup-false repeatability: PASS",
+          "[m3-programmable] inherited material inversion post msaa param falsifier startup-true repeatability: PASS",
+          "[m3-programmable] render graph seam: PASS",
+          "[m3-programmable] depth-aware URP overlay: PASS",
+          "[m3-programmable] fake-depth falsifier: PASS",
+          "[m3-programmable] multi-UV Dawn: PASS",
+          "[m3-programmable] multi-UV falsifier: PASS",
+          "[m3-programmable] multi-UV variant: PASS",
+          "[m3-programmable] multi-UV browser variant: PASS",
+          "[m3-programmable] browser live pipeline: PASS",
+          "[m3-programmable] browser custom pipeline + post composition: PASS",
+          "[m3-programmable] browser multi-texture falsifier: PASS",
+          "[m3-programmable] custom pipeline RHI: PASS",
+          "[m3-programmable] custom pipeline RHI true variant: PASS",
+          "[m3-programmable] custom pipeline RHI texture binding: PASS",
+          "[m3-programmable] custom pipeline MSAA adjacent pipeline: PASS",
+          "[m3-programmable] custom pipeline MSAA inversion post: PASS",
+          "[m3-programmable] custom pipeline MSAA live post: PASS",
+          "[m3-programmable] custom pipeline MSAA live post resolve falsifier: PASS",
+          "[m3-programmable] custom pipeline MSAA live post resolve repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA live variant repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA live post adjacent pipeline: PASS",
+          "[m3-programmable] custom pipeline MSAA live post adjacent pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA steady inversion: PASS",
+          "[m3-programmable] custom pipeline MSAA steady true inversion: PASS",
+          "[m3-programmable] custom pipeline MSAA steady true inversion repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA steady false inversion repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA steady false passthrough repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA steady true passthrough repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA true variant pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA true inversion pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA false passthrough pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline MSAA false inversion pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA false inversion pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA true inversion pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA true passthrough pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA false passthrough pipeline repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA steady false passthrough repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA steady false inversion repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA steady true passthrough repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA steady true inversion repeatability: PASS",
+          "[m3-programmable] custom pipeline no-MSAA live post resolve repeatability: PASS",
+          "[m3-programmable] custom pipeline live variant switch: PASS",
+          "[m3-programmable] M10 render feature Dawn fault recovery: PASS",
+          "[m3-programmable] M10 render feature browser fault recovery: PASS",
+          "[m3-programmable] PASS - M3 programmable rendering gates GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "composition smoke delegates bundle shape to the existing shader and CSM app gates"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fixed frame budgets are rendering correctness evidence, not an FPS benchmark"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "programmable rendering composition is covered by GPU and pixel gates"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-m3-programmable-rendering smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  }
+}

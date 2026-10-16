@@ -1,0 +1,64 @@
+{
+  "name": "@forgeax/hello-transform-gizmo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Translate, rotate and scale a 3D object through physical canvas pointer input.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node --test scripts/__tests__/browser-admission.test.mjs && node scripts/smoke-browser.mjs",
+    "verify:performance": "node scripts/smoke-browser.mjs --performance",
+    "verify:rhi": "node scripts/rhi-verify.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-transform-gizmo smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Real pointer and GPU timing evidence is emitted by verify:performance"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Bounded per-mode CPU, hit-test and GPU timing samples are emitted by verify:performance"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-transform-gizmo smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-interaction": "workspace:*",
+    "@forgeax/engine-app": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*"
+  }
+}

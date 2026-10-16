@@ -1,0 +1,8 @@
+{
+  "name": "@forgeax/view-fixture-host",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/main.ts"
+  }
+}

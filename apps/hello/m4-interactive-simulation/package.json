@@ -1,0 +1,48 @@
+{
+  "name": "@forgeax/hello-m4-interactive-simulation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M4 interactive simulation gauntlet: physics readiness, fixed-step movement, collisions, spatial audio, and cleanup.",
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m4-interactive-simulation smoke",
+    "gauntletScenario": {
+      "id": "hello-m4-interactive-simulation",
+      "script": "smoke",
+      "domains": ["Simulation and media implementations", "World and host contract", "Inspection, debugging, and development bridges"],
+      "packages": ["@forgeax/engine-physics", "@forgeax/engine-physics-rapier2d", "@forgeax/engine-physics-rapier3d", "@forgeax/engine-audio", "@forgeax/engine-audio-webaudio"],
+      "risks": ["baseline", "behavioral", "lifecycle", "cleanup", "fault", "recovery"],
+      "phaseInputs": ["baseline", "behavioral", "lifecycle", "cleanup", "recovery"],
+      "evidence": {
+        "frontDoors": ["physics-app", "character-app", "audio-app", "physics-rapier2d-unit", "physics-rapier3d-unit", "audio-webaudio-unit"],
+        "legs": ["semantic", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m4-interactive] physics gravity/readiness: PASS",
+          "[m4-interactive] character fixed-step/collision: PASS",
+          "[m4-interactive] audio app lifecycle: PASS",
+          "[m4-interactive] audio browser gesture/spatial pan/collision cleanup: PASS",
+          "[m4-interactive] 2D physics ECS/KCC lifecycle: PASS",
+          "[m4-interactive] physics lifecycle tests: PASS",
+          "[m4-interactive] audio lifecycle tests: PASS",
+          "[m4-interactive] simulation evidence/cleanup/invariants: PASS",
+          "[m4-interactive] simulation public front door/errors: PASS",
+          "[m4-interactive] simulation restore/replay: read-only front door PASS",
+          "[m4-interactive] PASS - M4 interactive simulation gates GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {"enabled": false, "reason": "headless composition scenario has no dedicated browser bundle"},
+      "fps": {"enabled": false, "reason": "frame counts verify scheduling but are not a performance benchmark"},
+      "bench": {"enabled": false, "reason": "simulation correctness is covered by app and package tests"},
+      "gate": {"enabled": true, "command": "pnpm --filter @forgeax/hello-m4-interactive-simulation smoke"},
+      "spike-report": {"enabled": false, "reason": "not a spike app"}
+    }
+  }
+}

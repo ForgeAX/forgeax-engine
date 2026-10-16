@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/vite-plugin-pack/schema/runtime-binding.schema.json",
+  "title": "RuntimeAssetBinding",
+  "description": "Host-injected binding for one ForgeaX dev Catalog scope. The scope and generation are the only runtime identity; filesystem roots do not cross this contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gameId",
+    "scopeId",
+    "generation",
+    "status",
+    "catalogUrl",
+    "importUrlBase",
+    "packageUrlBase"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "runtime-asset-binding-v1"
+    },
+    "gameId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scopeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic publication generation used to reject stale browser work."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["unbound", "transitioning", "ready", "degraded", "unavailable"]
+    },
+    "catalogUrl": {
+      "type": "string",
+      "minLength": 1
+    },
+    "importUrlBase": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packageUrlBase": {
+      "type": "string",
+      "minLength": 1
+    },
+    "catalogRoots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/catalogRoot"
+      }
+    },
+    "authority": {
+      "type": "string",
+      "enum": ["authoritative", "degraded"]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    }
+  },
+  "$defs": {
+    "catalogRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "catalogPrefix"],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "catalogPrefix": {
+          "type": "string"
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "blocking"]
+        },
+        "message": {
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/subjectRef"
+        },
+        "expected": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actual": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authority": {
+          "type": "string",
+          "enum": ["producer", "pack", "catalog"]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subjectRef"
+          }
+        },
+        "recoveryIntents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "subjectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["asset", "package", "resource"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/material.schema.json",
+  "title": "ForgeaX MaterialAsset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "const": "material"
+    },
+    "colorSpace": {
+      "enum": ["srgb", "linear"],
+      "default": "srgb",
+      "description": "Transfer function for authored material colors. Omitted values are sRGB; runtime shader values are linear."
+    },
+    "parent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "passes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/pass"
+      }
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/parameter"
+      }
+    },
+    "values": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/valueOrNull"
+      }
+    }
+  },
+  "$defs": {
+    "pass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "program"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "program": {
+          "$ref": "#/$defs/program"
+        },
+        "renderState": {
+          "type": "object",
+          "properties": {
+            "colorWriteMask": { "type": "integer", "minimum": 0, "maximum": 15 },
+            "depthBias": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+            "depthBiasSlopeScale": { "type": "number" },
+            "depthBiasClamp": { "type": "number" }
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/colorOutput" }
+        }
+      }
+    },
+    "program": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module"],
+      "properties": {
+        "bindings": { "enum": ["group-0", "group-0-resource", "view-only", "view-and-scene-depth", "render-material-with-scene-depth", "render-material-and-scene-depth", "render-material"], "default": "render-material" },
+        "sceneDepth": { "enum": ["read-only", "before-pass"] },
+        "module": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vertexEntry": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fragmentEntry": {
+          "type": "string",
+          "minLength": 1
+        },
+        "moduleSlots": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "enum": ["bool", "f32", "i32", "u32", "vec2", "vec3", "vec4", "color", "texture"]
+        },
+        "colorSpace": {
+          "enum": ["srgb", "linear"],
+          "description": "Schema-level transfer function for an authored color. A MaterialAsset colorSpace overrides it; parameters of type color ultimately default to sRGB and runtime shader values are linear."
+        },
+        "default": {
+          "$ref": "#/$defs/value"
+        },
+        "optional": {
+          "type": "boolean"
+        }
+      }
+    },
+    "valueOrNull": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/value"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/textureGuid"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        {
+          "$ref": "#/$defs/texture"
+        }
+      ]
+    },
+    "texture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["texture"],
+      "properties": {
+        "texture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampler": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coordinates": {
+          "$ref": "#/$defs/coordinates"
+        },
+        "occlusionStrength": {
+          "type": "number"
+        }
+      }
+    },
+    "textureGuid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "仅当对应 parameters 条目的 type 为 texture 时，字符串才解释为纹理 GUID 简写。"
+    },
+    "coordinates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "set": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transform": {
+          "$ref": "#/$defs/transform"
+        }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "offset": {
+          "$ref": "#/$defs/vec2"
+        },
+        "scale": {
+          "$ref": "#/$defs/vec2"
+        },
+        "rotation": {
+          "type": "number"
+        }
+      }
+    },
+    "vec2": {
+      "type": "array",
+      "prefixItems": [{ "type": "number" }, { "type": "number" }],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "colorOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "format"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blend": {
+          "type": "object"
+        },
+        "writeMask": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        }
+      }
+    }
+  }
+}

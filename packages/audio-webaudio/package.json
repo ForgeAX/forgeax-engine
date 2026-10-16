@@ -1,0 +1,72 @@
+{
+  "name": "@forgeax/engine-audio-webaudio",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Host-owned ForgeaX Web Audio consumer: decode cache, pending playback, AudioContext, buses, source nodes, and cleanup.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./audio-importer": {
+      "types": "./dist/audio-importer.d.ts",
+      "import": "./dist/audio-importer.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "typecheck": "tsc -b",
+    "bench": "node bench/run.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-audio": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Host Web Audio consumer is covered by package tests; no standalone player bundle is emitted"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "library package; fps is reported by apps that consume the audio tick system in their render loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "opt-in native browser DSP/control benchmark via pnpm bench; hardware measurements are preserved with source hashes rather than used as a cross-run CI threshold"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; test surface coverage runs as part of pnpm test:unit + tsc -b"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; this is a production MVP per plan-strategy D-1 (dual-package split)"
+      }
+    }
+  }
+}

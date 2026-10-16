@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "id": "@forgeax-extension/view",
+  "version": "0.1.0",
+  "displayName": { "en": "ForgeaX View" },
+  "description": { "en": "Engine-owned project and asset workspace" },
+  "categories": ["workbench"],
+  "entry": { "frontend": "./dist/browser.mjs" },
+  "contributes": {
+    "panelTypes": [{ "id": "view.workspace", "runtime": "iframe", "entry": "./dist/index.html" }],
+    "pages": [{
+      "id": "view",
+      "title": "ForgeaX View",
+      "cardinality": "singleton",
+      "restorePolicy": "project",
+      "layoutVersion": 1,
+      "layout": { "version": 1, "root": { "kind": "tabs", "placements": ["workspace"], "active": "workspace" } },
+      "panels": [{ "id": "workspace", "panelType": { "extension": "self", "id": "view.workspace" } }]
+    }],
+    "activities": [{ "id": "view", "title": "ForgeaX View", "pageType": { "extension": "self", "id": "view" } }]
+  },
+  "permissions": ["project:read", "project:write"]
+}

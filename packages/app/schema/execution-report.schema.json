@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/execution-report.schema.json",
+  "title": "ForgeaX ExecutionReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "workers",
+    "capabilities",
+    "engine",
+    "world",
+    "kernelDispatch",
+    "frame",
+    "performance",
+    "audio",
+    "fault"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 3
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker",
+        "offscreenCanvas",
+        "workerAnimationFrame",
+        "workerWebGpu",
+        "crossOriginIsolated",
+        "sharedArrayBuffer",
+        "atomicsWait"
+      ],
+      "properties": {
+        "worker": {
+          "$ref": "#/$defs/capability"
+        },
+        "offscreenCanvas": {
+          "$ref": "#/$defs/capability"
+        },
+        "workerAnimationFrame": {
+          "$ref": "#/$defs/capability"
+        },
+        "workerWebGpu": {
+          "$ref": "#/$defs/capability"
+        },
+        "crossOriginIsolated": {
+          "$ref": "#/$defs/capability"
+        },
+        "sharedArrayBuffer": {
+          "$ref": "#/$defs/capability"
+        },
+        "atomicsWait": {
+          "$ref": "#/$defs/capability"
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "realm",
+        "health"
+      ],
+      "properties": {
+        "realm": {
+          "enum": [
+            "host",
+            "worker"
+          ]
+        },
+        "health": {
+          "enum": [
+            "idle",
+            "starting",
+            "running",
+            "stopped",
+            "faulted"
+          ]
+        }
+      }
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "health",
+        "partialWrite",
+        "retryable"
+      ],
+      "properties": {
+        "identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "health": {
+          "enum": [
+            "healthy",
+            "poisoned"
+          ]
+        },
+        "partialWrite": {
+          "type": "boolean"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "kernelDispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligible",
+        "usedShared",
+        "reason",
+        "dispatched",
+        "completed"
+      ],
+      "properties": {
+        "eligible": {
+          "type": "boolean"
+        },
+        "usedShared": {
+          "type": "boolean"
+        },
+        "reason": {
+          "enum": [
+            "no-eligible-kernel",
+            "zero-work",
+            "small-span",
+            "forced-inline",
+            "shared",
+            "poisoned"
+          ]
+        },
+        "dispatched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submitted",
+        "completed",
+        "inFlight",
+        "highWater",
+        "throttledTicks"
+      ],
+      "properties": {
+        "submitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "highWater": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "throttledTicks": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "performance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostFrameMs",
+        "engineUpdateMs",
+        "kernelWaitMs",
+        "hostAudioMs"
+      ],
+      "properties": {
+        "hostFrameMs": {
+          "$ref": "#/$defs/nullableMeasurement"
+        },
+        "engineUpdateMs": {
+          "$ref": "#/$defs/nullableMeasurement"
+        },
+        "kernelWaitMs": {
+          "$ref": "#/$defs/nullableMeasurement"
+        },
+        "hostAudioMs": {
+          "$ref": "#/$defs/nullableMeasurement"
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "contextState",
+        "activeSourceCount",
+        "lastError"
+      ],
+      "properties": {
+        "owner": {
+          "const": "host"
+        },
+        "contextState": {
+          "enum": [
+            "running",
+            "suspended",
+            "closed"
+          ]
+        },
+        "activeSourceCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastError": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "expected",
+                "hint",
+                "detail"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "hint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "detail": {}
+              }
+            }
+          ]
+        },
+        "streaming": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "encodedBytes",
+            "pcmBytes",
+            "pendingBytes",
+            "pendingReads",
+            "underruns"
+          ],
+          "properties": {
+            "encodedBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pcmBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pendingBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pendingReads": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "underruns": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "dependentRequired": {
+        "limits": [
+          "capabilities"
+        ]
+      },
+      "required": [
+        "epoch",
+        "state",
+        "submittedFrame",
+        "completedFrame"
+      ],
+      "properties": {
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "enum": [
+            "alive",
+            "rebuilding",
+            "failed",
+            "stopped"
+          ]
+        },
+        "submittedFrame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completedFrame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backendKind",
+            "compute",
+            "storageBuffer"
+          ],
+          "properties": {
+            "backendKind": {
+              "enum": [
+                "webgpu",
+                "wgpu-native",
+                "wgpu-webgl2",
+                "null"
+              ]
+            },
+            "compute": {
+              "type": "boolean"
+            },
+            "storageBuffer": {
+              "type": "boolean"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maxStorageBuffersPerShaderStage"
+          ],
+          "properties": {
+            "maxStorageBuffersPerShaderStage": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "fault": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "code",
+            "expected",
+            "hint",
+            "detail",
+            "partialWrite",
+            "retryable"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "bootstrap",
+                "handshake",
+                "runtime",
+                "kernel",
+                "world",
+                "rebuild"
+              ]
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expected": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hint": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detail": {},
+            "partialWrite": {
+              "type": "boolean"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "workers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine",
+        "render",
+        "kernels"
+      ],
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/workerDecision"
+        },
+        "render": {
+          "$ref": "#/$defs/workerDecision"
+        },
+        "kernels": {
+          "$ref": "#/$defs/workerDecision"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "reason"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "samples",
+        "p50",
+        "p95",
+        "p99",
+        "jitter"
+      ],
+      "properties": {
+        "samples": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "p50": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p99": {
+          "type": "number",
+          "minimum": 0
+        },
+        "jitter": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "nullableMeasurement": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/measurement"
+        }
+      ]
+    },
+    "workerDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "enabled",
+        "reason",
+        "missingCapabilities"
+      ],
+      "properties": {
+        "requested": {
+          "enum": [
+            "auto",
+            true,
+            false
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "reason": {
+          "enum": [
+            "enabled",
+            "disabled",
+            "engine-disabled",
+            "capability-unavailable"
+          ]
+        },
+        "missingCapabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "worker",
+              "offscreenCanvas",
+              "workerAnimationFrame",
+              "workerWebGpu",
+              "crossOriginIsolated",
+              "sharedArrayBuffer",
+              "atomicsWait"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

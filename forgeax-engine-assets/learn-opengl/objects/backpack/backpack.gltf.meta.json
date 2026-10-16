@@ -1,0 +1,601 @@
+{
+  "importSettings": {
+    "defaultSceneIndex": 0,
+    "downscaleMaxDimension": 2048,
+    "diagnostics": {
+      "matrixTrsCoexistNodes": [],
+      "nodeNames": [
+        "Cube.028__0",
+        "Plane.008__0",
+        "Cube.029__0",
+        "Plane.009__0",
+        "Plane.010__0",
+        "Plane.011__0",
+        "Cylinder.029__0",
+        "Cube.030__0",
+        "Plane.012__0",
+        "Plane.013__0",
+        "Cylinder.030__0",
+        "Plane.014__0",
+        "Cube.031__0",
+        "Cylinder.031__0",
+        "Cube.032__0",
+        "Cylinder.032__0",
+        "Cube.033__0",
+        "Cube.034__0",
+        "Cube.035__0",
+        "Cube.036__0",
+        "Cylinder.033__0",
+        "Cube.037__0",
+        "Cylinder.034__0",
+        "Cylinder.035__0",
+        "Cube.038__0",
+        "Cube.039__0",
+        "Cylinder.036__0",
+        "Cylinder.037__0",
+        "Cylinder.038__0",
+        "Cylinder.039__0",
+        "Cylinder.040__0",
+        "Cylinder.041__0",
+        "Cylinder.042__0",
+        "Cylinder.043__0",
+        "Cylinder.044__0",
+        "Cylinder.045__0",
+        "Cylinder.046__0",
+        "Cylinder.047__0",
+        "Cylinder.048__0",
+        "Cylinder.049__0",
+        "Cube.040__0",
+        "Cube.041__0",
+        "Cube.042__0",
+        "Cube.043__0",
+        "Cube.044__0",
+        "Cube.045__0",
+        "Plane.015__0",
+        "Cube.046__0",
+        "Cube.047__0",
+        "Cylinder.050__0",
+        "Cube.048__0",
+        "Cylinder.051__0",
+        "Cylinder.052__0",
+        "Cylinder.053__0",
+        "Cylinder.054__0",
+        "BezierCurve.003__0",
+        "Cube.049__0",
+        "Cylinder.055__0",
+        "Cylinder.056__0",
+        "Cube.050__0",
+        "Sphere.014__0",
+        "Sphere.015__0",
+        "Sphere.016__0",
+        "Sphere.017__0",
+        "Cube.051__0",
+        "Sphere.018__0",
+        "Sphere.019__0",
+        "Sphere.020__0",
+        "Sphere.021__0",
+        "Cube.052__0",
+        "Cube.053__0",
+        "Cube.054__0",
+        "Sphere.022__0",
+        "Sphere.023__0",
+        "Sphere.024__0",
+        "Sphere.025__0",
+        "Sphere.026__0",
+        "Sphere.027__0",
+        "Cube.055__0"
+      ],
+      "unsupportedExtensions": []
+    }
+  },
+  "importer": "gltf",
+  "kind": "external-asset-package",
+  "schemaVersion": 1,
+  "source": "backpack.gltf",
+  "subAssets": [
+    {
+      "guid": "019f0414-203f-75e8-b952-c53b6061fe27",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh:Cube.028__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c53c16fbdde4",
+      "kind": "mesh",
+      "sourceIndex": 1,
+      "sourceKey": "mesh:Plane.008__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c53dc1b50bd5",
+      "kind": "mesh",
+      "sourceIndex": 2,
+      "sourceKey": "mesh:Cube.029__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c53e3a5a8058",
+      "kind": "mesh",
+      "sourceIndex": 3,
+      "sourceKey": "mesh:Plane.009__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c53fb736ab02",
+      "kind": "mesh",
+      "sourceIndex": 4,
+      "sourceKey": "mesh:Plane.010__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5406cb9185b",
+      "kind": "mesh",
+      "sourceIndex": 5,
+      "sourceKey": "mesh:Plane.011__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c541c15ff749",
+      "kind": "mesh",
+      "sourceIndex": 6,
+      "sourceKey": "mesh:Cylinder.029__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5427b527ad7",
+      "kind": "mesh",
+      "sourceIndex": 7,
+      "sourceKey": "mesh:Cube.030__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54386ff4ddf",
+      "kind": "mesh",
+      "sourceIndex": 8,
+      "sourceKey": "mesh:Plane.012__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c544f0a1933b",
+      "kind": "mesh",
+      "sourceIndex": 9,
+      "sourceKey": "mesh:Plane.013__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5450fedb36d",
+      "kind": "mesh",
+      "sourceIndex": 10,
+      "sourceKey": "mesh:Cylinder.030__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c546fa044c5c",
+      "kind": "mesh",
+      "sourceIndex": 11,
+      "sourceKey": "mesh:Plane.014__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54746583586",
+      "kind": "mesh",
+      "sourceIndex": 12,
+      "sourceKey": "mesh:Cube.031__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c548424390fd",
+      "kind": "mesh",
+      "sourceIndex": 13,
+      "sourceKey": "mesh:Cylinder.031__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54909aca648",
+      "kind": "mesh",
+      "sourceIndex": 14,
+      "sourceKey": "mesh:Cube.032__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54a8d71ad99",
+      "kind": "mesh",
+      "sourceIndex": 15,
+      "sourceKey": "mesh:Cylinder.032__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54bbfd914dd",
+      "kind": "mesh",
+      "sourceIndex": 16,
+      "sourceKey": "mesh:Cube.033__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54c21a61122",
+      "kind": "mesh",
+      "sourceIndex": 17,
+      "sourceKey": "mesh:Cube.034__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54d8c3d0aad",
+      "kind": "mesh",
+      "sourceIndex": 18,
+      "sourceKey": "mesh:Cube.035__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54edc7f8611",
+      "kind": "mesh",
+      "sourceIndex": 19,
+      "sourceKey": "mesh:Cube.036__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c54f68dd15ed",
+      "kind": "mesh",
+      "sourceIndex": 20,
+      "sourceKey": "mesh:Cylinder.033__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55022eac547",
+      "kind": "mesh",
+      "sourceIndex": 21,
+      "sourceKey": "mesh:Cube.037__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5519532268b",
+      "kind": "mesh",
+      "sourceIndex": 22,
+      "sourceKey": "mesh:Cylinder.034__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c552e6b82d71",
+      "kind": "mesh",
+      "sourceIndex": 23,
+      "sourceKey": "mesh:Cylinder.035__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c553c3310330",
+      "kind": "mesh",
+      "sourceIndex": 24,
+      "sourceKey": "mesh:Cube.038__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c554a5a7e9b6",
+      "kind": "mesh",
+      "sourceIndex": 25,
+      "sourceKey": "mesh:Cube.039__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5551ffb3180",
+      "kind": "mesh",
+      "sourceIndex": 26,
+      "sourceKey": "mesh:Cylinder.036__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c556cec7265a",
+      "kind": "mesh",
+      "sourceIndex": 27,
+      "sourceKey": "mesh:Cylinder.037__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5576be95ec4",
+      "kind": "mesh",
+      "sourceIndex": 28,
+      "sourceKey": "mesh:Cylinder.038__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c558aa4550e2",
+      "kind": "mesh",
+      "sourceIndex": 29,
+      "sourceKey": "mesh:Cylinder.039__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55988f92094",
+      "kind": "mesh",
+      "sourceIndex": 30,
+      "sourceKey": "mesh:Cylinder.040__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55aabeaac99",
+      "kind": "mesh",
+      "sourceIndex": 31,
+      "sourceKey": "mesh:Cylinder.041__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55bdfdb24cd",
+      "kind": "mesh",
+      "sourceIndex": 32,
+      "sourceKey": "mesh:Cylinder.042__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55cd6a7f963",
+      "kind": "mesh",
+      "sourceIndex": 33,
+      "sourceKey": "mesh:Cylinder.043__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55d541a95ad",
+      "kind": "mesh",
+      "sourceIndex": 34,
+      "sourceKey": "mesh:Cylinder.044__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55e504c29b3",
+      "kind": "mesh",
+      "sourceIndex": 35,
+      "sourceKey": "mesh:Cylinder.045__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c55fb2e9c71c",
+      "kind": "mesh",
+      "sourceIndex": 36,
+      "sourceKey": "mesh:Cylinder.046__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56096c65df1",
+      "kind": "mesh",
+      "sourceIndex": 37,
+      "sourceKey": "mesh:Cylinder.047__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c561409170ba",
+      "kind": "mesh",
+      "sourceIndex": 38,
+      "sourceKey": "mesh:Cylinder.048__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c562ab40dcdb",
+      "kind": "mesh",
+      "sourceIndex": 39,
+      "sourceKey": "mesh:Cylinder.049__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c563d0bdb624",
+      "kind": "mesh",
+      "sourceIndex": 40,
+      "sourceKey": "mesh:Cube.040__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56454849da2",
+      "kind": "mesh",
+      "sourceIndex": 41,
+      "sourceKey": "mesh:Cube.041__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56506130723",
+      "kind": "mesh",
+      "sourceIndex": 42,
+      "sourceKey": "mesh:Cube.042__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5660da2cd64",
+      "kind": "mesh",
+      "sourceIndex": 43,
+      "sourceKey": "mesh:Cube.043__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c567f580d6ec",
+      "kind": "mesh",
+      "sourceIndex": 44,
+      "sourceKey": "mesh:Cube.044__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5689b73e854",
+      "kind": "mesh",
+      "sourceIndex": 45,
+      "sourceKey": "mesh:Cube.045__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56958a7c4ec",
+      "kind": "mesh",
+      "sourceIndex": 46,
+      "sourceKey": "mesh:Plane.015__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56a1617d4d5",
+      "kind": "mesh",
+      "sourceIndex": 47,
+      "sourceKey": "mesh:Cube.046__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56b8ac6342c",
+      "kind": "mesh",
+      "sourceIndex": 48,
+      "sourceKey": "mesh:Cube.047__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56cc8742e45",
+      "kind": "mesh",
+      "sourceIndex": 49,
+      "sourceKey": "mesh:Cylinder.050__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56dc82e09ed",
+      "kind": "mesh",
+      "sourceIndex": 50,
+      "sourceKey": "mesh:Cube.048__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56eff9307cd",
+      "kind": "mesh",
+      "sourceIndex": 51,
+      "sourceKey": "mesh:Cylinder.051__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c56f8ebffed3",
+      "kind": "mesh",
+      "sourceIndex": 52,
+      "sourceKey": "mesh:Cylinder.052__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c570cc66b8d2",
+      "kind": "mesh",
+      "sourceIndex": 53,
+      "sourceKey": "mesh:Cylinder.053__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c571f9a94a80",
+      "kind": "mesh",
+      "sourceIndex": 54,
+      "sourceKey": "mesh:Cylinder.054__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c572a5f1ad33",
+      "kind": "mesh",
+      "sourceIndex": 55,
+      "sourceKey": "mesh:BezierCurve.003__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c573710b0895",
+      "kind": "mesh",
+      "sourceIndex": 56,
+      "sourceKey": "mesh:Cube.049__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c574ec6828ad",
+      "kind": "mesh",
+      "sourceIndex": 57,
+      "sourceKey": "mesh:Cylinder.055__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c575ed079347",
+      "kind": "mesh",
+      "sourceIndex": 58,
+      "sourceKey": "mesh:Cylinder.056__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5767e8ef837",
+      "kind": "mesh",
+      "sourceIndex": 59,
+      "sourceKey": "mesh:Cube.050__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c577eae86e61",
+      "kind": "mesh",
+      "sourceIndex": 60,
+      "sourceKey": "mesh:Sphere.014__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c578ef6d5a68",
+      "kind": "mesh",
+      "sourceIndex": 61,
+      "sourceKey": "mesh:Sphere.015__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c579346781f7",
+      "kind": "mesh",
+      "sourceIndex": 62,
+      "sourceKey": "mesh:Sphere.016__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c57a1dd7cb3c",
+      "kind": "mesh",
+      "sourceIndex": 63,
+      "sourceKey": "mesh:Sphere.017__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c57b87c45875",
+      "kind": "mesh",
+      "sourceIndex": 64,
+      "sourceKey": "mesh:Cube.051__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c57cee1e7c1c",
+      "kind": "mesh",
+      "sourceIndex": 65,
+      "sourceKey": "mesh:Sphere.018__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c57d991a218d",
+      "kind": "mesh",
+      "sourceIndex": 66,
+      "sourceKey": "mesh:Sphere.019__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c57e0b60d408",
+      "kind": "mesh",
+      "sourceIndex": 67,
+      "sourceKey": "mesh:Sphere.020__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c57f352d8d4c",
+      "kind": "mesh",
+      "sourceIndex": 68,
+      "sourceKey": "mesh:Sphere.021__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5800f87b143",
+      "kind": "mesh",
+      "sourceIndex": 69,
+      "sourceKey": "mesh:Cube.052__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58112171af3",
+      "kind": "mesh",
+      "sourceIndex": 70,
+      "sourceKey": "mesh:Cube.053__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5828e2bdd48",
+      "kind": "mesh",
+      "sourceIndex": 71,
+      "sourceKey": "mesh:Cube.054__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c583461331af",
+      "kind": "mesh",
+      "sourceIndex": 72,
+      "sourceKey": "mesh:Sphere.022__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58460fbb418",
+      "kind": "mesh",
+      "sourceIndex": 73,
+      "sourceKey": "mesh:Sphere.023__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58573c5ad1c",
+      "kind": "mesh",
+      "sourceIndex": 74,
+      "sourceKey": "mesh:Sphere.024__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c5861617fdb7",
+      "kind": "mesh",
+      "sourceIndex": 75,
+      "sourceKey": "mesh:Sphere.025__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c587528317a9",
+      "kind": "mesh",
+      "sourceIndex": 76,
+      "sourceKey": "mesh:Sphere.026__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c588d84bccc2",
+      "kind": "mesh",
+      "sourceIndex": 77,
+      "sourceKey": "mesh:Sphere.027__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c589d4c0b84f",
+      "kind": "mesh",
+      "sourceIndex": 78,
+      "sourceKey": "mesh:Cube.055__0-Mesh"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58afa79af40",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material:0"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58b7b7ae04b",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene:0"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58c9fdc6425",
+      "kind": "texture",
+      "sourceIndex": 0,
+      "sourceKey": "texture:0"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58d6cd5889c",
+      "kind": "texture",
+      "sourceIndex": 1,
+      "sourceKey": "texture:1"
+    },
+    {
+      "guid": "019f0414-203f-75e8-b952-c58e4350fa8b",
+      "kind": "texture",
+      "sourceIndex": 2,
+      "sourceKey": "texture:2"
+    }
+  ]
+}

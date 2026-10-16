@@ -1,0 +1,58 @@
+{
+  "name": "@forgeax/hello-sprite-lit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Sprite-lit demo: forgeax::sprite-lit material lit by 1 directional + 1 point + 1 spot light (feat-20260624-sprite-lit-shading-model-pure-2d-lighting M1').",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-sprite-lit smoke",
+    "_comment": "smokeInvocation = self-contained SSOT. hello-sprite-lit exercises the sprite-lit material end-to-end (forgeax::sprite-lit + Half-Lambert squared + DirectionalLight/PointLight/SpotLight via punctual storage buffers) with a single procedural-color sprite scene (plan-decisions L-2 procedural sprite, hardcoded 1 dir + 1 point + 1 spot light config).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) is downstream of @forgeax/engine-runtime + @forgeax/engine-app + @forgeax/engine-shader sizes already tracked at the package level; demo workspace declares no separate bundle-size baseline"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression covered by hello-cube / hello-app gates; sprite-lit perf is bounded by 1 sprite + 3 lights (URP cap 4) and falls under hello-pbr-style lighting cost already gated by packages/render/bench/transparent-sort.bench.ts (sprite-lit reuses the same splitLdrSprite sub-pass per plan-strategy D-4)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "perf-critical bench (per-light forward shading) is anchored at @forgeax/engine-runtime; sprite-lit reuses the same lighting buffer pipeline as PBR -- no demo-level bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-sprite-lit smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M1' acceptance demo for the 4th sprite shading model id (requirements section 2 #11)"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ForgeaX Multithreaded Execution</title></head>
+  <body style="margin:0;background:#10131a;color:#dce6f2;font:14px ui-monospace,monospace">
+    <section style="padding:16px;max-width:900px">
+      <h1 style="font:600 20px system-ui;margin:0 0 12px">ForgeaX Execution</h1>
+      <p id="execution-summary" role="status" style="font:600 16px system-ui;margin:0 0 12px">Engine: starting</p>
+      <button id="rebuild" hidden type="button" style="padding:8px 14px">Rebuild poisoned World</button>
+      <pre id="execution-report" data-status="starting" style="white-space:pre-wrap">starting</pre>
+    </section>
+    <canvas id="game" width="640" height="360"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

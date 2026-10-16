@@ -22,7 +22,10 @@ CPU-precomputed UV rotation removes repeated material-constant fragment work.
 It does not justify moving screen-position-dependent Vogel rotation to the CPU.
 Branch-free source is useful when it removes divergent or redundant work;
 retaining a cheap branch can be appropriate if it avoids much more expensive
-work. Compare generated code and actual workload rather than counting `if`s.
+work. Compare generated code and actual workload rather than counting `if`s. The
+[bilateral AO negative case](cases/full-scene-resources-20261016.md#bilateral-ao-qualify-the-shader-operation-on-the-actual-backend)
+shows fewer taps losing both local quality and GPU time, while an exact-pixel
+arithmetic rewrite also failed to save GPU time.
 
 ## Static material specialization
 
@@ -79,3 +82,33 @@ as well as runtime benefit before adding many independent static choices.
 
 For a matched compiled-WGSL example and its CPU/GPU evidence limits, read the
 [compiled graph case](cases/compiled-material-pruning.md).
+
+## Separate cold resource boundaries
+
+| First-use stage | Evidence to collect | Preparation boundary |
+| --- | --- | --- |
+| Encoded/cooked asset loading | Actual GUID, selected cooked program key and readiness receipt | Asset readiness does not prove a device pipeline or decoded audio buffer exists |
+| Receiver material admission | Source/epoch/revision/frame, new program key and source-fact derivation | Use the existing accepted publication owner; equal source under another key is not automatically duplicate admission |
+| GPU module/pipeline creation | Exact module/program label, device generation, pass/layout and frame | Preserve layout, visual outputs and recovery; avoid all-library prewarming without an identified first-use owner |
+| Host PCM decoding | Exact clip/request and prepared/rejected receipt | Prepare through the audio owner's bounded cache without a voice or fake shot |
+
+Map a late program key back to actual mesh/material resources before choosing a
+pre-Ready change. Keep arrival, accepted/submitted and completed receipts
+separate. The [resource update case](cases/full-scene-resources-20261016.md#cold-boundaries-and-unexplained-time)
+records a source-fact speedup and a separate PCM preparation contract; neither
+establishes the cause of an unexplained picture interval.
+
+## Attribute build cache misses to their producer inputs
+
+Compare per-Pack keys and final hit/miss decisions, source bytes, executing
+cooker/dependency bytes, Native compiler fingerprints and collected shader
+namespaces. A preflight probe and the actual build can report the same Pack
+twice; deduplicate by source identity before reporting a miss count.
+
+The [project shader case](cases/full-scene-resources-20261016.md#project-shader-cache-invalidation)
+shows unchanged map materials missing after one unrelated WGSL addition because
+the current material cooker hashes the complete project shader namespace. Keep
+that valid cold result. Narrowing requires actual entry/slot/transitive imports,
+all produced variants and current catalog validation, including duplicate or
+reserved module errors. Moving old entries to a new key does not establish that
+proof. Runtime Render changes alone do not explain a changed cook identity.

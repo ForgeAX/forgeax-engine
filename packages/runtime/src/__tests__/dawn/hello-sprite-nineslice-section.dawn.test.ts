@@ -271,7 +271,7 @@ async function renderOneFrame(opts: {
     },
   );
 
-  const drawn = drawPublished(renderer, world);
+  const drawn = await drawPublished(renderer, world);
   expect(drawn.ok).toBe(true);
   if (sharedDevice === undefined) throw new Error('device not captured');
   await sharedDevice.queue.onSubmittedWorkDone();
@@ -330,39 +330,34 @@ function midBandDistance(a: CapturedFrame, b: CapturedFrame): number {
 }
 
 describe('feat-20260527-sprite-nineslice w14 dawn smoke (stretch vs tile divergence)', () => {
-  it(
-    'stretch + tile sprite frames diverge in the mid-band after w15 (red until w15 lands)',
-    {
-      timeout: SPRITE_NINESLICE_DAWN_TEST_TIMEOUT_MS,
-    },
-    async () => {
-      // Asymmetric scale: x=4 vs y=1. With slices=[0.25,0.25,0.25,0.25] and the
-      // 4x4 corner-checker texture, the post-w15 9-slice path keeps corner
-      // zones at fixed world dimensions while the legacy pre-w15 path stretches
-      // the entire quad linearly -- so post-w15 the rendered pixels in the
-      // x-band differ between modes; pre-w15 the two scenes are byte-identical.
-      const stretch = await renderOneFrame({ sliceMode: 0, scaleX: 4, scaleY: 1 });
-      const tile = await renderOneFrame({ sliceMode: 1, scaleX: 4, scaleY: 1 });
+  it('stretch + tile sprite frames diverge in the mid-band after w15 (red until w15 lands)', {
+    timeout: SPRITE_NINESLICE_DAWN_TEST_TIMEOUT_MS,
+  }, async () => {
+    // Asymmetric scale: x=4 vs y=1. With slices=[0.25,0.25,0.25,0.25] and the
+    // 4x4 corner-checker texture, the post-w15 9-slice path keeps corner
+    // zones at fixed world dimensions while the legacy pre-w15 path stretches
+    // the entire quad linearly -- so post-w15 the rendered pixels in the
+    // x-band differ between modes; pre-w15 the two scenes are byte-identical.
+    const stretch = await renderOneFrame({ sliceMode: 0, scaleX: 4, scaleY: 1 });
+    const tile = await renderOneFrame({ sliceMode: 1, scaleX: 4, scaleY: 1 });
 
-      expect(stretch.errors).toEqual([]);
-      expect(tile.errors).toEqual([]);
+    expect(stretch.errors).toEqual([]);
+    expect(tile.errors).toEqual([]);
 
-      const dist = midBandDistance(stretch.frame, tile.frame);
+    const dist = midBandDistance(stretch.frame, tile.frame);
 
-      // RED (pre-w15): the shader ignores `material.slicesAndMode` so both
-      //   frames are byte-identical save for stochastic alpha-blend rounding;
-      //   `dist` is < 1.0 and the assertion below FAILS.
-      // GREEN (post-w15): vs_main routes stretch vs tile through different
-      //   anchor-grid mappings; mid-band pixels differ noticeably; `dist`
-      //   crosses 16 (i.e. roughly 4 byte-channel delta squared per channel
-      //   averaged across the mid-band sample window).
-      //
-      // The threshold 16 is chosen so noise (rounding from premultiplied alpha
-      // blend in srgb encoding) does not false-positive RED -> GREEN, while a
-      // genuine 9-region remap easily clears it (mid-band re-routes hundreds
-      // of pixels by tens of byte units each).
-      expect(dist).toBeGreaterThan(16);
-    },
-    SPRITE_NINESLICE_DAWN_TEST_TIMEOUT_MS,
-  );
+    // RED (pre-w15): the shader ignores `material.slicesAndMode` so both
+    //   frames are byte-identical save for stochastic alpha-blend rounding;
+    //   `dist` is < 1.0 and the assertion below FAILS.
+    // GREEN (post-w15): vs_main routes stretch vs tile through different
+    //   anchor-grid mappings; mid-band pixels differ noticeably; `dist`
+    //   crosses 16 (i.e. roughly 4 byte-channel delta squared per channel
+    //   averaged across the mid-band sample window).
+    //
+    // The threshold 16 is chosen so noise (rounding from premultiplied alpha
+    // blend in srgb encoding) does not false-positive RED -> GREEN, while a
+    // genuine 9-region remap easily clears it (mid-band re-routes hundreds
+    // of pixels by tens of byte units each).
+    expect(dist).toBeGreaterThan(16);
+  });
 });

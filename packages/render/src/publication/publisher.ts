@@ -112,6 +112,33 @@ export function createRenderPublisher(
   >();
   const jointsByEntity = new Map<number, readonly number[]>();
   const skinConsumers = new Map<number, Set<number>>();
+  const updateSkinConsumers = (entity: number, joints: readonly number[] | undefined): void => {
+    const previous = jointsByEntity.get(entity);
+    if (
+      previous === joints ||
+      (previous !== undefined &&
+        joints !== undefined &&
+        previous.length === joints.length &&
+        previous.every((joint, index) => joint === joints[index]))
+    )
+      return;
+    for (const joint of previous ?? []) {
+      const users = skinConsumers.get(joint);
+      users?.delete(entity);
+      if (users?.size === 0) skinConsumers.delete(joint);
+    }
+    jointsByEntity.delete(entity);
+    if (joints === undefined) return;
+    jointsByEntity.set(entity, [...joints]);
+    for (const joint of joints) {
+      let users = skinConsumers.get(joint);
+      if (users === undefined) {
+        users = new Set();
+        skinConsumers.set(joint, users);
+      }
+      users.add(entity);
+    }
+  };
   let frameDependencies = new Set<Handle<string, 'shared'>>();
   let catalogEpoch = -1,
     revision = 0,
@@ -670,26 +697,9 @@ export function createRenderPublisher(
               }
               dependencies.delete(entity);
             }
-            for (const entity of removedConsumers) {
-              for (const joint of jointsByEntity.get(entity) ?? []) {
-                const users = skinConsumers.get(joint);
-                users?.delete(entity);
-                if (users?.size === 0) skinConsumers.delete(joint);
-              }
-              jointsByEntity.delete(entity);
-            }
-            for (const row of frame.renderables) {
-              if (row.skinJointEntities === undefined) continue;
-              jointsByEntity.set(row.entityKey, row.skinJointEntities);
-              for (const joint of row.skinJointEntities) {
-                let users = skinConsumers.get(joint);
-                if (users === undefined) {
-                  users = new Set();
-                  skinConsumers.set(joint, users);
-                }
-                users.add(row.entityKey);
-              }
-            }
+            for (const entity of removed) updateSkinConsumers(entity, undefined);
+            for (const row of frame.renderables)
+              updateSkinConsumers(row.entityKey, row.skinJointEntities);
             for (const entity of removed) members.delete(entity);
             for (const [entity, handles] of nextDependencies) {
               members.add(entity);

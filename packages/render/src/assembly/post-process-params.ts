@@ -13,7 +13,7 @@ import type { RecoveryPostProcessResources } from '../recovery/types';
 
 interface PostProcessParamsCandidate {
   readonly buffers: ReadonlyMap<string, Buffer>;
-  readonly created: readonly Buffer[];
+  readonly created: Buffer[];
 }
 
 /** Own post-process declarations and their device-bound parameter buffer lifecycle. */
@@ -165,10 +165,11 @@ export function createPostProcessParamsOwner(
       }
       next.set(id, buffer);
     }
-    return ok({ buffers: next, created: Object.freeze([...allocated]) });
+    return ok({ buffers: next, created: allocated });
   };
   const discardPostProcessParamsCandidate = (candidate: PostProcessParamsCandidate): void => {
     destroyPostProcessParams(candidate.created);
+    candidate.created.length = 0;
   };
   const retirePostProcessParams = (buffers: readonly Buffer[]): void => {
     if (buffers.length === 0) return;
@@ -186,6 +187,9 @@ export function createPostProcessParamsOwner(
     for (const [id, buffer] of candidate.buffers) {
       postProcessParamsBuffers.set(id, buffer);
     }
+    // Admission transfers disposal ownership to the active map. A later
+    // frame abort cannot destroy an admitted or already retired allocation.
+    candidate.created.length = 0;
     retirePostProcessParams(previous.filter((buffer) => !next.has(buffer)));
   };
   return {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { type BigIntStats, createReadStream, createWriteStream } from 'node:fs';
+import { type BigIntStats, createReadStream, createWriteStream, realpathSync } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -49,7 +49,15 @@ const omitted = new Set([
 ]);
 
 export function runStateDirectory(projectRoot: string): string {
-  const identity = createHash('sha256').update(resolve(projectRoot)).digest('hex');
+  let root = resolve(projectRoot);
+  try {
+    root = realpathSync.native(root);
+  } catch (error) {
+    // Missing projects retain the ordinary stopped-run lookup; other I/O errors
+    // must not silently create another ownership identity.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const identity = createHash('sha256').update(root).digest('hex');
   return resolve(
     process.env.FORGEAX_RUNS_DIR ?? join(homedir(), '.local/share/ForgeaX/runs'),
     identity,
@@ -389,6 +397,12 @@ async function pnpmContext(
     ]);
     lock = parsePnpmLockfile(lockBytes);
     modules = parse(modulesBytes.toString('utf8')) as PnpmModulesState;
+    // Relative store paths belong to .modules.yaml's directory, not the workspace root.
+    if (typeof modules.virtualStoreDir === 'string')
+      modules = {
+        ...modules,
+        virtualStoreDir: resolve(dirname(modulesPath), modules.virtualStoreDir),
+      };
   } catch (cause) {
     if (isDependencySourceChanged(cause)) throw cause;
     throw dependencyClosureError(
@@ -467,7 +481,9 @@ async function pnpmContext(
         },
       );
     }
-    const patterns = (workspaceManifest as { readonly packages?: unknown } | null)?.packages;
+    const configuredPatterns = (workspaceManifest as { readonly packages?: unknown } | null)
+      ?.packages;
+    const patterns = configuredPatterns === undefined ? [] : configuredPatterns;
     // pnpm 12's native writer may omit this optional setting. Installed
     // project identities and lock locators remain the workspace authority.
     const recordedPatterns = state.settings?.workspacePackagePatterns;
@@ -1050,8 +1066,6 @@ async function verifyLocalDependency(
     return boundPackage ?? actual.root;
   }
 
-  if (boundPackage === undefined) return actual.root;
-  const boundManifest = await readPackageManifest(boundPackage);
   const resolvedVersion = locator.split('(')[0];
   if (typeof actualManifest.version !== 'string' || resolvedVersion !== actualManifest.version)
     throw dependencyClosureError(
@@ -1065,7 +1079,12 @@ async function verifyLocalDependency(
         installedVersion: actualManifest.version ?? null,
       },
     );
-  if (boundManifest.name !== name || typeof boundManifest.version !== 'string')
+  const boundManifest =
+    boundPackage === undefined ? undefined : await readPackageManifest(boundPackage);
+  if (
+    boundManifest !== undefined &&
+    (boundManifest.name !== name || typeof boundManifest.version !== 'string')
+  )
     throw dependencyClosureError(
       'project-dependency-identity-mismatch',
       'The selected local Engine package does not match its public package identity.',
@@ -1077,7 +1096,7 @@ async function verifyLocalDependency(
     );
   await assertPublicPackageExports(actual.root);
   await rememberEngineRuntimeProof(context.proofs, actual.root);
-  return boundPackage;
+  return boundPackage ?? actual.root;
 }
 
 async function installedPackage(from: string, name: string): Promise<InstalledPackage | undefined> {
@@ -1196,9 +1215,11 @@ async function planSnapshot(
   options: SnapshotPlanOptions = {},
 ): Promise<SnapshotPlan> {
   signal?.throwIfAborted();
-  const binding = await readEngineBinding(projectRoot);
-  if (!binding.ok) throw new Error(`${binding.error.code}: ${binding.error.hint}`);
-  const bindingIdentity = JSON.stringify(binding.value);
+  const bindingResult = await readEngineBinding(projectRoot);
+  if (!bindingResult.ok)
+    throw new Error(`${bindingResult.error.code}: ${bindingResult.error.hint}`);
+  const binding = bindingResult.value;
+  const bindingIdentity = JSON.stringify(binding);
   if (options.verifyLocalDependencies && options.expectedBinding !== bindingIdentity)
     throw dependencyClosureError(
       'project-engine-binding-changed',
@@ -1209,8 +1230,8 @@ async function planSnapshot(
       },
     );
   const boundPackages = new Map<string, string>();
-  if (binding.value) {
-    const inspected = await inspectEngineWorkspace(binding.value.path);
+  if (binding) {
+    const inspected = await inspectEngineWorkspace(binding.path);
     if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.hint}`);
     if (options.verifyLocalDependencies) {
       if (
@@ -1348,6 +1369,18 @@ async function planSnapshot(
         context === undefined
           ? declaredSpecifier
           : dependencySpecifier(context, name, declaredSpecifier);
+      const enginePackage = name === '@forgeax/engine' || name.startsWith('@forgeax/engine-');
+      if (
+        options.verifyLocalDependencies &&
+        binding === null &&
+        enginePackage &&
+        (specifier.startsWith('workspace:') || specifier.startsWith('file:'))
+      )
+        throw dependencyClosureError(
+          'project-local-dependency',
+          'Local Engine packages require an explicit healthy Engine source binding.',
+          { dependencies: [name] },
+        );
       const boundPackage = boundPackages.get(name);
       const actual = await installedPackage(source, name);
       if (actual === undefined) {
@@ -1385,7 +1418,9 @@ async function planSnapshot(
               actualName: actualManifest.name ?? null,
             },
           );
-        if (specifier.startsWith('npm:')) {
+        // Published registry bundles own their nested aliases; only project/workspace
+        // importers have pnpm placement records in this installation.
+        if (specifier.startsWith('npm:') && context !== undefined) {
           if (alias === undefined || alias.name !== actualManifest.name)
             throw dependencyClosureError(
               'project-dependency-identity-mismatch',
@@ -1398,13 +1433,13 @@ async function planSnapshot(
                 actualName: actualManifest.name ?? null,
               },
             );
-          context ??= await contextFor(source);
           const locator = lockEntry(context, name, specifier);
           await verifyNpmAliasPlacement(context, name, alias.name, locator, actual, actualManifest);
         } else if (
           specifier.startsWith('workspace:') ||
           specifier.startsWith('file:') ||
-          boundPackage !== undefined
+          boundPackage !== undefined ||
+          (enginePackage && context !== undefined)
         ) {
           context ??= await contextFor(source);
           const sourceManifest = await readPackageManifest(context.packageRoot);
@@ -1469,20 +1504,20 @@ async function planSnapshot(
   const proofs = [...proofsByPath.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
-  return { binding: JSON.stringify(binding.value), files, links, proofs };
+  return { binding: JSON.stringify(binding), files, links, proofs };
 }
 
 /** Reuse the snapshot dependency owner without copying files or publishing a run. */
 export async function inspectRunDependencyClosure(
   projectRoot: string,
-  binding: { readonly schemaVersion: string; readonly path: string },
-  engineDigest: string,
+  binding: { readonly schemaVersion: string; readonly path: string } | null,
+  engineDigest: string | undefined,
   pnpmVersion: string,
 ): Promise<void> {
   const options: SnapshotPlanOptions = {
     verifyLocalDependencies: true,
     expectedBinding: JSON.stringify(binding),
-    expectedEngineDigest: engineDigest,
+    ...(engineDigest === undefined ? {} : { expectedEngineDigest: engineDigest }),
     pnpmVersion,
   };
   const first = await planSnapshot(resolve(projectRoot), undefined, options);

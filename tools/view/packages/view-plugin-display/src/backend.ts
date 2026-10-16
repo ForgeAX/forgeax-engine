@@ -135,31 +135,40 @@ async function installRunObserver(ctx: Context) {
   const publish = (session: Session, connectionId?: string) => transport.publish(VIEW_STATUS_TOPIC, session.snapshot,
     connectionId ? { connectionId } : { excludeConnectionIds: [...pages.keys()] });
   const stopSession = (session: Session) => { session.controller.abort(); clearTimeout(session.timer); session.timer = undefined; };
+  const observe = async (root: string, signal: AbortSignal) => {
+    const owner = api.describe('engine.run.observe', 'engine-workspace').find(record => record.callable)?.owner;
+    if (!owner) throw new Error('Engine run observation is unavailable.');
+    const terminal = await api.run('engine.run.observe', { root }, {
+      sourceId: 'engine-workspace', providerId: owner.providerId, generation: owner.generation, signal,
+    }).terminal;
+    if (terminal.outcome === 'failed') throw new Error(terminal.failure.hint);
+    return terminal.result as RunObservation;
+  };
+  const accept = (session: Session, selected: RunBinding, observation: RunObservation) => {
+    const matches = observation.status?.runId === selected.runId;
+    session.snapshot = matches
+      ? { status: observation.status?.phase === 'ready' ? 'running' : observation.status?.phase ?? 'idle', binding: selected, observation }
+      : { status: 'unavailable', binding: selected, observation: session.snapshot.observation ?? null, error: 'The bound run is no longer active. Connect again to view the current run.' };
+    return matches;
+  };
   const refresh = async (session: Session, connectionId?: string) => {
     const selected = session.binding;
     const signal = session.controller.signal;
     if (disposed || !selected || signal.aborted) return;
+    let matches = true;
     try {
-      const owner = api.describe('engine.run.observe', 'engine-workspace').find(record => record.callable)?.owner;
-      if (!owner) throw new Error('Engine run observation is unavailable.');
-      else {
-        const terminal = await api.run('engine.run.observe', { root: selected.root }, {
-          sourceId: 'engine-workspace', providerId: owner.providerId, generation: owner.generation, signal,
-        }).terminal;
-        if (disposed || signal.aborted || session.binding !== selected) return;
-        if (terminal.outcome === 'failed') throw new Error(terminal.failure.hint);
-        const observation = terminal.result as RunObservation;
-        session.snapshot = observation.status?.runId === selected.runId
-          ? { status: observation.status?.phase === 'ready' ? 'running' : observation.status?.phase ?? 'idle', binding: selected, observation }
-          : { status: 'unavailable', binding: selected, observation: null, error: 'The bound run is no longer active. Bind the new run explicitly.' };
-      }
+      const observation = await observe(selected.root, signal);
+      if (disposed || signal.aborted || session.binding !== selected) return;
+      matches = accept(session, selected, observation);
     } catch (error) {
-      if (!signal.aborted && session.binding === selected) session.snapshot = { status: 'unavailable', binding: selected, observation: null, error: String(error) };
+      if (!signal.aborted && session.binding === selected) session.snapshot = { status: 'unavailable', binding: selected, observation: session.snapshot.observation ?? null, error: String(error) };
     } finally {
       if (!disposed && !signal.aborted && session.binding === selected) {
         publish(session, connectionId);
-        session.timer = setTimeout(() => void refresh(session, connectionId), 1000);
-        session.timer.unref?.();
+        if (matches) {
+          session.timer = setTimeout(() => void refresh(session, connectionId), 1000);
+          session.timer.unref?.();
+        }
       }
     }
   };
@@ -172,14 +181,38 @@ async function installRunObserver(ctx: Context) {
     pages.delete(id);
     stopSession(session);
   });
-  const tools = createDisplayApiTools({ handshake: status, bind({ root, runId }, caller) {
+  const tools = createDisplayApiTools({ handshake: status, async bind({ root, runId }, caller, signal) {
     const session = sessionFor(caller);
     stopSession(session);
-    session.controller = new AbortController();
-    session.binding = root === null ? null : { root: root.trim(), runId: runId!.trim() };
-    session.snapshot = { status: session.binding ? 'connecting' : 'idle', binding: session.binding, observation: null };
+    const controller = session.controller = new AbortController();
+    session.binding = root !== null && runId !== undefined ? { root: root.trim(), runId: runId.trim() } : null;
+    session.snapshot = { status: root === null ? 'idle' : 'connecting', binding: session.binding, observation: null };
     const id = pageId(caller);
     publish(session, id);
+    if (root !== null && runId === undefined) {
+      const cancel = () => controller.abort();
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) cancel();
+      try {
+        const observation = await observe(root.trim(), controller.signal);
+        if (disposed || controller.signal.aborted || session.controller !== controller) return session.snapshot;
+        const discovered = observation.status?.runId;
+        if (!discovered) session.snapshot = { status: 'idle', binding: null, observation: null };
+        else {
+          session.binding = { root: root.trim(), runId: discovered };
+          accept(session, session.binding, observation);
+          session.timer = setTimeout(() => void refresh(session, id), 1000);
+          session.timer.unref?.();
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && session.controller === controller) session.snapshot = { status: 'unavailable', binding: null, observation: null, error: String(error) };
+      } finally {
+        signal?.removeEventListener('abort', cancel);
+        if (controller.signal.aborted && session.controller === controller) session.snapshot = { status: 'idle', binding: null, observation: null };
+      }
+      if (!disposed && session.controller === controller) publish(session, id);
+      return session.snapshot;
+    }
     void refresh(session, id);
     return session.snapshot;
   } });

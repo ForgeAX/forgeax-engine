@@ -67,14 +67,14 @@ export async function mountViewReactPanelInto({ element, panel, props }: { eleme
 
 export function createViewPanelHost({ registry, overlayRoot, platform }: { registry: SlotRegistry; overlayRoot?: HTMLElement; platform?: FrontendPlatform }) {
   if (!registry) throw new TypeError('createViewPanelHost requires viewSlotRegistry');
-  let revealer: ((slot: string) => Promise<boolean>) | undefined;
+  let revealer: ((slot: string, signal?: AbortSignal) => Promise<boolean>) | undefined;
   return Object.freeze({
     registry,
-    setRevealer(next: (slot: string) => Promise<boolean>) {
+    setRevealer(next: (slot: string, signal?: AbortSignal) => Promise<boolean>) {
       revealer = next;
       return () => { if (revealer === next) revealer = undefined; };
     },
-    reveal(slot: string) { return revealer?.(slot) ?? Promise.resolve(false); },
+    reveal(slot: string, options?: { signal?: AbortSignal }) { return revealer?.(slot, options?.signal) ?? Promise.resolve(false); },
     waitForSlot: (slot: string) => waitForViewSlot(registry, slot),
     mount(slot: string, node: HTMLElement) {
       return registry.mount(slot, node);

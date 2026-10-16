@@ -53,6 +53,8 @@ export interface RenderFeaturePreparedRef<Kind extends PreparedKind = PreparedKi
 /** Declarative request for a registered graphics pipeline. */
 export interface RenderFeaturePipelineDescriptor {
   readonly shader: string;
+  /** Resolve explicit asynchronous preparation before reporting this pipeline ready. */
+  readonly preparePipelines?: boolean;
   readonly vertexLayout: string;
   /** Number of vec4 lanes in the material-input instance layout (1 through 4). */
   readonly particleInputLanes?: number;

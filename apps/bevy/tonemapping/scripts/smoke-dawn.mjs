@@ -157,7 +157,7 @@ for (let i = 0; i < TONEMAP_MODES.length; i += 1) {
   world.set(scene.camera, Camera, { tonemap });
   for (let frame = 0; frame < modeFrames; frame += 1) {
     world.update().unwrap();
-    const result = drawSmokeFrame(renderer, world);
+    const result = await drawSmokeFrame(renderer, world);
     if (!result.ok) drawErrors += 1;
     framesObserved += 1;
   }
@@ -166,7 +166,7 @@ for (let i = 0; i < TONEMAP_MODES.length; i += 1) {
 const remainingFrames = targetFrames - framesObserved;
 for (let frame = 0; frame < remainingFrames; frame += 1) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) drawErrors += 1;
   framesObserved += 1;
 }

@@ -367,7 +367,7 @@ async function renderConfig(
     spawnScene(w, castShadow, depthBias, normalBias, pcf, mapSize);
     let de = 0;
     for (let i = 0; i < SHADOW_FIELDS_RENDER_FRAMES; i++) {
-      const r = drawPublished(renderer, w);
+      const r = await drawPublished(renderer, w);
       if (!r.ok) de++;
       // Keep the native Dawn carrier paced like a real frame loop. Without a
       // bounded drain, a long shadow-map leg can retain an unbounded lavapipe
@@ -492,7 +492,7 @@ async function renderConfigWithSpy(
     spawnScene(w, castShadow, depthBias, normalBias, pcf, mapSize);
     let de = 0;
     for (let i = 0; i < 10; i++) {
-      const r = drawPublished(renderer, w);
+      const r = await drawPublished(renderer, w);
       if (!r.ok) de++;
     }
     if (de > 0) throw new Error(`draw errors: ${de}`);

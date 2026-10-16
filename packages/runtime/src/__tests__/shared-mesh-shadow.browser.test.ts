@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-render';
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 it.each([
@@ -118,16 +119,13 @@ it.each([
     for (let frame = 0; frame < 5; frame++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({
+      const receipt = await drawReadyFrame(renderer, {
         leases: [lease],
         camera: { lease },
         environment: { lease },
         fixedStep: world.getResource(FixedTime).tick,
       });
-      if (!drawn.ok) throw drawn.error;
-      presentation = drawn.value.presentation;
-      const completed = await drawn.value.completed;
-      if (!completed.ok) throw completed.error;
+      presentation = receipt.presentation;
     }
     expect(presentation, 'settled GPU shadow receivers must present their retained depth').toBe(
       'ready',

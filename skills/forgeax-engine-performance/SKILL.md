@@ -17,7 +17,7 @@ and reusable analysis, rather than another delivery state machine.
 
 | Current question | Read |
 | --- | --- |
-| Establish a baseline, separate CPU/GPU clocks, compare captures | [Measurement](references/measurement.md) |
+| Establish a baseline, qualify fresh product defaults, separate CPU/GPU clocks or compare captures | [Measurement](references/measurement.md) |
 | Measure cache hit/miss, invalidation, rebuild and maintenance populations | [Cache measurement](references/measurement.md#cache-populations-and-window-deltas) |
 | Extreme picture intervals, Worker task costs, completion waits or catch-up bursts | [Slow frames and scheduling](references/slow-frames.md) |
 | Native physics phases, contact complexity, wake costs or redundant Game submissions | [Physics pressure](references/physics.md) |
@@ -26,6 +26,7 @@ and reusable analysis, rather than another delivery state machine.
 | Worker GC, short-lived allocation sources, heap/source attribution or retention | [GC and allocation ownership](references/gc.md) |
 | Texture work, static features, shader variants or uniform-derived math | [Materials and shaders](references/materials-shaders.md) |
 | Shadow pass cost, coverage, resolution or sampling | [Shadows](references/shadows.md) |
+| Local smoke coverage, composite cost or temporal-safe screen bounds | [Local smoke footprint case](references/cases/local-smoke-footprint-20261016.md) |
 | Analyze an existing capture or choose a collection tool | [Toolbox](references/toolbox.md) |
 | Add another session's technique, script or scoped case | [Contributing](references/contributing.md) |
 | Understand the initial UV/static-switch integration and its limits | [Material specialization case](references/cases/material-specialization.md) |
@@ -34,6 +35,8 @@ and reusable analysis, rather than another delivery state machine.
 | Optimize scene ownership, draw-key lookup and cold-path cost | [Persistent scene case](references/cases/persistent-scene-prefix.md) |
 | Audit render string keys and collection-local chunk maintenance | [String-key case](references/cases/render-string-keys.md) |
 | Reduce feature transaction copying while preserving abort and completion leases | [Feature reference case](references/cases/feature-transaction-references.md) |
+| Reassess new scene assets, retained geometry or first-use stalls | [Full-scene resource update case](references/cases/full-scene-resources-20261016.md) |
+| Reduce full-effects program/publication work and retire loading-only owners | [Full-effects lifetime case](references/cases/full-scene-resources-20261016.md#full-effects-program-publication-and-preparation-lifetimes) |
 
 ## Drive the optimization
 
@@ -50,6 +53,9 @@ and reusable analysis, rather than another delivery state machine.
 4. Compare a matched workload and check the cases that should invalidate reuse.
    Report implementation proof, measured improvement and unfinished target
    acceptance separately. A quality/configuration change starts a new profile.
+   Batch verified owner changes around the user's requested workload and test
+   budget; use [batch validation](references/measurement.md#validate-an-optimization-batch)
+   before another whole-scene capture.
 
 The tools below read local artifacts and use Node built-ins. They do not launch a
 browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
@@ -57,6 +63,7 @@ browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
 | Tool | Input and useful result |
 | --- | --- |
 | [analyze_cpu_profile.mjs](scripts/analyze_cpu_profile.mjs) | CDP/V8 profile; sampled self/inclusive time, recursion-safe symbol totals and unobserved interval |
+| [analyze_cpu_windows.mjs](scripts/analyze_cpu_windows.mjs) | Existing ordinary CPU capture, clock anchors and frame receipts; separate same-capture LIVE/gap windows with coverage, identity and reordered-sample audit |
 | [summarize_gpu_timing.mjs](scripts/summarize_gpu_timing.mjs) | Engine GPU observations; semantic pass costs, completeness, interval union and timestamp envelope |
 | [analyze_heap_profile.mjs](scripts/analyze_heap_profile.mjs) | SamplingHeapProfile; conserved direct/ancestor/unresolved byte partitions and source owner distribution |
 | [symbolize_heap_profile.mjs](scripts/symbolize_heap_profile.mjs) | Captured script digests and frozen hidden maps; source locations authenticated to the selected profile |

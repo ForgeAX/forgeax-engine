@@ -26,6 +26,45 @@ sample/time arrays exit 1. The analyzer does not classify a missing ancestor or
 an opaque symbol as a particular Engine subsystem. Resolve the loaded script
 and mapping before making a source-level ownership claim.
 
+## Same-capture LIVE and completed-frame CPU windows
+
+```sh
+node skills/forgeax-engine-performance/scripts/analyze_cpu_windows.mjs \
+  cpu-profiles.json --report report.json --frames sampled-frames.json \
+  --maps cpu-node-maps.json --top 30 --output cpu-windows.json
+```
+
+This offline adapter reads the existing Frontline ordinary CPU collector's
+records from explicit paths. It needs no Game checkout or Engine runtime.
+Use the whole-profile analyzer above for other wrappers; do not rename loading
+bounds to LIVE to satisfy this adapter.
+
+| Input | Required producer facts |
+| --- | --- |
+| CPU profiles | `{profiles: [{target, profile, scriptDigests}], failures: []}`; original CDP target objects and microsecond clocks |
+| Report | `cpu.commonWindow`, empty CPU failures, `coldFirelineCpu.anchorsBefore/anchorsAfter`, and `windows.sampled.submissionGaps.worstCompletedGaps` |
+| Sampled frames | Explicit `firstLiveAt`, `end`, `timeOrigin` and `frames[]` receipts; `at` is the page-millisecond completion observation |
+| Optional symbols | `rawSha256`, complete target mappings, matching source/build/common-window identity and captured script digests; supplied map bytes are hashed, not re-authenticated from source files |
+
+Every before/after anchor must describe the same page time origin; their offset
+intervals must intersect. The midpoint converts page milliseconds to CDP
+microseconds. Output preserves the full offset interval and uncertainty, each
+original target object, input SHA256, requested/covered bounds and source
+coverage. Gap endpoints must match actual supplied frame receipts. Empty gap
+arrays are valid; missing LIVE/anchors, foreign frames, incomplete targets and
+stale symbol maps exit 1. Partial midpoint-window coverage exits 2 and retains
+the covered fraction. No realm sum or performance-comparison verdict is made.
+
+The ending-sample path reconstructs timestamp/sample pairs before stable sorting
+when raw deltas are negative. It validates every endpoint, including data outside
+LIVE, and reports reordered count/time as attribution sensitivity. It excludes
+the first-sample startup interval and unobserved tail; it never rescales samples.
+Self/inclusive rankings keep zero-based generated locations. Inclusive node
+stacks overlap; different realms run concurrently. A sampled stack can include
+scheduling delay. An unprofiled long frame from another capture has no attribution
+in this output. These rules apply to this clipped path; the legacy whole-profile
+analyzer retains its strict nonnegative-delta contract.
+
 ## Worker heap and native GC attribution
 
 Use [GC and allocation ownership](gc.md) to select the capture and interpret its
@@ -163,7 +202,7 @@ null improvement/change ratios. A zero baseline also produces null ratios.
 | --- | --- |
 | 0 | Valid CPU, heap/source or native-GC analysis; or selected comparison identity matches; or GPU input contains complete frames with no partial/failed/unavailable rows |
 | 1 | Invalid input, arguments, output path or incompatible facts; structured stderr reason |
-| 2 | Comparison identity differs; or GPU summary is incomplete/has no complete frames; structured report is still emitted |
+| 2 | Comparison identity differs; or GPU summary is incomplete/has no complete frames; or CPU window coverage is partial; structured report is still emitted |
 
 No code means a live correctness/performance gate passed. Output defaults to
 stdout; `--output` writes only that chosen file and refuses overwriting any raw
@@ -176,6 +215,8 @@ Keep outputs private and sanitize paths/device identities before external public
 | --- | --- |
 | Ordinary gameplay, input and Renderer completions | [WeChat gameplay benchmark](../../forgeax-engine-wechat/references/gameplay-performance.md), including browser collectors |
 | Browser GPU query capture | [browser_gameplay_gpu.mjs](../../forgeax-engine-wechat/scripts/browser_gameplay_gpu.mjs); read its `--help` and owning reference |
+| Frontline fresh defaults and automatic cold shot/wall warnings | Game combat driver, render configuration and cold timeline; inspect the current entrypoint before use |
+| Frontline first smoke-zone appearance and surrounding completion gaps | Existing completed-frame observer; HUD appearance is not a visibility or cost attribution probe |
 | Voxel Frontline extreme-frame trace and opt-in native/contact probe | Game-owned perf-extreme-frames.mjs; inspect its current entrypoint before use; [scoped capture and limits](cases/firefight-physics-scheduling.md) |
 | Host callback versus native completion | [Completion timing](../../forgeax-engine-wechat/references/completion-timing.md) |
 | Native host/device contention and capacity | [WeChat performance](../../forgeax-engine-wechat/references/performance.md) and its existing capacity collector |

@@ -32,7 +32,7 @@ it('resolves feature-owned behavior Packs with separate engine and host closures
     engine.find((record) => record.sourceKey === 'plugin/player')?.definition.asset.config,
   ).toMatchObject({ speed: 5.5, jumpSpeed: 6.25, gravity: 17, walk: expect.any(String) });
 
-  const ui = await collectAuthorPackClosure(root, 'assets/ui/ui.pack.ts');
+  const ui = await collectAuthorPackClosure(root, 'assets/ui/ui.pack.ts', ['assets']);
   const uiFiles = ui.files.map((file) => file.path);
   expect(uiFiles).toEqual(
     expect.arrayContaining([
@@ -45,7 +45,7 @@ it('resolves feature-owned behavior Packs with separate engine and host closures
   expect(uiFiles).not.toContain('assets/game.pack.ts');
   expect(uiFiles).not.toContain('assets/player/player.pack.ts');
 
-  const game = await collectAuthorPackClosure(root, 'assets/game.pack.ts');
+  const game = await collectAuthorPackClosure(root, 'assets/game.pack.ts', ['assets']);
   const gameFiles = game.files.map((file) => file.path);
   expect(gameFiles).toEqual(
     expect.arrayContaining([

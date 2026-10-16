@@ -103,6 +103,7 @@ export interface VfxGpuEmitterInspectSnapshot {
 
 /** Renderer-facing source view used to refresh culling without a queued tick. */
 export interface VfxGpuEmitterSource {
+  readonly instanceGeneration: number;
   readonly player: EntityHandle;
   readonly emitter: VfxGpuEmitterProgramAny;
   /** Exact immutable definition; queued work survives asset replacement. */
@@ -325,8 +326,18 @@ export class VfxGpuRuntime {
         this.reset(player);
         continue;
       }
+      const intent = world.get(player, ParticleEffectPlayer).unwrap();
+      // Parking is current resource intent, without advancing the fixed clock.
+      // Observe the stop before a same-seed restart, even when its render ACK
+      // is still in flight. The next real fixed tick owns the ordinary reset.
+      if (intent.preparePipelines && !intent.playing) state.playing = false;
       for (const emitter of state.asset.program.emitters)
-        visitor({ player, emitter, effect: state.asset });
+        visitor({
+          player,
+          emitter,
+          effect: state.asset,
+          instanceGeneration: this.#instances.get(player)?.generation ?? 0,
+        });
     }
   }
 

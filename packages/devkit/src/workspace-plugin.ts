@@ -10,6 +10,7 @@ import {
 import type { Context } from '@forgeax/engine-plugin';
 import type { ToolApi, ToolExecutionContext } from '@forgeax/engine-tool-runtime';
 import type { DevKitHostBinding } from './host-binding.js';
+import { createOperationHistoryTools } from './operation-history.js';
 import { createWorkspaceLiveTools } from './workspace-live-tools.js';
 import {
   createDevKitWorkspaceProvider,
@@ -122,6 +123,7 @@ export const devKitWorkspacePlugin = {
     const tools = [
       ...createEngineWorkspaceTools(runtime, publish),
       ...createWorkspaceLiveTools(),
+      ...createOperationHistoryTools(),
     ].map((tool) => ({
       descriptor: tool.descriptor,
       async execute(args: unknown, context: ToolExecutionContext) {
@@ -147,6 +149,29 @@ export const devKitWorkspacePlugin = {
           };
         }
         context.signal.throwIfAborted();
+        if (tool.descriptor.id.startsWith('engine.history.')) {
+          if (context.caller?.kind === 'frontend') {
+            const source = context.caller.sourceId;
+            const project =
+              source === 'view-frontend' || source?.startsWith('forgeax-workspace:')
+                ? forCaller(context.caller)?.project
+                : undefined;
+            if (!project)
+              return {
+                ok: false as const,
+                error: {
+                  code: 'engine-history-project-required',
+                  expected: 'an admitted frontend project',
+                  hint: 'Open a project before reading its operation history.',
+                },
+              };
+            return tool.execute(
+              { ...(args && typeof args === 'object' ? args : {}), root: project.project.root },
+              context,
+            );
+          }
+          return tool.execute(args, context);
+        }
         if (!tool.descriptor.id.startsWith('engine.run.')) {
           const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
           const session = forCaller(

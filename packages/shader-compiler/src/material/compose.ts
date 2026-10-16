@@ -290,6 +290,7 @@ function tokenizeWgsl(source: string): readonly WgslToken[] {
 
 /** After conditional projection, WGSL enables precede injected declarations. */
 export function hoistWgslEnables(source: string): string {
+  if (!source.includes('enable')) return source;
   const tokens = tokenizeWgsl(source);
   const ranges: Array<{ start: number; end: number }> = [];
   let depth = 0;
@@ -530,12 +531,16 @@ function rewriteBoundIdentifiers(
   ownRenames: ReadonlyMap<string, string>,
   importedRenames: ReadonlyMap<string, string>,
 ): string {
-  if (ownRenames.size === 0 && importedRenames.size === 0) return source;
+  const replacements = new Map(importedRenames);
+  for (const [name, replacement] of ownRenames) replacements.set(name, replacement);
+  // An own identity mapping still overrides an imported alias. Remove no-ops
+  // only after resolving that precedence, before any lexical analysis.
+  for (const [name, replacement] of replacements)
+    if (name === replacement) replacements.delete(name);
+  if (replacements.size === 0) return source;
   const tokens = tokenizeWgsl(source);
   const declarations = topLevelDeclarations(tokens);
   const analysis = analyzeWgslBindings(tokens, declarations);
-  const replacements = new Map(importedRenames);
-  for (const [name, replacement] of ownRenames) replacements.set(name, replacement);
   const edits: Array<{ start: number; end: number; replacement: string }> = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -554,11 +559,15 @@ function rewriteBoundIdentifiers(
       continue;
     edits.push({ start: token.start, end: token.end, replacement });
   }
-  let result = source;
-  for (const edit of edits.reverse()) {
-    result = `${result.slice(0, edit.start)}${edit.replacement}${result.slice(edit.end)}`;
+  if (edits.length === 0) return source;
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    parts.push(source.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
   }
-  return result;
+  parts.push(source.slice(cursor));
+  return parts.join('');
 }
 
 function replaceQualifiedModuleReferences(
@@ -708,7 +717,43 @@ function validateSurfaceAbi(
  * structs in the entry gives the compiler one lexical material namespace and
  * avoids a second import path for the authored Surface ABI.
  */
+const surfaceInlineCache = new Map<string, string>();
+let surfaceInlineBytes = 0;
+
 function inlineSurfaceImplementation(
+  ...args: Parameters<typeof inlineSurfaceImplementationUncached>
+): string {
+  // Only the pure string rewrite is reused. Catalog/ABI/dependency validation
+  // still runs for every caller, with its own material and pass diagnostics.
+  let inputUnits = 0;
+  for (const value of args) {
+    if (typeof value === 'string') inputUnits += value.length;
+    else if (Array.isArray(value))
+      for (const helper of value) inputUnits += helper.moduleId.length + helper.source.length;
+  }
+  if (inputUnits * 2 > 1024 * 1024) return inlineSurfaceImplementationUncached(...args);
+  const key = digestUtf8(JSON.stringify(args));
+  const previous = surfaceInlineCache.get(key);
+  if (previous !== undefined) {
+    surfaceInlineCache.delete(key);
+    surfaceInlineCache.set(key, previous);
+    return previous;
+  }
+  const source = inlineSurfaceImplementationUncached(...args);
+  const bytes = (source.length + key.length) * 2;
+  if (bytes > 1024 * 1024) return source;
+  while (surfaceInlineCache.size >= 128 || surfaceInlineBytes + bytes > 16 * 1024 * 1024) {
+    const oldest = surfaceInlineCache.entries().next().value;
+    if (oldest === undefined) break;
+    surfaceInlineCache.delete(oldest[0]);
+    surfaceInlineBytes -= (oldest[1].length + oldest[0].length) * 2;
+  }
+  surfaceInlineCache.set(key, source);
+  surfaceInlineBytes += bytes;
+  return source;
+}
+
+function inlineSurfaceImplementationUncached(
   templateSource: string,
   selectedSource: string,
   surfaceAbiSource: string,

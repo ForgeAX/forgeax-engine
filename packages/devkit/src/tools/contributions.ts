@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import type { PackAuthoringOperation } from '@forgeax/engine-pack/build';
 import type { PACK_AUTHORING_OPERATION_IDS } from '@forgeax/engine-pack/source';
 import {
@@ -6,6 +7,7 @@ import {
   type ToolContribution,
   type ToolDomainFailure,
 } from '@forgeax/engine-tool-runtime';
+import type { PluginSourceInventory } from '../build/plugin-assets.js';
 import type {
   AssetListOptions,
   BuildOptions,
@@ -37,6 +39,7 @@ function commandFailure(error: {
 
 export function createBuildContribution(
   projectRoot = process.cwd(),
+  takeInitialSources?: () => PluginSourceInventory | undefined,
 ): ToolContribution<BuildOptions, unknown> {
   return defineTool(
     projectBuildDescriptor as typeof projectBuildDescriptor & {
@@ -44,7 +47,10 @@ export function createBuildContribution(
     },
     async (options) => {
       const { buildCommand } = await import('../commands.js');
-      const result = await buildCommand({ ...options, root: options.root ?? projectRoot });
+      const root = options.root ?? projectRoot;
+      const initialSources =
+        resolve(root) === resolve(projectRoot) ? takeInitialSources?.() : undefined;
+      const result = await buildCommand({ ...options, root }, initialSources);
       return result.ok ? result.value : commandFailure(result.error);
     },
   );
@@ -178,7 +184,10 @@ export function createProjectRootContribution(
   );
 }
 
-export function createDefaultContributions(projectRoot = process.cwd()) {
+export function createDefaultContributions(
+  projectRoot = process.cwd(),
+  takeInitialSources?: () => PluginSourceInventory | undefined,
+) {
   return [
     defineTool(
       pluginMigrationDescriptor as typeof pluginMigrationDescriptor & {
@@ -195,7 +204,7 @@ export function createDefaultContributions(projectRoot = process.cwd()) {
         return result.ok ? result.value : commandFailure(result.error);
       },
     ),
-    createBuildContribution(projectRoot),
+    createBuildContribution(projectRoot, takeInitialSources),
     createAuthorContribution(projectRoot),
     createProjectRootContribution(projectRoot),
     createAuthorInspectContribution(projectRoot),

@@ -1,3 +1,4 @@
+import { driveReadyAppFrames } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // Shared dawn-node driver for the foliage smoke and the on/off perf probe:
 // real createApp + rAF path on a mock canvas, one readback at the end.
@@ -99,10 +100,17 @@ export async function runFoliage({ appRoot, scene = 'foliage', mode, furnaceMode
   if (recorder !== undefined) (await recorder.frameBoundary()).unwrap();
   let completed = 0;
   for (let i = 0; i < frames; i += 1) {
-    const callback = rafQueue.shift();
-    if (!callback) break;
     const before = performance.now();
-    callback(start + i * 16.67);
+    const tick = () => {
+      const callback = rafQueue.shift();
+      if (!callback) return false;
+      callback(start + i * 16.67);
+    };
+    if (timeFrames) {
+      if (tick() === false) break;
+    } else {
+      await driveReadyAppFrames(app.renderer, tick);
+    }
     completed += 1;
     if (i === 0 && recorder !== undefined && firstFrameCapture !== undefined) {
       await sharedDevice.queue.onSubmittedWorkDone();

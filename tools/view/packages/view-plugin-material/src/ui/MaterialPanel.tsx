@@ -2,6 +2,7 @@ import { EmptyState, InspectorForm, PanelHeader } from '@forgeax/view-components
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from '../i18n/useTranslation';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
+import type { ResourceAssetActionResolver } from '@forgeax/view-workspace-core/frontend-contract';
 import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspection-presentation';
 import { selectWorkspaceResourceSubject } from '@forgeax/view-workspace-core/resource-open';
@@ -9,14 +10,16 @@ import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspa
 import { RESOURCE_KINDS } from '../identity.ts';
 import './material.css';
 
-export function MaterialPanel(props: { client?: ViewWorkspaceClient }) {
+export function MaterialPanel(props: { client?: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   return <MaterialPropertiesPanel {...props} />;
 }
 
 export function MaterialPropertiesPanel({
   client,
+  assetActions,
 }: {
   client?: ViewWorkspaceClient;
+  assetActions?: ResourceAssetActionResolver;
 }) {
   const { t } = useTranslation();
   if (!client) {
@@ -26,10 +29,10 @@ export function MaterialPropertiesPanel({
       </div>
     );
   }
-  return <LiveProperties client={client} />;
+  return <LiveProperties client={client} assetActions={assetActions} />;
 }
 
-function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
+function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(
@@ -83,7 +86,7 @@ function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
   return (
     <div className="fx-asset-editor fx-ui" data-testid="panel-material-properties" data-view-readonly="true">
       <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
-      <InspectorForm inspection={inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('material.facts')} />
+      <InspectorForm assetActions={assetActions} inspection={inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('material.facts')} />
     </div>
   );
 }

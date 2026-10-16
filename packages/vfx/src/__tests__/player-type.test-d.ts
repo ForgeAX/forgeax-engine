@@ -37,7 +37,7 @@ describe('ParticleEffectPlayer public type shape', () => {
 
   it('contains only the author-intent schema fields', () => {
     expectTypeOf<keyof SchemaOf<typeof ParticleEffectPlayer>>().toEqualTypeOf<
-      'effect' | 'playing' | 'seed' | 'timeScale'
+      'effect' | 'playing' | 'preparePipelines' | 'seed' | 'timeScale'
     >();
     expectTypeOf<
       SchemaOf<typeof ParticleEffectPlayer>['effect']

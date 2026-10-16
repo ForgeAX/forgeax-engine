@@ -13,21 +13,24 @@ const asset: ParticleEffectAsset = {
 };
 
 describe('ParticleEffectPlayer ECS contract', () => {
-  it('exposes exactly the four author-intent fields with stable defaults', () => {
+  it('exposes author intent and opt-in preparation with stable defaults with stable defaults', () => {
     expect(Object.keys(componentSchema(ParticleEffectPlayer))).toEqual([
       'effect',
       'playing',
+      'preparePipelines',
       'seed',
       'timeScale',
     ]);
     expect(componentSchema(ParticleEffectPlayer)).toEqual({
       effect: 'shared<ParticleEffectAsset>',
       playing: 'bool',
+      preparePipelines: 'bool',
       seed: 'u32',
       timeScale: 'f32',
     });
     expect(componentDefinition(ParticleEffectPlayer).defaults).toEqual({
       playing: true,
+      preparePipelines: false,
       seed: 0,
       timeScale: 1,
     });
@@ -43,6 +46,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
     const payload: ParticleEffectPlayerData = {
       effect,
       playing: false,
+      preparePipelines: false,
       seed: 42,
       timeScale: 0.5,
     };

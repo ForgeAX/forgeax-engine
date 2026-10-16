@@ -21,6 +21,9 @@ export interface AsyncDynamicGeometryHost
     | 'retireDynamicGeometry'
   > {
   currentGeneration(): number | undefined;
+  /** Same token preserves currentness answers for the same immutable candidate
+   * roster in this World. Undefined requires individual live checks. */
+  dynamicGeometryCurrentness?(world: World): object | undefined;
   prepareDynamicGeometry(
     input: DynamicGeometryPrepareInput,
     options?: { readonly signal?: AbortSignal },

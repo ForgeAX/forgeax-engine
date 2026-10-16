@@ -78,7 +78,7 @@ let frames = 0;
 let drawErrors = 0;
 for (; frames < MIN_FRAMES; frames += 1) {
   app.world.update(1 / 60).unwrap();
-  const result = drawSmokeFrame(app.renderer, app.world);
+  const result = await drawSmokeFrame(app.renderer, app.world);
   if (!result.ok) drawErrors += 1;
 }
 const hasAudioEngine = app.world.hasResource(AUDIO_ENGINE_RESOURCE_KEY);

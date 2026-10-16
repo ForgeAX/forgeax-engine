@@ -1,16 +1,20 @@
 import { EmptyState, InspectorForm, PanelHeader } from '@forgeax/view-components';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
+import type { ResourceAssetActionResolver } from '@forgeax/view-workspace-core/frontend-contract';
 import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspection-presentation';
 import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { selectWorkspaceFallbackSubject } from '@forgeax/view-workspace-core/resource-open';
 import { useTranslation } from '../i18n/useTranslation';
 import './asset.css';
 
 export function AssetPropertiesPanel({
   client,
+  assetActions,
 }: {
   client?: ViewWorkspaceClient;
+  assetActions?: ResourceAssetActionResolver;
 }) {
   const { t } = useTranslation();
   if (!client) {
@@ -20,10 +24,10 @@ export function AssetPropertiesPanel({
       </div>
     );
   }
-  return <LiveProperties client={client} />;
+  return <LiveProperties client={client} assetActions={assetActions} />;
 }
 
-function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
+function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(
@@ -31,7 +35,7 @@ function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
     () => reader.getSnapshot(),
     () => reader.getSnapshot(),
   );
-  const subject = workspace?.openRequest?.asset;
+  const subject = selectWorkspaceFallbackSubject(workspace) ?? workspace?.openRequest?.asset;
   const projectId = workspace?.project?.id;
   const [inspection, setInspection] = useState<Record<string, unknown> | null>(null);
   const [failed, setFailed] = useState(false);
@@ -78,7 +82,7 @@ function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
   return (
     <div className="fx-asset-editor fx-ui" data-testid="panel-asset-properties" data-view-readonly="true">
       <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
-      <InspectorForm inspection={inspectionRecord} identityTitle={t('asset.facts')} />
+      <InspectorForm assetActions={assetActions} inspection={inspectionRecord} identityTitle={t('asset.facts')} />
     </div>
   );
 }

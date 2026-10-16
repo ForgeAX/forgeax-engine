@@ -84,7 +84,7 @@ world.spawn({ component: Transform, data: { pos: [0, 0, 6], quat: [0, 0, 0, 1], 
 let frames = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) console.error(`draw ${i}: ${result.error.code}`);
   frames++;
 }

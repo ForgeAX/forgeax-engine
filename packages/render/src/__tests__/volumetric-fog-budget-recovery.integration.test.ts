@@ -6,28 +6,34 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type {
   BindGroupLayoutDescriptor,
   Buffer,
+  ComputePipelineDescriptor,
   RenderPipelineDescriptor,
   RhiAdapter,
   RhiDevice,
   RhiError,
   SamplerDescriptor,
+  TextureDescriptor,
 } from '@forgeax/engine-rhi';
+import { RhiError as RuntimeRhiError } from '@forgeax/engine-rhi';
 import {
   rhi as nullRhi,
   RhiNullCommandEncoder,
   RhiNullDevice,
   RhiNullQueue,
+  RhiNullRenderPassEncoder,
 } from '@forgeax/engine-rhi-null';
-import { Transform } from '@forgeax/engine-scene';
-import { ok, type Result, type TextureAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { Camera, perspective, TONEMAP_ACES_FILMIC } from '../components/camera';
+import { CameraView } from '../components/camera-view';
 import { DirectionalLight } from '../components/directional-light';
 import { constructRendererHost } from '../construct-renderer';
 import { resolveVolumetricFogProfile } from '../pipeline/standard-profile';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { VolumetricFog } from '../volume/component';
 import { inspectVolumetricFog } from '../volume/inspection';
+import * as volumeProgramOwner from '../volume/programs';
 import { recoverVolumetricFog, stageVolumetricFog } from '../volume/recovery';
 import {
   createVolumetricFogResources,
@@ -61,8 +67,10 @@ type LostInfo = { readonly reason: 'destroyed' | 'unknown'; readonly message: st
 /** A null-device that can drive the real Renderer lost -> recover lifecycle. */
 class RecoverableNullDevice extends RhiNullDevice {
   readonly renderPipelineDescriptors: RenderPipelineDescriptor[] = [];
+  readonly computePipelineDescriptors: ComputePipelineDescriptor[] = [];
   readonly bindGroupLayoutDescriptors: BindGroupLayoutDescriptor[] = [];
   readonly samplerDescriptors: SamplerDescriptor[] = [];
+  readonly textureDescriptors: TextureDescriptor[] = [];
   private readonly resolveLost: (info: LostInfo) => void;
   private readonly lostPromise: Promise<LostInfo>;
 
@@ -85,9 +93,19 @@ class RecoverableNullDevice extends RhiNullDevice {
     return super.createRenderPipeline(descriptor);
   }
 
+  override createComputePipeline(descriptor: ComputePipelineDescriptor) {
+    this.computePipelineDescriptors.push(descriptor);
+    return super.createComputePipeline(descriptor);
+  }
+
   override createBindGroupLayout(descriptor: BindGroupLayoutDescriptor) {
     this.bindGroupLayoutDescriptors.push(descriptor);
     return super.createBindGroupLayout(descriptor);
+  }
+
+  override createTexture(descriptor: TextureDescriptor) {
+    this.textureDescriptors.push(descriptor);
+    return super.createTexture(descriptor);
   }
 
   override createSampler(descriptor?: SamplerDescriptor) {
@@ -181,6 +199,291 @@ async function persistAc22Receipt(receipt: unknown): Promise<void> {
 }
 
 describe('volumetric fog budget and recovery contract', () => {
+  it('limits the real composite draw to all owner bounds and restores full scissor across camera and view changes', async () => {
+    const adapter = new RecoverableNullAdapter();
+    const made = await constructRendererHost(
+      surfaceCanvas(640, 360),
+      {
+        rhi: { ...nullRhi, requestAdapter: () => Promise.resolve(ok(adapter)) },
+      },
+      { shaderManifestUrl: VOLUME_MANIFEST },
+    );
+    if (!made.ok) throw made.error;
+    const renderer = made.value.renderer;
+    onTestFinished(async () => {
+      await renderer.dispose();
+    });
+    const world = new World();
+    registerPropagateTransforms(world);
+    const camera = world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 3] } },
+        {
+          component: Camera,
+          data: {
+            ...perspective({ fov: Math.PI / 2, aspect: 16 / 9 }),
+            tonemap: TONEMAP_ACES_FILMIC,
+          },
+        },
+      )
+      .unwrap();
+    const light = world
+      .spawn({ component: DirectionalLight, data: { direction: [-0.4, -0.8, -0.3] } })
+      .unwrap();
+    const fogs = [-3, 3].map((x) =>
+      world
+        .spawn({
+          component: VolumetricFog,
+          data: {
+            light,
+            density: world.allocSharedRef('TextureAsset', densityAsset()),
+            boundsMin: [x - 0.4, -0.4, -18],
+            boundsMax: [x + 0.4, 0.4, -16],
+            extinction: [0.2, 0.2, 0.2],
+            albedo: [0.8, 0.8, 0.8],
+            emission: [0, 0, 0],
+            maxDistance: 200,
+          },
+        })
+        .unwrap(),
+    );
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const lease = attached.value,
+      request = { leases: [lease], camera: { lease }, environment: { lease } };
+    const scissors = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setScissorRect');
+    const draw = async () => {
+      scissors.mockClear();
+      world.update(1 / 60).unwrap();
+      const result = renderer.draw(request);
+      if (!result.ok) throw result.error;
+      const done = await result.value.completed;
+      if (!done.ok) throw done.error;
+      return scissors.mock.calls.filter((_row, index) => {
+        const encoder = scissors.mock.contexts[index];
+        return (
+          encoder instanceof RhiNullRenderPassEncoder && encoder.passName === 'volume-composite'
+        );
+      });
+    };
+    await draw();
+    await draw();
+    const partial = await draw();
+    expect(partial.some((rect) => rect[2] < 640 && rect[3] < 360)).toBe(true);
+    expect(partial.at(-1)).toEqual([0, 0, 640, 360]);
+    // Both disconnected owners must fit inside the same compositing rectangle.
+    const clipped = partial.find((rect) => rect[2] < 640 && rect[3] < 360);
+    expect(clipped?.[0]).toBeLessThan(300);
+    expect((clipped?.[0] ?? 0) + (clipped?.[2] ?? 0)).toBeGreaterThan(340);
+    world.set(camera, Transform, { pos: [-3, 0, -17] }).unwrap();
+    expect((await draw()).every((rect) => rect[2] === 640 && rect[3] === 360)).toBe(true);
+    world.set(camera, Transform, { pos: [0, 0, 3] }).unwrap();
+    world
+      .addComponent(camera, { component: CameraView, data: { viewport: [0.2, 0.2, 0.6, 0.5] } })
+      .unwrap();
+    // A composed viewport remains owned by its original graph; this optimization opts out.
+    expect((await draw()).length).toBe(0);
+    world.removeComponent(camera, CameraView).unwrap();
+    expect((await draw()).some((rect) => rect[2] < 640 && rect[3] < 360)).toBe(true);
+    for (const fog of fogs) world.despawn(fog).unwrap();
+    expect((await draw()).length).toBe(0);
+  });
+
+  it('skips actual offscreen density uploads and all volume passes without losing visible, abort or recovery ownership', async () => {
+    const adapter = new RecoverableNullAdapter();
+    const backend = { ...nullRhi, requestAdapter: () => Promise.resolve(ok(adapter)) };
+    const made = await constructRendererHost(
+      surfaceCanvas(96, 96),
+      { rhi: backend },
+      { shaderManifestUrl: VOLUME_MANIFEST },
+    );
+    if (!made.ok) throw made.error;
+    const renderer = made.value.renderer;
+    onTestFinished(async () => {
+      await renderer.dispose();
+    });
+    const world = new World();
+    registerPropagateTransforms(world);
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 3] } },
+        {
+          component: Camera,
+          data: { ...perspective({ fov: Math.PI / 2, aspect: 1 }), tonemap: TONEMAP_ACES_FILMIC },
+        },
+      )
+      .unwrap();
+    const light = world
+      .spawn({
+        component: DirectionalLight,
+        data: { direction: [-0.4, -0.8, -0.3], castShadow: true, cascadeCount: 1, mapSize: 32 },
+      })
+      .unwrap();
+    const outside = [100, -1, -2] as const;
+    const fogs = [outside, [-102, -1, -2] as const, [100, -1, 5] as const].map((min) =>
+      world
+        .spawn({
+          component: VolumetricFog,
+          data: {
+            light,
+            density: world.allocSharedRef('TextureAsset', densityAsset()),
+            boundsMin: min,
+            boundsMax: [min[0] + 2, min[1] + 2, min[2] + 2],
+            extinction: [0.2, 0.2, 0.2],
+            albedo: [0.8, 0.8, 0.8],
+            emission: [0, 0, 0],
+            anisotropy: 0,
+            maxDistance: 200,
+          },
+        })
+        .unwrap(),
+    );
+    const firstFog = fogs[0];
+    if (firstFog === undefined) throw Error('missing fog');
+    world.update(1 / 60).unwrap();
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const lease = attached.value;
+    const request = { leases: [lease], camera: { lease }, environment: { lease } };
+    let device = adapter.devices.at(-1);
+    if (device === undefined) throw Error('missing device');
+    let created = vi.spyOn(device, 'createTexture');
+    const computePasses = vi.spyOn(RhiNullCommandEncoder.prototype, 'beginComputePass');
+    const rasterPasses = vi.spyOn(RhiNullCommandEncoder.prototype, 'beginRenderPass');
+    const volumePassCount = () =>
+      [...computePasses.mock.calls, ...rasterPasses.mock.calls].filter(([descriptor]) =>
+        descriptor?.label?.includes('volume'),
+      ).length;
+    const stages: unknown[] = [];
+    let writes = vi.spyOn(device.queue, 'writeTexture');
+    const densityCreations = () =>
+      created.mock.calls.filter(([descriptor]) => descriptor.dimension === '3d').length;
+    const draw = async () => {
+      world.update(1 / 60).unwrap();
+      const drawn = renderer.draw(request);
+      if (!drawn.ok) throw drawn.error;
+      const completion = await drawn.value.completed;
+      if (!completion.ok) throw completion.error;
+      return renderer.inspect();
+    };
+    for (let i = 0; i < 3; i++) {
+      const inspection = (await draw()).volumetricFog;
+      expect({
+        status: inspection?.status,
+        passCount: inspection?.passCount,
+        densityTextures: densityCreations(),
+        densityWrites: writes.mock.calls.length,
+        encodedVolumePasses: volumePassCount(),
+      }).toEqual({
+        status: 'off',
+        passCount: 0,
+        densityTextures: 0,
+        densityWrites: 0,
+        encodedVolumePasses: 0,
+      });
+    }
+    expect(densityCreations()).toBe(0);
+    expect(writes).not.toHaveBeenCalled();
+    expect(volumePassCount()).toBe(0);
+    stages.push({
+      stage: 'cold-offscreen-3-frames',
+      densityTextures: densityCreations(),
+      densityWrites: writes.mock.calls.length,
+      encodedVolumePasses: volumePassCount(),
+    });
+    world.set(firstFog, VolumetricFog, { boundsMin: [-1, -1, -1], boundsMax: [1, 1, 1] }).unwrap();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'available', passCount: 4 });
+    expect(densityCreations()).toBe(3);
+    expect(volumePassCount()).toBe(4);
+    stages.push({
+      stage: 'first-visible-full-mixed-set',
+      densityTextures: densityCreations(),
+      densityWrites: writes.mock.calls.length,
+      encodedVolumePasses: volumePassCount(),
+    });
+    const priorWrites = writes.mock.calls.length;
+    world.set(firstFog, VolumetricFog, { boundsMin: outside, boundsMax: [102, 1, 0] }).unwrap();
+    world.update(1 / 60).unwrap();
+    const submit = vi.spyOn(device.queue, 'submit').mockReturnValueOnce(
+      err(
+        new RuntimeRhiError({
+          code: 'queue-submit-failed',
+          expected: 'test submit failure',
+          hint: 'retry',
+        }),
+      ),
+    );
+    const failed = renderer.draw(request);
+    if (failed.ok) expect((await failed.value.completed).ok).toBe(false);
+    else expect(failed.ok).toBe(false);
+    submit.mockRestore();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'off', passCount: 0 });
+    expect(writes.mock.calls.length).toBe(priorWrites);
+    // A culled view must retain the accepted source for the existing degraded LKG path.
+    world.set(firstFog, VolumetricFog, { anisotropy: 2 }).unwrap();
+    expect((await draw()).volumetricFog?.status).toBe('degraded');
+    world.set(firstFog, VolumetricFog, { anisotropy: 0 }).unwrap();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'off', passCount: 0 });
+    world.set(firstFog, VolumetricFog, { boundsMin: [-1, -1, -1], boundsMax: [1, 1, 1] }).unwrap();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'available', passCount: 4 });
+    expect(writes.mock.calls.length).toBe(priorWrites);
+    world.set(firstFog, VolumetricFog, { boundsMin: outside, boundsMax: [102, 1, 0] }).unwrap();
+    await draw();
+    device.lose();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(renderer.state()).toBe('device-lost');
+    const recovered = await renderer.recover();
+    if (!recovered.ok) throw recovered.error;
+    device = adapter.devices.at(-1);
+    if (device === undefined) throw Error('missing recovered device');
+    const recoveredDensityTextures = device.textureDescriptors.filter(
+      (descriptor) => descriptor.dimension === '3d' && descriptor.format === 'r8unorm',
+    ).length;
+    expect(recoveredDensityTextures).toBe(1);
+    created = vi.spyOn(device, 'createTexture');
+    writes = vi.spyOn(device.queue, 'writeTexture');
+    const beforeRecoveredViewPasses = volumePassCount();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'off', passCount: 0 });
+    expect(densityCreations()).toBe(0);
+    expect(writes).not.toHaveBeenCalled();
+    expect(volumePassCount()).toBe(beforeRecoveredViewPasses);
+    stages.push({
+      stage: 'recovered-offscreen',
+      recoveryDensityTextures: recoveredDensityTextures,
+      viewDensityTextures: densityCreations(),
+      viewDensityWrites: writes.mock.calls.length,
+      encodedVolumePasses: volumePassCount() - beforeRecoveredViewPasses,
+    });
+    world.set(firstFog, VolumetricFog, { boundsMin: [-1, -1, -1], boundsMax: [1, 1, 1] }).unwrap();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'available', passCount: 4 });
+    // Recovery restored the primary accepted density; the first visible view
+    // restores its two additional owners through the ordinary residency path.
+    expect(densityCreations()).toBe(2);
+    expect(
+      device.textureDescriptors.filter(
+        (descriptor) => descriptor.dimension === '3d' && descriptor.format === 'r8unorm',
+      ),
+    ).toHaveLength(3);
+    expect(volumePassCount() - beforeRecoveredViewPasses).toBe(4);
+    stages.push({
+      stage: 'recovered-visible-full-mixed-set',
+      totalDensityTextures: device.textureDescriptors.filter(
+        (descriptor) => descriptor.dimension === '3d' && descriptor.format === 'r8unorm',
+      ).length,
+      encodedVolumePasses: volumePassCount() - beforeRecoveredViewPasses,
+    });
+    for (const entity of fogs) world.removeComponent(entity, VolumetricFog).unwrap();
+    expect((await draw()).volumetricFog).toMatchObject({ status: 'off', passCount: 0 });
+    const receipt = process.env.FORGEAX_OFFSCREEN_VOLUME_RECEIPT;
+    if (receipt !== undefined) {
+      await mkdir(dirname(receipt), { recursive: true });
+      await writeFile(
+        receipt,
+        `${JSON.stringify({ stages, validationErrorPreserved: true, failedSubmitRetried: true, explicitRemovalOff: true }, null, 2)}\n`,
+      );
+    }
+  });
+
   it('keeps one active generation and bounded resources through 20 resizes', () => {
     let signature = {
       cameraRevision: 1,
@@ -585,6 +888,8 @@ describe('volumetric fog budget and recovery contract', () => {
   });
 
   it('keeps one real Renderer volume generation through 20 resizes, 3 recoveries, and 60 frames', async () => {
+    const compositeSelections = vi.spyOn(volumeProgramOwner, 'volumeCompositeState');
+    onTestFinished(() => compositeSelections.mockRestore());
     const adapter = new RecoverableNullAdapter();
     const backend = {
       ...nullRhi,
@@ -599,6 +904,20 @@ describe('volumetric fog budget and recovery contract', () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const { renderer } = created.value;
+    const readyVolumePipelines = adapter.devices[0]?.renderPipelineDescriptors.filter(
+      (descriptor) => descriptor.label === 'volume_composite',
+    );
+    expect(readyVolumePipelines?.map((descriptor) => descriptor.fragment?.constants)).toEqual([
+      { VOLUME_COMPOSITE_NEIGHBORS: 2 },
+      { VOLUME_COMPOSITE_NEIGHBORS: 4 },
+      { VOLUME_COMPOSITE_NEIGHBORS: 8 },
+    ]);
+    expect(
+      adapter.devices[0]?.computePipelineDescriptors.filter((descriptor) =>
+        descriptor.label?.startsWith('volume_'),
+      ),
+    ).toHaveLength(3);
+
     const world = new World();
     const density = world.allocSharedRef('TextureAsset', densityAsset());
     world
@@ -653,7 +972,9 @@ describe('volumetric fog budget and recovery contract', () => {
       return renderer.inspect();
     };
 
+    compositeSelections.mockClear();
     const initial = await draw();
+    expect(compositeSelections.mock.calls.map((call) => call[3])).toContain(8);
     expect(initial?.volumetricFog).toMatchObject({
       status: 'available',
       resourceStage: 'accepted',
@@ -756,6 +1077,35 @@ describe('volumetric fog budget and recovery contract', () => {
       expect(ledger.liveBuffers).toBe(initialLedger.liveBuffers);
     }
 
+    const originalProfile = renderer.inspect().profile;
+    expect(
+      renderer.setProfile({
+        ...originalProfile,
+        volumetricFog: { quality: 'low', depth: 48, tileSize: 16 },
+      }).ok,
+    ).toBe(true);
+    compositeSelections.mockClear();
+    await draw();
+    expect(compositeSelections.mock.calls.map((call) => call[3])).toContain(4);
+    expect(compositeSelections.mock.calls.map((call) => call[3])).not.toContain(2);
+    expect(
+      adapter.devices[0]?.renderPipelineDescriptors.filter(
+        (descriptor) => descriptor.label === 'volume_composite',
+      ),
+    ).toHaveLength(3);
+    expect(renderer.setProfile(originalProfile).ok).toBe(true);
+    compositeSelections.mockClear();
+    await draw();
+    expect(compositeSelections.mock.calls.map((call) => call[3])).toContain(8);
+    const compositeVariants = adapter.devices[0]?.renderPipelineDescriptors.filter(
+      (descriptor) => descriptor.label === 'volume_composite',
+    );
+    expect(compositeVariants?.map((descriptor) => descriptor.fragment?.constants)).toEqual([
+      { VOLUME_COMPOSITE_NEIGHBORS: 2 },
+      { VOLUME_COMPOSITE_NEIGHBORS: 4 },
+      { VOLUME_COMPOSITE_NEIGHBORS: 8 },
+    ]);
+
     const recoveryGenerations: number[] = [];
     const recoveryLedgers: LedgerSnapshot[] = [];
     for (let index = 0; index < 3; index += 1) {
@@ -836,6 +1186,18 @@ describe('volumetric fog budget and recovery contract', () => {
       expect(ledger.liveTextures).toBe(steadyLedger.liveTextures);
       expect(ledger.liveBuffers).toBe(steadyLedger.liveBuffers);
     }
+    const volumePrograms = adapter.devices.map((device) =>
+      Object.fromEntries(
+        ['volume_inject', 'volume_integrate', 'volume_temporal', 'volume_composite'].map(
+          (label) => [
+            label,
+            [...device.computePipelineDescriptors, ...device.renderPipelineDescriptors].filter(
+              (descriptor) => descriptor.label === label,
+            ).length,
+          ],
+        ),
+      ),
+    );
     await persistAc22Receipt({
       schemaVersion: '1',
       head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -850,7 +1212,15 @@ describe('volumetric fog budget and recovery contract', () => {
       steadyLast: steadyFacts.at(-1),
       resourceBudgetBytes: MAX_MEMORY_BYTES,
       activeLedger: steadyLedger,
+      volumePrograms,
     });
+    for (const programs of volumePrograms)
+      expect(programs).toEqual({
+        volume_inject: 1,
+        volume_integrate: 1,
+        volume_temporal: 1,
+        volume_composite: 3,
+      });
     await renderer.dispose();
   }, 30_000);
 });

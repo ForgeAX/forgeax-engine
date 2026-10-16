@@ -3,6 +3,7 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import gbufferSource from '../../../shader/src/standard-gbuffer.wgsl?raw';
+import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import { addDepthPyramidPasses } from '../depth-pyramid/graph';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import {
@@ -12,6 +13,7 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
+import { RhiErrorListenerRegistry } from '../lifecycle';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { DepthPyramidShaderSources, SsrShaderSources } from '../render-contract';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -302,17 +304,17 @@ export function admittedSsrSpatial() {
 }
 
 function runtimeFor(device: RhiDevice) {
+  const errorRegistry = new RhiErrorListenerRegistry();
   return {
     device,
-    shaderModuleFactory: {
-      createShaderModule: (descriptor: { readonly code: string; readonly label?: string }) =>
-        createShaderModuleImmediate(device, descriptor),
-    },
-    errorRegistry: {
-      fire: (error: unknown): void => {
-        throw error;
-      },
-    },
+    shaderModuleFactory: makeShaderDeviceAdapter(
+      device,
+      errorRegistry,
+      undefined,
+      createShaderModuleImmediate,
+      'immediate',
+    ),
+    errorRegistry,
   };
 }
 
@@ -883,11 +885,12 @@ export async function runSsrGpuDispatch(
   const pyramidPixels: number[][] = [];
   let surfacePixels: number[] = [];
   const bindGroupCounts = { createBindGroup: 0, keys: [] as string[] };
+  const runtime = runtimeFor(device);
   for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
     const encoder = device.createCommandEncoder({ label: `ssr-gpu-probe-${frameIndex}` }).unwrap();
     const frame = {
       encoder,
-      runtime: runtimeFor(device),
+      runtime,
       ssrShaders: { trace: shaders.trace, temporal: shaders.temporal, compose: shaders.compose },
       depthPyramidShaders: { seed: shaders.seed, reduce: shaders.reduce },
       bindGroupCounts,
@@ -896,7 +899,9 @@ export async function runSsrGpuDispatch(
     if (!executed.ok) throw executed.error;
     if (frameIndex === 1) bindGroupCounts.createBindGroup = 0;
     if (frameIndex > 1 && bindGroupCounts.createBindGroup !== 0) {
-      throw new Error('Stable SSR dispatch recreated a bind group');
+      throw new Error(
+        `Stable SSR dispatch recreated a bind group at ${frameIndex}: ${JSON.stringify(bindGroupCounts)}`,
+      );
     }
     const finished = encoder.finish();
     if (!finished.ok) throw finished.error;

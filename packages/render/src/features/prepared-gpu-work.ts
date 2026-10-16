@@ -95,6 +95,7 @@ export interface RenderFeatureGpuPrepare {
   prepareProgram(
     name: string,
     descriptor: RenderFeatureGpuProgramDescriptor,
+    waitForCompletion?: boolean,
   ): Result<RenderFeatureGpuProgramRef, RenderError>;
   prepareBuffer(
     name: string,
@@ -237,6 +238,7 @@ export interface PreparedGraphicsResourceLease {
 }
 
 interface ProgramItem {
+  readonly completionQualified: boolean;
   readonly name: string;
   /** Detached descriptor used for exact warm-frame equality checks. */
   readonly descriptor: RenderFeatureGpuProgramDescriptor;
@@ -473,13 +475,13 @@ export function isOwnedRenderFeatureProgramData(value: unknown): boolean {
   return value !== null && typeof value === 'object' && ownedProgramData.has(value);
 }
 
-function rhiReason(error: {
-  readonly code: string;
-  readonly hint: string;
-  readonly detail?: unknown;
-}): string {
-  const detail = error.detail === undefined ? '' : `:${stable(error.detail)}`;
-  return `${error.code}:${error.hint}${detail}`;
+function rhiReason(error: unknown): string {
+  if (error === null || typeof error !== 'object') return String(error);
+  const code = 'code' in error ? String(error.code) : 'webgpu-runtime-error';
+  const hint =
+    'hint' in error ? String(error.hint) : error instanceof Error ? error.message : String(error);
+  const detail = 'detail' in error && error.detail !== undefined ? `:${stable(error.detail)}` : '';
+  return `${code}:${hint}${detail}`;
 }
 
 function createRenderFeatureGpuWorkSession(input: {
@@ -492,6 +494,15 @@ function createRenderFeatureGpuWorkSession(input: {
   // Program code/layout belongs to the device session; playback names own
   // separate references and buffers. Bound retention across idle generations.
   const compiledPrograms = new Map<string, ProgramItem>();
+  let disposed = false;
+  interface PreparingProgram {
+    readonly module: ShaderModule;
+    readonly bindGroupLayout?: BindGroupLayout;
+    readonly pipelines: Map<string, ComputePipeline>;
+    pending: number;
+    error?: RenderError;
+  }
+  const preparingPrograms = new Map<string, PreparingProgram>();
   const parkedPrograms = new Map<string, { readonly item: ProgramItem; readonly frame: number }>();
   const programRefs = new Map<object, ProgramItem>();
   const buffers = new Map<string, BufferItem>();
@@ -518,11 +529,13 @@ function createRenderFeatureGpuWorkSession(input: {
   // Resource refs are freshly allocated opaque objects. Rollback needs only
   // this frame's additions; accepted index keys never need copying.
   const snapshotIndexes = () => ({
-    programs: new Map(programs),
-    buffers: new Map(buffers),
-    bindings: new Map(bindings),
-    textureViews: new Map(textureViews),
-    samplers: new Map(samplers),
+    // Candidate preparation only inserts or overwrites active names. Keep
+    // each name's first old value; accepted keys never move before commit.
+    programs: new Map<string, ProgramItem | undefined>(),
+    buffers: new Map<string, BufferItem | undefined>(),
+    bindings: new Map<string, BindingsItem | undefined>(),
+    textureViews: new Map<string, TextureViewItem | undefined>(),
+    samplers: new Map<string, SamplerItem | undefined>(),
     parkedPrograms: new Map(parkedPrograms),
     parkedBuffers: new Map(parkedBuffers),
     parkedBindings: new Map(parkedBindings),
@@ -536,6 +549,28 @@ function createRenderFeatureGpuWorkSession(input: {
   const restore = <K, V>(target: Map<K, V>, saved: ReadonlyMap<K, V>): void => {
     target.clear();
     for (const [key, value] of saved) target.set(key, value);
+  };
+  const setCandidateName = <T>(
+    target: Map<string, T>,
+    previous: Map<string, T | undefined> | undefined,
+    name: string,
+    item: T,
+  ): void => {
+    const current = target.get(name);
+    if (current === item) return;
+    if (previous !== undefined && !previous.has(name)) previous.set(name, current);
+    target.set(name, item);
+  };
+  const restoreCandidateNames = <T>(
+    target: Map<string, T>,
+    previous: ReadonlyMap<string, T | undefined>,
+  ): void => {
+    // Active names are never deleted during a candidate: restoring a value
+    // preserves accepted insertion order, while new names can be removed.
+    for (const [name, item] of previous) {
+      if (item === undefined) target.delete(name);
+      else target.set(name, item);
+    }
   };
   const destroyBuffers = (items: Iterable<BufferItem>): Result<void, RenderError> => {
     let first: RenderError | undefined;
@@ -566,11 +601,11 @@ function createRenderFeatureGpuWorkSession(input: {
     const discard = <T>(index: Map<object, T>, references: readonly object[]): void => {
       for (const reference of references) index.delete(reference);
     };
-    restore(programs, previous.programs);
-    restore(buffers, previous.buffers);
-    restore(bindings, previous.bindings);
-    restore(textureViews, previous.textureViews);
-    restore(samplers, previous.samplers);
+    restoreCandidateNames(programs, previous.programs);
+    restoreCandidateNames(buffers, previous.buffers);
+    restoreCandidateNames(bindings, previous.bindings);
+    restoreCandidateNames(textureViews, previous.textureViews);
+    restoreCandidateNames(samplers, previous.samplers);
     restore(parkedPrograms, previous.parkedPrograms);
     restore(parkedBuffers, previous.parkedBuffers);
     restore(parkedBindings, previous.parkedBindings);
@@ -595,23 +630,23 @@ function createRenderFeatureGpuWorkSession(input: {
 
   const activateProgram = (item: ProgramItem): void => {
     const current = programs.get(item.name);
-    if (current === undefined || current === item) {
+    if (current === undefined) {
       parkedPrograms.delete(item.name);
-      programs.set(item.name, item);
+      setCandidateName(programs, candidate?.programs, item.name, item);
     }
   };
   const activateBuffer = (item: BufferItem): void => {
     const current = buffers.get(item.name);
-    if (current === undefined || current === item) {
+    if (current === undefined) {
       parkedBuffers.delete(item.name);
-      buffers.set(item.name, item);
+      setCandidateName(buffers, candidate?.buffers, item.name, item);
     }
   };
   const activateBindings = (item: BindingsItem): void => {
     const current = bindings.get(item.name);
-    if (current === undefined || current === item) {
+    if (current === undefined) {
       parkedBindings.delete(item.name);
-      bindings.set(item.name, item);
+      setCandidateName(bindings, candidate?.bindings, item.name, item);
     }
     activateProgram(item.program);
     for (const entry of item.buffers) activateBuffer(entry.item);
@@ -644,9 +679,19 @@ function createRenderFeatureGpuWorkSession(input: {
     }
   };
 
-  const prepareProgram: RenderFeatureGpuPrepare['prepareProgram'] = (name, descriptor) => {
+  const prepareProgram: RenderFeatureGpuPrepare['prepareProgram'] = (
+    name,
+    descriptor,
+    waitForCompletion = false,
+  ) => {
+    const createAsync = waitForCompletion ? input.device.createComputePipelineAsync : undefined;
+    const complete = (item: ProgramItem) => createAsync === undefined || item.completionQualified;
     const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
-    if (prior !== undefined && equalDescriptorValue(prior.descriptor, descriptor)) {
+    if (
+      prior !== undefined &&
+      complete(prior) &&
+      equalDescriptorValue(prior.descriptor, descriptor)
+    ) {
       activateProgram(prior);
       touchProgram(prior);
       return ok(prior.reference);
@@ -670,7 +715,7 @@ function createRenderFeatureGpuWorkSession(input: {
       if (isOwnedRenderFeatureProgramData(descriptor)) ownedProgramKeys.set(descriptor, programKey);
     }
     const compiled = compiledPrograms.get(programKey);
-    if (compiled !== undefined) {
+    if (compiled !== undefined && complete(compiled)) {
       compiledPrograms.delete(programKey);
       compiledPrograms.set(programKey, compiled);
       const item = {
@@ -679,17 +724,26 @@ function createRenderFeatureGpuWorkSession(input: {
         reference: Object.freeze({ generation: input.generation }) as RenderFeatureGpuProgramRef,
       };
       parkedPrograms.delete(name);
-      programs.set(name, item);
+      setCandidateName(programs, candidate?.programs, name, item);
       changedResourceNames.add(name);
       programRefs.set(item.reference, item);
       candidate?.addedProgramRefs.push(item.reference);
       touchProgram(item);
       return ok(item.reference);
     }
-    const module = input.shaderModuleFactory.createShaderModule({
-      label: name,
-      code: descriptor.wgsl,
-    });
+    const preparing = preparingPrograms.get(programKey);
+    const preparationFailure = (reason: string) =>
+      failure(input.featureIdentity, 'prepare-gpu-program', 'pipeline', name, reason);
+    if (preparing?.error !== undefined) return err(preparing.error);
+    if (preparing !== undefined && preparing.pending > 0)
+      return err(preparationFailure('rhi-not-available:pipeline-pending'));
+    const module =
+      preparing === undefined
+        ? input.shaderModuleFactory.createShaderModule({
+            label: name,
+            code: descriptor.wgsl,
+          })
+        : ok(preparing.module);
     if (!module.ok) {
       return err(
         failure(
@@ -701,9 +755,9 @@ function createRenderFeatureGpuWorkSession(input: {
         ),
       );
     }
-    let bindGroupLayout: BindGroupLayout | undefined;
+    let bindGroupLayout: BindGroupLayout | undefined = preparing?.bindGroupLayout;
     let pipelineLayout: 'auto' | PipelineLayout = 'auto';
-    if (descriptor.bindings !== undefined) {
+    if (preparing === undefined && descriptor.bindings !== undefined) {
       if (descriptor.bindings.length !== 1) {
         return err(
           failure(
@@ -784,26 +838,52 @@ function createRenderFeatureGpuWorkSession(input: {
       }
       pipelineLayout = createdPipelineLayout.value;
     }
-    const pipelineMap = new Map<string, ComputePipeline>();
-    for (const entryPoint of descriptor.entryPoints) {
-      const pipeline = input.device.createComputePipeline({
-        label: `${name}.${entryPoint}`,
-        layout: pipelineLayout,
-        compute: { module: module.value, entryPoint },
-      });
-      if (!pipeline.ok) {
-        return err(
-          failure(
-            input.featureIdentity,
-            'prepare-gpu-program',
-            'pipeline',
-            name,
-            pipeline.error.code,
-          ),
-        );
+    const pipelineMap = preparing?.pipelines ?? new Map<string, ComputePipeline>();
+    if (preparing === undefined && createAsync !== undefined) {
+      if (preparingPrograms.size >= COMPILED_PROGRAM_CACHE_LIMIT)
+        return err(preparationFailure('preparation-budget-exceeded'));
+      const state: PreparingProgram = {
+        module: module.value,
+        ...(bindGroupLayout === undefined ? {} : { bindGroupLayout }),
+        pipelines: pipelineMap,
+        pending: descriptor.entryPoints.length,
+      };
+      preparingPrograms.set(programKey, state);
+      const settle = (entryPoint: string, result: Result<ComputePipeline, unknown>) => {
+        if (disposed || preparingPrograms.get(programKey) !== state) return;
+        if (result.ok) state.pipelines.set(entryPoint, result.value);
+        else state.error ??= preparationFailure(rhiReason(result.error));
+        state.pending--;
+      };
+      for (const entryPoint of descriptor.entryPoints) {
+        try {
+          const completion = createAsync.call(input.device, {
+            label: `${name}.${entryPoint}`,
+            layout: pipelineLayout,
+            compute: { module: module.value, entryPoint },
+          });
+          // forgeax-async-whitelist: dom-native - observe actual backend compute compilation completion.
+          void completion.then(
+            (result) => settle(entryPoint, result),
+            (cause) => settle(entryPoint, err(cause)),
+          );
+        } catch (cause) {
+          settle(entryPoint, err(cause));
+        }
       }
-      pipelineMap.set(entryPoint, pipeline.value);
+      return err(preparationFailure('rhi-not-available:pipeline-pending'));
     }
+    if (preparing === undefined)
+      for (const entryPoint of descriptor.entryPoints) {
+        const pipeline = input.device.createComputePipeline({
+          label: `${name}.${entryPoint}`,
+          layout: pipelineLayout,
+          compute: { module: module.value, entryPoint },
+        });
+        if (!pipeline.ok) return err(preparationFailure(pipeline.error.code));
+        pipelineMap.set(entryPoint, pipeline.value);
+      }
+    preparingPrograms.delete(programKey);
     const reference = Object.freeze({ generation: input.generation }) as RenderFeatureGpuProgramRef;
     const textureBindings = new Map<
       number,
@@ -825,6 +905,7 @@ function createRenderFeatureGpuWorkSession(input: {
     }
     const item = {
       name,
+      completionQualified: preparing !== undefined,
       descriptor: cloneProgramDescriptor(descriptor),
       reference,
       module: module.value,
@@ -840,7 +921,7 @@ function createRenderFeatureGpuWorkSession(input: {
       ...(bindGroupLayout === undefined ? {} : { bindGroupLayout }),
     };
     parkedPrograms.delete(name);
-    programs.set(name, item);
+    setCandidateName(programs, candidate?.programs, name, item);
     changedResourceNames.add(name);
     programRefs.set(reference, item);
     candidate?.addedProgramRefs.push(reference);
@@ -904,7 +985,7 @@ function createRenderFeatureGpuWorkSession(input: {
         owned: true,
       };
       parkedBuffers.delete(name);
-      buffers.set(name, item);
+      setCandidateName(buffers, candidate?.buffers, name, item);
       changedResourceNames.add(name);
       bufferRefs.set(reference, item);
       candidate?.addedBufferRefs.push(reference);
@@ -987,7 +1068,7 @@ function createRenderFeatureGpuWorkSession(input: {
       owned: false,
     };
     parkedBuffers.delete(name);
-    buffers.set(name, item);
+    setCandidateName(buffers, candidate?.buffers, name, item);
     changedResourceNames.add(name);
     bufferRefs.set(reference, item);
     candidate?.addedBufferRefs.push(reference);
@@ -1030,7 +1111,7 @@ function createRenderFeatureGpuWorkSession(input: {
       reference,
       ...(logicalTarget === undefined ? {} : { logicalTarget }),
     };
-    textureViews.set(name, item);
+    setCandidateName(textureViews, candidate?.textureViews, name, item);
     changedResourceNames.add(name);
     textureViewRefs.set(reference, item);
     candidate?.addedTextureViewRefs.push(reference);
@@ -1060,7 +1141,7 @@ function createRenderFeatureGpuWorkSession(input: {
       generation: input.generation,
     }) as RenderFeatureGpuSamplerRef;
     const item = { name, resource, reference };
-    samplers.set(name, item);
+    setCandidateName(samplers, candidate?.samplers, name, item);
     changedResourceNames.add(name);
     samplerRefs.set(reference, item);
     candidate?.addedSamplerRefs.push(reference);
@@ -1263,7 +1344,7 @@ function createRenderFeatureGpuWorkSession(input: {
       bindGroup: created?.value as BindGroup,
     };
     parkedBindings.delete(name);
-    bindings.set(name, item);
+    setCandidateName(bindings, candidate?.bindings, name, item);
     changedResourceNames.add(name);
     bindingRefs.set(reference, item);
     candidate?.addedBindingRefs.push(reference);
@@ -1655,6 +1736,8 @@ function createRenderFeatureGpuWorkSession(input: {
       ];
     },
     dispose: () => {
+      disposed = true;
+      preparingPrograms.clear();
       candidate = undefined;
       const destroyed = destroyBuffers(bufferRefs.values());
       programs.clear();

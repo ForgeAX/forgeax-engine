@@ -13,6 +13,7 @@ import {
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 export const CONTACT_SHADOW_SIZE = 128;
 
@@ -171,13 +172,13 @@ export async function verifyContactShadow(
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const last = index === 5;
-      if (last) unwrap(renderer.requestObservation?.(['linear-hdr']));
       const pending = last && capture !== undefined ? options.recorder?.captureFrame() : undefined;
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
-      const frame = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      const frame = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        last ? ['linear-hdr'] : undefined,
       );
-      unwrap(await frame.completed);
       if (pending !== undefined && capture !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
         await options.capture?.((await pending).unwrap(), capture);

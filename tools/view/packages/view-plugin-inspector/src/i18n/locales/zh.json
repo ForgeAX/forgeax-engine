@@ -1,5 +1,8 @@
 {
   "inspector": {
+    "assetReferencesTruncated": "资产引用列表不完整",
+    "assetReferencesUnavailable": "资产引用查询不可用",
+    "materialSource": { "component": "实例覆盖", "mesh-default": "网格默认", "engine-default": "Engine 默认" },
     "meshType": "网格",
     "componentTree": "实体组件",
     "collapseComponents": "折叠组件列表",
@@ -25,7 +28,7 @@
       "quat": "旋转",
       "scale": "缩放"
     },
-    "openResource": "打开资源",
+    "openResource": "打开资产查看器",
     "resourceDetails": "详细信息",
     "source": "来源",
     "sourceKey": "来源键",
@@ -63,10 +66,12 @@
     "rotation": "旋转",
     "unavailable": "不可用",
     "assetRef": {
+      "openUnavailable": "资产查看器不可用",
+      "readOnly": "只读资产引用",
       "none": "无",
       "missing": "资源缺失",
       "useSelection": "使用选中的资源",
-      "browse": "浏览资源",
+      "browse": "浏览至资产",
       "reveal": "在内容浏览器中定位",
       "more": "更多引用操作",
       "clear": "清除",

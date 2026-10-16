@@ -5,8 +5,6 @@
     "theme": "主题",
     "themeLight": "白天",
     "themeDark": "夜晚",
-    "traceExport": "导出视口诊断日志",
-    "traceExportHint": "下载视口交互诊断（点击画布、拖拽、按 Esc 后导出）",
     "close": "关闭",
     "localeShort": {
       "zh": "中",
@@ -85,13 +83,14 @@
     },
     "pages": {
       "editor": "Scene",
-      "display": "运行时截图",
+      "display": "运行观察",
       "plugins": "插件",
       "material": "材质",
       "mesh": "网格",
       "texture": "纹理",
       "asset": "资产",
-      "html": "HTML 界面"
+      "html": "HTML 界面",
+      "history": "操作历史"
     },
     "slots": {
       "plugins": "插件",

@@ -9,6 +9,7 @@ import { propagateTransforms } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { page } from 'vitest/browser';
 import { WAVE1_ATMOSPHERE_PRESET } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 interface ScreenshotPixels {
   readonly width: number;
@@ -191,15 +192,12 @@ export async function submitFrame(
   lease: RenderWorldLease,
 ): Promise<void> {
   propagateTransforms(world).unwrap();
-  const drawn = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
     fixedStep: world.getResource(FixedTime).tick,
   });
-  if (!drawn.ok) throw drawn.error;
-  const completed = await drawn.value.completed;
-  if (!completed.ok) throw completed.error;
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 

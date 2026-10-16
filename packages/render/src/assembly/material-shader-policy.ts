@@ -97,7 +97,7 @@ export function makeShaderDeviceAdapter(
 ): ShaderDeviceAdapterInternal {
   const moduleCache = new Map<string, ShaderModule>();
   const errorCache = new Map<string, RhiError>();
-  const pending = new Map<string, number>();
+  const pending = new Map<string, { readonly epoch: number; error?: RhiError }>();
   const epochs = new Map<string, number>();
   const requested = new Set<string>();
 
@@ -134,16 +134,19 @@ export function makeShaderDeviceAdapter(
       // M3 D-P4: rhi-webgpu supplies the async factory; rhi-wgpu (no top-level
       // async factory) falls back to the synchronous device.createShaderModule
       // entry which already returns Result<ShaderModule, RhiError>.
-      if (!pending.has(key)) {
+      let request = pending.get(key);
+      if (request === undefined) {
         const epoch = epochs.get(key) ?? 0;
-        pending.set(key, epoch);
+        request = { epoch };
+        pending.set(key, request);
+        const operation = request;
         const desc2: { code: string; label?: string | undefined } = { code: desc.code };
         if (desc.label !== undefined) desc2.label = desc.label;
         const asyncResult: Promise<Result<ShaderModule, RhiError>> = asyncCreateShaderModule
           ? asyncCreateShaderModule(rhiDevice, desc2)
           : invokeDeviceCreateShaderModule(rhiDevice, desc2);
         void asyncResult.then((result) => {
-          if (pending.get(key) !== epoch || (epochs.get(key) ?? 0) !== epoch) return;
+          if (pending.get(key) !== operation || (epochs.get(key) ?? 0) !== operation.epoch) return;
           if (result.ok) {
             moduleCache.set(key, result.value);
           } else {
@@ -153,7 +156,12 @@ export function makeShaderDeviceAdapter(
         });
       }
 
-      return err(makeRhiNotAvailableError(key));
+      // One compile can be requested by hundreds of material/CSM rows while
+      // its native promise is pending. Keep its structured signal with that
+      // request instead of capturing an Error stack for every retry. Settlement
+      // and invalidation retire the complete record, including this signal.
+      request.error ??= makeRhiNotAvailableError(key);
+      return err(request.error);
     },
     seedModule(label: string, module: ShaderModule): void {
       moduleCache.set(label, module);

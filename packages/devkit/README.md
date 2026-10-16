@@ -133,6 +133,7 @@ presentation clients decide how query results affect their selection.
 - [CLI and catalog](#cli-and-catalog)
 - [Browser compositor capture](#browser-compositor-capture)
 - [Engine source binding](#engine-source-binding)
+- [Platform SDK adaptation](#platform-sdk-adaptation)
 - [Startup diagnostics](#startup-diagnostics)
 - [Borrowed display carrier](#borrowed-display-carrier)
 - [Engine workspace provider](#engine-workspace-provider)
@@ -253,6 +254,36 @@ temporary observation values; `camera release` restores the authored game
 camera. The same values can be passed through `--input` from a script when a
 single request needs both fields.
 
+## Persistent operation history
+
+Engine CLI and SDK `ToolClient.run/runPath` calls automatically retain one
+receipt per invocation, even when View is absent. It contains the operation ID,
+bounded arguments/result or failure, timestamps, duration and producer artifact
+references. A started receipt without completion does not establish that a
+process is still alive. Help and history reads do not add records; rejected CLI
+syntax before invocation is not a domain operation.
+
+```sh
+forgeax engine history list --root ./game --limit 50 --json
+forgeax engine history get --root ./game --id ID --json
+forgeax engine history artifact read --root ./game --id ID --index 0 --json
+```
+
+`list` returns summaries and `nextCursor`; pass that cursor as `--before` to
+browse older records. `get` returns one receipt. `artifact read` returns a PNG
+as base64 with its digest, without executing the original command. PNGs are
+checked against producer digests and retained, so overwriting/deleting an
+exported image does not change history. Missing or oversized images carry
+explicit unavailable reasons. Diagnostic text is bounded, credentials are
+redacted and image bytes are read separately from summaries.
+
+Records live outside project source under `~/.local/share/ForgeaX/operations`,
+partitioned by canonical project root. `FORGEAX_HISTORY_DIR` overrides the
+storage root. Initial records and terminal updates publish atomically without
+a second index or background game. The resident Engine workspace publishes the
+same read operations; frontend callers can read only their admitted project.
+Optional View history consumes these facts and never replays commands.
+
 ## Bounded asset discovery
 
 The unified asset list always returns a bounded page envelope. The default
@@ -361,6 +392,15 @@ This target currently assembles the main game realm. It does not emit WeChat
 Worker/Worker V2 or open-data-domain entries, native audio/network adapters, or a
 remote download/persistent-cache service. See the [platform execution scope](../platform-wechat/README.md#execution-scope).
 Ordinary simulator acceptance and Android/iOS device acceptance remain separate.
+
+Standalone browser entries assemble the ordinary FrontendPlatform without
+whole-document navigation. Development workspaces select their own document
+navigation when opening or recovering an Editor target; Play still loads its
+Engine-created URL through the host-owned iframe. These are host assembly
+choices, not game PluginAsset configuration or View-specific game code. The SDK
+Project consumer checks emitted JavaScript for both the empty and game-3d
+production builds, including the custom deployment-base build, so unused host
+navigation cannot silently re-enter ordinary game output.
 
 The shared startup document and game UI render through Blitz into the existing
 Renderer submission. App starts before asynchronous scene activation; activation
@@ -891,6 +931,14 @@ Playwright Chromium; `--browser` explicitly selects another executable. Resource
 preview and replay reuse this discovery across Linux, macOS, and Windows, including `FORGEAX_BROWSER_EXECUTABLE`;
 an explicit `FORGEAX_CHROME_CHANNEL` selects the Playwright channel instead.
 
+One-shot resource preview and fresh replay retain each private Chromium process through
+Playwright's native BrowserServer owner, independently of its client connection. Cleanup retires
+that process even after the browser connection disconnects; a closed protocol connection is not
+proof of process termination. A borrowed display page retains its existing presentation lease
+and is never terminated as a private browser process. Generated Host startup failures end the
+readiness wait immediately, and automatic software retry is limited to structured adapter
+unavailability before any capture artifact exists.
+
 Project capture fixes the viewport and screen size, DPR 1, sRGB colour profile, light colour
 scheme, `en-US` locale, UTC timezone, and waits for `document.fonts.ready`. An unsized headed development
 session uses the native window and display density. Projects must ship the same
@@ -984,12 +1032,13 @@ for a missing SDK package. Status derives its workspace digest from the actual b
 reports their newest modification time. engine unlink removes the sole override and returns to the
 normal registry/SDK resolution path.
 
-`forgeax project doctor` accepts workspace and `file:` directory dependencies only while a healthy
-local Engine binding is selected. It checks the project and installed package identities against
-the active pnpm workspace state, importer, lock locators, and actual package links. Copied `file:`
-directory payloads must match the declared source; archive inputs and unproven copies remain
-unsupported. With no local binding, local dependencies stay rejected so registry/SDK projects keep
-their exact-version lock contract.
+`forgeax project doctor` accepts third-party workspace and `file:` directory dependencies in
+registry/SDK games as well as games with a healthy local Engine binding. It checks the project and
+installed package identities against the active pnpm workspace state, importer, lock locators, and
+actual package links. Copied `file:` directory payloads must match the declared source; archive
+inputs and unproven copies remain unsupported. Local `@forgeax/engine` and `@forgeax/engine-*`
+packages still require an explicit healthy Engine binding. Registry Engine packages retain their
+locked version and public-export checks when inspecting a local dependency closure.
 
 An installing workspace may use an unconditional package-name `overrides` rule to unify a
 dependency version. Doctor compares that root rule with both the project and installed
@@ -1008,6 +1057,100 @@ Physical realm consumers use `createRealmDispatch`. Each descriptor is routed to
 one owner for its declared realm (the `ToolRealm` contract). A missing owner
 returns `tool-capability-unavailable` with the realm in `detail`; it never falls
 through to another realm.
+
+## Platform SDK adaptation
+
+Keep platform rules in a game-owned browser/frontend plugin. Install the platform's
+SDK through its official tooling into the game, not into Engine. A single-package
+game can use a `file:vendor/...` package; a workspace package must actually belong
+to the declared workspace. Commit the resulting manifest and lockfile. Project
+check verifies those local packages without requiring a source Engine binding.
+
+### Minimal Zaohua lifecycle example
+
+This optional recipe uses the game's installed `zaohua-platform-sdk`. It adds no
+Engine runtime interface and is not installed into either template. Invoke the
+async generator through the frontend plugin's native `ctx.effect`, passing its
+`GameHost` and a game-owned `makePlayable` function. That function performs real
+loading and resolves only when the scene and player interaction are ready; it is
+not a timeout or a canvas-exists check. Declare `gameHost` in the plugin's `inject`.
+
+```ts
+import type { GameHost } from '@forgeax/engine/app';
+import { game, initialize, lifecycle } from 'zaohua-platform-sdk';
+
+export async function* bindZaohua(
+  host: GameHost,
+  makePlayable: () => Promise<void>,
+) {
+  const app = host.app;
+  if (!('pause' in app) || !('resume' in app)) {
+    throw new Error('Platform lifecycle requires the presentation App');
+  }
+  await initialize({ capabilities: ['game.loading', 'game.lifecycle'] });
+  game.loading();
+  let paused = false;
+  yield lifecycle.register({
+    pause() {
+      if (paused) return;
+      app.pause().unwrap();
+      paused = true;
+    },
+    resume() {
+      if (!paused) return;
+      app.resume().unwrap();
+      paused = false;
+    },
+    getState: () => ({ paused }),
+  });
+  await makePlayable();
+  game.loaded();
+}
+```
+
+Use `await ctx.effect(() => bindZaohua(ctx.gameHost!, makePlayable))` inside that
+frontend plugin. Native effect disposal unregisters the adapter, including when
+loading fails after registration. Initialize once per page; coordinate consumers
+through their existing plugin service dependencies rather than initializing the
+SDK independently in several plugins. Do not execute browser SDKs in Engine
+Workers, Pack `build()`, or module evaluation.
+
+| Concern | Minimum game responsibility |
+|:--|:--|
+| Loading | Report `loading()` before the integration's loading work and `loaded()` at its real playable boundary; a failed load must not report loaded |
+| Pause/resume | Handle App Results and report only the applied state; Zaohua's offline lifecycle response budget is three seconds |
+| Input | Clear game-owned held actions or touch state when needed, using its existing UI/Engine message protocol; never wait for a new World tick after pausing it |
+| Audio | Separately handle ongoing game music, voices or native media through their existing owners; stopping App frame scheduling alone does not suspend independent playback |
+| Navigation | Keep game screens in the current document; do not call a document-navigation API for a menu or level transition |
+
+This is a minimal lifecycle bridge, not a complete game's pause policy. The game
+still decides pause UI, pointer-lock release/reacquisition and input/audio behavior.
+A platform `paused` ACK does not prove that gameplay and audio actually stopped;
+verify the game's own observable behavior in its real platform host.
+
+### PC viewport baseline
+
+Use the generated Host's existing canvas/container sizing. Put game HUD rules in
+its authored UI CSS, for example:
+
+```css
+:host { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.hud { box-sizing: border-box; max-width: 100%; max-height: 100%; overflow: auto; }
+```
+
+Adapt these selectors to the game's real UI; do not add a second canvas resize
+loop. For the investigated Zaohua plugin 1.1.66, PC validation uses 1280x720 and
+1024x768. Require no unintended document overflow at both sizes, and inspect
+important controls and camera composition separately: scroll metrics alone do
+not establish usable layout. The source-selected platform and its current
+validator remain authoritative for other versions.
+
+PC publishing also requires SDK initialization, loading, lifecycle, single-page
+runtime and successful automatic validation. Mobile/both additionally requires
+its platform Landing page. Cloud save, multiplayer and player/runtime data remain
+separate gameplay or publishing choices. A static scanner matching an unused
+navigation helper does not establish actual navigation; preserve its failure and
+repair the validator rather than obfuscating Engine code or bypassing publishing.
 
 ## Startup diagnostics
 
@@ -1334,7 +1477,7 @@ frame and plugin counters, publication checks and disposal results.
 | Import a portable author closure | `forgeax asset source import` |
 | Clone source with independent identities | `forgeax asset source clone` |
 
-Use `help <path> --json` for the authoritative request schema. For example, `forgeax project root set --realm engine --guid <guid>` selects a root; `--guid null` removes it. Source transfer uses a new destination directory beneath assets, preserves source-relative layout, checks exact pnpm dependency-lock evidence, compiles the candidate and fences source/target revisions before commit. Cloning rewrites known GUID/namespace references and project WGSL module identities together with their material/import references. The candidate must retain its source closure inside the new clone directory; computed references that escape it fail before publication. Generated outputs are rebuilt in the target. Sources requiring cooked reads during closure discovery report an explicit unsupported transfer instead of copying an incomplete closure.
+Use `help <path> --json` for the authoritative request schema. For example, `forgeax project root set --realm engine --guid <guid>` selects a root; `--guid null` removes it. Source transfer uses a new destination directory beneath a configured `forge.json#assetRoots` directory, preserves source-relative layout, checks exact pnpm dependency-lock evidence, compiles the candidate and fences source/target revisions before commit. Cloning rewrites known GUID/namespace references and project WGSL module identities together with their material/import references. The candidate must retain its source closure inside the new clone directory; computed references that escape it fail before publication. Generated outputs are rebuilt in the target. Sources requiring cooked reads during closure discovery report an explicit unsupported transfer instead of copying an incomplete closure.
 
 Changes to project roots, code, configuration, dependencies, or asset sources compile a candidate before replacing the running session. A standalone Vite Host using `pluginProgramsBuild` restarts through Vite when its frozen executable inputs change, captures a new program/publication pair, and rejects URLs from the retired session. A new page or Worker receives one sessionGeneration; the accepted asset catalog stays frozen until replacement. Failed compilation preserves the old runtime; failure after replacement requires a new session and does not recover game progress. When the source fence detects a save during candidate compilation, the Host rejects that snapshot and prepares once from current source. This bounded retry handles a coalesced final save without another watcher event. A second source change or an ordinary compilation error still fails before replacement.
 
@@ -1554,7 +1697,7 @@ They are available through the same ToolApi and `forgeax engine run ...` CLI.
 |:--|:--|
 | Execution | Detached Engine process and private browser, headless by default; no presentation carrier injection. CLI exit and workspace disposal do not stop it. |
 | Inputs | Copy dirty project files and the resolved installed dependency graph, including a selected local Engine binding; dependency files follow each package's npm publish payload (`files` / ignore rules), not its whole checkout. Recheck consistency before starting. No mutable source links remain. |
-| Identity | One active run per project root. `runId` identifies the run and `inputVersion` hashes the snapshot. Repeated start reuses compatible execution; stop/start selects new inputs. Reload resets runtime against the same snapshot. |
+| Identity | One active run per physical project directory. Run storage canonicalizes existing directory aliases, so CLI paths and accepted workspace paths discover the same owner. `runId` identifies the run and `inputVersion` hashes the snapshot. Repeated start reuses compatible execution; stop/start selects new inputs. Reload resets runtime against the same snapshot. |
 | Observation | `observe` reads cached status, latest timestamped PNG and at most 100 log entries of 4096 characters. Sequence bounds and `droppedLogs` expose gaps. One producer per run samples at most once every five seconds, with a 4 MiB PNG limit. |
 | Authorization | Private control token stays in the mode-0600 session file. `runAccess: 'observe'` rejects every run operation except observe through both ToolApi and transport, regardless of caller-supplied arguments. Frontend callers are also observe-only. |
 | Cleanup | Stop closes execution and deletes its input snapshot; capture artifacts remain in the existing artifact directory. Failed startup is inspectable and explicitly stoppable. Concurrent daemons cannot claim the same run. |

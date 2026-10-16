@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { Update } from '@forgeax/engine-ecs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 // hello-level-switch headless smoke (feat-20260616 M7 / m7w4).
@@ -181,14 +182,14 @@ const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const assets = hostAssets;
 const lease = worldAttachment1.value;
-const drawFrame = () => {
-  const result = renderer.draw({
+const drawFrame = async () => {
+  const receipt = await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (result.ok) successfulFrameCount++;
-  return result;
+  successfulFrameCount++;
+  return { ok: true, value: receipt };
 };
 console.log(`[hello-level-switch] backend=${renderer.inspect().capabilities.backendKind}`);
 
@@ -383,7 +384,7 @@ const STATE_VARIANTS = ['tutorial', 'street-a'];
 for (const variant of STATE_VARIANTS) {
   setNextState(world, LevelId, variant);
   world.update(1 / 60).unwrap();
-  const r = drawFrame();
+  const r = await drawFrame();
   if (!r.ok) console.error(`[smoke] warmup transition to ${variant} failed: ${r.error.code}`);
 }
 console.log('[smoke] warmup transitions complete: tutorial -> street-a');
@@ -392,7 +393,7 @@ console.log('[smoke] warmup transitions complete: tutorial -> street-a');
 const BASELINE_FRAMES = 30;
 for (let i = 0; i < BASELINE_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = drawFrame();
+  const r = await drawFrame();
   if (!r.ok) console.error(`[smoke] baseline draw frame ${i} error: ${r.error.code}`);
 }
 
@@ -405,7 +406,7 @@ for (let s = 0; s < 10; s++) {
   const variant = STATE_VARIANTS[s % STATE_VARIANTS.length];
   setNextState(world, LevelId, variant);
   world.update(1 / 60).unwrap();
-  drawFrame();
+  await drawFrame();
 }
 const switchTotalWall = performance.now() - switchTotalStart;
 console.log(`[smoke] INFO - 10-switch wall = ${switchTotalWall.toFixed(2)}ms`);
@@ -413,7 +414,7 @@ console.log(`[smoke] INFO - 10-switch wall = ${switchTotalWall.toFixed(2)}ms`);
 // Stabilise: 5 frames after all switches.
 for (let i = 0; i < 5; i++) {
   world.update(1 / 60).unwrap();
-  drawFrame();
+  await drawFrame();
 }
 
 // AC-14 #2: Player survives through all transitions.
@@ -564,7 +565,7 @@ console.log('[smoke] M29 PASS: partial commit, later-token abort, fresh-World re
 const remainingFrames = Math.max(0, SMOKE_MIN_FRAMES - BASELINE_FRAMES - 10 - 5);
 for (let i = 0; i < remainingFrames; i++) {
   world.update(1 / 60).unwrap();
-  const r = drawFrame();
+  const r = await drawFrame();
   if (!r.ok) console.error(`[smoke] tail draw frame ${i} error: ${r.error.code}`);
 }
 
@@ -623,8 +624,8 @@ const assertM41Invalid = (result, label) => {
     m41Fail(`M41 ${label} did not return the exact structured invalid-variant error: ${JSON.stringify(result)}`);
   }
 };
-const drawM41 = (label) => {
-  const result = drawFrame();
+const drawM41 = async (label) => {
+  const result = await drawFrame();
   if (!result.ok) m41Fail(`M41 ${label} draw failed: ${result.error.code}`);
 };
 const pixelDelta = (left, right) => [...left.center, ...left.corner]
@@ -647,7 +648,7 @@ const m41Before = m41Snapshot(m41MainMenuExit, m41TutorialEnter, m41RepairEntity
 if (!m41Before.level.ok || m41Before.level.value !== 'street-a') {
   m41Fail(`M41 expected the warm main World to be in street-a, got ${JSON.stringify(m41Before.level)}`);
 }
-drawM41('before-invalid');
+await drawM41('before-invalid');
 const m41BeforePixels = await readRenderSamples();
 const m41Request = setNextState(world, LevelId, m41InvalidVariant);
 const m41ForceRequest = setNextStateForce(world, LevelId, m41InvalidVariant);
@@ -658,7 +659,7 @@ if (JSON.stringify(m41AfterRequest) !== JSON.stringify(m41Before)) {
   m41Fail(`M41 invalid requests changed the same World before update: ${JSON.stringify({ before: m41Before, after: m41AfterRequest })}`);
 }
 world.update(1 / 60).unwrap();
-drawM41('after-invalid');
+await drawM41('after-invalid');
 const m41AfterInvalidPixels = await readRenderSamples();
 const m41AfterInvalid = m41Snapshot(m41MainMenuExit, m41TutorialEnter, m41RepairEntity, m41CallbackRuns);
 if (JSON.stringify(m41AfterInvalid) !== JSON.stringify(m41Before)) {
@@ -674,7 +675,7 @@ if (!m41ValidRequest.ok || !m41IndependentRequest.ok) {
   m41Fail(`M41 valid same-World requests failed: ${JSON.stringify({ m41ValidRequest, m41IndependentRequest })}`);
 }
 world.update(1 / 60).unwrap();
-drawM41('after-valid');
+await drawM41('after-valid');
 const m41RepairedPixels = await readRenderSamples();
 const m41Repaired = m41Snapshot(m41MainMenuExit, m41TutorialEnter, m41RepairEntity, m41CallbackRuns);
 if (
@@ -694,10 +695,10 @@ if (pixelEnergy(m41RepairedPixels) <= 0.05) {
 
 setNextState(world, LevelId, 'main-menu');
 world.update(1 / 60).unwrap();
-drawM41('after-cleanup');
+await drawM41('after-cleanup');
 setNextStateForce(world, LevelId, 'main-menu');
 world.update(1 / 60).unwrap();
-drawM41('after-idempotent-cleanup');
+await drawM41('after-idempotent-cleanup');
 const m41Cleaned = m41Snapshot(m41MainMenuExit, m41TutorialEnter, m41RepairEntity, m41CallbackRuns);
 if (
   !m41Cleaned.level.ok || m41Cleaned.level.value !== 'main-menu' ||

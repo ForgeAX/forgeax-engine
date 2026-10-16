@@ -102,6 +102,7 @@ test('observation requires an exact independent binding and discards late result
     assert.equal(snapshot().status, 'unavailable');
     assert.equal(snapshot().observation, null);
     result = { status: { runId: 'b', phase: 'ready' }, screenshot: 'new' };
+    await bind({ root: '/new', runId: 'b' });
     await until(() => snapshot().status === 'running');
     assert.deepEqual(snapshot().binding, { root: '/new', runId: 'b' });
     assert.equal(snapshot().observation.screenshot, 'new');
@@ -113,6 +114,45 @@ test('observation requires an exact independent binding and discards late result
     await fiber.dispose();
     assert.equal(host.transport.snapshot('forgeax.view.status.get'), undefined);
   } finally { await provider.revoke(); await host.dispose(); }
+});
+
+test('discovers a project run once and never follows a replacement without another bind', { timeout: 12_000 }, async () => {
+  const host = await createBackendHost({ pairs: [] });
+  const context = host.context;
+  context.provide('viewWorkspaceCore', {});
+  let runId = 'discovered-run';
+  let complete;
+  const schema = toolJsonSchema({ type: 'object' });
+  const provider = context.toolApi.registerProvider({
+    sourceId: 'engine-workspace', providerId: 'discovery', realm: 'host', module: 'fixture',
+    tools: [defineTool({ id: 'engine.run.observe', path: ['engine', 'run', 'observe'], title: 'Observe', summary: 'Fixture', realm: 'host', argsSchema: schema, resultSchema: schema, inputSchema: {}, outputSchema: {}, evidence: [] }, args => {
+      if (args.root === '/pending') return new Promise(resolve => { complete = resolve; });
+      return { status: { runId, phase: 'ready' }, image: { png: `data:image/png;base64,${runId}` } };
+    })],
+  });
+  const fiber = await context.plugin(display);
+  await fiber.await();
+  const bind = args => call(host, 'view.display.bind', 'view-backend', args);
+  const snapshot = () => context.viewStatus();
+  try {
+    await bind({ root: '/project' });
+    await until(() => snapshot().status === 'running');
+    assert.deepEqual(snapshot().binding, { root: '/project', runId: 'discovered-run' });
+    runId = 'replacement';
+    await until(() => snapshot().status === 'unavailable');
+    assert.equal(snapshot().binding.runId, 'discovered-run');
+    assert.equal(snapshot().observation.image.png, 'data:image/png;base64,discovered-run');
+    await bind({ root: '/project' });
+    await until(() => snapshot().status === 'running');
+    assert.equal(snapshot().binding.runId, 'replacement');
+    const pending = bind({ root: '/pending' });
+    await until(() => complete);
+    await bind({ root: null });
+    complete({ status: { runId: 'late', phase: 'ready' } });
+    await pending;
+    assert.equal(snapshot().binding, null);
+    assert.equal(snapshot().observation, null);
+  } finally { await fiber.dispose(); await provider.revoke(); await host.dispose(); }
 });
 
 test('Display bindings and topic deliveries belong to each frontend connection', { timeout: 12_000 }, async () => {

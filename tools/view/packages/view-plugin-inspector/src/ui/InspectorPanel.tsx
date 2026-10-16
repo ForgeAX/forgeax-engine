@@ -1,6 +1,7 @@
 import { EmptyState, Spinner, Text, usePanelVisible, useWorkspaceClientConnected } from '@forgeax/view-components';
 import { MousePointer2 } from 'lucide-react';
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { AssetReferenceService, EntityAssetReferences } from '@forgeax/view-workspace-core/asset-references';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import { VIEW_WORKSPACE_TAB_ID, jsonUnchanged, type WorkspaceState } from '@forgeax/view-workspace-core/contract';
@@ -10,7 +11,7 @@ import { EntityInspectorBody } from './EntityInspectorBody';
 
 type InspectionRecord = { key: string; source: InspectorEntity | null };
 
-export function InspectorPanel({ client }: { client?: ViewWorkspaceClient }) {
+export function InspectorPanel({ client, assetReferences, browseAsset }: { client?: ViewWorkspaceClient; assetReferences?: AssetReferenceService; browseAsset?: (guid: string) => Promise<boolean> }) {
   const visible = usePanelVisible();
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
@@ -22,6 +23,8 @@ export function InspectorPanel({ client }: { client?: ViewWorkspaceClient }) {
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [actionFailure, setActionFailure] = useState<string | null>(null);
+  const referenceState = useSyncExternalStore(assetReferences?.subscribe ?? (() => () => {}), assetReferences?.getState ?? (() => undefined), () => undefined);
+  const cachedReferences = useRef<{ key: string; value?: EntityAssetReferences } | null>(null);
   const projectId = workspace?.project?.id;
   const selectionKey = primary?.entityId && target?.targetId
     ? `${projectId ?? ''}:${primary.entityId}:${target.targetId}:${target.generation ?? ''}` : null;
@@ -46,9 +49,17 @@ export function InspectorPanel({ client }: { client?: ViewWorkspaceClient }) {
       try {
         const result = await client.call<EntityInspection>('entity.inspect', { projectId, entityId: primary.entityId, targetId: target.targetId, targetGeneration: target.generation }, { signal });
         if (signal.aborted) return;
+        const referenceKey = JSON.stringify([selectionKey, reader.getSnapshot()?.catalogEpoch, referenceState?.phase,
+          { ...result, sampledAt: undefined }]);
+        if (cachedReferences.current?.key !== referenceKey) {
+          const value = referenceState?.phase === 'ready' && referenceState.scope?.targetId === target.targetId && referenceState.scope.targetGeneration === target.generation
+            ? await assetReferences?.query(primary.entityId, { signal }).catch(() => undefined) : undefined;
+          if (signal.aborted) return;
+          cachedReferences.current = { key: referenceKey, value };
+        }
         const source = inspectorEntityFromInspection(result, reader.getSnapshot()?.assets ?? [], {
           rotation: t('inspector.rotation'), unavailable: t('inspector.unavailable'),
-        });
+        }, cachedReferences.current.value);
         setInspection(current => current?.key === selectionKey
           && jsonUnchanged({ ...current.source?.raw, sampledAt: undefined }, { ...source?.raw, sampledAt: undefined })
           && jsonUnchanged(current.source?.components, source?.components)
@@ -68,7 +79,7 @@ export function InspectorPanel({ client }: { client?: ViewWorkspaceClient }) {
     void refresh();
     return () => { observation.dispose(); clearTimeout(timer); };
     // A batched return to the same selection still needs a fresh observation.
-  }, [client, connected, selectionKey, reader, workspace, t, visible]);
+  }, [client, connected, selectionKey, reader, workspace, t, visible, assetReferences, referenceState]);
   const source = connected && inspection?.key === selectionKey ? inspection.source : null;
   const submit = (operation: string, args: Record<string, unknown>) => {
     if (!client || !connected || !target || !primary?.entityId) return;
@@ -87,8 +98,16 @@ export function InspectorPanel({ client }: { client?: ViewWorkspaceClient }) {
         : <>
           <EntityInspectorBody key={selectionKey} source={source} selectionCount={workspace?.sceneSelection?.entityIds?.length ?? 1}
             focus={() => submit('entity.focus', { entityId: primary.entityId })}
-            openAsset={guid => submit('asset.open', { guid })} />
+            openAsset={guid => {
+              if (!matches(reader.getSnapshot())) return;
+              if (assetReferences?.getState().scope) void assetReferences.open(guid).catch(error => setActionFailure(String(error)));
+              else submit('asset.open', { guid });
+            }} browseAsset={browseAsset ? guid => { if (!matches(reader.getSnapshot())) return; void browseAsset(guid).then(ok => {
+              if (!ok) throw new Error(t('inspector.resourceIdentityUnavailable'));
+            }).catch(error => setActionFailure(String(error))); } : undefined} />
           {actionFailure ? <Text as="div" role="alert" className="insp-action-error">{actionFailure}</Text> : null}
+          {source.assetReferencesTruncated ? <Text as="div" role="status" className="insp-section-status">{t('inspector.assetReferencesTruncated')}</Text> : null}
+          {assetReferences && ['failed', 'unavailable'].includes(referenceState?.phase ?? '') ? <Text as="div" role="status" className="insp-section-status" title={referenceState?.error}>{t('inspector.assetReferencesUnavailable')}</Text> : null}
         </>}
   </div>;
 }

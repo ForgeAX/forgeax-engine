@@ -126,10 +126,10 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
     assert.ok(await frames() > gameFramesBefore, 'game systems continue through observer control');
     const toolbar = page.getByRole('toolbar', { name: 'Editor execution' });
     await toolbar.locator('[data-action="editor.eject"]').click();
-    await toolbar.getByText('Game tools · running · Free camera', { exact: true }).waitFor();
+    await toolbar.locator('[data-action="editor.possess"]').waitFor();
     assert.equal((await workspace.getCamera(args)).camera.control, 'observer');
     await toolbar.locator('[data-action="editor.possess"]').click();
-    await toolbar.getByText('Game tools · running', { exact: true }).waitFor();
+    await toolbar.locator('[data-action="editor.eject"]').waitFor();
     assert.equal((await workspace.getCamera(args)).camera.control, 'game');
 
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'toolbar-complete', at: new Date().toISOString() });
@@ -169,6 +169,20 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
     // Keep both hierarchy and Inspector polling while the Play identity retires.
     await workspace.selectSceneEntity({ ...args, entityId: entity.entityId });
     await page.waitForFunction(id => document.querySelector('[data-testid="panel-inspector"]')?.getAttribute('data-entity-id') === id, entity.entityId);
+    let lastPlayImage;
+    if (cycle === 0) {
+      await page.locator('[data-page-id="page-display"]').click();
+      const capture = page.locator('.fx-view-run-observer');
+      await capture.getByLabel('Capture source').selectOption('play');
+      const image = capture.getByRole('img', { name: 'Latest Engine run capture', includeHidden: true });
+      await image.waitFor({ state: 'visible', timeout: 30_000 });
+      assert.equal(await capture.locator('input').count(), 0);
+      assert.equal(await capture.getByRole('button', { name: /View project run|Reconnect current run/ }).isVisible(), false);
+      await page.screenshot({ path: '/tmp/view-runtime-capture-play.png' });
+      await page.locator('[data-page-id="page-editor"]').click();
+      lastPlayImage = await image.getAttribute('src');
+      assert.ok(lastPlayImage?.startsWith('data:image/png;base64,'));
+    }
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'stop-start', at: new Date().toISOString() });
     await workspace.invoke('play.stop', args);
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'stop-complete', at: new Date().toISOString() });
@@ -179,6 +193,14 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
     assert.equal(workspace.snapshot().workspaceTargetLost, false, 'a stopped Play target must not disconnect the editor');
     assert.equal(await page.locator('.fx-view-header__recovery').count(), 0);
     assert.deepEqual(await page.locator('.fx-error-notice').allTextContents(), [], `Play cycle ${cycle + 1} must not report retired panel queries`);
+    if (cycle === 0) {
+      await page.locator('[data-page-id="page-display"]').click();
+      const capture = page.locator('.fx-view-run-observer');
+      await capture.getByRole('status').filter({ hasText: 'Run ended' }).waitFor();
+      assert.equal(await capture.getByRole('img', { name: 'Latest Engine run capture' }).getAttribute('src'), lastPlayImage);
+      await page.screenshot({ path: '/tmp/view-runtime-capture-play-stopped.png' });
+      await page.locator('[data-page-id="page-editor"]').click();
+    }
     console.error('editor Play lifecycle passed', cycle + 1, tree.worldId);
   }
 }

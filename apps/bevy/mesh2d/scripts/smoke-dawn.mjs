@@ -99,7 +99,7 @@ async function capture() {
 let pixels;
 for (let i = 0; i < frames; i++) {
   world.update().unwrap();
-  const drawn = drawSmokeFrame(renderer, world);
+  const drawn = await drawSmokeFrame(renderer, world);
   if (!drawn.ok) console.error(`[smoke] draw ${i}: ${drawn.error.code}`);
   if (i === frames - 1) pixels = await capture();
 }

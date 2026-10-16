@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
+import { createFileSystemPackAuthoringGateway } from '../pack-authoring-node.js';
 import { scanInventory } from '../scanner.js';
 
 const loading = vi.hoisted(() => ({ load: vi.fn() }));
@@ -11,9 +12,10 @@ vi.mock('../scriptable-pack-node.js', async (importOriginal) => ({
 }));
 
 it.each([
-  'success',
-  'failure',
-] as const)('bounds metadata work, keeps source order and settles siblings on %s', async (mode) => {
+  ['scanner', 'success'],
+  ['scanner', 'failure'],
+  ['authoring', 'success'],
+] as const)('bounds %s metadata work, keeps source order and settles siblings on %s', async (entry, mode) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-scan-batches-'));
   const paths = Array.from({ length: 6 }, (_, i) => join(root, `${i}.pack.ts`));
   await Promise.all(paths.map((path) => writeFile(path, 'export default {};')));
@@ -52,7 +54,13 @@ it.each([
       },
     };
   });
-  const scan = scanInventory(paths, { scriptablePack: { metadataOnly: true } });
+  const scan =
+    entry === 'scanner'
+      ? scanInventory(paths, { scriptablePack: { metadataOnly: true } })
+      : createFileSystemPackAuthoringGateway({ gameRoot: root }).execute({
+          operation: 'asset.list',
+          requestId: 'bounded-authoring',
+        });
   void scan.finally(() => {
     finished = true;
   });
@@ -72,7 +80,12 @@ it.each([
     expect(peak).toBe(4);
     expect(active).toBe(0);
     expect(result.ok).toBe(mode === 'success');
-    if (result.ok) expect([...result.value.declarations.keys()]).toEqual(paths);
+    if (result.ok && 'declarations' in result.value)
+      expect([...result.value.declarations.keys()]).toEqual(paths);
+    else if (result.ok)
+      expect(result).toMatchObject({
+        value: { sources: paths.map((_, i) => ({ sourcePath: `${i}.pack.ts` })) },
+      });
     else expect(result.error).toMatchObject({ detail: { path: paths[0] } });
     expect(loading.load).toHaveBeenCalledTimes(mode === 'success' ? 6 : 4);
   } finally {

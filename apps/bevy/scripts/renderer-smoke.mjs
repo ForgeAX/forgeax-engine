@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { drawReadyFrame } from '../../../scripts/test/ready-render-frame.mjs';
 
 const leasesByRenderer = new WeakMap();
 
@@ -26,7 +27,7 @@ export function subscribeSmokeErrors(renderer, listener) {
  * The cache keeps the helper from allocating a new lease on every frame while
  * allowing legacy fixtures to pass their World only at this test boundary.
  */
-export function drawSmokeFrame(renderer, world) {
+export async function drawSmokeFrame(renderer, world) {
   let leasesByWorld = leasesByRenderer.get(renderer);
   if (leasesByWorld === undefined) {
     leasesByWorld = new WeakMap();
@@ -39,11 +40,14 @@ export function drawSmokeFrame(renderer, world) {
     lease = attached.value;
     leasesByWorld.set(world, lease);
   }
-  return renderer.draw({
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  return {
+    ok: true,
+    value: await drawReadyFrame(renderer, {
+      leases: [lease],
+      camera: { lease },
+      environment: { lease },
+    }),
+  };
 }
 
 /** Count real ready GPU completions while pumping the smoke's original RAF queue. */

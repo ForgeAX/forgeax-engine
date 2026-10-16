@@ -12,11 +12,11 @@ it('shows Pack source keys while retaining asset identity and other names', asyn
     write: false,
   });
   const { projectCatalog } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`);
-  const catalog = projectCatalog('/project', [
+  const catalog = projectCatalog({ root: '/project', assetRoots: ['assets'], assets: [
     { guid: 'pack-guid', kind: 'mesh', sourcePath: 'assets/props.pack.ts', sourceKey: 'mesh/barrel', name: 'Old name' },
     { guid: 'fallback-guid', kind: 'mesh', sourcePath: 'assets/props.pack.ts' },
     { guid: 'image-guid', kind: 'texture', sourcePath: 'assets/sky.png', sourceKey: 'texture/sky', name: 'Sky' },
-  ]);
+  ] });
   const assets = catalog.files.flatMap((file) => file.assets);
   assert.deepEqual(assets.map(({ guid, name }) => [guid, name]), [
     ['pack-guid', 'mesh/barrel'],
@@ -32,7 +32,7 @@ it('projects the Game 3D fixture source counts and directory tree', async () => 
   ]);
   const scenario = await import(`data:text/javascript;base64,${Buffer.from(scenarioBundle.outputFiles[0].contents).toString('base64')}`);
   const { projectCatalog } = await import(`data:text/javascript;base64,${Buffer.from(catalogBundle.outputFiles[0].contents).toString('base64')}`);
-  const catalog = projectCatalog(scenario.PROJECT_ROOT, scenario.ASSETS);
+  const catalog = projectCatalog({ root: scenario.PROJECT_ROOT, assetRoots: scenario.PROJECT.assetRoots, assets: scenario.ASSETS });
   const counts = new Map(catalog.files.map(file => [file.path, file.assets.length]));
   assert.equal(scenario.PROJECT.name, 'Game 3D');
   for (const [path, count] of [
@@ -122,10 +122,10 @@ it('projects Pack source inventory even with no published assets or a broken sib
     bundle: true, platform: 'node', format: 'esm', write: false,
   });
   const { projectCatalog } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`);
-  const catalog = projectCatalog('/project', [], [
+  const catalog = projectCatalog({ root: '/project', assetRoots: ['assets'], assets: [], sources: [
     { sourcePath: 'assets/empty.pack.json', revision: 'sha256:empty' },
     { sourcePath: 'assets/bad.pack.json', revision: 'sha256:bad', diagnostic: { code: 'pack-malformed-meta', hint: 'invalid JSON' } },
-  ]);
+  ] });
   assert.deepEqual(catalog.files.map(file => file.path), ['assets/empty.pack.json', 'assets/bad.pack.json']);
   assert.deepEqual(catalog.files.map(file => file.assets.length), [0, 0]);
   assert.equal(catalog.files[1].diagnostic.code, 'pack-malformed-meta');
@@ -137,14 +137,33 @@ it('keeps descendants beside their parents and hides every collapsed ancestor', 
     bundle: true, platform: 'node', format: 'esm', write: false,
   });
   const { projectCatalog, visibleCatalogFolders } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`);
-  const { folders } = projectCatalog('/project', [
+  const { folders } = projectCatalog({ root: '/project', assetRoots: ['assets'], assets: [
     { guid: 'one', kind: 'mesh', path: 'assets/z/mesh.pack.ts' },
     { guid: 'internal', kind: 'mesh', path: '.forgeax/generated/serve-proof/engine-builtins.pack.json' },
     { guid: 'two', kind: 'scene', path: 'assets/a/scene.pack.ts' },
     { guid: 'sibling', kind: 'mesh', path: 'assets-other/main.pack.ts' },
-  ]);
+  ] });
   const paths = collapsed => visibleCatalogFolders(folders, new Set(collapsed)).map(folder => folder.path);
-  assert.deepEqual(paths([]), ['.forgeax', '.forgeax/generated', '.forgeax/generated/serve-proof', 'assets', 'assets/a', 'assets/z', 'assets-other']);
-  assert.deepEqual(paths(['.forgeax', 'assets']), ['.forgeax', 'assets', 'assets-other']);
-  assert.deepEqual(paths(['.forgeax/generated']), ['.forgeax', '.forgeax/generated', 'assets', 'assets/a', 'assets/z', 'assets-other']);
+  assert.deepEqual(paths([]), ['assets', 'assets/a', 'assets/z']);
+  assert.deepEqual(paths(['.forgeax', 'assets']), ['assets']);
+  assert.deepEqual(paths(['.forgeax/generated']), ['assets', 'assets/a', 'assets/z']);
+});
+
+it('only projects configured asset directories across catalog, Pack and HTML sources', async () => {
+  const bundled = await build({ entryPoints: [resolve(import.meta.dirname, '../packages/view-plugin-content-browser/src/ui/workspace-catalog.ts')], bundle: true, platform: 'node', format: 'esm', write: false });
+  const { projectCatalog } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`);
+  const catalog = projectCatalog({ root: '/project', assetRoots: ['content/art', 'shared', 'empty'], assets: [
+    { guid: 'art', kind: 'mesh', path: '/project/content/art/model.pack.ts' },
+    { guid: 'shared', kind: 'texture', path: 'shared/sky.png' },
+    { guid: 'builtin', kind: 'mesh', path: '.forgeax/generated/engine.pack.json' },
+    { guid: 'default', kind: 'mesh', path: 'assets/old.pack.ts' },
+    { guid: 'prefix', kind: 'mesh', path: 'shared-other/old.pack.ts' },
+    { guid: 'external', kind: 'mesh', path: '/dependency/mesh.pack.ts' },
+    { guid: 'escape', kind: 'mesh', path: 'shared/../src/hidden.pack.ts' },
+  ], sources: [{ sourcePath: 'src/code.pack.ts' }, { sourcePath: 'content/art/empty.pack.ts' }],
+  htmlFiles: ['index.html', 'src/page.html', 'shared/guide.html'] });
+  assert.deepEqual(catalog.files.map(file => file.path), [
+    'content/art/model.pack.ts', 'shared/sky.png', 'content/art/empty.pack.ts', 'shared/guide.html',
+  ]);
+  assert(catalog.folders.some(folder => folder.path === 'empty'), 'configured empty roots remain navigable');
 });

@@ -63,7 +63,7 @@ function makeChequerTexture(primaryR: number, primaryG: number, primaryB: number
   return {
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: side, height: side } },
-    format: 'rgba8unorm',
+    format: 'rgba8unorm-srgb',
     data: bytes,
     colorSpace: 'srgb',
     mips: { kind: 'none' },
@@ -319,7 +319,7 @@ describe('bug-20260522 AC-01 per-entity material texture isolation (dawn)', () =
     });
 
     for (let f = 0; f < 5; f++) {
-      const drawn = drawPublished(renderer, world);
+      const drawn = await drawPublished(renderer, world);
       expect(drawn.ok).toBe(true);
     }
     await device.queue.onSubmittedWorkDone();
@@ -329,6 +329,10 @@ describe('bug-20260522 AC-01 per-entity material texture isolation (dawn)', () =
 
     const rbi = await readbackPixels(device, renderTarget);
     const view = makeReadbackView(rbi.bytes, rbi.bytesPerRow);
+    const texturedPixels = view.sampleBlock(40, 105, 55, 45);
+    expect(texturedPixels.filter(([r, g, b]) => g > r + 20 && g > b + 20).length).toBeGreaterThan(
+      100,
+    );
 
     // Sample B's render area: center-right of the framebuffer.
     // B is at posX=0.6, half-scale cube — the center of B projects
@@ -529,7 +533,7 @@ describe('bug-20260522 AC-01 per-entity material texture isolation (dawn)', () =
     });
 
     for (let f = 0; f < 5; f++) {
-      const drawn = drawPublished(renderer, world);
+      const drawn = await drawPublished(renderer, world);
       expect(drawn.ok).toBe(true);
     }
     await device.queue.onSubmittedWorkDone();
@@ -539,6 +543,10 @@ describe('bug-20260522 AC-01 per-entity material texture isolation (dawn)', () =
 
     const rbi = await readbackPixels(device, renderTarget);
     const view = makeReadbackView(rbi.bytes, rbi.bytesPerRow);
+    const texturedPixels = view.sampleBlock(40, 105, 55, 45);
+    expect(texturedPixels.filter(([r, g, b]) => g > r + 20 && g > b + 20).length).toBeGreaterThan(
+      100,
+    );
 
     const blockBX = 185;
     const blockBY = 113;

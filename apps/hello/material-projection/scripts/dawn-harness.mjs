@@ -1,3 +1,4 @@
+import { driveReadyAppFrames } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // Shared dawn-node driver for the projection smoke and the perf probe:
 // real createApp + rAF path on a mock canvas, one readback at the end.
@@ -110,9 +111,16 @@ export async function runProjection({ appRoot, mode, grid = 0, gridLane, timeLan
       lane = timeLanes[(i / TIMING_BLOCK) % timeLanes.length];
       setGridLane(lane);
     }
-    const callback = rafQueue.shift();
-    if (!callback) break;
-    callback(start + i * 16.67);
+    const tick = () => {
+      const callback = rafQueue.shift();
+      if (!callback) return false;
+      callback(start + i * 16.67);
+    };
+    if (timeFrames) {
+      if (tick() === false) break;
+    } else {
+      await driveReadyAppFrames(app.renderer, tick);
+    }
     completed += 1;
     if (timeFrames && i % TIMING_BLOCK === TIMING_BLOCK - 1) {
       // One GPU sync per block keeps the queue full, so the GPU does not idle

@@ -1404,7 +1404,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           // forward asks Dawn for a non-existent `fs_main` entry point.
           const preparedPassKind =
             descriptor.colorFormats.length === 0 ? 'shadow-caster' : 'forward';
-          const preparedPipelineEntry = runtime.getMaterialShaderPipelineEntry?.(
+          const preparedPipelineEntry = (
+            descriptor.preparePipelines
+              ? (runtime.prepareMaterialShaderPipelineEntry ??
+                  runtime.getMaterialShaderPipelineEntry)
+              : runtime.getMaterialShaderPipelineEntry
+          )?.(
             descriptor.shader,
             descriptor.colorFormats[0] === 'rgba16float',
             descriptor.renderState,
@@ -1435,7 +1440,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           );
           const preparedPipeline =
             preparedPipelineEntry === undefined
-              ? (runtime.getMaterialShaderPipeline?.(
+              ? ((descriptor.preparePipelines
+                  ? (runtime.prepareMaterialShaderPipeline ?? runtime.getMaterialShaderPipeline)
+                  : runtime.getMaterialShaderPipeline)?.(
                   descriptor.shader,
                   descriptor.colorFormats[0] === 'rgba16float',
                   descriptor.renderState,
@@ -2330,6 +2337,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           presentationRenderables,
           compositionWorlds,
         );
+        frameState.pipelinePreparationPending = false;
         let framePresentation: FramePresentation =
           cameras.length > 0 && (!environmentReady || environment === undefined)
             ? 'pending'
@@ -2756,6 +2764,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           const featureFrame = preparedFeatureFrame;
           if (featureFrame === undefined) return [];
 
+          if (featureFrame.preparationPending) frameState.pipelinePreparationPending = true;
           lastVisibilityStats.explicitlyHidden = featureFrame.hiddenEntityReports.length;
           reportPendingRenderFeatureErrors(
             featureFrame.errors,
@@ -3042,6 +3051,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         if (!submitted) surfaceSubmissionCandidate.abort();
         frameState.surfaceSubmissionObservation = undefined;
         if (!sceneSubmitted) discardStandardOutputStates(frameState);
+        if (frameState.pipelinePreparationPending) framePresentation = 'pending';
         const directionalQuality = lights.directionalShadowQuality;
         const directionalShadowReady =
           directionalQuality === undefined ||

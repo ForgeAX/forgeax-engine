@@ -1,5 +1,8 @@
 {
   "inspector": {
+    "assetReferencesTruncated": "Asset reference list is incomplete",
+    "assetReferencesUnavailable": "Asset reference query unavailable",
+    "materialSource": { "component": "Instance override", "mesh-default": "Mesh default", "engine-default": "Engine default" },
     "meshType": "Mesh",
     "componentTree": "Entity components",
     "collapseComponents": "Collapse component list",
@@ -25,7 +28,7 @@
       "quat": "Rotation",
       "scale": "Scale"
     },
-    "openResource": "Open resource",
+    "openResource": "Open asset viewer",
     "resourceDetails": "Details",
     "source": "Source",
     "sourceKey": "Source key",
@@ -63,10 +66,12 @@
     "rotation": "Rotation",
     "unavailable": "Unavailable",
     "assetRef": {
+      "openUnavailable": "Asset viewer unavailable",
+      "readOnly": "Read-only asset reference",
       "none": "None",
       "missing": "Missing asset",
       "useSelection": "Use selected asset",
-      "browse": "Browse assets",
+      "browse": "Browse to Asset",
       "reveal": "Reveal in Content Browser",
       "more": "More reference actions",
       "clear": "Clear",

@@ -164,6 +164,7 @@ export function CBGrid({
         key={key}
         data-action={CONTENT_BROWSER_ACTIONS.select}
         data-cb-path={item.type === 'file' ? item.path : undefined}
+        data-cb-guid={item.type === 'asset' ? item.guid : undefined}
         data-cb-group={groupKey}
         data-cb-asset-guid={item.type === 'asset' ? item.guid : undefined}
         aria-selected={selected}

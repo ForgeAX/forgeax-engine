@@ -23,6 +23,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { expect, it, vi } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
+import { isOwnedRenderFeatureProgramData } from '../../../render/src/features/prepared-gpu-work';
 import { Materials } from '../../../render/src/materials';
 import {
   type RenderPublication,
@@ -138,9 +139,73 @@ async function loadEffect(input: VfxGpuEffectAsset): Promise<VfxGpuEffectAsset> 
 
 const effect = await loadEffect(rawEffect);
 
+it('captures stock material GUIDs once per World extraction and refreshes every candidate', async () => {
+  const guid = '019e9c00-0000-7000-8000-000000000045';
+  const world = new World();
+  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const material = {
+    kind: 'material',
+    passes: [{ name: 'particle-billboard', program: { module: 'game::particle' } }],
+    values: { baseColor: [1, 0, 0, 1] },
+    cooked: { owner: 'actual asset witness' },
+  } satisfies MaterialAsset & { cooked: unknown };
+  assets.catalog(guid, material).unwrap();
+  const renderedEffect = {
+    ...effect,
+    program: {
+      ...effect.program,
+      emitters: effect.program.emitters.map((emitter) => ({
+        ...emitter,
+        renderers: [0, 1].map(() => ({ kind: 'billboard', material: guid })),
+      })),
+    },
+  } as VfxGpuEffectAsset;
+  const handle = world.allocSharedRef('ParticleEffectAsset', renderedEffect);
+  for (let index = 0; index < 3; index++)
+    world.spawn({ component: ParticleEffectPlayer, data: { effect: handle } }).unwrap();
+  const host = createVfxRuntimeHost({ camera: { read: () => camera } });
+  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  let references = 0;
+  const extract = () =>
+    host.feature
+      .extract({
+        worlds: [world],
+        owner: 0,
+        // Repeated or discarded candidates still capture current author values.
+        frameNumber: 1,
+        views: [{ identity: 'main', render: true }],
+        referenceAsset: (_worldIndex, identity, captured) => {
+          expect(identity).toBe(guid);
+          expect(captured).toBe(assets.lookup(guid));
+          references++;
+          return materialHandle;
+        },
+      })
+      .unwrap() as Parameters<ReturnType<typeof gpuParticleRenderFeature>['plan']>[0];
+  try {
+    (await host.attachWorld({ world, assets })).unwrap();
+    world.update(1 / 60).unwrap();
+    const first = extract();
+    expect(references).toBe(1);
+    expect(first.worlds[0]?.materials.get(guid)?.asset.values).toEqual(material.values);
+    material.values.baseColor[1] = 0.5;
+    const second = extract();
+    expect(references).toBe(2);
+    expect(second.worlds[0]?.materials.get(guid)?.asset.values?.baseColor).toEqual([1, 0.5, 0, 1]);
+    const replacement = { ...material, values: { baseColor: [0, 0, 1, 1] } };
+    assets.catalog(guid, replacement).unwrap();
+    const third = extract();
+    expect(references).toBe(3);
+    expect(third.worlds[0]?.materials.get(guid)?.asset.values).toEqual(replacement.values);
+  } finally {
+    (await host.detachWorld({ world })).unwrap();
+  }
+});
+
 it.each([
   'instance',
   'prototype',
+  'accessor',
 ] as const)('retains a replaced %s material projection provider through the VFX host', async (replacement) => {
   const guid = '019e9c00-0000-7000-8000-000000000044';
   const world = new World();
@@ -150,7 +215,7 @@ it.each([
       ...effect.program,
       emitters: effect.program.emitters.map((emitter) => ({
         ...emitter,
-        renderers: [{ kind: 'billboard', material: guid }],
+        renderers: [0, 1].map(() => ({ kind: 'billboard', material: guid })),
       })),
     },
   } as VfxGpuEffectAsset;
@@ -176,12 +241,24 @@ it.each([
     staticSelection: [],
     passes: [{ name: 'forward', module: 'game::custom-raster', programs: [] }],
   };
-  const provider = vi
-    .spyOn(
-      replacement === 'instance' ? assets : AssetRegistry.prototype,
-      'getMaterialProjectionForPayload',
-    )
-    .mockReturnValue(projection);
+  const provider =
+    replacement === 'accessor'
+      ? vi.fn((_material: MaterialAsset) => projection)
+      : vi
+          .spyOn(
+            replacement === 'instance' ? assets : AssetRegistry.prototype,
+            'getMaterialProjectionForPayload',
+          )
+          .mockReturnValue(projection);
+  let propertyReads = 0;
+  if (replacement === 'accessor')
+    Object.defineProperty(assets, 'getMaterialProjectionForPayload', {
+      configurable: true,
+      get: () => {
+        propertyReads++;
+        return provider;
+      },
+    });
   const host = createVfxRuntimeHost({ camera: { read: () => camera } });
   try {
     (await host.attachWorld({ world, assets })).unwrap();
@@ -194,7 +271,8 @@ it.each([
         views: [{ identity: 'main', render: true }],
       })
       .unwrap() as Parameters<ReturnType<typeof gpuParticleRenderFeature>['plan']>[0];
-    expect(provider).toHaveBeenCalled();
+    expect(provider).toHaveBeenCalledTimes(4);
+    if (replacement === 'accessor') expect(propertyReads).toBe(4);
     expect(required(required(frame.worlds[0]).materials.get(guid)).projection).toBe(projection);
   } finally {
     (await host.detachWorld({ world })).unwrap();
@@ -223,6 +301,8 @@ it.each([
   { kinds: ['mesh', 'billboard'], pass: 'particle-billboard' },
   { kinds: ['billboard'], pass: 'particle-mesh' },
   { kinds: ['billboard', 'mesh'], pass: 'particle-mesh', disabled: 'mesh' },
+  { kinds: ['billboard'], pass: 'particle-billboard', mixed: true },
+  { kinds: ['billboard'], pass: 'particle-billboard', mixed: true, legacyBoundary: true },
 ] as const)('omits stock raster-only material projections: $kinds / $pass', async (testCase) => {
   const { kinds, pass } = testCase;
   const disabled = 'disabled' in testCase ? testCase.disabled : undefined;
@@ -230,13 +310,33 @@ it.each([
   const meshGuid = '019e9c00-0000-7000-8000-000000000042';
   const material: MaterialAsset = {
     kind: 'material',
-    passes: [{ name: pass, program: { module: 'game::particle' } }],
+    passes: [
+      { name: pass, program: { module: 'game::particle' } },
+      ...('mixed' in testCase
+        ? [
+            { name: 'forward', program: { module: 'game::unused-forward' } },
+            { name: 'shadow-caster', program: { module: 'game::unused-shadow' } },
+          ]
+        : []),
+    ],
   };
-  const record = materialRecordFixture({
+  let record = materialRecordFixture({
     guid: materialGuid,
-    passes: [{ name: pass, program: { module: 'game::particle' } }],
+    passes: required(material.passes),
     contexts: [materialContext],
   });
+  if ('legacyBoundary' in testCase)
+    record = {
+      ...record,
+      programs: record.programs.map((program) => ({
+        ...program,
+        selections: program.selections.map((selection) =>
+          selection.pass.startsWith('particle-')
+            ? selection
+            : { ...selection, address: 'direct' as const },
+        ),
+      })),
+    };
   const geometry = createBoxGeometry(1, 1, 1).unwrap();
   const renderers = kinds.map((kind) => ({
     kind,
@@ -287,6 +387,16 @@ it.each([
   const receiver = new RenderPublicationReceiver(identity);
   try {
     world.update(1 / 60).unwrap();
+    if ('legacyBoundary' in testCase) {
+      const frame = source.feature
+        .extract({ worlds: [world], owner: 0, frameNumber: 1, views: [] })
+        .unwrap();
+      expect(required(frame.worlds[0]?.materials.get(materialGuid)).projection).toBe(projection);
+      // Raster address metadata makes this deliberately mixed legacy input
+      // modern. Preserve its original admission error rather than hiding it.
+      expect(publisher.prepare(0).ok).toBe(false);
+      return;
+    }
     for (let iteration = 0; iteration < 2; iteration++) {
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet, {
@@ -298,7 +408,15 @@ it.each([
       const row = required(required(frame.worlds[0]).materials.get(materialGuid));
       const enabledKinds = kinds.filter((kind) => kind !== disabled);
       const used = pass.startsWith('particle-');
-      if (used) expect(row.projection).toEqual(projection);
+      if (used)
+        expect(row.projection).toEqual(
+          'mixed' in testCase && !('legacyBoundary' in testCase)
+            ? {
+                ...projection,
+                passes: projection.passes.filter((pass) => pass.name.startsWith('particle-')),
+              }
+            : projection,
+        );
       else {
         expect(row).not.toHaveProperty('projection');
         const redundant = {
@@ -312,20 +430,18 @@ it.each([
           serialize(projection).byteLength * 0.8,
         );
       }
-      const planned = consumer
-        .plan(
-          frame,
-          singleViewContext({
-            resolveAsset: (_index, reference) => accepted.resources.resolveAsset(reference),
-            materialContext,
-            caps: {} as never,
-            frame: { frameNumber: packet.revision },
-            generation: 0,
-          }),
-        )
-        .unwrap();
+      const planned = consumer.plan(
+        frame,
+        singleViewContext({
+          resolveAsset: (_index, reference) => accepted.resources.resolveAsset(reference),
+          materialContext,
+          caps: {} as never,
+          frame: { frameNumber: packet.revision },
+          generation: 0,
+        }),
+      );
       expect(
-        planResources(planned)
+        planResources(planned.unwrap())
           .filter((resource) => resource.kind === 'graphics-program')
           .map((resource) => resource.program.shader),
       ).toEqual(
@@ -713,6 +829,219 @@ it('owns Worker-cloned effect programs once and invalidates a replaced asset eve
       row.kind === 'compute-program' ? [row.program] : [],
     );
     expect(recovered[0]?.wgsl).toBe('// accepted replacement');
+  } finally {
+    await f.close();
+  }
+});
+
+it.each([
+  'immutable',
+  'raw',
+] as const)('retains only immutable provider-free compute layouts across retry, tick, and device recovery (%s)', async (ownership) => {
+  const emitter = required(rawEffect.program.emitters[0]);
+  const loaded = await loadEffect({
+    ...rawEffect,
+    program: {
+      ...rawEffect.program,
+      emitters: [
+        {
+          ...emitter,
+          reflection: {
+            ...emitter.reflection,
+            bindings: [{ entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }] }],
+          },
+        },
+      ],
+    },
+  });
+  const f = await publicationFixture(ownership === 'raw' ? structuredClone(loaded) : loaded);
+  const bindings = (plan: ReturnType<typeof f.plan>) =>
+    planResources(plan.unwrap()).filter((row) => row.kind === 'compute-bindings');
+  const runtimeBytes = (plan: ReturnType<typeof f.plan>) =>
+    required(
+      planResources(plan.unwrap()).find(
+        (row) => row.kind === 'buffer' && row.name.endsWith('.tick-0.runtime'),
+      ),
+    );
+  try {
+    f.world.update(1 / 60).unwrap();
+    const first = f.seal();
+    const initial = f.plan(first);
+    const layout = required(bindings(initial)[0]);
+    expect(layout.entries).toEqual([
+      { binding: 0, resource: layout.name.replace('.tick-0.simulation-bindings', '.particles') },
+    ]);
+    expect(isOwnedRenderFeatureProgramData(layout)).toBe(ownership === 'immutable');
+    const retry = f.plan(first);
+    if (ownership === 'immutable') expect(bindings(retry)[0]).toBe(layout);
+    else expect(bindings(retry)[0]).not.toBe(layout);
+    f.consumer.onFrameAborted?.(f.data(first));
+    const afterAbort = f.plan(first);
+    expect(bindings(afterAbort)).toEqual(bindings(initial));
+    f.submit(first, afterAbort);
+    f.world.update(1 / 60).unwrap();
+    const second = f.seal();
+    const advanced = f.plan(second);
+    if (ownership === 'immutable') expect(bindings(advanced)[0]).toBe(layout);
+    else expect(bindings(advanced)[0]).not.toBe(layout);
+    // Logical layouts are retained; the exact current fixed-tick upload is not.
+    expect(runtimeBytes(advanced)).not.toEqual(runtimeBytes(initial));
+    const recovered = f.plan(second, 1);
+    expect(bindings(recovered)[0]).toEqual(layout);
+    if (ownership === 'immutable') expect(bindings(recovered)[0]).toBe(layout);
+    if (ownership === 'immutable') {
+      f.submit(second, recovered);
+      f.world.removeComponent(f.player, ParticleEffectPlayer).unwrap();
+      const empty = f.seal();
+      const emptyPlan = f.plan(empty);
+      expect(bindings(emptyPlan)).toEqual([]);
+      f.submit(empty, emptyPlan);
+      const handle = f.world.allocSharedRef('ParticleEffectAsset', loaded);
+      f.world
+        .addComponent(f.player, { component: ParticleEffectPlayer, data: { effect: handle } })
+        .unwrap();
+      f.world.sharedRefs.release(handle).unwrap();
+      f.world.update(1 / 60).unwrap();
+      const reentered = f.seal();
+      expect(bindings(f.plan(reentered))[0]).not.toBe(layout);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+it('observes in-place raw inline binding edits without reusing an immutable layout', async () => {
+  const f = await publicationFixture(structuredClone(effect));
+  try {
+    f.world.update(1 / 60).unwrap();
+    const packet = f.seal();
+    const first = planResources(f.plan(packet).unwrap()).filter(
+      (row) => row.kind === 'compute-bindings',
+    );
+    const inline = required(f.data(packet).worlds[0]?.intents[0]);
+    expect(inline.inline).toBe(true);
+    const emitter = inline.emitter as VfxGpuEffectAsset['program']['emitters'][number];
+    Object.assign(required(emitter.reflection.bindings[0]), {
+      entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }],
+    });
+    const changed = planResources(f.plan(packet).unwrap()).filter(
+      (row) => row.kind === 'compute-bindings',
+    );
+    expect(changed[0]).not.toBe(first[0]);
+    expect(first[0]?.entries).toEqual([]);
+    expect(changed[0]?.entries[0]?.binding).toBe(0);
+    expect(changed[0]?.entries[0]?.resource).toMatch(/\.particles$/);
+  } finally {
+    await f.close();
+  }
+});
+
+it.each([
+  'immutable',
+  'raw',
+] as const)('shares only an immutable compute program while keeping independent player storage and preparation (%s)', async (ownership) => {
+  const f = await publicationFixture(ownership === 'immutable' ? effect : structuredClone(effect));
+  const secondPlayer = f.world
+    .spawn({
+      component: ParticleEffectPlayer,
+      data: { effect: f.handle, preparePipelines: true },
+    })
+    .unwrap();
+  const resources = (plan: ReturnType<typeof f.plan>) => planResources(plan.unwrap());
+  const programs = (plan: ReturnType<typeof f.plan>) =>
+    resources(plan).filter((row) => row.kind === 'compute-program');
+  try {
+    f.world.update(1 / 60).unwrap();
+    const first = f.seal();
+    const initial = f.plan(first);
+    const declarations = programs(initial);
+    expect(declarations).toHaveLength(ownership === 'immutable' ? 1 : 2);
+    expect(declarations.filter((row) => row.preparePipelines === true)).toHaveLength(1);
+    const particles = resources(initial).filter(
+      (row) => row.kind === 'buffer' && row.name.endsWith('.particles'),
+    );
+    const bindings = resources(initial).filter((row) => row.kind === 'compute-bindings');
+    expect(new Set(particles.map((row) => row.name)).size).toBe(2);
+    expect(new Set(bindings.map((row) => row.name)).size).toBe(2);
+    expect(new Set(bindings.map((row) => row.program)).size).toBe(
+      ownership === 'immutable' ? 1 : 2,
+    );
+    f.submit(first, initial);
+    f.world.removeComponent(f.player, ParticleEffectPlayer).unwrap();
+    f.world.update(1 / 60).unwrap();
+    const second = f.seal();
+    const surviving = f.plan(second);
+    expect(programs(surviving)).toHaveLength(1);
+    expect(programs(surviving)[0]?.preparePipelines).toBe(true);
+    if (ownership === 'immutable') expect(programs(surviving)[0]?.name).toBe(declarations[0]?.name);
+    expect(
+      resources(surviving).filter(
+        (row) => row.kind === 'buffer' && row.name.endsWith('.particles'),
+      ),
+    ).toHaveLength(1);
+    f.submit(second, surviving);
+    f.world.set(secondPlayer, ParticleEffectPlayer, { preparePipelines: false }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    const third = f.seal();
+    expect(programs(f.plan(third))[0]?.preparePipelines).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
+it.each([
+  'immutable',
+  'raw',
+] as const)('retains generated buffer metadata but keeps uploads and raw capacity live (%s)', async (ownership) => {
+  const f = await publicationFixture(ownership === 'immutable' ? effect : structuredClone(effect));
+  const resources = (packet: ReturnType<typeof f.seal>) => planResources(f.plan(packet).unwrap());
+  try {
+    f.world.update(1 / 60).unwrap();
+    const first = f.seal();
+    const initial = resources(first);
+    const particles = required(
+      initial.find((row) => row.kind === 'buffer' && row.name.endsWith('.particles')),
+    );
+    const upload = required(
+      initial.find((row) => row.kind === 'buffer' && row.name.endsWith('.tick-0.runtime')),
+    );
+    expect(isOwnedRenderFeatureProgramData(particles)).toBe(true);
+    const retry = resources(first);
+    expect(retry.find((row) => row.name === particles.name)).toBe(particles);
+    expect(retry.find((row) => row.name === upload.name)).not.toBe(upload);
+    f.consumer.onFrameAborted?.(f.data(first));
+    expect(resources(first).find((row) => row.name === particles.name)).toBe(particles);
+    expect(
+      planResources(f.plan(first, 1).unwrap()).find((row) => row.name === particles.name),
+    ).toBe(particles);
+    if (ownership === 'raw') {
+      const inline = required(f.data(first).worlds[0]?.intents[0]);
+      expect(inline.inline).toBe(true);
+      const emitter = inline.emitter as VfxGpuEffectAsset['program']['emitters'][number];
+      const original = emitter.capacity;
+      Object.assign(emitter, { capacity: original * 2 });
+      const changed = required(resources(first).find((row) => row.name === particles.name));
+      expect(changed).not.toBe(particles);
+      expect(changed.kind === 'buffer' && changed.size).toBe(
+        particles.kind === 'buffer' ? particles.size * 2 : undefined,
+      );
+    } else {
+      f.submit(first, f.plan(first));
+      f.world.removeComponent(f.player, ParticleEffectPlayer).unwrap();
+      const empty = f.seal();
+      const emptyPlan = f.plan(empty);
+      expect(planResources(emptyPlan.unwrap()).filter((row) => row.kind === 'buffer')).toEqual([]);
+      f.submit(empty, emptyPlan);
+      const handle = f.world.allocSharedRef('ParticleEffectAsset', effect);
+      f.world
+        .addComponent(f.player, { component: ParticleEffectPlayer, data: { effect: handle } })
+        .unwrap();
+      f.world.sharedRefs.release(handle).unwrap();
+      f.world.update(1 / 60).unwrap();
+      expect(
+        resources(f.seal()).find((row) => row.kind === 'buffer' && row.name.endsWith('.particles')),
+      ).not.toBe(particles);
+    }
   } finally {
     await f.close();
   }
@@ -1134,7 +1463,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
       transfer: renderPublicationTransfers(packet),
     });
     publisher.recycle(packet.revision, returned).unwrap();
-    return { packet, data: data(packet), resources: accepted.resources, geometry };
+    return { packet, data: data(packet), resources: accepted.resources, geometry, planned };
   };
   return {
     world,
@@ -1144,6 +1473,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
     handle,
     player,
     meshGuid,
+    materialGuid,
     source,
     publisher,
     consumer,
@@ -1155,6 +1485,103 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
     },
   };
 }
+
+function materialColor(planned: Parameters<typeof planResources>[0]) {
+  const runtime = planResources(planned).find(
+    (resource) => resource.kind === 'buffer' && resource.name.endsWith('.renderer-0.runtime'),
+  );
+  if (runtime?.kind !== 'buffer' || !(runtime.data instanceof Uint8Array))
+    throw new Error('Expected the actual particle projection runtime buffer');
+  return [...new Float32Array(runtime.data.buffer, runtime.data.byteOffset, 76).slice(32, 36)];
+}
+
+it('omits duplicated cooked records while keeping mutable authored VFX material values current', async () => {
+  const f = await meshPublicationFixture();
+  const color: [number, number, number, number] = [0.25, 0.5, 0.75, 1];
+  const material = {
+    ...Materials.unlit(color),
+    values: { baseColor: color },
+    cooked: { program: 'exact asset closure'.repeat(1024) },
+  };
+  try {
+    f.assets.catalog(f.materialGuid, material).unwrap();
+    const first = f.publish();
+    expect(required(first.data.worlds[0]?.materials.get(f.materialGuid)).asset).not.toHaveProperty(
+      'cooked',
+    );
+    const resident = first.resources.lookupAsset<MaterialAsset>(f.materialGuid);
+    expect(resident).toHaveProperty('cooked', material.cooked);
+    expect(materialColor(first.planned)).toEqual([0.25, 0.5, 0.75, 1]);
+    color[0] = 0.75;
+    const second = f.publish();
+    expect(second.packet.assets.filter((row) => row.value.kind === 'material')).toHaveLength(0);
+    expect(materialColor(second.planned)).toEqual([0.75, 0.5, 0.75, 1]);
+    const replacement = { ...Materials.unlit([0.5, 0.25, 0.75, 1]), cooked: { program: 'next' } };
+    f.assets.catalog(f.materialGuid, replacement).unwrap();
+    f.publisher.prepare(0).unwrap().discard();
+    const third = f.publish();
+    expect(third.packet.assets.filter((row) => row.value.kind === 'material')).toHaveLength(1);
+    expect(third.resources.lookupAsset(f.materialGuid)).toHaveProperty(
+      'cooked',
+      replacement.cooked,
+    );
+    expect(materialColor(third.planned)).toEqual([0.5, 0.25, 0.75, 1]);
+    f.assets.catalog(f.materialGuid, material).unwrap();
+    expect(materialColor(f.publish().planned)).toEqual([0.75, 0.5, 0.75, 1]);
+    expect(material.cooked.program.length).toBeGreaterThan(1024);
+  } finally {
+    await f.close();
+  }
+});
+
+it('keeps cooked data inline without an exact publication resource witness', async () => {
+  const f = await meshPublicationFixture();
+  const material = { ...Materials.unlit([1, 1, 1, 1]), cooked: { program: 'custom or direct' } };
+  try {
+    f.assets.catalog(f.materialGuid, material).unwrap();
+    for (const referenceAsset of [undefined, () => undefined]) {
+      const frame = f.source
+        .extract({
+          worlds: [f.world],
+          owner: 0,
+          frameNumber: 1,
+          views: [],
+          ...(referenceAsset === undefined ? {} : { referenceAsset }),
+        })
+        .unwrap();
+      expect(required(frame.worlds[0]?.materials.get(f.materialGuid)).asset).toBe(material);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+it('keeps custom cooked accessors and their original clone failure observable', async () => {
+  const f = await meshPublicationFixture();
+  const material = Materials.unlit([1, 1, 1, 1]);
+  const failure = new Error('custom cooked getter');
+  const getter = vi.fn(() => {
+    throw failure;
+  });
+  Object.defineProperty(material, 'cooked', { enumerable: true, get: getter });
+  try {
+    f.assets.catalog(f.materialGuid, material).unwrap();
+    const frame = f.source
+      .extract({
+        worlds: [f.world],
+        owner: 0,
+        frameNumber: 1,
+        views: [],
+        referenceAsset: () => 1 as never,
+      })
+      .unwrap();
+    expect(getter).not.toHaveBeenCalled();
+    expect(required(frame.worlds[0]?.materials.get(f.materialGuid)).asset).toBe(material);
+    expect(() => structuredClone(frame)).toThrow(failure);
+  } finally {
+    await f.close();
+  }
+});
 
 it('publishes a stock VFX mesh once through asset residency across steady frames and discarded replacement', async () => {
   const f = await meshPublicationFixture();

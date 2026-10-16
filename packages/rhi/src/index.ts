@@ -1745,6 +1745,10 @@ export interface RhiDevice {
   createPipelineLayout(desc: PipelineLayoutDescriptor): Result<PipelineLayout, RhiError>;
   /** Create render pipeline (synchronous path). */
   createRenderPipeline(desc: RenderPipelineDescriptor): Result<RenderPipeline, RhiError>;
+  /** Optional backend completion: resolves only when the PSO can be used without compilation delay. */
+  createRenderPipelineAsync?(
+    desc: RenderPipelineDescriptor,
+  ): Promise<Result<RenderPipeline, RhiError>>;
   /**
    * Create a compute pipeline (synchronous path).
    *
@@ -1767,6 +1771,10 @@ export interface RhiDevice {
    *   }
    */
   createComputePipeline(desc: ComputePipelineDescriptor): Result<ComputePipeline, RhiError>;
+  /** Optional native compilation completion for explicitly prepared compute work. */
+  createComputePipelineAsync?(
+    desc: ComputePipelineDescriptor,
+  ): Promise<Result<ComputePipeline, RhiError>>;
   /**
    * Create a query set (occlusion or timestamp).
    *

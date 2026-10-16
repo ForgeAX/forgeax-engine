@@ -1,3 +1,4 @@
+import { type BrowserFrameCompleted, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import { expect, it } from 'vitest';
@@ -56,10 +57,15 @@ it('captures actual child Renderer work through the source inspection channel', 
     if (!created.ok) throw created.error;
     expect(delayedCapabilityProbe).toBe(true);
     const running = created.value;
+    let readyFrames = 0;
+    const onCompleted = (event: Event) => {
+      if ((event as CustomEvent<BrowserFrameCompleted>).detail.presentation === 'ready') readyFrames++;
+    };
+    canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
     try {
       running.start().unwrap();
       await expect
-        .poll(() => running.execution?.report().render?.completedFrame ?? 0, { timeout: 60_000 })
+        .poll(() => readyFrames, { timeout: 60_000 })
         .toBeGreaterThan(2);
       const worker = engineWorker;
       const identity = running.execution?.report().world.identity;
@@ -94,6 +100,7 @@ it('captures actual child Renderer work through the source inspection channel', 
       expect(tape.value.events.some((event) => event.kind === 'submit')).toBe(true);
       expect(running.execution?.report().fault).toBeNull();
     } finally {
+      canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
       await running.dispose();
     }
   } finally {

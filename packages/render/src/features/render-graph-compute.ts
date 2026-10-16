@@ -19,6 +19,7 @@ import {
   encodeRenderFeatureGpuComputePass,
   type RenderFeatureResolvedGpuComputePass,
 } from './prepared-gpu-work';
+import { projectRenderFeatureCopies } from './render-graph-copy';
 import type { RenderFeatureGraphTargetResolver } from './render-graph-raster';
 import {
   createRenderFeatureGraphBufferState,
@@ -54,6 +55,12 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
         start++;
         continue;
       }
+      if (first.resolvedGpuCopies !== undefined) {
+        const added = projectRenderFeatureCopies(this.builder, this.resources, first, scope);
+        if (!added.ok) return added;
+        start++;
+        continue;
+      }
       if (first.resolvedGpuCompute === undefined)
         return err(
           new RenderFeatureStageFailedError(
@@ -64,6 +71,8 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
           ),
         );
       let end = start + 1;
+      const logicalPasses = [first];
+      const earlyCopies: RenderFeaturePlanExecutionPass[] = [];
       const program = first.gpuCompute?.program;
       if (program !== undefined && bufferOnly(first)) {
         const uses = new Map<Buffer, Set<GraphBufferAccess>>();
@@ -83,11 +92,26 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
           const nextWork = next?.resolvedGpuCompute;
           if (
             next === undefined ||
+            next.featureIdentity !== first.featureIdentity ||
+            next.order !== first.order
+          )
+            break;
+          if (next.resolvedGpuCopies !== undefined) {
+            // Copies may cross prior dispatches only with disjoint physical
+            // buffers. Names, byte ranges and the current enabled bit are not proof.
+            if (
+              next.resolvedGpuCopies.some(
+                (copy) => uses.has(copy.source.buffer) || uses.has(copy.destination.buffer),
+              )
+            )
+              break;
+            earlyCopies.push(next);
+            end++;
+            continue;
+          }
+          if (
             nextWork === undefined ||
             !bufferOnly(next) ||
-            next.featureIdentity !== first.featureIdentity ||
-            next.order !== first.order ||
-            next.gpuCompute?.program !== program ||
             nextWork.buffers.some((resource) => {
               const accesses = uses.get(resource.buffer);
               return accesses !== undefined && !accesses.has(resource.access);
@@ -95,10 +119,15 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
           )
             break;
           remember(nextWork);
+          logicalPasses.push(next);
           end++;
         }
       }
-      const added = this.addPass(passes.slice(start, end), scope);
+      for (const copy of earlyCopies) {
+        const added = projectRenderFeatureCopies(this.builder, this.resources, copy, scope);
+        if (!added.ok) return added;
+      }
+      const added = this.addPass(logicalPasses, scope);
       if (!added.ok) return added;
       start = end;
     }

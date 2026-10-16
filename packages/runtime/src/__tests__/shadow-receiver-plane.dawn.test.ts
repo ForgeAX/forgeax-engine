@@ -26,6 +26,7 @@ import {
 } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
@@ -231,17 +232,17 @@ it.each([
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
         const last = index === 3;
-        if (last) unwrap(renderer.requestObservation?.(['linear-hdr']));
         const capture =
           receiver === 'terrain' && ((!castShadow && last) || (castShadow && index === 0))
             ? recorder?.captureFrame()
             : undefined;
         if (capture !== undefined && recorder !== undefined)
           (await recorder.frameBoundary()).unwrap();
-        const frame = unwrap(
-          renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+        const frame = await drawReadyFrame(
+          renderer,
+          { leases: [lease], camera: { lease }, environment: { lease } },
+          last ? ['linear-hdr'] : undefined,
         );
-        unwrap(await frame.completed);
         if (capture !== undefined && artifactDir !== undefined && recorder !== undefined) {
           (await recorder.frameBoundary()).unwrap();
           const tape = (await capture).unwrap();

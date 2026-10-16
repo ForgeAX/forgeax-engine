@@ -229,6 +229,8 @@ export interface RenderSystemRuntime {
     readonly misses: number;
     readonly keyCharacters: number;
   };
+  readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
+  readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
   readonly getMaterialShaderPipeline?: (
     materialShaderId: string,
     isHdr: boolean,
@@ -623,6 +625,9 @@ export interface _StandardForwardSceneView {
   readonly runtime: RenderSystemRuntime;
   readonly validated: readonly ValidatedRenderable[];
   readonly validatedOrdered: readonly ValidatedRenderable[];
+  /** Residency-validated explicit preparation rows, including hidden meshes. */
+  readonly pipelinePreparationEntries?: readonly ValidatedRenderable[];
+  readonly gpuDrivenShadowPreparationArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
   readonly viewBindGroup: BindGroup | null;
   /** Dynamic View-UBO slot used by auxiliary cube/probe face cameras. */
   readonly viewBindGroupDynamicOffset?: number;

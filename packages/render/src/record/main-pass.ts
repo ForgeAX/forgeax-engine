@@ -32,6 +32,7 @@ import {
   COLOR_PASS_SELECTOR,
   DEFERRED_PASS_SELECTOR,
   FORWARD_PASS_SELECTOR,
+  matchPass,
 } from '../systems/pass-selector';
 import { resolveReflectionProbeBinding } from './frame-lighting';
 import { getOpaqueResourceIdentity, worldEntityKey } from './frame-snapshot';
@@ -140,6 +141,76 @@ function matchesRecordMode(
 /** Membership of the Standard transparent set (sorted or weighted blended). */
 export function isTransparentLaneMaterial(material: MaterialSnapshot): boolean {
   return matchesRecordMode(material, 'transparent');
+}
+
+/** Explicit preparation is work even when no visible draw selects this lane. */
+export function hasMainPassPipelinePreparation(
+  c: Pick<_InternalRenderPipelineContext, 'pipelinePreparationEntries'>,
+  selector: PassSelector,
+  mode: MainPassOptions['recordMode'],
+  excludeSelector?: PassSelector,
+): boolean {
+  for (const entry of c.pipelinePreparationEntries ?? []) {
+    for (const sm of entry.mesh.submeshes) {
+      const material = entry.source.materials[sm.materialSlot] ?? entry.source.material;
+      if (mode !== undefined && !matchesRecordMode(material, mode)) continue;
+      for (const pass of entry.source.pipelinePreparation ?? []) {
+        if (
+          pass.materialHandle === (material.materialHandle ?? 0) &&
+          matchPass(pass.tags, selector) &&
+          (excludeSelector === undefined || !matchPass(pass.tags, excludeSelector))
+        )
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Prepare an otherwise empty graph lane without opening its attachments. */
+export function prepareMainPassPipelines(
+  c: _InternalRenderPipelineContext,
+  selector: PassSelector,
+  options: MainPassOptions,
+  sampleCount: number,
+  colorFormats: readonly GPUTextureFormat[],
+): void {
+  if (!hasMainPassPipelinePreparation(c, selector, options.recordMode, options.excludeSelector))
+    return;
+  const mode = options.recordMode;
+  const blended = mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual';
+  recordGeometryDraws(
+    {
+      ...c,
+      ...(colorFormats[0] === undefined ? {} : { transparentColorFormat: colorFormats[0] }),
+      msaaActive: sampleCount === 4,
+      translucentFog: blended && (c.viewBindGroupDynamicOffset ?? 0) === 0,
+      splitLdrSprite: blended ? false : c.splitLdrSprite,
+    },
+    undefined,
+    null,
+    [],
+    sampleCount,
+    null,
+    null,
+    undefined,
+    options.passKind ?? 'forward',
+    undefined,
+    colorFormats,
+    options.coverageOnly ?? false,
+    options.fragmentEntryPoint,
+    mode === 'single-layer-medium-nearest-layer'
+      ? 'nearest-layer'
+      : mode === 'single-layer-medium-color'
+        ? 'color'
+        : undefined,
+    options.transparentDepthWrite ?? false,
+    mode === 'oit-accumulate' ? 'accumulate' : mode === 'oit-residual' ? 'residual' : undefined,
+    (pass, material) =>
+      matchPass(pass.tags, selector) &&
+      (options.excludeSelector === undefined || !matchPass(pass.tags, options.excludeSelector)) &&
+      (mode === undefined || matchesRecordMode(material, mode)),
+  );
 }
 
 type MaterialSelectionContext = Pick<
@@ -576,9 +647,17 @@ export function recordMainPass(
   // but has no material contract to assemble. GPU batches keep their own
   // projection and cannot be inferred from the CPU selector's empty map.
   if (
-    validatedOrdered.length > 0 &&
     !clusteredBindGroupMissing &&
-    (matchedMaterials === null || matchedMaterials.size > 0 || options?.gpuDriven !== undefined)
+    ((validatedOrdered.length > 0 &&
+      (matchedMaterials === null ||
+        matchedMaterials.size > 0 ||
+        options?.gpuDriven !== undefined)) ||
+      hasMainPassPipelinePreparation(
+        c,
+        selector ?? (passKind === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR),
+        recordMode,
+        options?.excludeSelector,
+      ))
   ) {
     // feat-20260518-pbr-direct-lighting-mvp M5 / w22.10 (D-4 + D-9 +
     // AC-07 std140): per-entity material slice grew from 32 B (legacy
@@ -963,6 +1042,14 @@ export function recordMainPass(
           : recordMode === 'oit-residual'
             ? 'residual'
             : undefined,
+        (preparedPass, material) =>
+          matchPass(
+            preparedPass.tags,
+            selector ?? (passKind === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR),
+          ) &&
+          (options?.excludeSelector === undefined ||
+            !matchPass(preparedPass.tags, options.excludeSelector)) &&
+          (recordMode === undefined || matchesRecordMode(material, recordMode)),
       );
     };
     // The late occlusion pass only adds GPU items the HZB revealed; the CPU

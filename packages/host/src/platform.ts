@@ -21,7 +21,8 @@ export interface FrontendPlatform {
   readonly fetch: typeof globalThis.fetch;
   readonly connectHost: (url: string) => Promise<HostTransportClient>;
   readonly createFrame: (url: string) => FrontendFrame;
-  readonly navigate: (
+  /** Optional document placement supplied by a development or embedding host. */
+  readonly navigate?: (
     url: string,
     options?: { signal?: AbortSignal; replace?: boolean },
   ) => Promise<void>;
@@ -46,45 +47,6 @@ export function createFrontendPlatformPlugin(platform: FrontendPlatform): Plugin
       ctx.provide('frontendPlatform', platform);
     },
   };
-}
-
-/** Standard document navigation settles on departure; embedded hosts supply their own placement. */
-export function navigateBrowserDocument(
-  window: Pick<Window, 'location' | 'addEventListener' | 'removeEventListener'>,
-  url: string,
-  { signal, replace = false }: { signal?: AbortSignal; replace?: boolean } = {},
-): Promise<void> {
-  const navigate = () => (replace ? window.location.replace(url) : window.location.assign(url));
-  if (!window.addEventListener) {
-    navigate();
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      window.removeEventListener('pagehide', leave);
-      signal?.removeEventListener('abort', cancel);
-    };
-    const leave = () => {
-      cleanup();
-      resolve();
-    };
-    const cancel = () => {
-      cleanup();
-      reject(signal?.reason ?? new Error('document navigation cancelled'));
-    };
-    window.addEventListener('pagehide', leave, { once: true });
-    signal?.addEventListener('abort', cancel, { once: true });
-    if (signal?.aborted) {
-      cancel();
-      return;
-    }
-    try {
-      navigate();
-    } catch (error) {
-      cleanup();
-      reject(error);
-    }
-  });
 }
 
 /** Shared browser fallback for environments without the async Clipboard API. */
@@ -139,7 +101,7 @@ export function createBrowserFrame(document: Document, url: string): FrontendFra
   };
 }
 
-/** Default frontend capabilities; selecting a hosted plugin is the only variant boundary. */
+/** Browser realm capabilities; document navigation is selected by its consuming host. */
 export function createBrowserFrontendPlatform(
   window: Window & typeof globalThis = globalThis.window,
 ): FrontendPlatform {
@@ -149,7 +111,6 @@ export function createBrowserFrontendPlatform(
     fetch: window.fetch.bind(window),
     connectHost: (url) => createHostWebSocketClient(new window.WebSocket(url)),
     createFrame: (url) => createBrowserFrame(window.document, url),
-    navigate: (url, options) => navigateBrowserDocument(window, url, options),
     writeClipboard: (text) => writeBrowserClipboard(text, window.document, window.navigator),
   };
 }

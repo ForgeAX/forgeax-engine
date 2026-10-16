@@ -17,6 +17,7 @@ import { buildFrameModel, decodeTape, type RecorderAttachment } from '@forgeax/e
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
@@ -116,15 +117,13 @@ export async function verifyCharacterFill(
   const draw = async (name?: string) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (renderer.requestObservation === undefined)
-      throw new Error('missing character HDR observation');
-    renderValue(renderer.requestObservation(['linear-hdr']));
     const pending = name === undefined ? undefined : recorder.captureFrame();
     if (pending) (await recorder.frameBoundary()).unwrap();
-    const receipt = renderValue(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      ['linear-hdr'],
     );
-    renderValue(await receipt.completed);
     if (pending && name) {
       (await recorder.frameBoundary()).unwrap();
       const tape = compactTape((await pending).unwrap());

@@ -84,7 +84,7 @@ for (let i = 0; i < FRAMES; i++) {
   if (frames.some((frame, index) => frame !== previous[index])) changes++;
   previous = frames;
   propagateTransforms(world);
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`${draw.error.code}: ${draw.error.hint}`);
   if (i === 5) earlyFrame = await capture();
   if (i === FRAMES - 1) lateFrame = await capture();

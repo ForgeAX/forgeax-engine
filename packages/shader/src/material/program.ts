@@ -17,29 +17,24 @@ export interface MaterialShaderProgram {
 /** WGSL permits nested block comments; preserve token separation when removing them. */
 function withoutComments(source: string): string {
   const parts: string[] = [];
+  const comments = /\/\/|\/\*/gu;
+  const blocks = /\/\*|\*\//gu;
   let start = 0;
-  let index = 0;
-  while (index < source.length) {
-    if (source.startsWith('//', index)) {
-      parts.push(source.slice(start, index), ' ');
-      const end = source.indexOf('\n', index + 2);
-      index = end < 0 ? source.length : end;
-      start = index;
-    } else if (source.startsWith('/*', index)) {
-      parts.push(source.slice(start, index), ' ');
+  for (let comment = comments.exec(source); comment !== null; comment = comments.exec(source)) {
+    parts.push(source.slice(start, comment.index), ' ');
+    if (comment[0] === '//') {
+      const end = source.indexOf('\n', comments.lastIndex);
+      start = end < 0 ? source.length : end;
+    } else {
       let depth = 1;
-      index += 2;
-      while (index < source.length && depth > 0) {
-        if (source.startsWith('/*', index)) {
-          depth++;
-          index += 2;
-        } else if (source.startsWith('*/', index)) {
-          depth--;
-          index += 2;
-        } else index++;
+      blocks.lastIndex = comments.lastIndex;
+      for (let block = blocks.exec(source); block !== null; block = blocks.exec(source)) {
+        depth += block[0] === '/*' ? 1 : -1;
+        if (depth === 0) break;
       }
-      start = index;
-    } else index++;
+      start = depth === 0 ? blocks.lastIndex : source.length;
+    }
+    comments.lastIndex = start;
   }
   return parts.length === 0 ? source : parts.join('') + source.slice(start);
 }

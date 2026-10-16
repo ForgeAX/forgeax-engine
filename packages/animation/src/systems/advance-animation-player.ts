@@ -6,7 +6,7 @@ import { sampleChannel } from '../sample-channel';
 // each active slot (clips[i] != 0), advances times[i] += dt * speeds[i] (paused
 // gates the whole entity), samples the AnimationClip channels, and accumulates a
 // weighted pose into per-joint TRS accumulators. Once all slots are
-// folded in, each joint receives a single `world.set(joint, Transform,
+// folded in, each changed joint receives at most one `world.set(joint, Transform,
 // fullPose)` (research F-2 / F-7 / F-8 — single write per joint per tick).
 //
 // Variable N-slot (feat-20260713 M1 / w5): the fixed 4-slot cap is retired. The
@@ -52,7 +52,11 @@ import { sampleChannel } from '../sample-channel';
 
 import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
 import { defineSystem, defineSystemSet, ENTITY_NULL_RAW } from '@forgeax/engine-ecs';
-import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
+import {
+  createStateProjection,
+  readRenderArrayView,
+  type StateProjection,
+} from '@forgeax/engine-ecs/projection';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
 import type { AnimationChannel, AnimationClip } from '@forgeax/engine-types';
 import { toShared } from '@forgeax/engine-types';
@@ -535,9 +539,24 @@ function tickEntityTargets(
   for (const [targetRaw, acc] of accumulators) {
     const target = targetRaw as EntityHandle;
     const partial = finalizeAccumulator(acc);
-    if (Object.keys(partial).length > 0) {
-      world.set(target, Transform as never, partial as never);
+    let changed = false;
+    for (const field of Object.keys(partial)) {
+      const values = partial[field];
+      const current = readRenderArrayView(world, target, Transform, field);
+      // Transform stores f32 values. Compare the actual destination, so an
+      // external author write is restored even when clip time has not moved.
+      if (
+        values !== undefined &&
+        current !== undefined &&
+        current.length === values.length &&
+        values.every(
+          (value, index) => !Number.isNaN(value) && Object.is(current[index], Math.fround(value)),
+        )
+      )
+        delete partial[field];
+      else changed = true;
     }
+    if (changed) world.set(target, Transform as never, partial as never);
   }
   for (const [targetRaw, acc] of morphAccumulators) {
     if (acc.sumW <= 0) continue;

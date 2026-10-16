@@ -20,7 +20,11 @@ const viewObjectInspectorFrontendPlugin = {
       activity: { labelKey: TITLE_I18N_KEY, icon: 'detail' },
       layout: PANEL_LAYOUT,
       panel: 'Inspector',
-      props: { client: workspaceClient },
+      props: { client: workspaceClient, assetReferences: ctx.get('viewAssetReferences', false),
+        browseAsset: (guid: string) => {
+          const scope = ctx.get('viewAssetReferences', false)?.getState().scope;
+          return scope ? ctx.get('viewAssetBrowser', false)?.revealAsset({ ...scope, guid }) ?? Promise.resolve(false) : Promise.resolve(false);
+        } },
     });
     ctx.effect(() => async () => {
       await disposePanel?.();

@@ -42,7 +42,7 @@ export async function verifyPluginFilters(page, output, { backendHost, pagePlugi
 
   await tag('frontend').click();
   await assertTags('frontend');
-  await search.fill('page.');
+  await search.fill('forgeax.view.page.');
   assert.deepEqual((await rows.locator('strong').allTextContents()).sort(), [...pagePlugins].sort());
   await page.screenshot({ path: resolve(output, 'plugin-hosts-frontend.png') });
   await reset();

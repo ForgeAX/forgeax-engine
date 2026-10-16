@@ -22,6 +22,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -100,20 +101,18 @@ export async function verifyOutline(
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const draw = async () => {
+  const draw = async (observe = false) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    return drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      observe ? ['final-display', 'linear-ldr'] : undefined,
     );
-    value(await receipt.completed);
-    return receipt;
   };
   const observe = async (name: string) => {
-    if (renderer.requestObservation === undefined) throw new Error('observation unavailable');
     const include = ['final-display', 'linear-ldr'] as const;
-    value(renderer.requestObservation(include));
-    const receipt = await draw();
+    const receipt = await draw(true);
     const observations = value(await renderer.observe(receipt, { include })).observations;
     const observation = observations?.find((item) => item.domain === 'final-display');
     const linear = observations?.find((item) => item.domain === 'linear-ldr');

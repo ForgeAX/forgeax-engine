@@ -1,5 +1,5 @@
 import { useClipboardAction, usePanelVisible } from '@forgeax/view-components';
-import type { WorkspaceState } from '@forgeax/view-workspace-core/contract';
+import type { WorkspaceAsset, WorkspaceEntityInspection, WorkspaceState, WorkspaceTarget } from '@forgeax/view-workspace-core/contract';
 import {
   Box,
   Braces,
@@ -10,10 +10,12 @@ import {
   Crosshair,
   Filter,
   Folder,
+  FolderSearch,
   Layers,
   Lightbulb,
   Maximize2,
   Minimize2,
+  PencilLine,
   Settings,
   X,
 } from 'lucide-react';
@@ -45,6 +47,8 @@ import { useTranslation } from '../i18n/useTranslation';
 import { SCENE_TREE_ACTIONS } from '../schema.ts';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import { VIEW_WORKSPACE_TAB_ID, jsonUnchanged } from '@forgeax/view-workspace-core/contract';
+import type { AssetBrowserReveal } from '@forgeax/view-workspace-core/frontend-contract';
+import { resourceAssetName } from '@forgeax/view-workspace-core/page-title';
 import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import {
   entityMatchesSceneTreeFilters,
@@ -57,6 +61,8 @@ import {
   normalizeSceneTreeRows,
   type HierarchyRow,
 } from '../hierarchy.ts';
+import { explicitEntityAssetReferences, primaryEntityAsset } from '@forgeax/view-workspace-core/asset-references';
+import type { AssetReference, AssetReferenceService } from '@forgeax/view-workspace-core/asset-references';
 
 type SceneTreeFilterOption = {
   id: string;
@@ -68,6 +74,11 @@ type SceneSelectionClient = Pick<
   ViewWorkspaceClient,
   'subscribe' | 'getState' | 'selectSceneEntity' | 'clearSceneSelection' | 'getSceneTree' | 'call' | 'onDisconnect' | 'transport'
 >;
+type AssetBrowserActions = {
+  browseAsset?: (input: AssetBrowserReveal) => Promise<boolean>;
+  canBrowseAsset?: () => boolean;
+  assetReferences?: AssetReferenceService;
+};
 
 type WorkspacePreviewSnapshot = WorkspaceState;
 
@@ -85,8 +96,9 @@ type MenuItem =
       forge?: boolean;
       children?: MenuItem[];
       action?: () => void;
+      title?: string;
     };
-type MenuState = { x: number; y: number; items: MenuItem[] } | null;
+type MenuState = { x: number; y: number; items: MenuItem[]; rowId?: string } | null;
 
 function rowComponentNames(row: HierarchyRow) {
   if (Array.isArray(row.componentNames) && row.componentNames.length > 0) {
@@ -101,6 +113,12 @@ function rowType(row: HierarchyRow) {
   const primary = rowComponentNames(row).find((name) => name !== 'Transform') ?? row.typeKey;
   if (!primary) return 'mesh';
   return hierarchyTypeCategory(String(primary));
+}
+
+function sameSceneTarget(current: WorkspaceState | null, projectId: string, target: WorkspaceTarget) {
+  return current?.project?.id === projectId
+    && current.preview?.target?.targetId === target.targetId
+    && current.preview?.target?.generation === target.generation;
 }
 
 function filterOptionIcon(id: string) {
@@ -126,6 +144,7 @@ function RowIcon({ row }: { row: HierarchyRow }) {
 function HierarchyContextMenu({ state, close }: { state: Exclude<MenuState, null>; close: () => void }) {
   const overlayRoot = useOverlayRoot();
   const [submenu, setSubmenu] = useState<string | null>(null);
+  const [submenuAnchor, setSubmenuAnchor] = useState<AnchorRect | null>(null);
   useEffect(() => {
     const dismiss = () => close();
     const escape = (event: KeyboardEvent) => event.key === 'Escape' && close();
@@ -140,9 +159,11 @@ function HierarchyContextMenu({ state, close }: { state: Exclude<MenuState, null
     <div className={nested ? 'hier-context-submenu' : 'hier-context-menu'}>
       {items.map((item, index) => {
         if (item.kind === 'separator') return <i className="hier-context-separator" key={`sep-${index}`} />;
-        if (item.kind === 'title') return <div className="hier-context-title" key={`title-${index}`}>{item.icon}{item.label}</div>;
+        if (item.kind === 'title') return <div className="hier-context-title" title={item.label} key={`title-${index}`}>{item.icon}<span>{item.label}</span></div>;
         return (
-          <div className="hier-context-item-wrap" key={item.id} onPointerEnter={() => item.children && setSubmenu(item.id)}>
+          <div className="hier-context-item-wrap" key={item.id} title={item.title ?? item.label} onPointerEnter={event => {
+            if (item.children) { setSubmenu(item.id); setSubmenuAnchor(event.currentTarget.getBoundingClientRect()); }
+          }}>
             <button
               type="button"
               role="menuitem"
@@ -150,9 +171,10 @@ function HierarchyContextMenu({ state, close }: { state: Exclude<MenuState, null
               data-danger={item.danger || undefined}
               data-forge={item.forge || undefined}
               disabled={item.disabled}
-              onClick={() => {
+              onClick={event => {
                 if (item.children) {
                   setSubmenu(submenu === item.id ? null : item.id);
+                  setSubmenuAnchor(event.currentTarget.getBoundingClientRect());
                   return;
                 }
                 item.action?.();
@@ -164,7 +186,8 @@ function HierarchyContextMenu({ state, close }: { state: Exclude<MenuState, null
               {item.shortcut ? <kbd>{item.shortcut}</kbd> : null}
               {item.children ? <ChevronRight size={12} /> : null}
             </button>
-            {item.children && submenu === item.id ? renderItems(item.children, true) : null}
+            {item.children && submenu === item.id ? <FloatingMenu open anchorRect={submenuAnchor} gap={2}
+              containerProps={{ style: { zIndex: 'calc(var(--fx-layer-tooltip) + 1)' } }}>{renderItems(item.children, true)}</FloatingMenu> : null}
           </div>
         );
       })}
@@ -194,7 +217,7 @@ function highlighted(value: string, query: string) {
   return <>{value.slice(0, index)}<mark className="hl">{value.slice(index, index + query.length)}</mark>{value.slice(index + query.length)}</>;
 }
 
-export function SceneTreePanel(props: { client?: SceneSelectionClient }) {
+export function SceneTreePanel(props: { client?: SceneSelectionClient } & AssetBrowserActions) {
   if (!props.client) {
     return (
       <EmptyState
@@ -203,7 +226,7 @@ export function SceneTreePanel(props: { client?: SceneSelectionClient }) {
       />
     );
   }
-  return <SceneTreeLivePanel client={props.client} />;
+  return <SceneTreeLivePanel client={props.client} browseAsset={props.browseAsset} canBrowseAsset={props.canBrowseAsset} assetReferences={props.assetReferences} />;
 }
 
 function useEngineSceneRows(
@@ -286,7 +309,7 @@ function useEngineSceneRows(
   return { rows, filterOptions: sceneTreeComponentFilters(rows), failed: current?.failed ?? false, hasMore: current?.hasMore ?? false, loadMore: () => setPageCount(value => value + 1) };
 }
 
-function SceneTreeLivePanel({ client }: { client: SceneSelectionClient }) {
+function SceneTreeLivePanel({ client, browseAsset, canBrowseAsset, assetReferences }: { client: SceneSelectionClient } & AssetBrowserActions) {
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(
@@ -317,7 +340,7 @@ function SceneTreeLivePanel({ client }: { client: SceneSelectionClient }) {
   return <>
     {hasMore && <button type="button" onClick={loadMore}>Showing {Math.max(0, rows.length - 1)} entities. Load more</button>}
     <SceneTreeRowsPanel key={`${workspace.preview?.target?.targetId}:${workspace.preview?.target?.generation}`}
-      client={client} rows={rows} filterOptions={filterOptions} />
+      client={client} rows={rows} filterOptions={filterOptions} browseAsset={browseAsset} canBrowseAsset={canBrowseAsset} assetReferences={assetReferences} />
   </>;
 }
 
@@ -325,11 +348,14 @@ function SceneTreeRowsPanel({
   client,
   rows,
   filterOptions,
+  browseAsset,
+  canBrowseAsset,
+  assetReferences,
 }: {
   client: SceneSelectionClient;
   rows: HierarchyRow[];
   filterOptions: SceneTreeFilterOption[];
-}) {
+} & AssetBrowserActions) {
   const writeClipboard = useClipboardAction();
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
@@ -380,8 +406,17 @@ function SceneTreeRowsPanel({
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const [contextMenu, setContextMenu] = useState<MenuState>(null);
+  const menuObservation = useRef<ReturnType<typeof createWorkspaceObservation> | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [selected, setSelected] = useState(new Set<string>());
   const [anchor, setAnchor] = useState<string | null>(null);
+
+  useEffect(() => () => menuObservation.current?.dispose(), []);
+  useEffect(() => {
+    menuObservation.current?.dispose();
+    menuObservation.current = null;
+    setContextMenu(null);
+  }, [workspace?.project?.id, workspace?.preview?.target?.targetId, workspace?.preview?.target?.generation]);
 
   useEffect(() => {
     setExpanded((current) => {
@@ -500,22 +535,96 @@ function SceneTreeRowsPanel({
     setAnchor(primary.id);
     publishSceneSelection(primary, [...next]);
   };
-  const showContext = (event: MouseEvent, items: MenuItem[]) => {
+  const closeContextMenu = () => {
+    menuObservation.current?.dispose();
+    menuObservation.current = null;
+    setContextMenu(null);
+  };
+  const showContext = (event: MouseEvent, items: MenuItem[], rowId?: string) => {
     event.preventDefault();
     event.stopPropagation();
+    menuObservation.current?.dispose();
+    menuObservation.current = null;
     setHeaderMenu(null);
-    setContextMenu({ x: event.clientX, y: event.clientY, items });
+    setActionError(null);
+    setContextMenu({ x: event.clientX, y: event.clientY, items, rowId });
   };
   const blankMenu = useCallback((): MenuItem[] => [
     { kind: 'title', label: t('sceneTree.readOnlyTitle') },
     { kind: 'item', id: 'clear-filter', label: t('sceneTree.menu.clearSearchAndFilters'), icon: <X size={14} />, disabled: !query && filters.size === 0, action: () => { setQuery(''); setFilters(new Set()); } },
     { kind: 'item', id: 'focus', label: t('sceneTree.menu.focusSelection'), icon: <Crosshair size={14} />, shortcut: 'F', disabled: selected.size === 0, action: () => {} },
   ], [filters.size, query, selected.size, t]);
-  const rowMenu = useCallback((row: HierarchyRow): MenuItem[] => [
-    { kind: 'title', label: rowLabel(row), icon: <RowIcon row={row} /> },
+  const runAssetAction = (asset: WorkspaceAsset, operation: 'browse' | 'edit') => {
+    const projectId = workspace?.project?.id;
+    const target = workspace?.preview?.target;
+    if (!projectId || !target?.targetId || !sameSceneTarget(reader.getSnapshot(), projectId, target)) return;
+    const observation = createWorkspaceObservation(reader, current => sameSceneTarget(current, projectId, target));
+    if (observation.signal.aborted) { observation.dispose(); return; }
+    const task = operation === 'browse'
+      ? browseAsset?.({ projectId, guid: asset.guid, targetId: target.targetId, targetGeneration: target.generation }) ?? Promise.resolve(false)
+      : (assetReferences?.getState().scope ? assetReferences.open(asset.guid) : undefined) ?? client.call('asset.open', { projectId, tabId: VIEW_WORKSPACE_TAB_ID, guid: asset.guid,
+        targetId: target.targetId, targetGeneration: target.generation }, { signal: observation.signal, reportError: false });
+    void task.then(result => {
+      if (operation === 'browse' && result !== true) throw new Error(t('sceneTree.menu.assetBrowserUnavailable'));
+    }).catch(error => {
+      if (!observation.signal.aborted) setActionError(String(error));
+    }).finally(() => observation.dispose());
+  };
+  const rowMenu = (row: HierarchyRow, asset?: WorkspaceAsset, pending = false, failure?: string): MenuItem[] => [
+    { kind: 'title', label: `${rowLabel(row)}${pending ? ` · ${t('sceneTree.menu.resolvingAsset')}` : ''}`, icon: <RowIcon row={row} /> },
+    ...(row.kind === 'entity' && !isSceneRootRow(row) ? [
+      { kind: 'item' as const, id: SCENE_TREE_ACTIONS.browseAsset, label: t('sceneTree.menu.browseToAsset'), icon: <FolderSearch size={14} />,
+        disabled: !asset || !canBrowseAsset?.(),
+        title: pending ? t('sceneTree.menu.resolvingAsset') : failure ?? (!asset ? t('sceneTree.menu.assetIdentityUnavailable')
+          : !canBrowseAsset?.() ? t('sceneTree.menu.assetBrowserUnavailable') : undefined),
+        action: () => { if (asset) runAssetAction(asset, 'browse'); } },
+      { kind: 'item' as const, id: SCENE_TREE_ACTIONS.editAsset,
+        label: asset ? t('sceneTree.menu.editAssetNamed', { name: resourceAssetName(asset) ?? asset.guid }) : t('sceneTree.menu.editAsset'),
+        icon: <PencilLine size={14} />, disabled: !asset,
+        title: pending ? t('sceneTree.menu.resolvingAsset') : failure ?? (!asset ? t('sceneTree.menu.assetIdentityUnavailable') : undefined),
+        action: () => { if (asset) runAssetAction(asset, 'edit'); } },
+      { kind: 'separator' as const },
+    ] : []),
     { kind: 'item', id: 'copy-json', label: t('sceneTree.menu.copyJson'), icon: <Braces size={14} />, action: () => void writeClipboard(JSON.stringify(row, null, 2)) },
-    { kind: 'item', id: 'focus', label: t('sceneTree.menu.focusInViewport'), icon: <Crosshair size={14} />, shortcut: 'F', disabled: !workspace?.preview || isSceneRootRow(row), action: () => { const target = workspace?.preview?.target; if (target) void client?.call('entity.focus', { entityId: row.id, targetId: target.targetId, targetGeneration: target.generation }); } },
-  ], [rowLabel, t, client, workspace?.preview]);
+    { kind: 'item', id: 'focus', label: t('sceneTree.menu.focusInViewport'), icon: <Crosshair size={14} />, shortcut: 'F', disabled: !workspace?.preview || isSceneRootRow(row), action: () => { const target = workspace?.preview?.target; if (target) void client.call('entity.focus', { entityId: row.id, targetId: target.targetId, targetGeneration: target.generation }); } },
+  ];
+  const showMeshContext = (event: MouseEvent, row: HierarchyRow) => {
+    showContext(event, rowMenu(row, undefined, true), row.id);
+    const projectId = workspace?.project?.id;
+    const target = workspace?.preview?.target;
+    if (!projectId || !target?.targetId) return;
+    const observation = createWorkspaceObservation(reader, current => sameSceneTarget(current, projectId, target));
+    menuObservation.current = observation;
+    const { signal } = observation;
+    void (async () => {
+      try {
+        const inspection = await client.call<WorkspaceEntityInspection>('entity.inspect', {
+          projectId, tabId: VIEW_WORKSPACE_TAB_ID, entityId: row.id,
+          targetId: target.targetId, targetGeneration: target.generation,
+        }, { signal, reportError: false });
+        if (signal.aborted || inspection.entityId !== row.id || inspection.targetId !== target.targetId) return;
+        const catalog = reader.getSnapshot()?.assets;
+        const assets = Array.isArray(catalog) ? catalog : (await client.call<{ assets: WorkspaceAsset[] }>('assets.list', {
+          projectId, tabId: VIEW_WORKSPACE_TAB_ID, targetId: target.targetId, targetGeneration: target.generation,
+        }, { signal, reportError: false })).assets;
+        if (signal.aborted) return;
+        const nativeScope = assetReferences?.getState().scope;
+        let references: readonly AssetReference[] = explicitEntityAssetReferences(inspection);
+        if (assetReferences && nativeScope?.targetId === target.targetId && nativeScope.targetGeneration === target.generation) {
+          try { references = (await assetReferences.query(row.id, { signal })).references; }
+          catch (error) { if (signal.aborted || references.length === 0) throw error; }
+        }
+        if (signal.aborted) return;
+        const asset = primaryEntityAsset(references, assets);
+        setContextMenu(current => current?.rowId === row.id ? { ...current, items: rowMenu(row, asset) } : current);
+      } catch (error) {
+        if (!signal.aborted) setContextMenu(current => current?.rowId === row.id ? { ...current, items: rowMenu(row, undefined, false, String(error)) } : current);
+      } finally {
+        if (menuObservation.current === observation) menuObservation.current = null;
+        observation.dispose();
+      }
+    })();
+  };
   useEffect(() => {
     if (!headerMenu) setHeaderMenuAnchor(null);
   }, [headerMenu]);
@@ -599,6 +708,7 @@ function SceneTreeRowsPanel({
         {columns.type ? <span className="ch-type sortable col-type">{t('sceneTree.columnType')}</span> : null}
         {columns.id ? <span className="ch-id sortable col-id">{t('sceneTree.columnId')}</span> : null}
       </div>
+      {actionError ? <div className="hier-action-error" role="alert">{actionError}</div> : null}
       <div
         className="ol-body"
         data-testid="hier-root-dropzone"
@@ -635,7 +745,10 @@ function SceneTreeRowsPanel({
                   setSelected(new Set([row.id]));
                   if (row.kind === 'entity') publishSceneSelection(row);
                 }
-                showContext(event, isSceneRootRow(row) ? blankMenu() : rowMenu(row));
+                const subject = selected.has(row.id) && selected.size > 1 ? rows.find(candidate => candidate.id === externalEntityId) ?? row : row;
+                if (isSceneRootRow(subject)) showContext(event, blankMenu());
+                else if (subject.kind === 'entity') showMeshContext(event, subject);
+                else showContext(event, rowMenu(subject));
               }}
             >
               <button
@@ -769,7 +882,7 @@ function SceneTreeRowsPanel({
           </button>
         </div>
       </FloatingMenu>
-      {contextMenu ? <HierarchyContextMenu state={contextMenu} close={() => setContextMenu(null)} /> : null}
+      {contextMenu ? <HierarchyContextMenu state={contextMenu} close={closeContextMenu} /> : null}
     </div>
   );
 }

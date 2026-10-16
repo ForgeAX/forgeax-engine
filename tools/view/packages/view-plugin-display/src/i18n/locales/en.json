@@ -1,8 +1,43 @@
 {
   "display": {
-    "title": "Runtime capture",
+    "title": "Runtime observation",
     "idle": "View ready (idle)",
     "running": "Running {{service}}:{{run}}",
-    "error": "View connection error: {{message}}"
+    "error": "View connection error: {{message}}",
+    "source": "Capture source",
+    "play": "Editor Play",
+    "independent": "Independent Engine run",
+    "noProject": "No project open",
+    "connect": "View project run",
+    "reconnect": "Reconnect current run",
+    "disconnect": "Disconnect",
+    "connecting": "Connecting to the current project run…",
+    "noPlay": "No Play session. Start Play from the Scene page to see its screenshots here.",
+    "noRun": "No independent Engine run was found for this project.",
+    "notConnected": "Connect to view the current project’s independent Engine run.",
+    "ended": "Run ended · showing the last captured image",
+    "captured": "Captured {{time}}",
+    "frame": "Frame {{frame}}",
+    "lastImage": "Last captured image",
+    "image": "Latest Engine run capture",
+    "playHint": "Read-only snapshots, refreshed about once a second while this page is visible. Interact with the game in Scene.",
+    "runHint": "Read-only observation. Engine captures at most once every five seconds. Disconnecting does not stop the game.",
+    "logs": "Run log",
+    "details": "Runtime details",
+    "omitted": "{{count}} earlier log entries omitted.",
+    "phase": {
+      "ready": "Running",
+      "running": "Running",
+      "starting": "Starting…",
+      "preparing": "Preparing…",
+      "stopping": "Stopping…",
+      "stopped": "Stopped · showing the last captured image",
+      "failed": "Run failed",
+      "error": "Run failed",
+      "waiting": "Waiting for runtime readiness…",
+      "reloading": "Reloading…",
+      "unreachable": "Runtime disconnected",
+      "idle": "Idle"
+    }
   }
 }

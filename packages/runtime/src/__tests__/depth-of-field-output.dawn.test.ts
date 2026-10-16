@@ -8,6 +8,7 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
+  ShadowParticipation,
   TONEMAP_NONE,
 } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -53,7 +54,7 @@ it('preserves color through DoF attachment topology changes and component remova
       )
       .unwrap();
     const read = async () => {
-      drawPublished(fixture.renderer, world).unwrap();
+      (await drawPublished(fixture.renderer, world)).unwrap();
       await fixture.device.queue.onSubmittedWorkDone();
       return readBarrelPixels(fixture.device, fixture.renderTarget, width, height);
     };
@@ -104,15 +105,13 @@ it('spreads a defocused far silhouette over the cleared background', async () =>
   const world = new World();
   const releaseTransforms = registerPropagateTransforms(world);
   try {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([0.8, 0.2, 0.1, 1], { castShadow: false }),
-    );
+    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.2, 0.1, 1]));
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, -6], scale: [4, 4, 1] } },
         { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
         { component: MeshRenderer, data: { materials: [material] } },
+        { component: ShadowParticipation, data: { cast: false } },
       )
       .unwrap();
     const camera = world
@@ -133,7 +132,7 @@ it('spreads a defocused far silhouette over the cleared background', async () =>
       )
       .unwrap();
     const read = async () => {
-      drawPublished(fixture.renderer, world).unwrap();
+      (await drawPublished(fixture.renderer, world)).unwrap();
       await fixture.device.queue.onSubmittedWorkDone();
       return readBarrelPixels(fixture.device, fixture.renderTarget, width, height);
     };

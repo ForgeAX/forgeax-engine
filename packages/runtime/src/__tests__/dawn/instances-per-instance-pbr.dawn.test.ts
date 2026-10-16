@@ -232,7 +232,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
     });
 
     for (let i = 0; i < 5; i++) {
-      const r = drawPublished(renderer, worldN);
+      const r = await drawPublished(renderer, worldN);
       if (!r.ok) throw new Error(`draw N frame ${i} error: ${r.error.code}`);
     }
 
@@ -314,7 +314,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
     });
 
     for (let i = 0; i < 5; i++) {
-      const r = drawPublished(renderer, world1);
+      const r = await drawPublished(renderer, world1);
       if (!r.ok) throw new Error(`draw 1 frame ${i} error: ${r.error.code}`);
     }
     await device.queue.onSubmittedWorkDone();

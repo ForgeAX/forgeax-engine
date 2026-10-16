@@ -28,3 +28,4 @@ export {
   mountHtmlUiPreviewPanel,
   mountHtmlUiInspectorPanel,
 };
+import '@forgeax/view-plugin-history/ui';

@@ -154,7 +154,7 @@ for (let i = 0; i < ANTIALIAS_MODES.length; i += 1) {
   world.set(scene.camera, Camera, { antialias });
   for (let frame = 0; frame < modeFrames; frame += 1) {
     world.update().unwrap();
-    const result = drawSmokeFrame(renderer, world);
+    const result = await drawSmokeFrame(renderer, world);
     if (!result.ok) drawErrors += 1;
     framesObserved += 1;
   }
@@ -162,7 +162,7 @@ for (let i = 0; i < ANTIALIAS_MODES.length; i += 1) {
 }
 for (let frame = framesObserved; frame < targetFrames; frame += 1) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) drawErrors += 1;
   framesObserved += 1;
 }

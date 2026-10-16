@@ -30,6 +30,15 @@ flowchart LR
     C -->|"No"| F["Remove scene, runtime, and pack references together"]
 ```
 
+## Optional platform SDK integration
+
+Keep platform SDK initialization, loading reports and pause/resume registration in
+a game-owned frontend plugin. Engine provides App controls and canvas sizing;
+the game owns HUD layout, input/audio cleanup and the actual playable boundary.
+See the installed DevKit README's **Platform SDK adaptation** section for a
+minimal Zaohua example. This template does not install or initialize a platform
+SDK; choose that integration only for the requested target platform.
+
 ## Behavior Packs
 
 Start with the Pack for the feature you want to change. `game.pack.ts` only composes the engine

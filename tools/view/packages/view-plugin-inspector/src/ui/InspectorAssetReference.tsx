@@ -3,9 +3,10 @@ import type { InspectorResourceReference } from '../inspection.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import { INSPECTOR_ACTIONS } from '../schema.ts';
 
-export function InspectorAssetReference({ reference, openAsset, inline = false }: {
+export function InspectorAssetReference({ reference, openAsset, browseAsset, inline = false }: {
   reference: InspectorResourceReference;
   openAsset: (guid: string) => void;
+  browseAsset?: (guid: string) => void;
   inline?: boolean;
 }) {
   const { t } = useTranslation();
@@ -14,10 +15,11 @@ export function InspectorAssetReference({ reference, openAsset, inline = false }
   const name = reference.asset?.name || reference.asset?.sourceKey || rawName || reference.guid
     || (reference.handle === 0 ? t(reference.inherited ? 'inspector.materialInherited' : 'inspector.unbound') : reference.handle !== undefined
       ? t('inspector.handleReference', { handle: reference.handle }) : t('inspector.bindingUnavailable'));
-  const missing = reference.rawValue && typeof reference.rawValue === 'object' && 'missing' in reference.rawValue && reference.rawValue.missing === true;
-  const canOpen = Boolean(reference.guid && !missing && reference.asset?.previewable !== false);
-  const value = reference.rawValue === '' || reference.rawValue === null || reference.handle === 0 ? ''
-    : reference.guid ? { guid: reference.guid, name, kind: reference.kind, missing }
+  const missing = reference.status === 'missing' || Boolean(reference.guid && !reference.asset)
+    || (reference.rawValue && typeof reference.rawValue === 'object' && 'missing' in reference.rawValue && reference.rawValue.missing === true);
+  const canOpen = Boolean(reference.guid && !missing && reference.asset);
+  const value = reference.guid ? { guid: reference.guid, name, kind: reference.kind, missing }
+    : reference.rawValue === '' || reference.rawValue === null || reference.handle === 0 ? ''
       : { name, kind: reference.kind };
   const details = [
     ['GUID', reference.guid],
@@ -29,11 +31,14 @@ export function InspectorAssetReference({ reference, openAsset, inline = false }
     <div data-testid="insp-resource-reference">
       <AssetReferenceField value={value} labels={{
         none: t('inspector.assetRef.none'), missing: t('inspector.assetRef.missing'), open: t('inspector.openResource'),
+        openUnavailable: t('inspector.assetRef.openUnavailable'), readOnly: t('inspector.assetRef.readOnly'),
+        identityUnavailable: t('inspector.resourceIdentityUnavailable'),
         useSelection: t('inspector.assetRef.useSelection'), browse: t('inspector.assetRef.browse'),
         reveal: t('inspector.assetRef.reveal'), more: t('inspector.assetRef.more'),
         clear: t('inspector.assetRef.clear'), copyGuid: t('inspector.assetRef.copyGuid'),
       }} openAction={INSPECTOR_ACTIONS.openAsset}
-        onOpen={canOpen && reference.guid ? () => openAsset(reference.guid!) : undefined} />
+        onOpen={canOpen && reference.guid ? () => openAsset(reference.guid!) : undefined}
+        onBrowse={canOpen && reference.guid && browseAsset ? () => browseAsset(reference.guid!) : undefined} />
     </div>
     {!reference.guid && reference.handle !== 0 && reference.rawValue !== '' && reference.rawValue !== null
       ? <Text as="div" tone="muted" className="insp-resource-warning" role="status">{t('inspector.resourceIdentityUnavailable')}</Text> : null}

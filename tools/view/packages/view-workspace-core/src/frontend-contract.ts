@@ -1,4 +1,7 @@
-import type { WorkspaceOpenRequest } from './contract.ts';
+import type { WorkspaceAsset, WorkspaceOpenRequest } from './contract.ts';
+import type { AssetReferenceService } from './asset-references.ts';
+import type { PresentationOwner, PresentationResource } from './presentation.ts';
+export type { PresentationOwner, PresentationSnapshot } from './presentation.ts';
 export type ViewFileOpenRequest = { requestId: string; sequence: number; file: { path: string; extension: string; projectId: string } };
 export type PageResourceOpenRequest = WorkspaceOpenRequest | ViewFileOpenRequest;
 
@@ -14,6 +17,7 @@ export type PanelClaim = {
 };
 export type PanelMount = PanelClaim & { panel: string; props?: Record<string, unknown> };
 export type PageController = {
+  getResource?: () => PresentationResource | undefined;
   getTitle?: () => string | undefined; subscribeTitle?: (listener: () => void) => () => void; dispose?: () => void;
 };
 export type ResourceSelector = { kinds: readonly string[]; fallback?: never; extensions?: never } | { extensions: readonly string[]; kinds?: never; fallback?: never } | { fallback: true; kinds?: never; extensions?: never };
@@ -22,13 +26,17 @@ export type PageType = {
   closable: boolean; singleton: boolean; initial: boolean; openable: boolean;
   layout: 'dock' | 'surface'; showPanelRail: boolean; hideWhenInactive: boolean;
   resourceSelector?: ResourceSelector; priority?: number; controller?: PageController;
+  resourcePresentation?: 'preview' | 'details';
 };
 export type PageTypeContribution = Omit<PageType, 'controller'> & { createController?: () => PageController | undefined };
 export type PageHost = {
+  attachPresentation?(owner: PresentationOwner): () => void;
+  callPresentation?: PresentationOwner;
   registerType(type: PageTypeContribution): () => void;
   mount(typeId: string, node: HTMLElement): () => void;
   openResource(input: PageResourceOpenRequest): PageResourceOpenRequest;
   subscribeResourceOpen(listener: (request: PageResourceOpenRequest) => void): () => void;
+  getAssetPresentation?(asset: Pick<WorkspaceAsset, 'kind'>): 'preview' | 'details' | undefined;
 };
 export type SlotRegistry = {
   subscribe(listener: (claims: readonly PanelClaim[]) => void): () => void;
@@ -45,8 +53,14 @@ export type PanelHost = {
   claim(claim: PanelClaim): () => void;
   mountPanel(options: PanelMount): Promise<Dispose>;
   mountPanelInto(options: { element: HTMLElement; panel: string; props?: Record<string, unknown> }): Promise<Dispose>;
-  reveal?(slot: string): Promise<boolean>;
+  reveal?(slot: string, options?: { signal?: AbortSignal }): Promise<boolean>;
 };
+export type AssetBrowserReveal = { projectId: string; guid: string; targetId: string; targetGeneration?: number };
+export type AssetBrowserService = {
+  available(): boolean;
+  revealAsset(input: AssetBrowserReveal): Promise<boolean>;
+};
+export type ResourceAssetActionResolver = (value: unknown) => { onOpen?: () => void; onBrowse?: () => void } | undefined;
 export type ResourceIdentity = {
   PAGE_TYPE: string; PAGE_TITLE_I18N_KEY: string; PAGE_ORDER: number; RESOURCE_SELECTOR: ResourceSelector; PAGE_PRIORITY?: number;
   PREVIEW_SLOT?: string; PREVIEW_TITLE_I18N_KEY?: string; PREVIEW_ICON?: string; PREVIEW_LAYOUT?: PanelLayout; PREVIEW_PANEL?: string;
@@ -60,5 +74,7 @@ declare module '@forgeax/engine-plugin' {
     pageHost: PageHost;
     panelHost: PanelHost;
     viewSlotRegistry: SlotRegistry;
+    viewAssetBrowser?: AssetBrowserService;
+    viewAssetReferences?: AssetReferenceService;
   }
 }

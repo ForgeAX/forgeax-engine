@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 
@@ -288,17 +289,11 @@ export async function runVisibilityDawnSmoke({ frames = 60 } = {}) {
     if (frame === Math.floor((frames * 5) / 6)) scene.setAncestorHidden();
     const updateResult = world.value.update(1 / 60);
     if (!updateResult.ok) errors.push(describeStructuredError(updateResult.error));
-    const drawResult = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    if (!drawResult.ok) {
-      errors.push(describeStructuredError(drawResult.error));
-    } else {
-      const completed = await drawResult.value.completed;
-      if (!completed.ok) errors.push(describeStructuredError(completed.error));
-    }
     for (const [phase, captureFrame] of Object.entries(captureFrames)) {
       if (frame === captureFrame) {
         captures[phase] = await capturePhase(scene, diagnostics, sharedDevice.value, renderTarget.value);

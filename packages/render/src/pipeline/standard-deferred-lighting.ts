@@ -5,6 +5,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import {
   type BindGroupLayout,
+  type RhiDevice,
   RhiError,
   type RenderPipeline as RhiPipeline,
 } from '@forgeax/engine-rhi';
@@ -14,6 +15,7 @@ import {
   MAX_FRAME_CAPSULES,
 } from '../capsule-shadow/frame';
 import { WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
+import type { DeviceScope } from '../device/device-scope';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import type { GraphEnvironment } from '../environment/ibl';
 import { atmosphereTextures } from '../environment/luts';
@@ -40,6 +42,51 @@ export interface StandardDeferredShaderSources {
   readonly unclustered: string;
   readonly clusteredLut?: string;
   readonly unclusteredLut?: string;
+}
+
+interface DeferredLightingProgram {
+  readonly scope: DeviceScope;
+  readonly device: RhiDevice;
+  readonly viewLayout: BindGroupLayout;
+  readonly source: string;
+  readonly pipeline: RhiPipeline;
+  readonly material: BindGroupLayout;
+  readonly cluster: BindGroupLayout;
+  readonly probe: BindGroupLayout;
+}
+
+// Graph targets and bind groups have graph lifetime. Immutable layouts/PSOs
+// survive graph replacement only inside their owning live device generation.
+const lightingPrograms = new WeakMap<
+  DeviceScope,
+  WeakMap<RhiDevice, WeakMap<BindGroupLayout, Map<string, Map<string, DeferredLightingProgram>>>>
+>();
+
+function programsFor(scope: DeviceScope, device: RhiDevice, view: BindGroupLayout, source: string) {
+  let devices = lightingPrograms.get(scope);
+  if (devices === undefined) {
+    devices = new WeakMap();
+    lightingPrograms.set(scope, devices);
+    scope._adopt('pipeline', devices, () => {
+      lightingPrograms.delete(scope);
+    });
+  }
+  let views = devices.get(device);
+  if (views === undefined) {
+    views = new WeakMap();
+    devices.set(device, views);
+  }
+  let sources = views.get(view);
+  if (sources === undefined) {
+    sources = new Map();
+    views.set(view, sources);
+  }
+  let variants = sources.get(source);
+  if (variants === undefined) {
+    variants = new Map();
+    sources.set(source, variants);
+  }
+  return variants;
 }
 
 /** Geometry initializes emissive; this pass adds deferred lighting radiance. */
@@ -192,14 +239,15 @@ export function addStandardDeferredLighting(
   ];
   const states = new Map<
     boolean,
-    {
-      pipeline: RhiPipeline;
-      material: BindGroupLayout;
-      cluster: BindGroupLayout;
-      probe: BindGroupLayout;
-      groups: WeakMap<object, unknown>;
-    }
+    DeferredLightingProgram & { readonly groups: WeakMap<object, unknown> }
   >();
+  const fragmentEntry =
+    input.diffuse !== undefined && input.reflectionFallback === undefined
+      ? 'fs_standard_deferred_subsurface'
+      : colors.length === 1
+        ? 'fs_standard_deferred'
+        : 'fs_standard_deferred_reflections';
+  const targetKey = JSON.stringify(colors.map((target) => target.format));
   return graph.addRasterPass('lighting', {
     accesses: [
       ...sampled.map((resource) => ({ resource, usage: 'sampled-read' as const })),
@@ -238,139 +286,164 @@ export function addStandardDeferredLighting(
           expected: 'cooked Standard deferred lighting program',
           hint: 'rebuild the Engine shader manifest and reinitialize the Renderer',
         });
+      const scope = internal.runtime.deviceScope;
+      if (!scope.isAlive())
+        throw new RhiError({
+          code: 'rhi-not-available',
+          expected: 'a live device scope for deferred lighting',
+          hint: 'recreate the Renderer after device retirement',
+        });
+
+      const viewLayout = internal.pipelineState.viewBindGroupLayout;
       let state = states.get(usesLut);
-      if (state === undefined) {
-        const module = frame.runtime.shaderModuleFactory
-          ?.createShaderModule({
-            code: source,
-            label: `standard_deferred_${input.cluster !== null}_${usesLut}`,
-          })
-          .unwrap();
-        if (module === undefined)
-          throw new RhiError({
-            code: 'rhi-not-available',
-            expected: 'deferred shader module factory',
-            hint: 'initialize the Renderer backend',
-          });
-        const material = device
-          .createBindGroupLayout({
-            label: 'deferred-surface-environment',
-            entries: [
-              ...Array.from({ length: 6 }, (_, binding) => ({
-                binding,
-                visibility: 2,
-                texture: {
-                  sampleType:
-                    binding < 4
-                      ? ('uint' as const)
-                      : binding === 4
-                        ? ('depth' as const)
-                        : ('float' as const),
-                  viewDimension: '2d' as const,
+      if (
+        state === undefined ||
+        state.scope !== scope ||
+        state.device !== device ||
+        state.viewLayout !== viewLayout ||
+        state.source !== source
+      ) {
+        const programs = programsFor(scope, device, viewLayout, source);
+        const key = `${input.cluster !== null}:${usesLut}:${fragmentEntry}:${targetKey}`;
+        let program = programs.get(key);
+        if (program === undefined) {
+          const module = frame.runtime.shaderModuleFactory
+            ?.createShaderModule({
+              code: source,
+              label: `standard_deferred_${input.cluster !== null}_${usesLut}`,
+            })
+            .unwrap();
+          if (module === undefined)
+            throw new RhiError({
+              code: 'rhi-not-available',
+              expected: 'deferred shader module factory',
+              hint: 'initialize the Renderer backend',
+            });
+          const material = device
+            .createBindGroupLayout({
+              label: 'deferred-surface-environment',
+              entries: [
+                ...Array.from({ length: 6 }, (_, binding) => ({
+                  binding,
+                  visibility: 2,
+                  texture: {
+                    sampleType:
+                      binding < 4
+                        ? ('uint' as const)
+                        : binding === 4
+                          ? ('depth' as const)
+                          : ('float' as const),
+                    viewDimension: '2d' as const,
+                  },
+                })),
+                { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
+                {
+                  binding: 7,
+                  visibility: 2,
+                  buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
                 },
-              })),
-              { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
-              {
-                binding: 7,
-                visibility: 2,
-                buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
-              },
-              ...[8, 9, 10, 11].map((binding) => ({
-                binding,
-                visibility: 2,
-                texture: {
-                  sampleType: 'float' as const,
-                  viewDimension: binding === 10 ? ('2d' as const) : ('cube' as const),
+                ...[8, 9, 10, 11].map((binding) => ({
+                  binding,
+                  visibility: 2,
+                  texture: {
+                    sampleType: 'float' as const,
+                    viewDimension: binding === 10 ? ('2d' as const) : ('cube' as const),
+                  },
+                })),
+                { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 64 } },
+                { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
+                { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
+                {
+                  binding: 15,
+                  visibility: 2,
+                  texture: { sampleType: 'uint', viewDimension: '2d' },
                 },
-              })),
-              { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 64 } },
-              { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
-              { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
-              { binding: 15, visibility: 2, texture: { sampleType: 'uint', viewDimension: '2d' } },
-              ...(usesLut
-                ? [
-                    {
-                      binding: 16,
-                      visibility: 2,
-                      texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-                    },
-                  ]
-                : []),
-            ],
-          })
-          .unwrap();
-        const cluster = device
-          .createBindGroupLayout({
-            entries:
-              input.cluster === null
-                ? []
-                : [3, 4, 5, 6].map((binding) => ({
-                    binding,
-                    visibility: 2,
-                    buffer: {
-                      type: binding === 6 ? ('uniform' as const) : ('read-only-storage' as const),
-                    },
-                  })),
-          })
-          .unwrap();
-        const probeLayout = device
-          .createBindGroupLayout({
-            entries: [
-              {
-                binding: 0,
-                visibility: 2,
-                buffer: { type: 'read-only-storage', minBindingSize: 256 },
-              },
-            ],
-          })
-          .unwrap();
-        const layout = device
-          .createPipelineLayout({
-            bindGroupLayouts: [
-              internal.pipelineState.viewBindGroupLayout,
-              material,
-              cluster,
-              probeLayout,
-            ],
-          })
-          .unwrap();
-        const pipeline = device
-          .createRenderPipeline({
-            label: 'standard-deferred-lighting',
-            layout,
-            vertex: { module, entryPoint: 'vs_standard_deferred', buffers: [] },
-            fragment: {
-              module,
-              entryPoint:
-                input.diffuse !== undefined && input.reflectionFallback === undefined
-                  ? 'fs_standard_deferred_subsurface'
-                  : colors.length === 1
-                    ? 'fs_standard_deferred'
-                    : 'fs_standard_deferred_reflections',
-              targets: colors.map((target, index) => ({
-                format: target.format,
-                ...(index === 0
-                  ? {
-                      blend: {
-                        color: {
-                          operation: 'add' as const,
-                          srcFactor: 'one' as const,
-                          dstFactor: 'one' as const,
-                        },
-                        alpha: {
-                          operation: 'add' as const,
-                          srcFactor: 'zero' as const,
-                          dstFactor: 'one' as const,
-                        },
+                ...(usesLut
+                  ? [
+                      {
+                        binding: 16,
+                        visibility: 2,
+                        texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
                       },
-                    }
-                  : {}),
-              })),
-            },
-            primitive: { topology: 'triangle-list', cullMode: 'none' },
-          })
-          .unwrap();
-        state = { pipeline, material, cluster, probe: probeLayout, groups: new WeakMap() };
+                    ]
+                  : []),
+              ],
+            })
+            .unwrap();
+          const cluster = device
+            .createBindGroupLayout({
+              entries:
+                input.cluster === null
+                  ? []
+                  : [3, 4, 5, 6].map((binding) => ({
+                      binding,
+                      visibility: 2,
+                      buffer: {
+                        type: binding === 6 ? ('uniform' as const) : ('read-only-storage' as const),
+                      },
+                    })),
+            })
+            .unwrap();
+          const probeLayout = device
+            .createBindGroupLayout({
+              entries: [
+                {
+                  binding: 0,
+                  visibility: 2,
+                  buffer: { type: 'read-only-storage', minBindingSize: 256 },
+                },
+              ],
+            })
+            .unwrap();
+          const layout = device
+            .createPipelineLayout({
+              bindGroupLayouts: [viewLayout, material, cluster, probeLayout],
+            })
+            .unwrap();
+          const pipeline = device
+            .createRenderPipeline({
+              label: 'standard-deferred-lighting',
+              layout,
+              vertex: { module, entryPoint: 'vs_standard_deferred', buffers: [] },
+              fragment: {
+                module,
+                entryPoint: fragmentEntry,
+                targets: colors.map((target, index) => ({
+                  format: target.format,
+                  ...(index === 0
+                    ? {
+                        blend: {
+                          color: {
+                            operation: 'add' as const,
+                            srcFactor: 'one' as const,
+                            dstFactor: 'one' as const,
+                          },
+                          alpha: {
+                            operation: 'add' as const,
+                            srcFactor: 'zero' as const,
+                            dstFactor: 'one' as const,
+                          },
+                        },
+                      }
+                    : {}),
+                })),
+              },
+              primitive: { topology: 'triangle-list', cullMode: 'none' },
+            })
+            .unwrap();
+          program = {
+            scope,
+            device,
+            viewLayout,
+            source,
+            pipeline,
+            material,
+            cluster,
+            probe: probeLayout,
+          };
+          programs.set(key, program);
+        }
+        state = { ...program, groups: new WeakMap() };
         states.set(usesLut, state);
       }
       const current = state;

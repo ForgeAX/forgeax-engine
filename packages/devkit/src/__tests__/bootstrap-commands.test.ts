@@ -882,27 +882,111 @@ describe('doctorCommand', () => {
     });
   });
 
-  it('keeps local workspace and file declarations rejected without a binding', async () => {
-    const sdk = await sdkFixture(false);
-    await writeFile(
-      resolve(sdk.template, 'package.json'),
-      JSON.stringify({
-        name: 'game',
-        version: '0.0.0',
-        dependencies: { 'shared-runtime': 'workspace:*' },
-        optionalDependencies: { 'file-runtime': 'file:../file-runtime' },
-      }),
-    );
+  it('accepts a lock-proven third-party workspace without a local Engine binding', async () => {
+    const { sdk } = await localDoctorFixture();
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
 
-    const result = await doctorCommand({ root: sdk.template });
-
-    expect(result).toEqual({
-      ok: false,
-      error: expect.objectContaining({
-        code: 'project-local-dependency',
-        detail: { dependencies: ['file-runtime', 'shared-runtime'] },
-      }),
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: true,
+      value: { workspaceDependencies: ['shared-runtime'] },
     });
+  });
+
+  it.each([
+    'absolute',
+    'relative',
+  ])('accepts a matching third-party file directory without a local Engine binding (%s store)', async (store) => {
+    const { sdk } = await localDoctorFixture();
+    await addFileDirectoryDependency(sdk);
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
+    if (store === 'relative') {
+      const modulesPath = resolve(sdk.root, 'node_modules', '.modules.yaml');
+      const modules = await readFile(modulesPath, 'utf8');
+      await writeFile(
+        modulesPath,
+        modules.replace(/virtualStoreDir:.*\n/, 'virtualStoreDir: .pnpm\n'),
+      );
+    }
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: true,
+      value: { workspaceDependencies: ['file-runtime', 'shared-runtime'] },
+    });
+  });
+
+  it('rejects an uninstalled third-party workspace without a local Engine binding', async () => {
+    const { sdk } = await localDoctorFixture();
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
+    await rm(resolve(sdk.template, 'node_modules', 'shared-runtime'));
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: false,
+      error: { code: 'project-dependency-not-installed' },
+    });
+  });
+
+  it('rejects a stale copied file package without a local Engine binding', async () => {
+    const { sdk } = await localDoctorFixture();
+    const installed = await addFileDirectoryDependency(sdk);
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
+    await writeFile(resolve(installed, 'index.js'), 'export const stale = true;\n');
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: false,
+      error: { code: 'project-file-dependency-unverified' },
+    });
+  });
+
+  it.each([
+    'workspace:*',
+    'file:../../engine',
+  ])('still requires an explicit Engine binding for %s', async (specifier) => {
+    const { sdk } = await localDoctorFixture();
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
+    const path = resolve(sdk.template, 'package.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.dependencies['@forgeax/engine'] = specifier;
+    await writeFile(path, JSON.stringify(manifest));
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: false,
+      error: { code: 'project-local-dependency', detail: { dependencies: ['@forgeax/engine'] } },
+    });
+  });
+
+  it.each([
+    '1.0.0',
+    '1.0.1',
+  ])('verifies the registry Engine version while allowing a third-party workspace (%s)', async (version) => {
+    const { sdk } = await localDoctorFixture();
+    await addRegistryEngineDependency(sdk, version);
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject(
+      version === '1.0.0'
+        ? { ok: true }
+        : { ok: false, error: { code: 'project-engine-version-mismatch' } },
+    );
+  });
+
+  it('keeps a registry bundle npm alias under its published package instead of requiring a workspace importer', async () => {
+    const { sdk } = await localDoctorFixture();
+    await addRegistryEngineDependency(sdk, '1.0.0');
+    await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
+    const registryEngine = resolve(sdk.root, 'registry-engine');
+    const manifestPath = resolve(registryEngine, 'package.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.dependencies = { 'runtime-alias': 'npm:bundled-runtime@1.0.0' };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const bundled = resolve(registryEngine, 'node_modules', 'runtime-alias');
+    await mkdir(bundled, { recursive: true });
+    await writeFile(
+      resolve(bundled, 'package.json'),
+      JSON.stringify({ name: 'bundled-runtime', version: '1.0.0' }),
+    );
+    await writeFile(resolve(bundled, 'index.js'), 'export const bundled = true;\n');
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({ ok: true });
   });
 
   it('accepts a healthy local Engine binding with a lock-proven workspace package', async () => {

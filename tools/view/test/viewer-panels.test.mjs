@@ -4,12 +4,14 @@ import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
 import displayFrontendPlugin from '../packages/view-plugin-display/src/frontend.ts';
+import { setLocale as setDisplayLocale } from '../packages/view-plugin-display/src/i18n/index.ts';
 import viewportFrontendPlugin, { viewPlayPresentationPlugin } from '../packages/view-plugin-viewport/src/frontend.ts';
 import {
   createViewPageHost,
   createViewPageTypeRegistry,
   listOpenablePageTypes,
   readPageTypeTitleRevision,
+  resolvePageTypeLabel,
   resolvePageTypeTitle,
   subscribePageTypeTitles,
 } from '../packages/viewer/src/host/page-registry.ts';
@@ -218,6 +220,7 @@ describe('dynamic Viewer panel contributions', () => {
     assert.equal(resolvePageTypeTitle(pageType, (key) => key === 'view.pages.editor' ? 'Scene' : key), 'Scene');
     title = 'Main';
     assert.equal(resolvePageTypeTitle(pageType, () => 'Scene'), 'Main');
+    assert.equal(resolvePageTypeLabel(pageType, () => 'Scene'), 'Scene');
     let notified = 0;
     const unsubscribe = subscribePageTypeTitles(registry.getTypes(), () => {
       notified += 1;
@@ -426,6 +429,7 @@ describe('dynamic Viewer panel contributions', () => {
 
 describe('display Frontend Fiber surface ownership', () => {
   it('renders cached run output without an execution iframe or input forwarding', async () => {
+    setDisplayLocale('en');
     const { document, root } = fakeDocument();
     const registry = createViewPageTypeRegistry();
     const pageHost = createViewPageHost({ registry });
@@ -442,16 +446,16 @@ describe('display Frontend Fiber surface ownership', () => {
     assert.equal(surface.tagName, 'SECTION');
     assert.equal(registry.getTypes()[0].hideWhenInactive, true);
     assert.equal(walk(root).filter(element => element.tagName === 'IFRAME').length, 0);
-    status.update({ status: 'running', observation: {
+    status.update({ status: 'running', binding: { root: '/project', runId: 'run' }, observation: {
       status: { phase: 'ready', revision: 'r' },
       image: { capturedAt: '2000-01-01T00:00:00Z', revision: 'r', png: 'data:image/png;base64,AA==' },
       logs: [{ sequence: 12, level: 'info', text: 'ready' }], droppedLogs: 11,
     } });
-    assert.match(surface.children[1].textContent, /Stale image/);
-    assert.equal(surface.children[2].getAttribute('src'), 'data:image/png;base64,AA==');
-    assert.match(surface.children[3].textContent, /11 earlier log entries omitted/);
+    assert.match(surface.children[2].textContent, /Last captured image/);
+    assert.equal(surface.children[3].getAttribute('src'), 'data:image/png;base64,AA==');
+    assert.match(surface.children[5].children[1].textContent, /11 earlier log entries omitted/);
     status.update({ status: 'error', error: 'Disconnected' });
-    assert.equal(surface.children[2].hidden, true);
+    assert.equal(surface.children[3].hidden, true);
     await effects[0]();
   });
 

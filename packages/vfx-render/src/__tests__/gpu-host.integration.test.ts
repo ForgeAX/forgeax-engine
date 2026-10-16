@@ -124,6 +124,8 @@ describe('GPU VFX public host', () => {
     expect(registered).toHaveLength(1);
     expect(host.feature.requiredMaterialShaders).toEqual([
       ...Object.values(PARTICLE_SHADER_IDENTIFIERS),
+      'forgeax::vfx-render.particles.mesh-unlit',
+      'forgeax::vfx-render.particles.mesh-inputs-unlit',
       ...Object.values(PARTICLE_INPUT_SHADER_IDENTIFIERS),
     ]);
     expect(await host.detachWorld({ world })).toMatchObject({

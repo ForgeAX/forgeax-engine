@@ -24,6 +24,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 export type SaveEvidence = (name: string, bytes: Uint8Array) => void;
 
@@ -180,11 +181,11 @@ export async function renderJitteredFrames(renderer: Renderer, size: number) {
       for (let frame = 0; frame < 3; frame++) {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        if (frame === 2) unwrap(renderer.requestObservation(['linear-hdr']));
-        const receipt = unwrap(
-          renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+        const receipt = await drawReadyFrame(
+          renderer,
+          { leases: [lease], camera: { lease }, environment: { lease } },
+          frame === 2 ? ['linear-hdr'] : undefined,
         );
-        unwrap(await receipt.completed);
         if (frame < 2) continue;
         const observed = unwrap(
           await renderer.observe(receipt, { include: ['linear-hdr'] }),
@@ -376,10 +377,11 @@ export async function verifySpecularAaGBuffer(
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
-      unwrap(await receipt.completed);
+      await drawReadyFrame(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
     };
     for (let frame = 0; frame < 4; frame++) await draw();
     const capture = recorder.captureFrame();

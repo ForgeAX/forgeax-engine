@@ -10,6 +10,8 @@ import { createViewWorkspaceClient, workspaceBrowserEndpoint } from './client.ts
 import { createProjectSession } from './project-session.ts';
 import { logResourceOpen, observeWorkspaceOpenRequests } from './resource-open.ts';
 import { initViewTraceFromEnvironment, wrapViewWorkspaceClient } from './view-trace.ts';
+import { attachPresentationResponder } from './presentation.ts';
+import { workspaceError } from './contract.ts';
 
 export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> = {
   name: 'forgeax.view.service.workspace-client.frontend',
@@ -74,6 +76,13 @@ export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> 
     }
     if (lifetime.signal.aborted) return;
     ctx.provide('viewOperationClient', client);
+    if (transport) {
+      const dispose = attachPresentationResponder(transport, (operation, args, signal) => {
+        if (!pageHost?.callPresentation) throw workspaceError('view-presentation-unavailable', 'an installed native presentation owner', 'Mount the View Shell before querying its presentation.');
+        return pageHost.callPresentation(operation, args, signal);
+      });
+      ctx.effect(() => dispose);
+    }
     if (pageHost?.openResource && client) {
       logResourceOpen('open-request-observer-wired', {});
       const stop = observeWorkspaceOpenRequests(client, (request) => pageHost.openResource(request));

@@ -1,0 +1,21 @@
+{
+  "history": {
+    "title": "Operation history",
+    "latest": "Latest records",
+    "older": "Older records",
+    "noProject": "Open a project to read its Engine command history.",
+    "loading": "Loading operation history…",
+    "empty": "No recorded Engine commands for this project yet. Commands run without View are recorded too.",
+    "select": "Select an operation to inspect its result and captured images.",
+    "running": "Started · no completion receipt yet",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "arguments": "Arguments (bounded summary)",
+    "result": "Result (bounded summary)",
+    "failure": "Failure",
+    "artifacts": "Captured image",
+    "artifactRefs": "All artifact references",
+    "image": "Image produced by this Engine operation",
+    "loadingImage": "Loading saved image…"
+  }
+}

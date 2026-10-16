@@ -134,8 +134,10 @@ export function resolveFeatureWorkResources(
         if (pass.kind === 'compute') {
           include(pass.program);
           include(pass.bindings);
-          for (const dispatch of pass.dispatches)
+          for (const dispatch of pass.dispatches) {
+            if (dispatch.bindings !== undefined) include(dispatch.bindings);
             if (dispatch.kind === 'indirect') include(dispatch.resource);
+          }
         } else if (pass.kind === 'copy') {
           for (const copy of pass.copies) {
             include(copy.source);

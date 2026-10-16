@@ -119,7 +119,7 @@ async function drawFrames(count) {
   let failures = 0;
   for (let i = 0; i < count; i += 1) {
     world.update().unwrap();
-    const result = drawSmokeFrame(renderer, world);
+    const result = await drawSmokeFrame(renderer, world);
     if (!result.ok) failures += 1;
     await sharedDevice.queue.onSubmittedWorkDone();
   }

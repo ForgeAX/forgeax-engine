@@ -153,7 +153,7 @@ export async function readProjectFacts(
       name: forge.name,
       roots: forge.roots,
       ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
-      assetRoots: ['assets'],
+      assetRoots: forge.assetRoots,
       packageJson,
     },
   };

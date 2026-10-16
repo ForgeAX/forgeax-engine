@@ -14,7 +14,7 @@ export type WorkspaceInputOptions = {
   api: ViewWorkspaceClient; targetId: string; targetGeneration?: number; tabId?: string;
   bindings?: WorkspaceInputBindings;
   interactionIdFactory?: () => string; shouldCapture?: (event: Event) => boolean;
-  onError?: (error: unknown) => void; onFocusSelection?: () => unknown; onSpeedChange?: (speed: number) => void;
+  onError?: (error: unknown) => void; onFocusSelection?: () => unknown;
   window?: Window | typeof globalThis; document?: Document;
 };
 type RemoveInput = ((reason?: string) => void) & { handlesAbort?: boolean };
@@ -24,7 +24,7 @@ type PresentationEntry = { target: WorkspaceTarget; targetId: string; surface: H
 export type WorkspaceShellOptions = {
   document?: Document; window?: Window | typeof globalThis; mountId?: string; element?: HTMLElement;
   api?: ViewWorkspaceClient; presentation?: WorkspacePresentation; resourceBrowser?: boolean; presentationOnly?: boolean; inspectorPanel?: boolean;
-  onNavigationSpeed?: (speed: number) => void; inputControllerFactory?: (options: WorkspaceInputOptions) => ViewWorkspaceInputController;
+  inputControllerFactory?: (options: WorkspaceInputOptions) => ViewWorkspaceInputController;
 };
 import { createViewportInputApi } from './camera-client.ts';
 import { reportWorkspaceCommandError, workspaceDiagnosticRecord } from '@forgeax/view-workspace-core/command-error';
@@ -192,7 +192,6 @@ export class ViewWorkspaceInputController {
   declare shouldCapture: (event: Event) => boolean;
   declare onError: (error: unknown) => void;
   declare onFocusSelection: () => unknown;
-  declare onSpeedChange: (speed: number) => void;
   declare speed: number;
   declare held: Set<string>;
   declare shiftHeld: boolean;
@@ -226,7 +225,6 @@ export class ViewWorkspaceInputController {
     shouldCapture = () => true,
     onError = () => {},
     onFocusSelection = () => {},
-    onSpeedChange = () => {},
     window = globalThis,
     document = globalThis.document,
   }: Partial<WorkspaceInputOptions> = {}) {
@@ -243,7 +241,6 @@ export class ViewWorkspaceInputController {
     this.shouldCapture = shouldCapture;
     this.onError = onError;
     this.onFocusSelection = onFocusSelection;
-    this.onSpeedChange = onSpeedChange;
     this.speed = 4;
     this.held = new Set();
     this.shiftHeld = false;
@@ -500,7 +497,6 @@ export class ViewWorkspaceInputController {
       motion = movement();
     } else if (input.type === 'wheel' && input.mode === 'speed') {
       this.speed = Math.max(0.05, Math.min(1024, this.speed * Math.exp(-input.deltaY * 0.002)));
-      this.onSpeedChange(this.speed);
       motion = movement();
     } else if (input.type === 'wheel' || input.mode === 'dolly') {
       motion = { type: 'dolly', amount: Math.max(-4, Math.min(4,
@@ -655,7 +651,6 @@ export class ViewWorkspaceInputController {
     if (!element || this.bound) return () => {};
     this.element = element;
     this.bound = true;
-    this.onSpeedChange(this.speed);
     const previousTabIndex = element.getAttribute?.('tabindex');
     if (previousTabIndex == null) element.setAttribute?.('tabindex', '0');
     traceInputAttach(element, { targetId: this.targetId, tabId: this.tabId });
@@ -896,7 +891,6 @@ export class ViewWorkspaceShell {
   declare presentationOnly: boolean;
   declare inspectorPanel: boolean;
   declare inputControllerFactory: (options: WorkspaceInputOptions) => ViewWorkspaceInputController;
-  declare onNavigationSpeed: (speed: number) => void;
   declare state: ShellState;
   declare element: HTMLElement | null;
   declare rootElement: HTMLElement | null;
@@ -943,7 +937,6 @@ export class ViewWorkspaceShell {
     resourceBrowser = false,
     presentationOnly = false,
     inspectorPanel = true,
-    onNavigationSpeed = () => {},
     inputControllerFactory = (options) => new ViewWorkspaceInputController(options),
   }: WorkspaceShellOptions = {}) {
     this.document = document;
@@ -955,7 +948,6 @@ export class ViewWorkspaceShell {
     this.presentationOnly = presentationOnly;
     this.inspectorPanel = inspectorPanel !== false;
     this.inputControllerFactory = inputControllerFactory;
-    this.onNavigationSpeed = onNavigationSpeed;
     this.state = {
       selectedTabId: VIEW_WORKSPACE_TAB_ID,
       tabs: [],
@@ -1884,7 +1876,6 @@ export class ViewWorkspaceShell {
         window: this.window,
         document: this.document,
         onError: (error) => this.fail(error),
-        onSpeedChange: this.onNavigationSpeed,
         onFocusSelection: () => {
           const selected = this.state.sceneSelection;
           if (selected?.primary?.entityId) return this.api?.call('entity.focus', {

@@ -203,6 +203,9 @@ function normalizeDescriptor(
       descriptor = Object.freeze({
         kind,
         shader: pipeline.shader,
+        ...(pipeline.preparePipelines === undefined
+          ? {}
+          : { preparePipelines: pipeline.preparePipelines }),
         vertexLayout: pipeline.vertexLayout,
         ...(pipeline.particleInputLanes === undefined
           ? {}

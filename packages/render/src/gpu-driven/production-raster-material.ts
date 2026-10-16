@@ -231,6 +231,76 @@ function invalidSurfaceDynamicRange(
 
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
+export interface MaterialAbiRasterPipelineInput {
+  readonly artifact: MaterialShaderArtifact;
+  readonly deformation: 'rigid' | 'skin';
+  readonly format: TextureFormat;
+  readonly sampleCount: 1 | 4;
+  readonly layoutProjection: MeshGpuHandles['layoutProjection'];
+  readonly shaderUvSetCount: number;
+  readonly topology: GpuDrivenBatch['key']['topology'];
+  readonly stripIndexFormat: 'uint16' | 'uint32' | undefined;
+  readonly renderState: MaterialRenderState | undefined;
+  readonly additionalColorFormats: readonly TextureFormat[];
+  readonly standardTextureMask?: number | undefined;
+  readonly forwardColorPass: boolean;
+}
+
+/** One request specification for real raster and hidden preparation. */
+export function requestMaterialAbiRasterPipeline(
+  factory: MaterialPipelineFactory,
+  input: MaterialAbiRasterPipelineInput,
+) {
+  const artifact = input.artifact,
+    receipt = artifact.receipt;
+  const sceneEntry =
+    artifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : receipt?.sceneIndexEntry;
+  if (sceneEntry === undefined) return null;
+  const clustered =
+    artifact.program.group2 === 'cluster' || artifact.program.group2 === 'skin-cluster';
+  const layoutKind = clustered
+    ? input.deformation === 'skin'
+      ? 'gpu-driven-cluster-skin'
+      : 'gpu-driven-cluster-pbr'
+    : input.deformation === 'skin'
+      ? 'gpu-driven-skin'
+      : 'gpu-driven-pbr';
+  return factory(
+    artifact.specializationKey ?? artifact.material,
+    false,
+    gpuDrivenReflectionFallbackRenderState({
+      renderState: input.renderState,
+      colorFormat: input.format,
+      additionalColorFormats: input.additionalColorFormats,
+      forwardColorPass: input.forwardColorPass,
+      reflectionFallbackOutputAvailable: artifact.reflectionFallbackOutputAvailable === true,
+    }),
+    input.topology,
+    input.stripIndexFormat,
+    artifact.variantSet,
+    'forward',
+    undefined,
+    input.sampleCount,
+    input.format,
+    isCanonicalStandardPbrMaterialShader(artifact.material)
+      ? input.shaderUvSetCount
+      : (artifact.uvSetCount ?? input.shaderUvSetCount),
+    'depth32float-stencil8',
+    undefined,
+    input.layoutProjection,
+    'immediate',
+    layoutKind,
+    sceneEntry,
+    input.additionalColorFormats,
+    artifact.vertexEntry,
+    artifact.fragmentEntry,
+    undefined,
+    input.standardTextureMask === undefined
+      ? undefined
+      : { [STANDARD_TEXTURE_MASK_OVERRIDE]: input.standardTextureMask },
+  );
+}
+
 export class MaterialAbiRasterAdapter {
   private readonly pipelines = new Map<string, RenderPipeline>();
   private sceneMeshBinding:
@@ -1457,6 +1527,7 @@ export class MaterialAbiRasterAdapter {
     additionalColorFormats: readonly TextureFormat[] = [],
     standardTextureMask?: number,
     forwardColorPass = false,
+    preparationFactory?: MaterialPipelineFactory,
   ): Result<RenderPipeline, RhiError> {
     const pipelineRenderState = gpuDrivenReflectionFallbackRenderState({
       renderState,
@@ -1528,40 +1599,22 @@ export class MaterialAbiRasterAdapter {
       const group2Contract = selectedArtifact.program.group2;
       const expectsClusteredGroup =
         group2Contract === 'cluster' || group2Contract === 'skin-cluster';
-      const layoutKind = expectsClusteredGroup
-        ? this.deformation === 'skin'
-          ? 'gpu-driven-cluster-skin'
-          : 'gpu-driven-cluster-pbr'
-        : this.deformation === 'skin'
-          ? 'gpu-driven-skin'
-          : 'gpu-driven-pbr';
-      const pipelineEntry = this.pipelineFactory(
-        selectedArtifact.specializationKey ?? selectedArtifact.material,
-        false,
-        pipelineRenderState,
-        topology,
-        stripIndexFormat,
-        selectedArtifact.variantSet,
-        'forward',
-        undefined,
-        sampleCount,
-        format,
-        pipelineUvSetCount,
-        'depth32float-stencil8',
-        undefined,
-        layoutProjection,
-        // GPU-driven receipts are already producer-validated. Use the
-        // synchronous shader-module adapter for this submission seam so a
-        // newly loaded authored material cannot lose its first draw to the
-        // ordinary async pre-bake warm-up window.
-        'immediate',
-        layoutKind,
-        sceneEntry,
-        additionalColorFormats,
-        selectedArtifact.vertexEntry,
-        selectedArtifact.fragmentEntry,
-        undefined,
-        constants,
+      const pipelineEntry = requestMaterialAbiRasterPipeline(
+        preparationFactory ?? this.pipelineFactory,
+        {
+          artifact: selectedArtifact,
+          deformation: this.deformation,
+          format,
+          sampleCount,
+          layoutProjection,
+          shaderUvSetCount,
+          topology,
+          stripIndexFormat,
+          renderState,
+          additionalColorFormats,
+          standardTextureMask,
+          forwardColorPass,
+        },
       );
       if (pipelineEntry === null) {
         return err(

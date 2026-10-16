@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { completeReadyFrame, drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -1048,17 +1049,21 @@ export async function captureCondition(
     selected.world.update().unwrap();
     // Measure CPU consumption, not elapsed wall time: runner scheduling and
     // async observation latency must not become a false CPU regression.
-    const cpuStart = process.cpuUsage();
-    const receipt = fixture.renderer.draw({ leases: [selected.lease], camera: { lease: selected.lease }, environment: { lease: selected.lease } });
-    if (!receipt.ok) throw new Error(`renderer draw failed: ${receipt.error.code}: ${receipt.error.hint ?? receipt.error.expected ?? ''} ${JSON.stringify(receipt.error.detail ?? {})} events=${JSON.stringify(fixture.rendererErrors.slice(-3))}`);
-    assertNoRendererErrors(fixture, `draw:${condition}`);
-    const cpuElapsed = process.cpuUsage(cpuStart);
+    let cpuElapsed;
+    const receipt = await completeReadyFrame(() => {
+      const cpuStart = process.cpuUsage();
+      const drawn = fixture.renderer.draw({ leases: [selected.lease], camera: { lease: selected.lease }, environment: { lease: selected.lease } });
+      cpuElapsed = process.cpuUsage(cpuStart);
+      if (!drawn.ok) throw new Error(`renderer draw failed: ${drawn.error.code}: ${drawn.error.hint ?? drawn.error.expected ?? ''} ${JSON.stringify(drawn.error.detail ?? {})} events=${JSON.stringify(fixture.rendererErrors.slice(-3))}`);
+      assertNoRendererErrors(fixture, `draw:${condition}`);
+      return drawn.value;
+    });
     const cpuFrameUs = cpuElapsed.user + cpuElapsed.system;
     if (retainTiming) {
       // Keep the original process-wide draw span. Save the raw counters before
       // observation so a failed read still leaves the completed CPU sample.
       facts.cpuSamples.push({
-        condition, order, frame, frameId: receipt.value.frameId,
+        condition, order, frame, frameId: receipt.frameId,
         userUs: cpuElapsed.user, systemUs: cpuElapsed.system,
         captureGpuTimings: retainTiming, observeTimings: retainTiming,
         profileCapture: profileSession !== undefined,
@@ -1066,7 +1071,7 @@ export async function captureCondition(
     } else {
       facts.cpuFrameUs.push(cpuFrameUs);
     }
-    const observed = await fixture.renderer.observe(receipt.value, {
+    const observed = await fixture.renderer.observe(receipt, {
       include: retainTiming ? ['timings'] : [],
     });
     if (!observed.ok) throw new Error(`renderer observation failed: ${observed.error.code}`);
@@ -1100,7 +1105,7 @@ export async function captureCondition(
       if (timing?.status !== 'ready' || !Number.isFinite(timing.frameMs)) {
         throw new Error(`renderer GPU frame timestamp timing is unavailable: ${JSON.stringify(timing ?? {})}`);
       }
-      if (gpuCondition) samples.push({ condition, order, frameId: receipt.value.frameId, gpuFrameUs: timing.frameMs * 1000, identity: fixture.identity });
+      if (gpuCondition) samples.push({ condition, order, frameId: receipt.frameId, gpuFrameUs: timing.frameMs * 1000, identity: fixture.identity });
     }
     if ((frame + 1) % 60 === 0 || frame + 1 === total) {
       logProducerPhase(`condition:${order}:${condition}`, 'progress', {
@@ -1336,16 +1341,14 @@ function frameRequestFor(fixture, worlds, cameraWorldName = worlds[0]) {
 
 async function drawAndObserve(fixture, worlds, { cameraWorld = worlds[0] } = {}) {
   for (const worldName of worlds) fixture[worldName].world.update().unwrap();
-  const drawn = fixture.renderer.draw(frameRequestFor(fixture, worlds, cameraWorld));
-  if (!drawn.ok) throw new Error(`falsification draw failed: ${drawn.error.code}`);
+  const drawn = await drawReadyFrame(fixture.renderer, frameRequestFor(fixture, worlds, cameraWorld));
   assertNoRendererErrors(fixture, `falsification draw:${worlds.join(',')}`);
-  await drawn.value.completed;
-  const observed = await fixture.renderer.observe(drawn.value, { include: [] });
+  const observed = await fixture.renderer.observe(drawn, { include: [] });
   if (!observed.ok) throw new Error(`falsification observe failed: ${observed.error.code}`);
   assertNoRendererErrors(fixture, `falsification observe:${worlds.join(',')}`);
   const inspection = inspectLodOcclusion(fixture).lodOcclusion;
   if (inspection === undefined) throw new Error('falsification did not publish LOD inspection');
-  return { inspection, frameId: drawn.value.frameId };
+  return { inspection, frameId: drawn.frameId };
 }
 
 /**

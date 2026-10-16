@@ -23,6 +23,22 @@ and [Render transport](../../../packages/app/src/execution/source-render-worker.
 owners when resolving these identities. Build a short event table for each
 selected interval, including the next picture's work when it overlaps completion.
 
+## Mark cold gameplay boundaries
+
+Use existing matched completion receipts and passive gameplay observations;
+keep the declared window and closing receipt when summarizing a boundary.
+
+| Boundary | Preserve in the result |
+| --- | --- |
+| First ready, shot or real wall hit | Completed-gap maximum and coverage around the event; distinguish the immutable first-cartridge wall witness from later HUD counters |
+| First grenade/skill smoke appearance | A prior zero-zone observation and first positive count in the same World/device window; already-active, absent or truncated smoke remains not observed |
+| Visual or causal claim | HUD publication can lag creation, and a zone may be outside the camera. Owner counters and intersecting gaps prove neither visible pixels nor exclusive CPU/GPU cost |
+
+[Existing Frontline collectors](toolbox.md#reuse-live-producers) report cold
+warnings without firing a rehearsal shot or adding a loading/LIVE inspection.
+Use an exact same-capture task/native join for attribution; retain missing
+coverage instead of filling it from a later ordinary or instrumented run.
+
 ## Explain the dominant duration
 
 | Observed pattern | Next discriminating measurement |
@@ -43,6 +59,14 @@ Cross-thread overlap is not a serial frame budget. Sum only compatible scopes
 with a stated purpose; keep inclusive parent/child timers separate. CPU task
 duration, completion-notification latency and GPU pass duration are distinct
 observations. Report the unexplained interval when evidence cannot assign it.
+
+A public zero-fallback counter excludes only observed fallback activity in its
+covered population. It neither measures successful-query duration nor attributes
+a preceding unprofiled stall. A later CPU capture that misses the original long
+interval cannot explain that interval through its new hotspot ranking. Preserve
+the original failure and obtain only the missing owner identity or bounded
+timing evidence; the [full-scene case](cases/full-scene-resources-20261016.md#cold-boundaries-and-unexplained-time)
+keeps this distinction for an un-reproduced 1.25-second gap.
 
 ## Use controls to choose the next owner
 

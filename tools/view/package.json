@@ -31,9 +31,11 @@
     "playwright": "1.63.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "@forgeax/view-plugin-history": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/view-plugin-asset-references": "workspace:*",
     "@forgeax/view-components": "workspace:*",
     "@forgeax/view-plugin-content-browser": "workspace:*",
     "@forgeax/view-plugin-display": "workspace:*",
@@ -57,6 +59,11 @@
     "node": ">=22"
   },
   "exports": {
+    "./workspace/asset-references": "./dist/modules/workspace/asset-references.mjs",
+    "./plugins/asset-references/identity": "./dist/modules/plugins/asset-references/identity.mjs",
+    "./plugins/asset-references/frontend": "./dist/modules/plugins/asset-references/frontend.mjs",
+    "./plugins/asset-references/session": "./dist/modules/plugins/asset-references/session.mjs",
+    "./plugins/asset-references/runtime": "./dist/modules/plugins/asset-references/runtime.mjs",
     "./workspace/presentation": "./dist/modules/workspace/presentation.mjs",
     "./pages/scene": "./dist/modules/pages/scene.mjs",
     "./shell/frontend": "./dist/modules/shell/frontend.mjs",
@@ -157,7 +164,9 @@
     "./build": "./scripts/build-tool.mjs",
     "./viewer/application": "./dist/modules/viewer/application.mjs",
     "./viewer/panels": "./dist/modules/viewer/panels.mjs",
-    "./plugins/viewport/input": "./dist/modules/plugins/viewport/input.mjs"
+    "./plugins/viewport/input": "./dist/modules/plugins/viewport/input.mjs",
+    "./workspace/document-navigation": "./dist/modules/workspace/document-navigation.mjs",
+    "./plugins/history/frontend": "./dist/modules/plugins/history/frontend.mjs"
   },
   "scripts": {
     "build": "node scripts/build-tool.mjs",

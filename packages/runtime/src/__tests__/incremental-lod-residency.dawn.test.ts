@@ -9,6 +9,7 @@ import {
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createBarrelRendererFixture, readBarrelPixels } from './barrel-distortion-gpu-fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -93,10 +94,12 @@ it('submits resident LOD1, then admits late LOD2 without using retired mesh buff
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     device.pushErrorScope('validation');
-    const result = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const receipt = await drawReadyFrame(renderer, {
+      leases: [lease],
+      camera: { lease },
+      environment: { lease },
+    });
     const validation = device.popErrorScope();
-    const receipt = renderValue(result);
-    renderValue(await receipt.completed);
     expect(await validation, `native validation at frame ${receipt.frameId}`).toBeNull();
   };
   const expectColor = async (channel: number) => {

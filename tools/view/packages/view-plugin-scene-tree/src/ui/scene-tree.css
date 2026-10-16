@@ -114,6 +114,13 @@
   letter-spacing: var(--fx-type-caption-letter-spacing);
   text-transform: uppercase;
 }
+.hier-action-error {
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  color: var(--fx-color-status-error-fg);
+  font-size: var(--fx-type-caption-font-size);
+  overflow-wrap: anywhere;
+}
 .ch-caret { width: var(--hier-w-caret); flex: 0 0 auto; }
 .ch-name { flex: 1; min-width: var(--fx-ref-space-16); }
 .ch-type { width: var(--hier-w-type); flex: 0 0 auto; }
@@ -241,11 +248,14 @@
   box-shadow: var(--fx-shadow-floating);
 }
 .hier-context-submenu {
-  position: absolute;
-  top: calc(-1 * var(--fx-ref-space-6));
-  left: calc(100% - var(--fx-ref-space-2));
-  min-width: var(--fx-component-panel-config-min-width);
+  width: 320px;
+  min-width: 0;
+  max-width: calc(100vw - var(--fx-ref-space-16));
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+.hier-context-menu { width: 256px; min-width: 0; max-width: calc(100vw - var(--fx-ref-space-16)); }
+.hier-context-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hier-context-title {
   display: flex;
   align-items: center;
@@ -282,7 +292,7 @@
   flex: 0 0 var(--fx-component-control-icon-size);
   color: var(--fx-color-text-muted);
 }
-.hier-context-item-wrap > button > span:nth-child(2) { flex: 1; }
+.hier-context-item-wrap > button > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hier-context-item-wrap kbd {
   color: var(--fx-color-text-muted);
   font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) / var(--fx-type-caption-line-height) var(--fx-type-code-font-family);

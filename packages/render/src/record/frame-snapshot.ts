@@ -451,6 +451,16 @@ export interface FrameGraphTargets {
 
 /** A compiled graph together with the topology key and target lookup installed with it. */
 export interface InstalledFrameGraph {
+  /** Pure demand from the same graph's retained shadow target/raster owner. */
+  readonly requiresShadowPipelinePreparation?: (
+    frame: import('../render-pipeline').RenderPipelineFrame,
+    identity: import('../gpu-driven/shadow-views').ShadowViewIdentity,
+  ) => boolean;
+  /** Private graph-owned real GPU-driven PSO completion gate. */
+  readonly prepareGpuDrivenPipelines?: (
+    entries?: readonly ValidatedRenderable[],
+    artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
+  ) => boolean;
   /** Stock pipeline directional views actually projected during this graph build.
    * Absent for custom/legacy graphs: their preparation retains the full capacity. */
   readonly directionalShadowViewCount?: number;
@@ -480,6 +490,8 @@ export interface InstalledFrameGraph {
  * lifetime).
  */
 export interface RenderFrameState {
+  /** A required non-drawing pipeline request has not completed this record. */
+  pipelinePreparationPending?: boolean;
   frameNumber: number;
   materialUboCounters?: {
     -readonly [K in keyof import('../inspection-types').MaterialUniformCacheInspection]: import('../inspection-types').MaterialUniformCacheInspection[K];

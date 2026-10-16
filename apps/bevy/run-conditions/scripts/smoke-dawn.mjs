@@ -136,7 +136,7 @@ async function capture() {
 
 for (let frame = 0; frame < FRAMES; frame++) {
   world.update(3 / FRAMES).unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) console.error(`[smoke] draw frame ${frame} error: ${draw.error.code}`);
   if (frame === Math.floor(FRAMES / 5)) {
     beforeUnlock = readRunConditionState(world, state);

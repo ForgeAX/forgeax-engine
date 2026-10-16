@@ -85,6 +85,8 @@ export type RenderFeatureResourceDeclaration =
   | {
       readonly kind: 'compute-program';
       readonly name: string;
+      /** Request native compilation completion before this program becomes ready. */
+      readonly preparePipelines?: boolean;
       readonly program: RenderFeatureGpuProgramDescriptor;
     }
   | {
@@ -180,12 +182,15 @@ export type RenderFeatureDispatch =
   | {
       readonly kind: 'direct';
       readonly entryPoint: string;
+      /** Optional bindings for this dispatch; the pass program remains shared. */
+      readonly bindings?: string;
       /** Frame data. A zero axis retains graph resources but records no dispatch. */
       readonly workgroups: readonly [number, number?, number?];
     }
   | {
       readonly kind: 'indirect';
       readonly entryPoint: string;
+      readonly bindings?: string;
       readonly resource: string;
       readonly offset: number;
     };
@@ -231,6 +236,8 @@ export type RenderFeaturePassDeclaration = (
       readonly kind: 'copy';
       readonly name: string;
       readonly copies: readonly {
+        /** Frame data: retain copy resources/order while skipping this command. */
+        readonly enabled?: boolean | undefined;
         readonly source: string;
         readonly destination: string;
         readonly size: number;
@@ -448,6 +455,19 @@ const signatureEvidenceByPlan = new WeakMap<
 // Only detached renderer-owned program data can omit repeated subtree reads.
 // Frozen borrowed containers (including getters and byte aliases) stay live.
 const ownedProgramSignatureNodes = new WeakMap<object, RenderFeaturePlanSignatureNode>();
+// Buffer topology sorts usage and adds an omitted upload field. Keep this
+// normalized evidence separate from the same object's ordinary JSON subtree.
+const ownedBufferSignatureNodes = new WeakMap<object, RenderFeaturePlanSignatureNode>();
+
+function isOwnedStaticBuffer(
+  resource: RenderFeatureResourceDeclaration,
+): resource is Extract<RenderFeatureResourceDeclaration, { readonly kind: 'buffer' }> {
+  return (
+    isOwnedRenderFeatureProgramData(resource) &&
+    resource.kind === 'buffer' &&
+    resource.data === undefined
+  );
+}
 
 // The detached evidence is deliberately checked again by graph admission.
 // Host and graph therefore share one exact structural proof without trusting
@@ -563,7 +583,7 @@ function stablePrimitiveToken(
 function cloneSignatureNode(
   value: unknown,
   previous?: RenderFeaturePlanSignatureNode,
-  frameData: false | 'passes' | 'dispatches' | 'draws' = false,
+  frameData: false | 'passes' | 'dispatches' | 'draws' | 'copies' = false,
   ownedStringTokens?: OwnedStringTokens,
 ): RenderFeaturePlanSignatureNode {
   if (frameData === false && isOwnedRenderFeatureProgramData(value)) {
@@ -580,7 +600,7 @@ function cloneSignatureNode(
 function cloneSignatureObject(
   value: unknown,
   previous?: RenderFeaturePlanSignatureNode,
-  frameData: false | 'passes' | 'dispatches' | 'draws' = false,
+  frameData: false | 'passes' | 'dispatches' | 'draws' | 'copies' = false,
   ownedStringTokens?: OwnedStringTokens,
 ): RenderFeaturePlanSignatureNode {
   if (ArrayBuffer.isView(value)) {
@@ -625,7 +645,7 @@ function cloneSignatureObject(
   if (value !== null && typeof value === 'object') {
     const source = value as Readonly<Record<string, unknown>>;
     const payloadKey =
-      frameData === 'passes' || frameData === 'draws'
+      frameData === 'passes' || frameData === 'draws' || frameData === 'copies'
         ? 'enabled'
         : frameData === 'dispatches' && source.kind === 'direct'
           ? 'workgroups'
@@ -683,11 +703,13 @@ function cloneSignatureObject(
       const next = cloneSignatureNode(
         child,
         prior,
-        passKind === 'compute' && key === 'dispatches'
-          ? 'dispatches'
-          : (passKind === 'raster' || passKind === 'shadow-caster') && key === 'draws'
-            ? 'draws'
-            : false,
+        passKind === 'copy' && key === 'copies'
+          ? 'copies'
+          : passKind === 'compute' && key === 'dispatches'
+            ? 'dispatches'
+            : (passKind === 'raster' || passKind === 'shadow-caster') && key === 'draws'
+              ? 'draws'
+              : false,
         ownedStringTokens,
       );
       if (values === undefined && next !== prior) {
@@ -725,6 +747,17 @@ function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unk
 }
 
 function signaturePassValue(pass: RenderFeaturePassDeclaration): unknown {
+  if (pass.kind === 'copy') {
+    const { enabled: _enabled, copies, ...topology } = pass;
+    return {
+      ...topology,
+      copies: copies.map((copy) => {
+        if (!Object.hasOwn(copy, 'enabled')) return copy;
+        const { enabled: _enabled, ...command } = copy;
+        return command;
+      }),
+    };
+  }
   if (pass.kind === 'compute') {
     const { enabled: _enabled, dispatches, ...topology } = pass;
     return {
@@ -747,9 +780,7 @@ function signaturePassValue(pass: RenderFeaturePassDeclaration): unknown {
       }),
     };
   }
-  if (!Object.hasOwn(pass, 'enabled')) return pass;
-  const { enabled: _enabled, ...topology } = pass;
-  return topology;
+  return pass;
 }
 
 /** Generic entry retains the exact original source-observation/serializer path. */
@@ -795,7 +826,12 @@ function cloneSignatureSnapshot(
       // materialising its normalized spread object on the common upload-only
       // update path.  Changed declarations still share equal descendants.
       if (reuseStringTokens) ownedStringTokens ??= ownedStringTokenReuse(metrics);
-      next = cloneSignatureNode(signatureResourceValue(resource), prior, false, ownedStringTokens);
+      const ownedStatic = isOwnedStaticBuffer(resource);
+      const cached = ownedStatic ? ownedBufferSignatureNodes.get(resource) : undefined;
+      next =
+        cached ??
+        cloneSignatureNode(signatureResourceValue(resource), prior, false, ownedStringTokens);
+      if (ownedStatic && cached === undefined) ownedBufferSignatureNodes.set(resource, next);
     }
     if (resources === undefined && next !== prior) {
       resources = new Array(initialLength);
@@ -832,7 +868,7 @@ function cloneSignatureSnapshot(
 function equalSignatureNode(
   value: unknown,
   snapshot: RenderFeaturePlanSignatureNode,
-  frameData: false | 'dispatches' | 'draws' = false,
+  frameData: false | 'dispatches' | 'draws' | 'copies' = false,
 ): boolean {
   if (
     frameData === false &&
@@ -874,7 +910,7 @@ function equalSignatureNode(
   }
   const source = value as Readonly<Record<string, unknown>>;
   const payloadKey =
-    frameData === 'draws'
+    frameData === 'draws' || frameData === 'copies'
       ? 'enabled'
       : frameData === 'dispatches' && source.kind === 'direct'
         ? 'workgroups'
@@ -932,6 +968,11 @@ function equalSortedUsage(usage: unknown, snapshot: RenderFeaturePlanSignatureNo
 
 function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatureNode): boolean {
   if (
+    isOwnedRenderFeatureProgramData(resource) &&
+    ownedBufferSignatureNodes.get(resource as object) === snapshot
+  )
+    return true;
+  if (
     resource === null ||
     typeof resource !== 'object' ||
     Array.isArray(resource) ||
@@ -982,11 +1023,13 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
         !equalSignatureNode(
           child,
           snapshot.values[snapshotIndex] as RenderFeaturePlanSignatureNode,
-          kind === 'compute' && key === 'dispatches'
-            ? 'dispatches'
-            : (kind === 'raster' || kind === 'shadow-caster') && key === 'draws'
-              ? 'draws'
-              : false,
+          kind === 'copy' && key === 'copies'
+            ? 'copies'
+            : kind === 'compute' && key === 'dispatches'
+              ? 'dispatches'
+              : (kind === 'raster' || kind === 'shadow-caster') && key === 'draws'
+                ? 'draws'
+                : false,
         )
       ) {
         return false;
@@ -1191,30 +1234,35 @@ export function deriveRenderFeaturePassAccess(
   }
   if (pass.kind === 'compute') {
     const program = resources.get(pass.program);
-    const bindings = resources.get(pass.bindings);
+    const bindingNames = new Set([pass.bindings]);
+    for (const dispatch of pass.dispatches)
+      if (dispatch.bindings !== undefined) bindingNames.add(dispatch.bindings);
     const layoutEntries =
       program?.kind === 'compute-program' ? (program.program.bindings?.[0]?.entries ?? []) : [];
-    if (bindings?.kind === 'compute-bindings') {
-      for (const entry of bindings.entries) {
-        const usage = bindingAccess(
-          layoutEntries.find((candidate) => candidate.binding === entry.binding)?.buffer?.type,
-        );
-        if (usage !== undefined) accesses.push({ resource: entry.resource, usage });
-        const declaration = resources.get(entry.resource);
-        if (
-          declaration?.kind === 'prepared-gpu-resource' &&
-          declaration.logicalTarget !== undefined
-        ) {
-          const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
-          const usage =
-            layout?.storageTexture?.access === 'write-only'
-              ? 'storage-write'
-              : layout?.storageTexture?.access === 'read-only'
-                ? 'storage-read'
-                : layout?.storageTexture?.access === 'read-write'
-                  ? 'sampled-storage-read-write'
-                  : 'sampled-read';
-          accesses.push({ resource: declaration.logicalTarget, usage });
+    for (const name of bindingNames) {
+      const bindings = resources.get(name);
+      if (bindings?.kind === 'compute-bindings') {
+        for (const entry of bindings.entries) {
+          const usage = bindingAccess(
+            layoutEntries.find((candidate) => candidate.binding === entry.binding)?.buffer?.type,
+          );
+          if (usage !== undefined) accesses.push({ resource: entry.resource, usage });
+          const declaration = resources.get(entry.resource);
+          if (
+            declaration?.kind === 'prepared-gpu-resource' &&
+            declaration.logicalTarget !== undefined
+          ) {
+            const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
+            const usage =
+              layout?.storageTexture?.access === 'write-only'
+                ? 'storage-write'
+                : layout?.storageTexture?.access === 'read-only'
+                  ? 'storage-read'
+                  : layout?.storageTexture?.access === 'read-write'
+                    ? 'sampled-storage-read-write'
+                    : 'sampled-read';
+            accesses.push({ resource: declaration.logicalTarget, usage });
+          }
         }
       }
     }
@@ -1326,6 +1374,7 @@ export function freezeRenderFeaturePlan(
         if (
           source === undefined ||
           destination === undefined ||
+          (copy.enabled !== undefined && typeof copy.enabled !== 'boolean') ||
           copy.source === copy.destination ||
           !source.usage?.includes('copy-src') ||
           !Number.isSafeInteger(copy.size) ||
@@ -1356,28 +1405,48 @@ export function freezeRenderFeaturePlan(
         return err(stageFailure(identity));
       }
       const entryPoints = new Set(program.program.entryPoints);
-      for (const entry of bindings.entries) {
-        const layout = program.program.bindings?.[0]?.entries.find(
-          (candidate) => candidate.binding === entry.binding,
-        );
-        const resource = resources.get(entry.resource);
-        const validBuffer = resource?.kind === 'buffer' && layout?.buffer !== undefined;
-        const validPrepared =
-          resource?.kind === 'prepared-gpu-resource' &&
-          ((resource.resource.kind === 'buffer' && layout?.buffer !== undefined) ||
-            (resource.resource.kind === 'texture-view' &&
-              (layout?.texture !== undefined || layout?.storageTexture !== undefined)) ||
-            (resource.resource.kind === 'sampler' && layout?.sampler !== undefined));
-        const validSceneInput =
-          (resource?.kind === 'scene-depth' && layout?.texture?.sampleType === 'depth') ||
-          (resource?.kind === 'scene-noise' && layout?.texture !== undefined) ||
-          (resource?.kind === 'scene-sdf' && layout?.buffer?.type === 'read-only-storage');
-        if (!validBuffer && !validPrepared && !validSceneInput) {
-          return err(stageFailure(identity));
+      const validated = new Set<object>();
+      const immutableProgram = isOwnedRenderFeatureProgramData(program.program);
+      const validateBindings = (
+        bindings: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-bindings' }>,
+      ): boolean => {
+        if (immutableProgram && validated.has(bindings)) return true;
+        for (const entry of bindings.entries) {
+          const layout = program.program.bindings?.[0]?.entries.find(
+            (candidate) => candidate.binding === entry.binding,
+          );
+          const resource = resources.get(entry.resource);
+          const validBuffer = resource?.kind === 'buffer' && layout?.buffer !== undefined;
+          const validPrepared =
+            resource?.kind === 'prepared-gpu-resource' &&
+            ((resource.resource.kind === 'buffer' && layout?.buffer !== undefined) ||
+              (resource.resource.kind === 'texture-view' &&
+                (layout?.texture !== undefined || layout?.storageTexture !== undefined)) ||
+              (resource.resource.kind === 'sampler' && layout?.sampler !== undefined));
+          const validSceneInput =
+            (resource?.kind === 'scene-depth' && layout?.texture?.sampleType === 'depth') ||
+            (resource?.kind === 'scene-noise' && layout?.texture !== undefined) ||
+            (resource?.kind === 'scene-sdf' && layout?.buffer?.type === 'read-only-storage');
+          if (!validBuffer && !validPrepared && !validSceneInput) {
+            return false;
+          }
         }
-      }
+        if (immutableProgram && isOwnedRenderFeatureProgramData(bindings)) validated.add(bindings);
+        return true;
+      };
+      if (!validateBindings(bindings)) return err(stageFailure(identity));
       for (const dispatch of pass.dispatches) {
         if (!entryPoints.has(dispatch.entryPoint)) return err(stageFailure(identity));
+        const override = dispatch.bindings;
+        if (override !== undefined) {
+          const binding = resources.get(override);
+          if (
+            binding?.kind !== 'compute-bindings' ||
+            binding.program !== pass.program ||
+            !validateBindings(binding)
+          )
+            return err(stageFailure(identity));
+        }
         if (dispatch.kind === 'direct') {
           if (!validRenderFeatureWorkgroups(dispatch.workgroups)) {
             return err(stageFailure(identity));
@@ -1439,7 +1508,11 @@ export function freezeRenderFeaturePlan(
   }
 
   const frozen = Object.freeze({
-    resources: Object.freeze(plan.resources.map((resource) => Object.freeze({ ...resource }))),
+    resources: Object.freeze(
+      plan.resources.map((resource) =>
+        isOwnedStaticBuffer(resource) ? resource : Object.freeze({ ...resource }),
+      ),
+    ),
     passes: Object.freeze(plan.passes.map((pass) => Object.freeze({ ...pass }))),
   });
   return ok(frozen);

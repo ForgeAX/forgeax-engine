@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { driveReadyAppFrames } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // hello-bloom headless smoke (feat-20260531-bloom-first-declarative-render-graph-pass / M4 / w19).
 //
@@ -455,7 +456,7 @@ const timingErrors = [];
 let timingStage = 'on';
 const timingObservationPromises = [];
 const unsubscribeRenderer = app.renderer.subscribe((event) => {
-  if (event.kind !== 'frame-submitted') return;
+  if (event.kind !== 'frame-submitted' || event.receipt.presentation !== 'ready') return;
   submittedFrameEvents.push(event);
   if (!CAPTURE_GPU_TIMINGS) return;
   const stage = timingStage;
@@ -531,20 +532,13 @@ async function waitForFrameCredit() {
 }
 
 async function driveFrames(count) {
-  let driven = 0;
-  for (let i = 0; i < count; i++) {
-    if (!(await waitForFrameCredit())) break;
+  return driveReadyAppFrames(app.renderer, async () => {
+    if (!(await waitForFrameCredit())) return false;
     const due = rafQueue.shift();
-    if (!due) break;
+    if (!due) return false;
     fakeNow += 16.67;
     due.cb(fakeNow);
-    driven++;
-    // The callback starts an async submit. Yield once before checking the
-    // next credit so the renderer can publish its receipt synchronously and
-    // the smoke does not mistake queued callbacks for successful submits.
-    await delay(1);
-  }
-  return driven;
+  }, count);
 }
 
 function bloomPassNames() {

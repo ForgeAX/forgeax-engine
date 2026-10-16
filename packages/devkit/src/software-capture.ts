@@ -1528,6 +1528,14 @@ export async function browserCaptureCommand(
   const root = options.root ?? process.cwd();
   const output = resolve(root, options.output ?? 'artifacts/capture/game-ui.png');
   const browser = createBrowserCapture(root);
+  let captureSession: SoftwareBrowserSession | undefined;
+  const artifacts = () =>
+    (captureSession?.report().captures ?? []).map((record) => ({
+      kind: 'png' as const,
+      uri: record.output,
+      mediaType: 'image/png',
+      digest: record.digest,
+    }));
   try {
     const backend = options.backend ?? (options.software === true ? 'software' : 'auto');
     const session = await browser.open({
@@ -1548,15 +1556,16 @@ export async function browserCaptureCommand(
       outputDir: dirname(output),
       report: evidencePath(output),
     });
+    captureSession = session;
     await session.capture(options.deterministic === true ? 'true' : undefined, {
       output,
       waitMs: options.waitMs ?? 4000,
       requireUi: options.requireUi === true,
     });
     await session.close();
-    return { ok: true, value: session.report() };
+    return { ok: true, value: session.report(), artifacts: artifacts() };
   } catch (cause) {
-    return { ok: false, error: captureCommandError(cause) };
+    return { ok: false, error: captureCommandError(cause), artifacts: artifacts() };
   } finally {
     await browser.close();
   }

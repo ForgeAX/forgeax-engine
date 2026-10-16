@@ -1,5 +1,6 @@
 import type { InspectorFormField } from '@forgeax/view-components';
 import type { WorkspaceAsset, WorkspaceEntityInspection, WorkspaceState } from '@forgeax/view-workspace-core/contract';
+import type { AssetReference, EntityAssetReferences } from '@forgeax/view-workspace-core/asset-references';
 import { classifySceneEntity, SCENE_ENTITY_COMPONENTS, type SceneEntityKind } from '@forgeax/view-workspace-core/scene-entity-classification';
 import {
   formatInspectorFieldLabel,
@@ -12,6 +13,7 @@ export type InspectorField = InspectorFormField & {
   rawValue: unknown;
   presentation?: 'collection' | 'resource' | 'color' | 'handle';
   resource?: InspectorResourceReference;
+  resources?: readonly InspectorResourceReference[];
   colorChannels?: readonly number[];
 };
 export type InspectorComponent = { name: string; icon: string; category: 'all' | 'type' | 'capability'; fields: InspectorField[] };
@@ -22,6 +24,9 @@ export type InspectorResourceReference = {
   guid?: string;
   asset?: WorkspaceAsset;
   inherited?: boolean;
+  slotName?: string;
+  bindingSource?: AssetReference['origin'];
+  status?: AssetReference['status'];
 };
 export type InspectorEntity = {
   id: string;
@@ -34,6 +39,7 @@ export type InspectorEntity = {
   meshReference: InspectorResourceReference;
   materialOverrides: InspectorResourceReference[] | null;
   materialOverridesTruncated: boolean;
+  assetReferencesTruncated?: boolean;
 };
 export type InspectorGroup = 'common' | 'object' | 'rendering' | 'physics' | 'animation' | 'media' | 'effects' | 'behavior' | 'all';
 export type InspectorSection = {
@@ -93,7 +99,7 @@ const CAMERA_RENDER_SECTIONS: Record<string, readonly string[]> = {
   cameraOutput: ['target', 'targetLayer', 'clearColor', 'autoAspect'],
 };
 const ENTITY_DATA_COMPONENTS = new Set([
-  'Entity', 'Name', 'ChildOf', 'Children', 'GlobalTransform', 'Transform', 'Mobility', 'Disabled',
+  'Entity', 'Name', 'ChildOf', 'Children', 'GlobalTransform', 'Transform', 'TransformInterpolation', 'Mobility', 'Disabled',
   'Visibility', 'ShadowParticipation', 'Layer', 'SortKey', 'ClippingPlanes', 'CapsuleShadow',
   'CameraView', 'RuntimeMaterialValue', 'RuntimeMeshVertices',
 ]);
@@ -158,12 +164,25 @@ export function inspectorEntityFromInspection(
   inspection: EntityInspection | null | undefined,
   assets: readonly WorkspaceAsset[] = [],
   labels: { rotation?: string; unavailable?: string } = {},
+  bindings?: EntityAssetReferences,
 ): InspectorEntity | null {
   if (!inspection?.entityId || !Array.isArray(inspection.components)) return null;
   const classification = classifySceneEntity(inspection.components.map(component => component.name));
   const materials = componentValues(inspection, 'MeshRenderer').materials;
   const materialCollection = inspectorCollection(materials);
   const overrides = Array.isArray(materials) ? materials : materialCollection.truncated ? materialCollection.entries.map(([, value]) => value) : null;
+  const references = bindings?.entityId === inspection.entityId && bindings.targetId === inspection.targetId ? bindings.references : [];
+  const resource = (key: string, value: unknown, kind: string): InspectorResourceReference => {
+    const reference = references.find(reference => reference.key === key);
+    const projected = { ...inspectorResourceReference(value, kind, assets),
+      ...(reference ? { slotName: reference.slotName, bindingSource: reference.origin, status: reference.status } : {}) };
+    if (reference?.status !== 'resolved' || !reference.guid) return projected;
+    const asset = assets.find(asset => asset.guid.toLowerCase() === reference.guid!.toLowerCase() && (!reference.kind || asset.kind === reference.kind));
+    return { ...projected, guid: reference.guid, kind: asset?.kind ?? reference.kind ?? kind, asset,
+      inherited: reference.origin !== 'component', slotName: reference.slotName, status: asset ? reference.status : 'missing' };
+  };
+  const materialReferences = references.filter(reference => reference.component === 'MeshRenderer' && reference.field === 'materials' && reference.index !== undefined);
+  const slotCount = Math.max(overrides?.length ?? 0, ...materialReferences.map(reference => reference.index! + 1), 0);
   return {
     id: inspection.entityId,
     name: inspection.name?.trim() ? inspection.name : (inspection.entity === undefined ? inspection.entityId : `Entity ${inspection.entity}`),
@@ -171,9 +190,14 @@ export function inspectorEntityFromInspection(
     kind: classification.kind,
     primaryComponents: classification.primaryComponents,
     raw: inspection,
-    meshReference: inspectorResourceReference(componentValues(inspection, 'MeshFilter').assetHandle, 'mesh', assets),
-    materialOverrides: overrides?.map(value => ({ ...inspectorResourceReference(value, 'material', assets), inherited: value === 0 })) ?? null,
+    meshReference: resource('MeshFilter.assetHandle', componentValues(inspection, 'MeshFilter').assetHandle, 'mesh'),
+    materialOverrides: overrides !== null || materialReferences.length ? Array.from({ length: slotCount }, (_, index) => {
+      const value = overrides?.[index] ?? 0;
+      const reference = resource(`MeshRenderer.materials[${index}]`, value, 'material');
+      return { ...reference, inherited: reference.inherited ?? value === 0 };
+    }) : null,
     materialOverridesTruncated: materialCollection.truncated,
+    assetReferencesTruncated: bindings?.truncated,
     components: inspection.components.map((component) => {
       const values = component.values && typeof component.values === 'object' && !Array.isArray(component.values)
         ? component.values as Record<string, unknown> : {};
@@ -194,6 +218,7 @@ export function inspectorEntityFromInspection(
           }
           const type = schema.type ?? '';
           const shared = /^shared<([^>]+)>$/.exec(type);
+          const sharedArray = /^array<shared<([^>]+)>>$/.exec(type);
           const handle = /^unique<[^>]+>$/.test(type) && typeof rawValue === 'number';
           const vector = /^(?:array<(?:f32|f64),\s*([34])>|vec([34])|(quat))$/.exec(type);
           const vectorSize = vector ? Number(vector[1] ?? vector[2] ?? 4) : 0;
@@ -227,8 +252,10 @@ export function inspectorEntityFromInspection(
             value: label ?? normalizeInspectorFieldValue(rawValue, kind),
             ...(schema.labels ? { options: label ? Object.keys(schema.labels) : [...Object.keys(schema.labels), String(rawValue)] }
               : options ? { options } : {}),
-            ...(shared || asset ? { presentation: 'resource' as const, resource: inspectorResourceReference(rawValue, shared ? ASSET_KINDS[shared[1]!] ?? 'asset'
-              : rawValue && typeof rawValue === 'object' && 'kind' in rawValue && typeof rawValue.kind === 'string' ? rawValue.kind : 'asset', assets) }
+            ...(shared || asset ? { presentation: 'resource' as const, resource: resource(`${component.name}.${key}`, rawValue, shared ? ASSET_KINDS[shared[1]!] ?? 'asset'
+              : rawValue && typeof rawValue === 'object' && 'kind' in rawValue && typeof rawValue.kind === 'string' ? rawValue.kind : 'asset') }
+              : sharedArray ? { presentation: 'collection' as const,
+                resources: inspectorCollection(rawValue).entries.map(([index, value]) => resource(`${component.name}.${key}[${index}]`, value, ASSET_KINDS[sharedArray[1]!] ?? 'asset')) }
               : color ? { presentation: 'color' as const, colorChannels: rawValue as number[] }
                 : collection ? { presentation: 'collection' as const }
                   : handle ? { presentation: 'handle' as const } : {}),
@@ -367,7 +394,8 @@ export function inspectorWorkspaceTarget(workspace: WorkspaceState | null) {
 
 export function inspectorFieldMatches(field: InspectorField, query: string, label = field.label) {
   const text = query.trim().toLowerCase();
-  return !text || [field.key, field.label, label, field.resource?.asset?.name, field.resource?.guid]
+  return !text || [field.key, field.label, label, field.resource?.asset?.name, field.resource?.asset?.sourceKey, field.resource?.guid,
+    ...(field.resources ?? []).flatMap(resource => [resource.asset?.name, resource.asset?.sourceKey, resource.guid])]
     .some(value => String(value ?? '').toLowerCase().includes(text));
 }
 
@@ -377,5 +405,7 @@ export function inspectorSectionMatches(section: InspectorSection, source: Inspe
   if (!text || matches(title) || matches(section.component)) return true;
   if (section.kind === 'mesh') return matches(JSON.stringify(source.meshReference)) || matches('assetHandle');
   if (section.kind === 'materials') return matches(JSON.stringify(source.materialOverrides)) || matches('materials');
-  return section.fields.some(field => matches(field.key) || matches(field.label) || matches(field.resource?.asset?.name) || matches(field.resource?.guid) || (fieldLabel && matches(fieldLabel(field))));
+  if (section.component === 'MeshRenderer' && section.fields.some(field => field.key === 'materials')
+    && matches(JSON.stringify(source.materialOverrides))) return true;
+  return section.fields.some(field => inspectorFieldMatches(field, query, fieldLabel?.(field) ?? field.label));
 }

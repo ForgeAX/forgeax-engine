@@ -356,12 +356,21 @@ async function capture(page, label) {
     if (typeof capture !== 'function') {
       throw new Error('window.__captureAntiAliasingMsaaFrame missing');
     }
-    const out = await capture(
-      snapshotTimeoutMs === undefined
-        ? undefined
-        : { snapshotTimeoutMs },
-    );
-    if (!out?.ok) return { label: captureLabel, out };
+    // A valid diagnostic tape can describe preparation. This paired visual
+    // proof needs an actual ready scene submission under the same deadline.
+    const deadline = Date.now() + snapshotTimeoutMs;
+    let out;
+    do {
+      out = await capture({ snapshotTimeoutMs: Math.max(1, deadline - Date.now()) });
+      if (!out?.ok) return { label: captureLabel, out };
+      const submitted = out.value.submittedFrame;
+      if (submitted.status === 'complete' && submitted.receipt.presentation === 'ready') break;
+      if (submitted.status !== 'complete') {
+        throw new Error(`capture ${captureLabel} has no completed submission: ${JSON.stringify(submitted)}`);
+      }
+      if (Date.now() >= deadline) throw new Error(`capture ${captureLabel} scene did not become ready`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } while (true);
     const bytes = out.value.bytes instanceof Uint8Array
       ? out.value.bytes
       : new Uint8Array(out.value.bytes);
@@ -383,7 +392,7 @@ async function capture(page, label) {
         channels: 4,
       },
     };
-  }, { label });
+  }, { label, snapshotTimeoutMs: 30_000 });
   if (!result.out?.ok) {
     throw new Error(`capture ${label} failed before materializing v7 tape: ${JSON.stringify(result.out)}`);
   }

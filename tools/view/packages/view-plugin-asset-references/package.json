@@ -1,0 +1,46 @@
+{
+  "name": "@forgeax/view-plugin-asset-references",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Resident read-only asset reference queries for the View Editor.",
+  "exports": {
+    "./identity": "./src/identity.ts",
+    "./frontend": "./src/frontend.ts",
+    "./session": "./src/session.ts",
+    "./runtime": "./src/runtime/query.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/view-workspace-core": "workspace:*"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  }
+}

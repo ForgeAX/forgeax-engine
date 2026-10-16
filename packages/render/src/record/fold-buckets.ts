@@ -413,6 +413,7 @@ export function buildDispatchPlan(
   shadowValidated: readonly ValidatedRenderable[] = [],
   materialBindingClasses?: ReadonlyMap<string, string>,
   shadowGeometryGpuOwned = false,
+  ownedBindingClasses = false,
 ): {
   validatedOrdered: readonly ValidatedRenderable[];
   shadowValidatedOrdered: readonly ValidatedRenderable[];
@@ -493,7 +494,29 @@ export function buildDispatchPlan(
     }
     return entry.source.materials.length > 0 ? entry.source.materials : [entry.source.material];
   });
+  // The stock frame just built this detached string map. Index its sparse
+  // per-object classes once, instead of allocating a composite key for every
+  // material occurrence. Raw/custom inputs retain their exact get() observations.
+  let classesByRow: (ReadonlyMap<string, string> | undefined)[] | undefined;
+  if (ownedBindingClasses) {
+    const byObject = new Map<string, Map<string, string>>();
+    for (const [key, value] of materialBindingClasses ?? []) {
+      const split = key.lastIndexOf(':');
+      const owner = key.slice(0, split);
+      let materials = byObject.get(owner);
+      if (materials === undefined) {
+        materials = new Map();
+        byObject.set(owner, materials);
+      }
+      materials.set(key.slice(split + 1), value);
+    }
+    classesByRow = materialRows.map(({ source }) =>
+      byObject.get(`${source.worldId}:${source.entityKey}`),
+    );
+  }
   const materialSlotPlan = buildMaterialSlotPlan(materialGroups, (material, owner) => {
+    if (classesByRow !== undefined)
+      return classesByRow[owner]?.get(String(material.materialHandle ?? -1)) ?? '';
     const row = materialRows[owner];
     return row === undefined
       ? ''

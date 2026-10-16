@@ -44,7 +44,9 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
       resolve(root, 'assets/instances/player.pack.json'),
       JSON.stringify({ schemaVersion: '3.0.0', packageId: instance, parent, values: { speed: 5 } }),
     );
-    const closure = await collectAuthorPackClosure(root, 'assets/instances/player.pack.json');
+    const closure = await collectAuthorPackClosure(root, 'assets/instances/player.pack.json', [
+      'assets',
+    ]);
     expect(closure.files.map((file) => file.path)).toEqual([
       'assets/character.pack.ts',
       'assets/instances/player.pack.json',
@@ -102,7 +104,7 @@ it('includes external Meta identities and their source resource closure without 
     await writeFile(resolve(root, 'assets/guide.ui.css'), 'main { background: url(./paper.png); }');
     await writeFile(resolve(root, 'assets/paper.png'), new Uint8Array([4, 5, 6]));
     await writeFile(resolve(root, 'assets/icon.png'), new Uint8Array([1, 2, 3]));
-    const closure = await collectAuthorPackClosure(root, 'assets/game.pack.json');
+    const closure = await collectAuthorPackClosure(root, 'assets/game.pack.json', ['assets']);
     expect(closure.files.map((file) => file.path)).toEqual([
       'assets/game.pack.json',
       'assets/guide.ui.css',
@@ -151,7 +153,7 @@ it('follows authored shader module identities and their transitive imports', asy
       resolve(root, 'assets/shaders/unrelated.wgsl'),
       '#define_import_path local::unrelated\n',
     );
-    const closure = await collectAuthorPackClosure(root, 'assets/material.pack.json');
+    const closure = await collectAuthorPackClosure(root, 'assets/material.pack.json', ['assets']);
     expect(closure.files.map((file) => file.path)).toEqual([
       'assets/material.pack.json',
       'assets/shaders/noise.wgsl',

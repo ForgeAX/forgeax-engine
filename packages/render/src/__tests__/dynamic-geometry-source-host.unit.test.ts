@@ -11,7 +11,11 @@ import { MeshFilter, MeshRenderer } from '../components';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import { createDynamicGeometryLifecycle, DynamicGeometryError } from '../dynamic-geometry';
 
-function fixture(maxConcurrentPreparations = 1, lifecycle = createDynamicGeometryLifecycle()) {
+function fixture(
+  maxConcurrentPreparations = 1,
+  lifecycle = createDynamicGeometryLifecycle(),
+  collective = false,
+) {
   const world = new World();
   world.addSystem(FixedUpdate, { name: 'source-fixed-time', queries: [], fn: () => {} }).unwrap();
   const previous = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
@@ -30,12 +34,14 @@ function fixture(maxConcurrentPreparations = 1, lifecycle = createDynamicGeometr
   let consumed = false,
     current = true,
     destroyed = false;
+  let currentnessToken: object = Object.freeze({});
   const pending: {
     resolve(result: Awaited<ReturnType<DynamicGeometryResidencyPort['prepare']>>): void;
     reject(cause: unknown): void;
   }[] = [];
   const lifetime = new ResidencyLifetime(() => {
     destroyed = true;
+    currentnessToken = Object.freeze({});
   });
   const prepare = vi.fn<DynamicGeometryResidencyPort['prepare']>(
     () =>
@@ -52,7 +58,11 @@ function fixture(maxConcurrentPreparations = 1, lifecycle = createDynamicGeometr
     lifecycle,
     attachedWorlds,
     currentGeneration: () => generation,
-    residency: { prepare, maxConcurrentPreparations },
+    residency: {
+      prepare,
+      maxConcurrentPreparations,
+      ...(collective ? { currentnessToken: () => currentnessToken } : {}),
+    },
     isConsumedByRenderFrame: () => consumed,
     recordStageLane: () => (consumed ? 'gpu' : undefined),
     publishedFixedStep: () => publishedTick,
@@ -86,6 +96,7 @@ function fixture(maxConcurrentPreparations = 1, lifecycle = createDynamicGeometr
     },
     invalidateResidency: () => {
       current = false;
+      currentnessToken = Object.freeze({});
     },
     submitted: (withTick = true) => {
       consumed = true;
@@ -94,6 +105,63 @@ function fixture(maxConcurrentPreparations = 1, lifecycle = createDynamicGeometr
     destroyed: () => destroyed,
   };
 }
+
+it('requires individual currentness checks when the physical owner has no collective proof', () => {
+  const f = fixture();
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).toBeUndefined();
+});
+
+it('invalidates collective currentness on candidate, residency, generation and World ownership changes', async () => {
+  const f = fixture(1, createDynamicGeometryLifecycle(), true);
+  const token = () => f.host.dynamicGeometryCurrentness?.(f.world);
+  const initial = token();
+  expect(initial).toBeDefined();
+  expect(token()).toBe(initial);
+  expect(f.host.dynamicGeometryCurrentness?.(new World())).toBeUndefined();
+  const pending = f.host.prepareDynamicGeometry(f.input);
+  const preparing = token();
+  expect(preparing).not.toBe(initial);
+  await Promise.resolve();
+  f.ready();
+  const candidate = (await pending).unwrap();
+  const ready = token();
+  expect(ready).not.toBe(preparing);
+  expect(token()).toBe(ready);
+  expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(true);
+  f.invalidateResidency();
+  expect(token()).not.toBe(ready);
+  expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(false);
+  const stale = token();
+  f.recover();
+  expect(token()).not.toBe(stale);
+  f.detach();
+  expect(token()).toBeUndefined();
+});
+
+it('invalidates collective currentness before cancellation cleanup finishes', async () => {
+  const f = fixture(1, createDynamicGeometryLifecycle(), true);
+  const pending = f.host.prepareDynamicGeometry(f.input);
+  await Promise.resolve();
+  f.ready();
+  const candidate = (await pending).unwrap(),
+    ready = f.host.dynamicGeometryCurrentness?.(f.world);
+  expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(true);
+  f.host.cancelDynamicGeometry(candidate).unwrap();
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).not.toBe(ready);
+  expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(false);
+});
+
+it('withholds collective currentness after uncertain native ownership faults the World', async () => {
+  const f = fixture(1, createDynamicGeometryLifecycle(), true);
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).toBeDefined();
+  const pending = f.host.prepareDynamicGeometry(f.input);
+  const rejected = expect(pending).rejects.toMatchObject({ code: 'dynamic-geometry-invalid' });
+  await Promise.resolve();
+  f.failUnexpectedly();
+  await rejected;
+  expect(f.host.dynamicGeometryFault(f.world)).toBeDefined();
+  expect(f.host.dynamicGeometryCurrentness?.(f.world)).toBeUndefined();
+});
 
 it('reserves the existing candidate budget while waiting and mutates only on synchronous admission', async () => {
   const f = fixture();

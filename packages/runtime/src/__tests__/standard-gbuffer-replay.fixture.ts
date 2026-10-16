@@ -28,6 +28,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 
 type SaveEvidence = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -279,27 +280,24 @@ export async function verifyStandardGBufferReplay(
           .unwrap();
       }
       renderValue(renderer.setProfile({ ...original, renderPath: 'deferred', ssao: effects }));
-      const draw = async () => {
+      const draw = async (observe = false) => {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        const receipt = renderValue(
-          renderer.draw({
+        return drawReadyFrame(
+          renderer,
+          {
             leases: [lease],
             camera: { lease },
             environment: { lease },
             ...(mode === 'direct' ? { geometryLane: 'direct' as const } : {}),
-          }),
+          },
+          observe ? ['linear-hdr'] : undefined,
         );
-        renderValue(await receipt.completed);
-        return receipt;
       };
       for (let frame = 0; frame < 8; frame++) await draw();
-      if (renderer.requestObservation === undefined)
-        throw new Error('linear HDR observation unavailable');
-      renderValue(renderer.requestObservation(['linear-hdr']));
       const capture = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      const receipt = await draw();
+      const receipt = await draw(true);
       (await recorder.frameBoundary()).unwrap();
       const encoded = compactTape((await capture).unwrap());
       await save(`${mode}.rhitape`, encoded.bytes);

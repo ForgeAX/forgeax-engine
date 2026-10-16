@@ -17,6 +17,10 @@ struct VolumeOutput {
 @group(0) @binding(1) var volume_sampler : sampler;
 @group(0) @binding(2) var scene_depth : texture_depth_2d;
 @group(0) @binding(3) var<uniform> volume_view : VolumeDepthView;
+// Low quality uses center + one symmetric axis, stratified per output pixel.
+// Four axial neighbors remain supported; standalone/high retain all eight.
+// The fixed spatial pattern has no temporal reconstruction or output history.
+override VOLUME_COMPOSITE_NEIGHBORS : u32 = 8u;
 
 @vertex
 fn volume_vs(@builtin(vertex_index) index : u32) -> VolumeOutput {
@@ -62,14 +66,28 @@ fn radiance_luma_weight(center : vec4<f32>, neighbor : vec4<f32>) -> f32 {
   return exp(-relative_luma * 8.0);
 }
 
+fn vacuum_volume_neighborhood(
+  uv : vec2<f32>,
+  center : vec4<f32>,
+  offsets : array<vec2<f32>, 8>,
+) -> bool {
+  let vacuum = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  if (any(center != vacuum)) { return false; }
+  // A vacuum center alone cannot reject an edge: the original reconstruction
+  // also sees the eight filtered neighbors, including clamped border samples.
+  for (var index = 0u; index < clamp(VOLUME_COMPOSITE_NEIGHBORS, 2u, 8u); index += 1u) {
+    let neighbor_uv = clamp(uv + offsets[index], vec2<f32>(0.0), vec2<f32>(1.0));
+    let neighbor = textureSampleLevel(resolved_volume, volume_sampler, neighbor_uv, 0.0);
+    if (any(neighbor != vacuum)) { return false; }
+  }
+  return true;
+}
+
 fn edge_aware_resolved_volume(uv : vec2<f32>) -> vec4<f32> {
   let dimensions = max(vec2<f32>(textureDimensions(resolved_volume)), vec2<f32>(1.0));
   let texel = 1.0 / dimensions;
   let center = textureSampleLevel(resolved_volume, volume_sampler, uv, 0.0);
-  let center_depth = linear_scene_depth(uv);
-  var accumulated = center * 4.0;
-  var total_weight = 4.0;
-  let offsets = array<vec2<f32>, 8>(
+  var offsets = array<vec2<f32>, 8>(
     vec2<f32>(texel.x, 0.0),
     vec2<f32>(-texel.x, 0.0),
     vec2<f32>(0.0, texel.y),
@@ -79,8 +97,26 @@ fn edge_aware_resolved_volume(uv : vec2<f32>) -> vec4<f32> {
     vec2<f32>(texel.x, -texel.y),
     vec2<f32>(-texel.x, -texel.y),
   );
+  let neighbor_count = clamp(VOLUME_COMPOSITE_NEIGHBORS, 2u, 8u);
+  if (neighbor_count == 2u) {
+    let pixel = vec2<u32>(uv * vec2<f32>(textureDimensions(scene_depth)));
+    let hash = (pixel.x * 1597334677u) ^ (pixel.y * 3812015801u);
+    if (((hash ^ (hash >> 16u)) & 1u) != 0u) {
+      offsets[0] = vec2<f32>(0.0, texel.y);
+      offsets[1] = vec2<f32>(0.0, -texel.y);
+    }
+  }
+  // Every original weight combines the same optical identity here, so the
+  // optical result is vacuum regardless of depth or edge weights. Keep the
+  // selected profile's reconstruction for every non-vacuum neighbor.
+  if (vacuum_volume_neighborhood(uv, center, offsets)) {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  }
+  let center_depth = linear_scene_depth(uv);
+  var accumulated = center * 4.0;
+  var total_weight = 4.0;
   let spatial_weights = array<f32, 8>(2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0);
-  for (var index = 0u; index < 8u; index += 1u) {
+  for (var index = 0u; index < clamp(VOLUME_COMPOSITE_NEIGHBORS, 2u, 8u); index += 1u) {
     let neighbor_uv = clamp(uv + offsets[index], vec2<f32>(0.0), vec2<f32>(1.0));
     let neighbor = textureSampleLevel(
       resolved_volume,
@@ -95,7 +131,8 @@ fn edge_aware_resolved_volume(uv : vec2<f32>) -> vec4<f32> {
       abs(neighbor_depth - center_depth) <= max(center_depth * 0.08, 0.25));
     // Transmittance is the available edge signal: retain hard depth/occluder
     // boundaries while reconstructing smooth low-frequency scattering.
-    let edge_weight = spatial_weights[index] * depth_weight * exp(-abs(neighbor.a - center.a) * 6.0) *
+    let spatial_weight = select(spatial_weights[index], 4.0, neighbor_count == 2u);
+    let edge_weight = spatial_weight * depth_weight * exp(-abs(neighbor.a - center.a) * 6.0) *
       radiance_luma_weight(center, neighbor);
     accumulated += neighbor * edge_weight;
     total_weight += edge_weight;

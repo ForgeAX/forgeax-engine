@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readdir, readFile, realpath } from 'node:fs/promises';
-import { basename, join, relative, sep } from 'node:path';
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PackageId } from './guid.js';
 import { parsePackSourceJson } from './pack-authoring.js';
 import { declaredPackAssets, SCANNER_BLACKLIST, scanInventory } from './scanner.js';
@@ -18,6 +18,7 @@ export interface PackSourceIndexRow {
 export async function listPackSources(
   projectRoot: string,
   limit = 200,
+  assetRoots?: readonly string[],
 ): Promise<{
   sources: readonly PackSourceIndexRow[];
   hasMore: boolean;
@@ -28,8 +29,10 @@ export async function listPackSources(
   const paths: string[] = [];
   let visited = 0;
   let hasMore = false;
+  const visitedDirectories = new Set<string>();
   async function visit(dir: string): Promise<void> {
-    if (hasMore) return;
+    if (hasMore || visitedDirectories.has(dir)) return;
+    visitedDirectories.add(dir);
     const entries = await readdir(dir, { withFileTypes: true });
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
@@ -48,7 +51,17 @@ export async function listPackSources(
       }
     }
   }
-  await visit(root);
+  for (const directory of assetRoots ?? ['']) {
+    const path = resolve(root, directory);
+    const rel = relative(root, path);
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+      throw new RangeError('Pack source directories must stay inside the project');
+    const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (entry?.isDirectory() && (await realpath(path)) === path) await visit(path);
+  }
   hasMore ||= paths.length > limit;
   const selected = paths.slice(0, limit);
   const sources: PackSourceIndexRow[] = [];

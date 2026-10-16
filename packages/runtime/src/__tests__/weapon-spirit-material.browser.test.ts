@@ -186,7 +186,7 @@ it.each([
     }
     const drawFrames = async (count: number) => {
       for (let frame = 0; frame < count; frame += 1) {
-        const receipt = drawPublished(host.value.renderer, world);
+        const receipt = await drawPublished(host.value.renderer, world);
         if (!receipt.ok) throw receipt.error;
         const completed = await receipt.value.completed;
         if (!completed.ok) throw completed.error;

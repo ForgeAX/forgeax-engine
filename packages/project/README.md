@@ -7,6 +7,7 @@ The realm-neutral schema and injected JSON reader for `forge.json`. Its strict s
   "id": "my-game",
   "name": "My Game",
   "schemaVersion": "3.0.0",
+  "assetRoots": ["assets"],
   "roots": { "engine": "00000000-0000-4000-8000-000000000001" }
 }
 ```
@@ -17,7 +18,13 @@ The realm-neutral schema and injected JSON reader for `forge.json`. Its strict s
 | engine | App's World realm, on the main thread or an Engine Worker |
 | host | DOM, audio and host transport realm |
 
-Configuration belongs in the referenced Pack asset. Native plugin code composes children. A scene is instantiated and released by a scene-owner plugin. The project manifest remains outside the asset Catalog.
+`assetRoots` declares the authored asset directories relative to the project. It
+defaults to `["assets"]`; `[]` declares no authored asset directories. Absolute
+paths, backslashes, empty path segments and `.`/`..` segments are rejected. DevKit
+uses these same roots for source discovery and transfer, and workspace project
+facts expose them to consumers such as View.
+
+Plugin configuration belongs in the referenced Pack asset. Native plugin code composes children. A scene is instantiated and released by a scene-owner plugin. The project manifest remains outside the asset Catalog.
 
 ## Read a project
 

@@ -15,6 +15,7 @@ import {
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { makeVolumetricDensity } from '../../../../apps/hello/volumetric-fog/src/volumetric-density-importer';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
 
 // One device, 128-square output, no external assets or per-frame PNG encoding.
@@ -110,11 +111,13 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!drawn.ok) throw drawn.error;
-    if (read) context.drawImage(canvas, 0, 0);
-    const completed = await drawn.value.completed;
-    if (!completed.ok) throw completed.error;
+    await completeReadyFrame(() => {
+      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      if (!drawn.ok) throw drawn.error;
+      // Borrow the current WebGPU canvas image before the browser presents it.
+      if (read && drawn.value.presentation === 'ready') context.drawImage(canvas, 0, 0);
+      return drawn.value;
+    });
     if (!read) return new Uint8ClampedArray();
     return context.getImageData(0, 0, size, size).data;
   };

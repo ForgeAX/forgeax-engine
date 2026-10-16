@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
@@ -400,11 +401,7 @@ async function drawFrames(
   let receipt: FrameReceipt | undefined;
   for (let frame = 0; frame < frameCount; frame += 1) {
     world.update().unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!drawn.ok) throw drawn.error;
-    receipt = drawn.value;
-    const completed = await receipt.completed;
-    if (!completed.ok) throw completed.error;
+    receipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   }
   if (receipt === undefined) throw new Error('extended-lighting runtime submitted no frames');
   return receipt;

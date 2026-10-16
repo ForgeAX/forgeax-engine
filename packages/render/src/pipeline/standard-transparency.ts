@@ -9,7 +9,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import { OIT_COMPOSITE_EPSILON } from '../oit/weight';
-import { selectMainPassMaterials } from '../record/main-pass';
+import { prepareMainPassPipelines, selectMainPassMaterials } from '../record/main-pass';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import {
@@ -86,14 +86,28 @@ export function addStandardTransparentPasses(
           input.color.resolveTarget !== undefined
         )
           return true;
-        return (
-          selectMainPassMaterials(
-            frame as _InternalRenderPipelineContext,
-            FORWARD_PASS_SELECTOR,
-            recordMode,
-            input.template.excludeSelector,
-          )?.size !== 0
+        const context = frame as _InternalRenderPipelineContext;
+        const selected = selectMainPassMaterials(
+          context,
+          FORWARD_PASS_SELECTOR,
+          recordMode,
+          input.template.excludeSelector,
         );
+        if (selected?.size !== 0) return true;
+        prepareMainPassPipelines(
+          context,
+          FORWARD_PASS_SELECTOR,
+          {
+            recordMode,
+            transparentDepthWrite: true,
+            ...(input.template.excludeSelector === undefined
+              ? {}
+              : { excludeSelector: input.template.excludeSelector }),
+          },
+          input.color.sampleCount,
+          [input.color.format as GPUTextureFormat],
+        );
+        return false;
       },
       colorLoadOp: 'load',
       depthLoadOp: 'load',

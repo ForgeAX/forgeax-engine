@@ -102,7 +102,7 @@ let early;
 let late;
 for (let i = 0; i < frames; i++) {
   world.update().unwrap();
-  const drawn = drawSmokeFrame(renderer, world);
+  const drawn = await drawSmokeFrame(renderer, world);
   if (!drawn.ok) console.error(`[smoke] draw ${i}: ${drawn.error.code}`);
   if (i === Math.max(1, Math.floor(frames * 0.05))) early = await capture();
   if (i === Math.max(1, Math.floor(frames * 0.65))) late = await capture();

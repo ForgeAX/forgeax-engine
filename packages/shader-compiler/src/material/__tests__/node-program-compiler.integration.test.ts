@@ -60,33 +60,69 @@ describe('Node material program compilation', () => {
       const result = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
       const firstWorkers = workers.size;
       const next = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
+      const stableWorkers = firstWorkers === workers.size;
+      const concurrent = await Promise.all(Array.from({ length: 4 }, () =>
+        createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input)));
+      const bad = structuredClone(input);
+      bad.source.passes[0].program.module = 'missing::module';
+      let diagnostic;
+      try { await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(bad); }
+      catch (error) {
+        diagnostic = { code: error.code, message: error.message, expected: error.expected, hint: error.hint, detail: error.detail };
+      }
+      const totalWorkers = workers.size;
+      let workerFailure = false;
+      if (process.env.FORGEAX_SHADER_COMPILE_WORKERS !== '1') {
+        let interrupted = false;
+        Worker.prototype.postMessage = function (...args) {
+          if (!interrupted) { interrupted = true; void this.terminate(); return; }
+          return post.apply(this, args);
+        };
+        try { await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input); }
+        catch { workerFailure = true; }
+        finally { Worker.prototype.postMessage = post; }
+        const recovered = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
+        if (JSON.stringify(recovered) !== JSON.stringify(next)) throw new Error('worker recovery changed output');
+      }
       const bytes = JSON.stringify(result, (_, value) => ArrayBuffer.isView(value)
         ? { type: value.constructor.name, bytes: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64') }
         : value);
       console.log(JSON.stringify({
         digest: createHash('sha256').update(bytes).digest('hex'),
         programs: result.payload.cooked.programs.length,
-        stableWorkers: firstWorkers === workers.size,
+        stableWorkers,
+        totalWorkers,
+        workerFailure,
+        concurrentEqual: concurrent.every((draft) => JSON.stringify(draft) === JSON.stringify(next)),
+        diagnostic,
         firstWorkers,
         repeatedResult: JSON.stringify(result) === JSON.stringify(next),
       }));
     `;
-    const outputs = [];
-    for (const workers of ['1', '2']) {
-      const result = await run(process.execPath, ['--input-type=module', '--eval', script], {
-        env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: workers },
-      });
-      outputs.push(JSON.parse(result.stdout));
-    }
+    const outputs = await Promise.all(
+      ['1', '2'].map(async (workers) => {
+        const result = await run(process.execPath, ['--input-type=module', '--eval', script], {
+          env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: workers },
+          timeout: 45_000,
+        });
+        return JSON.parse(result.stdout);
+      }),
+    );
     expect(outputs[0]?.programs).toBeGreaterThan(1);
     expect(outputs[1]?.digest).toBe(outputs[0]?.digest);
     expect(outputs[1]?.programs).toBe(outputs[0]?.programs);
     expect(outputs.map((output) => output.stableWorkers)).toEqual([true, true]);
     expect(outputs.map((output) => output.repeatedResult)).toEqual([true, true]);
+    expect(outputs.map((output) => output.concurrentEqual)).toEqual([true, true]);
+    expect(outputs[0]?.diagnostic).toBeDefined();
+    expect(outputs[1]?.diagnostic).toEqual(outputs[0]?.diagnostic);
+    expect(outputs[1]?.totalWorkers).toBeLessThanOrEqual(2);
+    expect(outputs.map((output) => output.workerFailure)).toEqual([false, true]);
     expect(outputs[0]?.firstWorkers).toBe(0);
     expect(outputs[1]?.firstWorkers).toBeGreaterThan(0);
     expect(outputs[1]?.firstWorkers).toBeLessThanOrEqual(2);
-  }, 30_000);
+    // Two isolated native processes, including recovery, also run under CI coverage.
+  }, 60_000);
 
   it('keeps native bytes, reflected selections, mutable isolation and caller errors', async () => {
     const parallel = compiler(2);

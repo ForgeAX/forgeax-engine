@@ -1479,8 +1479,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 28 named engine shader entries',
-      ).toBe(28);
+        'materialShaders[] must contain exactly 30 named engine shader entries',
+      ).toBe(30);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1619,7 +1619,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::vfx-render.particles.billboard-inputs',
         'forgeax::vfx-render.particles.mesh',
         'forgeax::vfx-render.particles.mesh-inputs',
+        'forgeax::vfx-render.particles.mesh-inputs-unlit',
         'forgeax::vfx-render.particles.mesh-shadow',
+        'forgeax::vfx-render.particles.mesh-unlit',
         'forgeax::vfx-render.particles.ribbon',
         'forgeax::vfx-render.particles.ribbon-inputs',
         'forgeax::vfx-render.particles.trail',
@@ -1649,7 +1651,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           expect(parsed).toEqual(STANDARD_PIPELINE_PARAM_SCHEMA);
         } else if (
           ms.identifier === 'forgeax::vfx-render.particles.mesh' ||
-          ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs'
+          ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs' ||
+          ms.identifier === 'forgeax::vfx-render.particles.mesh-unlit' ||
+          ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs-unlit'
         ) {
           expect(parsed).toEqual(particleMeshSurfaceSchema);
         } else if (ms.identifier === 'forgeax::msdf-text') {
@@ -1753,7 +1757,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::vfx-render.particles.billboard-inputs',
           'forgeax::vfx-render.particles.mesh',
           'forgeax::vfx-render.particles.mesh-inputs',
+          'forgeax::vfx-render.particles.mesh-inputs-unlit',
           'forgeax::vfx-render.particles.mesh-shadow',
+          'forgeax::vfx-render.particles.mesh-unlit',
           'forgeax::vfx-render.particles.ribbon',
           'forgeax::vfx-render.particles.ribbon-inputs',
           'forgeax::vfx-render.particles.trail',

@@ -1612,10 +1612,25 @@ export async function runSurfaceAppLifecycle(input: {
       const recoveredReceiptIndex = receipts.length;
       app.stepFrame(0).unwrap();
       await waitForReceipts(recoveredReceiptIndex + 1);
-      const recoveredReceipt = receipts[recoveredReceiptIndex];
+      let recoveredReceipt = receipts[recoveredReceiptIndex];
       if (recoveredReceipt === undefined) {
         throw new Error('surface-app-lifecycle: recovered receipt unavailable');
       }
+      const preparationDeadline = Date.now() + 30_000;
+      while (recoveredReceipt.presentation !== 'ready' && Date.now() < preparationDeadline) {
+        armLifecycleObservation();
+        const index = receipts.length;
+        app.stepFrame(0).unwrap();
+        await waitForReceipts(index + 1);
+        recoveredReceipt = receipts[index];
+        if (recoveredReceipt === undefined)
+          throw new Error('surface-app-lifecycle: preparation receipt unavailable');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      if (recoveredReceipt.presentation !== 'ready')
+        throw new Error('surface-app-lifecycle: recovered scene did not become ready');
+      if (world.getResource(Time).elapsed !== worldTimeBeforeLoss)
+        throw new Error('surface-app-lifecycle: pipeline preparation advanced World time');
       const recovered = await captureReceipt('recovered', recoveredReceipt);
       const vfxAfterRecovery = inspectVfxRecoveryState();
       const splashIntentsAfterRecovery = inspectCommittedSplashes();

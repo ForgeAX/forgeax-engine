@@ -269,3 +269,87 @@ describe('capable Shadow legacy mesh consumption', () => {
     }
   });
 });
+
+describe('stock frame sparse material binding index', () => {
+  it('preserves complete slot indices, owners and probe/pass splits across worlds and handles', () => {
+    const materials = [0, -1, 0xffffffff, Number.NaN, Number.POSITIVE_INFINITY].map(
+      (materialHandle) => ({
+        materialHandle,
+        materialShaderId: 'forgeax::default-standard-pbr',
+      }),
+    );
+    const rows = [0, 1, 65536, 1048576].map((worldId, index) => {
+      const row = validatedRow(index);
+      Object.assign(row.source, {
+        worldId,
+        entityKey: 0xffffffff - index,
+        material: materials[0],
+        materials,
+      });
+      return row;
+    });
+    const classes = new Map<string, string>();
+    for (const row of rows)
+      for (const material of materials)
+        if (material.materialHandle !== 0xffffffff)
+          classes.set(
+            `${row.source.worldId}:${row.source.entityKey}:${material.materialHandle}`,
+            row.source.worldId === 1 ? 'forward|probe:2' : '|probe:0',
+          );
+    const control = buildDispatchPlan(ceilingInternals(32), rows, [], [], rows, classes);
+    const candidate = buildDispatchPlan(
+      ceilingInternals(32),
+      rows,
+      [],
+      [],
+      rows,
+      classes,
+      false,
+      true,
+    );
+    expect(candidate).toEqual(control);
+    expect(classes.size).toBe(16);
+  });
+
+  it('observes changes on the next frame without retaining an index or stale empty domain', () => {
+    const row = validatedRow(0);
+    const material = { materialHandle: 17, materialShaderId: 'forgeax::default-standard-pbr' };
+    Object.assign(row.source, { worldId: 3, entityKey: 5, material, materials: [material] });
+    const other = validatedRow(1);
+    Object.assign(other.source, { worldId: 3, entityKey: 6, material, materials: [material] });
+    const classes = new Map<string, string>();
+    const resolve = (owned: boolean) =>
+      buildDispatchPlan(ceilingInternals(8), [row, other], [], [], [], classes, false, owned);
+    expect(resolve(true)).toEqual(resolve(false));
+    classes.set('3:5:17', 'probe:1');
+    expect(resolve(true)).toEqual(resolve(false));
+    expect(resolve(true).materialSlotCount).toBe(2);
+    classes.set('3:6:17', 'probe:1');
+    expect(resolve(true).materialSlotCount).toBe(1);
+    classes.clear();
+    expect(resolve(true)).toEqual(resolve(false));
+  });
+
+  it('keeps custom get observations and errors on the raw default path', () => {
+    const row = validatedRow(0);
+    Object.assign(row.source, { worldId: 1, entityKey: 2 });
+    const reads: string[] = [];
+    class BorrowedClasses extends Map<string, string> {
+      override get(key: string) {
+        reads.push(key);
+        return 'borrowed';
+      }
+      override [Symbol.iterator](): MapIterator<[string, string]> {
+        throw new Error('do not enumerate borrowed bindings');
+      }
+    }
+    buildDispatchPlan(ceilingInternals(8), [row], [], [], [row], new BorrowedClasses());
+    expect(reads).toEqual(['1:2:-1', '1:2:-1']);
+    const reason = new Error('binding unavailable');
+    const broken = new Map<string, string>();
+    broken.get = () => {
+      throw reason;
+    };
+    expect(() => buildDispatchPlan(ceilingInternals(8), [row], [], [], [], broken)).toThrow(reason);
+  });
+});

@@ -92,7 +92,7 @@ await createWorldContext(world, [scenePlugin()]);
 const rigs = buildWorld(world);
 const initialUpdate = world.update(0);
 if (!initialUpdate.ok) throw new Error(`${initialUpdate.error.code}: ${initialUpdate.error.hint}`);
-drawSmokeFrame(renderer, world);
+await drawSmokeFrame(renderer, world);
 await delay(30);
 const earlyFrame = await capture();
 const early = world.get(rigs[0].upper, Transform);
@@ -100,7 +100,7 @@ const earlyQuat = early.ok ? Array.from(early.value.quat) : [];
 for (let frame = 1; frame < frames; frame++) {
   const update = world.update(1 / 60);
   if (!update.ok) throw new Error(`${update.error.code}: ${update.error.hint}`);
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) errors.push(draw.error);
 }
 await delay(30);

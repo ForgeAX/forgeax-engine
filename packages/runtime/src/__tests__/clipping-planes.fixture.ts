@@ -24,6 +24,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -167,18 +168,19 @@ export async function verifyClippingPlanes(
   let baselineShadowPixels = 0;
   const profile = renderer.inspect().profile;
   renderValue(renderer.setProfile({ ...profile, renderPath: 'forward', ssao: false }));
-  const draw = async (direct: boolean) => {
+  const draw = async (direct: boolean, observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(
-      renderer.draw({
+    const receipt = await drawReadyFrame(
+      renderer,
+      {
         leases: [lease],
         camera: { lease },
         environment: { lease },
         ...(direct ? { geometryLane: 'direct' as const } : {}),
-      }),
+      },
+      observe ? ['linear-hdr'] : undefined,
     );
-    renderValue(await receipt.completed);
     return receipt;
   };
   const pixel = (read: ReplayReadbackResult, x: number, y: number): number => {
@@ -267,10 +269,9 @@ export async function verifyClippingPlanes(
       expect(errors).toEqual([]);
       if (renderer.requestObservation === undefined)
         throw new Error('missing live HDR observation');
-      renderValue(renderer.requestObservation(['linear-hdr']));
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      const receipt = await draw(direct);
+      const receipt = await draw(direct, true);
       const live = renderValue(
         await renderer.observe(receipt, { include: ['linear-hdr'] }),
       ).observations?.find((item) => item.domain === 'linear-hdr');

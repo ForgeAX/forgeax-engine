@@ -28,6 +28,7 @@
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] pixelSamples=<json>`
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -348,8 +349,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw(frameRequest);
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
+  await drawReadyFrame(renderer, frameRequest);
   framesObserved++;
 }
 const device = sharedDevice;

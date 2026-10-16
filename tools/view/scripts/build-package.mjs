@@ -4,13 +4,16 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { build } from 'esbuild';
+import { assetReferenceEsbuildPlugin } from './asset-reference-program.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'dist/modules');
 const packagesRoot = resolve(root, 'packages');
 const productIds = [
+  'asset-references',
   'scene',
   'display',
+  'history',
   'content-browser',
   'plugins',
   'inspector',
@@ -179,7 +182,7 @@ const result = await build({
   jsxImportSource: 'react',
   outExtension: { '.js': '.mjs' },
   sourcemap: true,
-  plugins: [internalWorkspacePlugin, cssInjectionPlugin],
+  plugins: [assetReferenceEsbuildPlugin, internalWorkspacePlugin, cssInjectionPlugin],
   external: [
     'node:*',
     '@forgeax/engine-*',

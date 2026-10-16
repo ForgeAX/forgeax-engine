@@ -4,9 +4,10 @@ import type { ViewDisplayStatus, DisplayStatusInput } from '../status.ts';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { WorkspaceState } from '@forgeax/view-workspace-core/contract';
 import { createWorkspaceStateReader, type WorkspaceStateClient } from '@forgeax/view-workspace-core/workspace-state';
+import { t, getLocale, subscribeLocale } from '../i18n/index.ts';
 
 type ObserverClient = Pick<ViewWorkspaceClient, 'call'> & Partial<Pick<ViewWorkspaceClient, 'capture'>> & Partial<WorkspaceStateClient>;
-type PlayFrame = { targetId: string; png?: string; frameId?: number; error: string };
+type PlayFrame = { targetId: string; generation: number; png?: string; frameId?: number; capturedAt?: string; error: string };
 
 function failureText(error: unknown): string {
   if (error && typeof error === 'object' && 'hint' in error && typeof error.hint === 'string') return error.hint;
@@ -16,35 +17,61 @@ function failureText(error: unknown): string {
 export function mountRunObserver({ document, surface, status, client }: { document: Document; surface: HTMLElement; status: ViewDisplayStatus; client: ObserverClient }) {
   let live = true;
   let visible = false;
-  const summary = document.createElement('p');
-  summary.setAttribute('role', 'status');
-  const picture = document.createElement('img');
-  picture.alt = 'Latest Engine run capture';
-  const logs = document.createElement('pre');
-  logs.setAttribute('aria-label', 'Run log');
-  const form = document.createElement('form');
-  const project = document.createElement('input');
-  project.className = 'fx-input';
-  project.placeholder = 'Engine project path';
-  project.setAttribute('aria-label', 'Observed project path');
-  const run = document.createElement('input');
-  run.className = 'fx-input';
-  run.placeholder = 'Run ID';
-  run.setAttribute('aria-label', 'Observed run ID');
+  let busy = false;
+  let attemptedRoot: string | undefined;
+  let actionError = '';
+  let sourceChoice: 'play' | 'run' | undefined;
+  let workspace: WorkspaceState | null = null;
+  const toolbar = document.createElement('div');
+  toolbar.className = 'fx-capture-toolbar';
+  const sourceLabel = document.createElement('label');
+  const sourceText = document.createElement('span');
+  const source = document.createElement('select');
+  source.className = 'fx-input';
+  const playOption = document.createElement('option');
+  playOption.value = 'play';
+  const runOption = document.createElement('option');
+  runOption.value = 'run';
+  source.append(playOption, runOption);
+  sourceLabel.append(sourceText, source);
+  const project = document.createElement('span');
+  project.className = 'fx-capture-project';
   const connect = document.createElement('button');
   connect.className = 'fx-button fx-button--primary fx-button--compact';
-  connect.type = 'submit'; connect.textContent = 'Observe run';
+  connect.type = 'button';
   const disconnect = document.createElement('button');
   disconnect.className = 'fx-button fx-button--secondary fx-button--compact';
-  disconnect.type = 'button'; disconnect.textContent = 'Disconnect';
-  form.append(project, run, connect, disconnect);
-  const bind = async (args: { root: string | null; runId?: string }) => {
-    connect.disabled = disconnect.disabled = true;
-    try { const next = await client.call<DisplayStatusInput>('display.bind', args); if (live) status.update(next); }
-    catch (error) { if (live) summary.textContent = failureText(error); }
-    finally { if (live) connect.disabled = disconnect.disabled = false; }
+  disconnect.type = 'button';
+  toolbar.append(sourceLabel, project, connect, disconnect);
+  const summary = document.createElement('p');
+  summary.setAttribute('role', 'status');
+  const metadata = document.createElement('p');
+  metadata.className = 'fx-capture-metadata';
+  const picture = document.createElement('img');
+  const hint = document.createElement('p');
+  hint.className = 'fx-capture-hint';
+  const logDetails = document.createElement('details');
+  const logTitle = document.createElement('summary');
+  const logs = document.createElement('pre');
+  logDetails.append(logTitle, logs);
+  const identityDetails = document.createElement('details');
+  const identityTitle = document.createElement('summary');
+  const identity = document.createElement('pre');
+  identityDetails.append(identityTitle, identity);
+  surface.append(toolbar, summary, metadata, picture, hint, logDetails, identityDetails);
+
+  const bind = async (args: { root: string | null }) => {
+    if (busy) return;
+    busy = true;
+    actionError = '';
+    attemptedRoot = args.root ?? undefined;
+    render();
+    try {
+      const next = await client.call<DisplayStatusInput>('display.bind', args, { reportError: false });
+      if (live) status.update(next);
+    } catch (error) { if (live) actionError = failureText(error); }
+    finally { busy = false; if (live) render(); }
   };
-  let workspace: WorkspaceState | null = null;
   let playFrame: PlayFrame | undefined;
   let playKey = '';
   let playGeneration = 0;
@@ -53,15 +80,9 @@ export function mountRunObserver({ document, surface, status, client }: { docume
   const activePlay = () => {
     const play = workspace?.play;
     const target = play?.target;
-    if (typeof target?.targetId !== 'string' || !target.targetId || typeof target.generation !== 'number') return null;
-    return play;
+    return typeof target?.targetId === 'string' && target.targetId && typeof target.generation === 'number' ? play : null;
   };
-  const capturePlay = (target: { targetId: string; generation: number }, signal?: AbortSignal) => {
-    const args = { targetId: target.targetId, targetGeneration: target.generation };
-    const options = { ...(signal === undefined ? {} : { signal }), reportError: false };
-    if (typeof client.capture === 'function') return client.capture({ ...args, ...options });
-    return client.call('preview.capture', args, options);
-  };
+  const selectedSource = () => sourceChoice ?? (activePlay() ? 'play' : status.snapshot().binding ? 'run' : 'play');
   const stopPlayCapture = () => {
     playGeneration += 1;
     clearTimeout(playTimer);
@@ -78,23 +99,19 @@ export function mountRunObserver({ document, surface, status, client }: { docume
       const play = activePlay();
       if (!play || play.phase !== 'running' || typeof play.target.generation !== 'number') return;
       const target = { targetId: play.target.targetId, generation: play.target.generation };
+      const args = { targetId: target.targetId, targetGeneration: target.generation };
+      const options = { signal: abort.signal, reportError: false };
       try {
-        const captured = await capturePlay(target, abort.signal) as { png?: string; frameId?: number } | null;
+        const captured = await (typeof client.capture === 'function'
+          ? client.capture({ ...args, ...options })
+          : client.call('preview.capture', args, options)) as { png?: string; frameId?: number } | null;
         if (!live || token !== playGeneration) return;
-        const current = activePlay();
-        if (current?.target.targetId !== target.targetId || current.phase !== 'running') return;
-        playFrame = { targetId: target.targetId, png: captured?.png, frameId: captured?.frameId, error: '' };
+        playFrame = { ...target, png: captured?.png, frameId: captured?.frameId, capturedAt: new Date().toISOString(), error: '' };
       } catch (error) {
         if (!live || token !== playGeneration || abort.signal.aborted) return;
-        const previous = playFrame?.targetId === target.targetId ? playFrame : undefined;
         const busy = failureText(error).includes('preview capture is busy')
           || (error && typeof error === 'object' && 'code' in error && (error.code === 'view-workspace-target-busy' || error.code === 'engine-workspace-target-busy'));
-        playFrame = {
-          targetId: target.targetId,
-          png: previous?.png,
-          frameId: previous?.frameId,
-          error: busy ? '' : failureText(error),
-        };
+        playFrame = { ...playFrame, ...target, error: busy ? '' : failureText(error) };
       }
       render();
       if (!live || token !== playGeneration || activePlay()?.phase !== 'running') return;
@@ -104,96 +121,97 @@ export function mountRunObserver({ document, surface, status, client }: { docume
   };
   const syncPlay = () => {
     const play = activePlay();
-    const key = visible && play?.phase === 'running' && typeof play.target.generation === 'number'
-      ? `${play.target.targetId}:${play.target.generation}`
-      : '';
+    if (play && (playFrame?.targetId !== play.target.targetId || playFrame.generation !== play.target.generation)) playFrame = undefined;
+    const key = visible && selectedSource() === 'play' && play?.phase === 'running'
+      ? `${play.target.targetId}:${play.target.generation}` : '';
     if (key === playKey) return;
     playKey = key;
-    playFrame = undefined;
     stopPlayCapture();
     if (key) watchPlay();
   };
-  const submit = (event: Event) => {
-    event.preventDefault();
-    if (activePlay()) return;
-    const root = String(project.value ?? '').trim();
-    const runId = String(run.value ?? '').trim();
-    if (!root || !runId) {
-      summary.textContent = 'Provide root and exact runId, or null root to disconnect.';
-      return;
-    }
-    void bind({ root, runId });
+  const attach = () => {
+    if (selectedSource() === 'run' && workspace?.project?.root) void bind({ root: workspace.project.root });
   };
-  const detach = () => { if (!activePlay()) void bind({ root: null }); };
-  form.addEventListener('submit', submit);
+  const detach = () => { if (selectedSource() === 'run') void bind({ root: null }); };
+  const chooseSource = () => { sourceChoice = source.value === 'run' ? 'run' : 'play'; actionError = ''; syncPlay(); render(); };
+  connect.addEventListener('click', attach);
   disconnect.addEventListener('click', detach);
-  surface.append(form, summary, picture, logs);
-  let bindingKey: string | undefined;
+  source.addEventListener('change', chooseSource);
+  const text = (element: HTMLElement, value: string) => { if (element.textContent !== value) element.textContent = value; };
   const showImage = (png: string | undefined) => {
     if (png?.startsWith('data:image/png;base64,')) {
       if (picture.getAttribute('src') !== png) picture.setAttribute('src', png);
-      if (picture.hidden !== false) picture.hidden = false;
-      return;
+      picture.hidden = false;
+    } else {
+      if (picture.getAttribute('src') !== null) picture.removeAttribute('src');
+      picture.hidden = true;
     }
-    if (picture.getAttribute('src') != null) picture.removeAttribute('src');
-    if (picture.hidden !== true) picture.hidden = true;
-  };
-  const renderPlay = (play: NonNullable<WorkspaceState['play']>) => {
-    if (form.hidden !== true) form.hidden = true;
-    const frame = playFrame?.targetId === play.target.targetId ? playFrame : undefined;
-    const nextSummary = frame?.error
-      ? frame.error
-      : play.phase === 'running'
-        ? `Play · running${frame?.frameId === undefined ? '' : ` · Frame ${frame.frameId}`}${frame?.png ? '' : ' · Capturing…'}`
-        : `Play · ${play.phase}`;
-    if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
-    showImage(frame?.png);
-    if (logs.textContent !== '') logs.textContent = '';
   };
   const render = () => {
-    const play = activePlay();
-    if (play) {
-      renderPlay(play);
-      return;
-    }
-    if (form.hidden) form.hidden = false;
     const value = status.snapshot();
-    const nextKey = JSON.stringify(value.binding);
-    if (bindingKey !== nextKey) {
-      bindingKey = nextKey;
-      project.value = value.binding?.root ?? '';
-      run.value = value.binding?.runId ?? '';
-    }
-    const observation = value.observation;
-    const image = observation?.image;
+    const playMode = selectedSource() === 'play';
+    source.value = playMode ? 'play' : 'run';
+    source.setAttribute('aria-label', t('display.source'));
+    text(sourceText, t('display.source'));
+    text(playOption, t('display.play'));
+    text(runOption, t('display.independent'));
+    const projectRoot = !playMode && value.binding ? value.binding.root : workspace?.project?.root;
+    text(project, projectRoot === workspace?.project?.root ? workspace?.project?.name ?? t('display.noProject') : projectRoot?.split(/[\\/]/).pop() ?? t('display.noProject'));
+    project.title = projectRoot ?? '';
+    text(connect, t(value.binding ? 'display.reconnect' : 'display.connect'));
+    text(disconnect, t('display.disconnect'));
+    connect.hidden = playMode;
+    disconnect.hidden = playMode || !value.binding;
+    connect.disabled = busy || !workspace?.project?.root;
+    disconnect.disabled = busy;
+    const play = activePlay();
+    const observation = playMode ? null : value.observation;
+    const image = playMode ? playFrame : observation?.image;
+    const error = playMode ? playFrame?.error : actionError || value.error;
+    const phase = playMode ? play?.phase : observation?.status?.phase;
+    const ended = playMode ? !play && !!playFrame : value.status === 'unavailable' && !!observation;
+    const empty = playMode ? 'display.noPlay' : attemptedRoot === workspace?.project?.root ? 'display.noRun' : 'display.notConnected';
+    text(summary, busy && !playMode ? t('display.connecting') : error || t(ended ? 'display.ended' : phase ? `display.phase.${phase}` : empty));
     const stamp = image?.capturedAt;
-    const stale = stamp && (Date.now() - Date.parse(stamp) > 15000 || image.revision !== observation?.status?.revision || observation?.status?.phase !== 'ready');
-    const nextSummary = value.error ?? (observation
-      ? `${observation?.status?.phase ?? value.status}${observation?.status?.runId ? ` · Run ${observation.status.runId.slice(0, 8)}` : ''}${observation?.status?.inputVersion ? ` · Input ${observation.status.inputVersion.slice(7, 19)}` : ''} · ${stamp ? `Captured ${stamp}${image.frameId === undefined ? '' : ` · Frame ${image.frameId}`}${stale ? ' · Stale image' : ''}` : 'No captured image yet'}`
-      : 'No Engine run is connected.');
-    if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
+    const stale = ended || !!stamp && (Date.now() - Date.parse(stamp) > 15000 || (playMode ? play?.phase !== 'running' : phase !== 'ready' || 'revision' in image && image.revision !== observation?.status?.revision));
+    text(metadata, stamp ? `${t('display.captured', { time: new Date(stamp).toLocaleTimeString(getLocale()) })}${image?.frameId === undefined ? '' : ` · ${t('display.frame', { frame: image.frameId })}`}${stale ? ` · ${t('display.lastImage')}` : ''}` : '');
+    picture.alt = t('display.image');
     showImage(image?.png);
-    const nextLogs = (observation?.droppedLogs ? `${observation.droppedLogs} earlier log entries omitted.\n` : '') + (observation?.logs?.map(entry => `[${entry.sequence}] ${entry.level}: ${entry.text}`).join('\n') ?? '');
-    if (logs.textContent !== nextLogs) logs.textContent = nextLogs;
+    text(hint, t(playMode ? 'display.playHint' : 'display.runHint'));
+    text(logTitle, t('display.logs'));
+    logs.setAttribute('aria-label', t('display.logs'));
+    text(logs, (observation?.droppedLogs ? t('display.omitted', { count: observation.droppedLogs }) + '\n' : '') + (observation?.logs?.map(entry => `[${entry.sequence}] ${entry.level}: ${entry.text}`).join('\n') ?? ''));
+    logDetails.hidden = !logs.textContent;
+    text(identityTitle, t('display.details'));
+    text(identity, playMode ? playFrame ? `Target: ${playFrame.targetId}\nGeneration: ${playFrame.generation}` : '' : value.binding ? `Project: ${value.binding.root}\nRun: ${value.binding.runId}\nInput: ${observation?.status?.inputVersion ?? ''}` : '');
+    identityDetails.hidden = !identity.textContent;
   };
-  const unsubscribeObservation = status.subscribe(render);
-  const reader = createWorkspaceStateReader(client && typeof client.subscribe === 'function' ? client as WorkspaceStateClient : undefined);
+  const unsubscribeObservation = status.subscribe(() => {
+    if (sourceChoice === undefined && status.snapshot().binding && !activePlay()) sourceChoice = 'run';
+    syncPlay(); render();
+  });
+  const reader = createWorkspaceStateReader(typeof client?.subscribe === 'function' ? client as WorkspaceStateClient : undefined);
   const unsubscribeWorkspace = reader.subscribe(() => {
-    workspace = reader.getSnapshot();
+    const next = reader.getSnapshot();
+    if (workspace?.project?.root !== next?.project?.root) { playFrame = undefined; attemptedRoot = undefined; actionError = ''; }
+    workspace = next;
+    if (sourceChoice === undefined && activePlay()) sourceChoice = 'play';
     syncPlay();
     if (live) render();
   });
   const stopVisibility = observeElementVisibility(surface, next => { visible = next; syncPlay(); });
+  const unsubscribeLocale = subscribeLocale(render);
   render();
-  const dispose = () => {
+  return () => {
     live = false;
     stopVisibility();
     stopPlayCapture();
     unsubscribeObservation();
     unsubscribeWorkspace();
+    unsubscribeLocale();
     reader.dispose();
-    form.removeEventListener('submit', submit);
+    connect.removeEventListener('click', attach);
     disconnect.removeEventListener('click', detach);
+    source.removeEventListener('change', chooseSource);
   };
-  return dispose;
 }

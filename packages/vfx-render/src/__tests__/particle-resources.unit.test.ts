@@ -293,6 +293,41 @@ describe('VFX Mesh world-space projection', () => {
   });
 });
 
+describe('authored unlit mesh fallback', () => {
+  const renderState = { depthWriteEnabled: false, queue: 3000 };
+  const material = {
+    kind: 'material',
+    passes: [{ name: 'forward', program: { module: 'game::unlit' }, renderState }],
+  } as MaterialAsset;
+
+  it.each([false, true])('specializes only an unlit stock mesh fallback, inputs=%s', (inputs) => {
+    expect(particleMaterialPass('mesh', material, inputs, undefined, true)).toEqual({
+      shader: `forgeax::vfx-render.particles.${inputs ? 'mesh-inputs-unlit' : 'mesh-unlit'}`,
+      renderState,
+    });
+    expect(particleMaterialPass('mesh', material, inputs, undefined, false)).toEqual({
+      shader: `forgeax::vfx-render.particles.${inputs ? 'mesh-inputs' : 'mesh'}`,
+      renderState,
+    });
+  });
+
+  it('preserves an explicit particle mesh program and its state', () => {
+    const custom = {
+      kind: 'material',
+      passes: [
+        { name: 'particle-mesh', program: { module: 'game::authored-particle' }, renderState },
+      ],
+    } as MaterialAsset;
+    expect(particleMaterialPass('mesh', custom, false, undefined, true)).toEqual({
+      shader: 'game::authored-particle',
+      renderState,
+    });
+    expect(particleMaterialPass('billboard', material, false, undefined, true)).toEqual({
+      shader: 'forgeax::vfx-render.particles.billboard',
+    });
+  });
+});
+
 describe('particle renderer blend defaults', () => {
   it('maps additive billboard output to premultiplied RGB plus additive color blending', () => {
     expect(particleRendererRenderState('billboard', 'additive', undefined)).toEqual({

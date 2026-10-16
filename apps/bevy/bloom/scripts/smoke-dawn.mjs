@@ -157,23 +157,23 @@ const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 const phaseFrames = Math.max(1, Math.floor(TARGET_FRAMES / 3));
 let framesObserved = 0;
 let drawErrors = 0;
-const drawPhase = (count) => {
+const drawPhase = async (count) => {
   for (let i = 0; i < count; i += 1) {
     world.update().unwrap();
-    const r = drawSmokeFrame(renderer, world);
+    const r = await drawSmokeFrame(renderer, world);
     if (!r.ok) { drawErrors += 1; console.error(`[smoke] draw frame ${framesObserved} error: ${r.error.code}`); }
     framesObserved += 1;
   }
 };
 
 world.set(scene.camera, Camera, { bloom: BLOOM_DISABLED });
-drawPhase(phaseFrames);
+await drawPhase(phaseFrames);
 const bloomOffPixels = await capturePixels();
 world.set(scene.camera, Camera, { bloom: BLOOM_ENABLED });
-drawPhase(phaseFrames);
+await drawPhase(phaseFrames);
 const bloomOnPixels = await capturePixels();
 const passNames = renderer.inspect().perFramePassNames;
-drawPhase(TARGET_FRAMES - phaseFrames * 2);
+await drawPhase(TARGET_FRAMES - phaseFrames * 2);
 
 const artifactDir = resolve(here, '..', 'artifacts');
 mkdirSync(artifactDir, { recursive: true });

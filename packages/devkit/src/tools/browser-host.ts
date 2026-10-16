@@ -9,6 +9,8 @@ import type {
 } from '@forgeax/engine-app';
 import { createResourcePreviewReport, type ResourcePreviewReport } from '@forgeax/engine-preview';
 import {
+  type ArtifactRef,
+  createArtifactRef,
   createPreviewArtifactManifest,
   type JsonValue,
   type PreviewArtifactManifestEntry,
@@ -18,6 +20,7 @@ import {
 } from '@forgeax/engine-tool-runtime';
 import {
   type Browser,
+  type BrowserServer,
   type ConsoleMessage,
   chromium,
   type Frame,
@@ -44,7 +47,46 @@ import type { PreviewHostResult } from './preview-host.js';
 
 export type BrowserHostResult =
   | { readonly ok: true; readonly value: PreviewHostResult }
-  | { readonly ok: false; readonly error: ToolDomainFailure };
+  | {
+      readonly ok: false;
+      readonly error: ToolDomainFailure;
+      readonly artifacts?: readonly ArtifactRef[];
+    };
+
+/** Observe the generated Host's readiness within its existing startup budget. */
+export async function waitForBrowserToolHost(
+  realm: Page | Frame,
+  name: '__forgeaxToolHost' | '__forgeaxToolReplayHost',
+  timeoutMs = 45_000,
+): Promise<void> {
+  const observation = await realm.waitForFunction(
+    (key) => {
+      const fatal = document.querySelector('#forgeax-fatal');
+      if (fatal?.checkVisibility())
+        return (
+          document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
+          fatal.textContent?.trim() ||
+          'Engine startup failed'
+        ).slice(0, 16_384);
+      return (globalThis as unknown as Record<string, { ready?: boolean }>)[key]?.ready === true;
+    },
+    name,
+    { timeout: timeoutMs },
+  );
+  let failure: unknown;
+  try {
+    failure = await observation.jsonValue();
+  } finally {
+    await observation.dispose();
+  }
+  if (typeof failure === 'string')
+    throw {
+      code: 'tool-preview-startup-failed',
+      expected: 'the generated Engine Host to start without a terminal failure',
+      hint: 'Repair the reported startup cause before retrying this preview.',
+      detail: { cause: failure },
+    };
+}
 
 function transportCause(cause: unknown): JsonValue {
   if (cause instanceof Error) {
@@ -337,11 +379,62 @@ export async function publishPreviewArtifacts(
   };
 }
 
+/** A failed replay still owns the real capture evidence; it has no successful preview manifest. */
+export async function publishFailedPreviewCapture(
+  projectRoot: string,
+  runId: string,
+  capture: ToolPreviewCaptureResult,
+): Promise<readonly ArtifactRef[]> {
+  const root = join(projectRoot, '.forgeax', 'tool-runs');
+  await mkdir(root, { recursive: true });
+  const published = join(
+    root,
+    `${runId.replace(/[^a-zA-Z0-9._-]/g, '_')}-${capture.captureId.replace(/[^a-zA-Z0-9._-]/g, '_')}-failed-capture`,
+  );
+  const parts = [
+    {
+      name: 'capture.rhitape',
+      kind: 'rhi-tape' as const,
+      mediaType: 'application/octet-stream',
+      bytes: dataUriBytes(capture.tape.jsonUri),
+    },
+    {
+      name: 'capture.png',
+      kind: 'png' as const,
+      mediaType: 'image/png',
+      bytes: dataUriBytes(capture.capturePng.uri),
+    },
+    {
+      name: 'profile.json',
+      kind: 'profile-capture' as const,
+      mediaType: 'application/json',
+      bytes: dataUriBytes(capture.profile.uri),
+    },
+  ];
+  const staging = await mkdtemp(join(root, '.staging-'));
+  try {
+    await Promise.all(parts.map((part) => writeFile(join(staging, part.name), part.bytes)));
+    await rename(staging, published);
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+  return parts.map((part) =>
+    createArtifactRef({
+      kind: part.kind,
+      mediaType: part.mediaType,
+      digest: sha256(part.bytes),
+      sizeBytes: part.bytes.byteLength,
+      uri: projectUri(projectRoot, join(published, part.name)),
+    }),
+  );
+}
+
 function browserFailure(
   phase: string,
   cause: unknown,
   pageErrors: readonly string[] = [],
-): BrowserHostResult {
+): Extract<BrowserHostResult, { ok: false }> {
   if (
     cause !== null &&
     typeof cause === 'object' &&
@@ -457,10 +550,36 @@ export async function runBrowserPreviewHost(
   const hostStartedAtMs = performance.now();
   let phase = 'server-listen';
   let browser: Browser | undefined;
+  let browserServer: BrowserServer | undefined;
   let page: Page | undefined;
   let carrierAttachment: BrowserCarrierAttachment | undefined;
   let carrierFallbackReason: string | undefined;
   let pageErrors: string[] = [];
+  let completedCapture: ToolPreviewCaptureResult | undefined;
+  const failedWithCapture = async (
+    cause: unknown,
+  ): Promise<Extract<BrowserHostResult, { ok: false }>> => {
+    const failure = browserFailure(phase, cause, pageErrors);
+    if (!completedCapture) return failure;
+    try {
+      return {
+        ...failure,
+        artifacts: await publishFailedPreviewCapture(projectRoot, runId, completedCapture),
+      };
+    } catch (error) {
+      return {
+        ...failure,
+        error: {
+          ...failure.error,
+          detail: {
+            phase,
+            cause: transportCause(cause),
+            evidencePublicationError: transportCause(error),
+          },
+        },
+      };
+    }
+  };
   let removePageListeners: () => void = () => {};
   const requestedBackend = options.backend ?? 'auto';
   const launchBackend: CaptureBackend = requestedBackend === 'software' ? 'software' : 'hardware';
@@ -468,8 +587,13 @@ export async function runBrowserPreviewHost(
   const channel = process.env.FORGEAX_CHROME_CHANNEL;
   const executablePath =
     channel === undefined ? await resolveBrowserExecutable(undefined) : undefined;
-  const launchBrowser = (headlessMode: boolean, backend: CaptureBackend): Promise<Browser> =>
-    chromium.launch({
+  const launchBrowser = async (
+    headlessMode: boolean,
+    backend: CaptureBackend,
+  ): Promise<Browser> => {
+    // Keep the native process owner independently of the protocol connection.
+    // A crashed/disconnected client may close without terminating Chromium.
+    const owner = await chromium.launchServer({
       ...(channel === undefined ? {} : { channel }),
       ...(executablePath === undefined ? {} : { executablePath }),
       headless: headlessMode,
@@ -491,6 +615,18 @@ export async function runBrowserPreviewHost(
         : {}),
       chromiumSandbox: true,
     });
+    browserServer = owner;
+    try {
+      if (signal.aborted) throw new Error('Browser Host aborted during browser launch');
+      const connected = await chromium.connect(owner.wsEndpoint());
+      if (signal.aborted) throw new Error('Browser Host aborted during browser connection');
+      return connected;
+    } catch (cause) {
+      if (browserServer === owner) browserServer = undefined;
+      await owner.kill();
+      throw cause;
+    }
+  };
   const observePage = (target: Page, execution: BrowserExecutionTarget): void => {
     removePageListeners();
     const targetFrame = execution.kind === 'frame' ? execution.realm : undefined;
@@ -527,23 +663,31 @@ export async function runBrowserPreviewHost(
       removePageListeners = () => {};
     };
   };
+  let browserRetirement: Promise<unknown> = Promise.resolve();
   const closeBrowserProcess = async (releaseCarrier = false): Promise<void> => {
     const activePage = page;
     const activeBrowser = browser;
+    const activeBrowserServer = browserServer;
     const activeCarrier = carrierAttachment;
     page = undefined;
     browser = undefined;
+    browserServer = undefined;
     removePageListeners();
     if (releaseCarrier) carrierAttachment = undefined;
-    await Promise.allSettled([
+    browserRetirement = Promise.allSettled([
+      browserRetirement,
       ...(activeCarrier === undefined && activePage !== undefined
         ? [activePage.close().catch(() => undefined)]
         : []),
       activeBrowser?.close(),
+      // These private preview realms have no borrowed application lifetime.
+      // Retire the actual process even if its client has already disconnected.
+      activeBrowserServer?.kill(),
       ...(releaseCarrier && activeCarrier !== undefined
         ? [activeCarrier.close('tool-preview-close')]
         : []),
     ]);
+    await browserRetirement;
   };
   const abort = (): void => {
     void closeBrowserProcess(true);
@@ -617,16 +761,7 @@ export async function runBrowserPreviewHost(
     // the actual Engine Host ready below; wait for DOM parsing and that owner
     // signal instead of waiting for a connection that is intentionally live.
     await captureRealm.goto(captureUrl.href, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await captureRealm.waitForFunction(
-      () =>
-        (
-          globalThis as unknown as {
-            __forgeaxToolHost?: { readonly ready?: boolean };
-          }
-        ).__forgeaxToolHost?.ready === true,
-      undefined,
-      { timeout: 45_000 },
-    );
+    await waitForBrowserToolHost(captureRealm, '__forgeaxToolHost');
     phase = 'capture-run';
     const captured = await captureRealm.evaluate(async () => {
       const host = (
@@ -654,6 +789,7 @@ export async function runBrowserPreviewHost(
       ) as Awaited<ReturnType<typeof host.capture>>;
     });
     if (!captured.ok) return browserFailure('capture-run', captured.error, pageErrors);
+    completedCapture = captured.result;
     const captureCapabilityFailure = skinCapabilityFailure(resource?.kind, [
       ...(Array.isArray(captured.result.appErrors) ? captured.result.appErrors : []),
       ...pageErrors,
@@ -705,6 +841,7 @@ export async function runBrowserPreviewHost(
         height: reuseCanvasCapture ? captured.result.capturePng.height : recipe.viewport.height,
       },
     };
+    completedCapture = capturedResult;
 
     await closeBrowserProcess();
     pageErrors = [];
@@ -722,16 +859,7 @@ export async function runBrowserPreviewHost(
     const replayUrl = new URL(`http://127.0.0.1:${address.port}/`);
     replayUrl.searchParams.set('forgeax-tool-replay', '1');
     await page.goto(replayUrl.href, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await page.waitForFunction(
-      () =>
-        (
-          globalThis as unknown as {
-            __forgeaxToolReplayHost?: { readonly ready?: boolean };
-          }
-        ).__forgeaxToolReplayHost?.ready === true,
-      undefined,
-      { timeout: 45_000 },
-    );
+    await waitForBrowserToolHost(page, '__forgeaxToolReplayHost');
     phase = 'replay-run';
     const result = (await page.evaluate(async (serializedCapture: string): Promise<unknown> => {
       const host = (
@@ -757,7 +885,7 @@ export async function runBrowserPreviewHost(
     }, JSON.stringify(capturedResult))) as
       | { readonly ok: true; readonly result: PreviewHostResult }
       | { readonly ok: false; readonly error: ToolDomainFailure };
-    if (!result.ok) return browserFailure('replay-run', result.error, pageErrors);
+    if (!result.ok) return failedWithCapture(result.error);
     if (pageErrors.length > 0)
       return browserFailure('replay-page-runtime', pageErrors[0], pageErrors);
 
@@ -817,7 +945,7 @@ export async function runBrowserPreviewHost(
           : await publishPreviewArtifacts(projectRoot, runId, value),
     };
   } catch (cause) {
-    return browserFailure(phase, cause, pageErrors);
+    return await failedWithCapture(cause);
   } finally {
     signal.removeEventListener('abort', abort);
     await closeBrowserProcess(true);

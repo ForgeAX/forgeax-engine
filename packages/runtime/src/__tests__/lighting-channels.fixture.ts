@@ -20,6 +20,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
@@ -292,55 +293,58 @@ export async function verifyLightingChannels(
   const draw = async (observe: boolean, capture: boolean) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (observe) renderValue(required(renderer.requestObservation?.(['linear-hdr'])));
     const pending = capture ? options.recorder?.captureFrame() : undefined;
     if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
     time += 1 / 60;
-    const candidate = publisher?.prepare(time).unwrap();
-    const packet =
-      candidate === undefined
-        ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
-          });
-    candidate?.accept();
-    try {
-      const receipt = renderValue(
-        renderer.draw(
-          packet === undefined
-            ? {
-                leases: [required(lease)],
-                camera: { lease: required(lease) },
-                environment: { lease: required(lease) },
-              }
-            : { publication: packet },
-        ),
-      );
-      renderValue(await receipt.completed);
-      let tape: EncodedTape | undefined;
-      if (pending !== undefined) {
-        (await options.recorder?.frameBoundary())?.unwrap();
-        tape = compactTape((await pending).unwrap());
-      }
-      const observation = observe
-        ? renderValue(
-            await renderer.observe(receipt, { include: ['linear-hdr'] }),
-          ).observations?.find((value) => value.domain === 'linear-hdr')
-        : undefined;
-      const image =
-        observation === undefined
+    const receipt = await completeReadyFrame(async () => {
+      const candidate = publisher?.prepare(time).unwrap();
+      const packet =
+        candidate === undefined
           ? undefined
-          : luminanceRgba16f(
-              observation.bytes,
-              CHANNEL_SIZE,
-              CHANNEL_SIZE,
-              observation.metadata.bytesPerRow,
-            );
-      return { tape, image };
-    } finally {
-      if (packet !== undefined)
-        required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+          : structuredClone(candidate.packet, {
+              transfer: renderPublicationTransfers(candidate.packet),
+            });
+      candidate?.accept();
+      try {
+        if (observe) renderValue(required(renderer.requestObservation?.(['linear-hdr'])));
+        const receipt = renderValue(
+          renderer.draw(
+            packet === undefined
+              ? {
+                  leases: [required(lease)],
+                  camera: { lease: required(lease) },
+                  environment: { lease: required(lease) },
+                }
+              : { publication: packet },
+          ),
+        );
+        renderValue(await receipt.completed);
+        return receipt;
+      } finally {
+        if (packet !== undefined)
+          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      }
+    });
+    let tape: EncodedTape | undefined;
+    if (pending !== undefined) {
+      (await options.recorder?.frameBoundary())?.unwrap();
+      tape = compactTape((await pending).unwrap());
     }
+    const observation = observe
+      ? renderValue(
+          await renderer.observe(receipt, { include: ['linear-hdr'] }),
+        ).observations?.find((value) => value.domain === 'linear-hdr')
+      : undefined;
+    const image =
+      observation === undefined
+        ? undefined
+        : luminanceRgba16f(
+            observation.bytes,
+            CHANNEL_SIZE,
+            CHANNEL_SIZE,
+            observation.metadata.bytesPerRow,
+          );
+    return { tape, image };
   };
   const samples: ChannelSample[] = [];
   const profile = renderer.inspect().profile;

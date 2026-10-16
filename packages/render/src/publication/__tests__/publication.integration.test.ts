@@ -46,6 +46,7 @@ import { Materials } from '../../materials';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { subsurfaceDemand } from '../../subsurface/demand';
 import { renderPublicationTransfers } from '../contract';
+import { publicationDispatchGroups } from '../dispatch-groups';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
@@ -93,6 +94,75 @@ function fixture() {
 }
 
 describe('native render publication', () => {
+  it('owns dispatch membership without freezing borrowed packet rows or nested material values', () => {
+    const f = fixture();
+    const candidate = f.publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    try {
+      const source = packet.templates[0]?.dispatch[0];
+      expect(source).toBeDefined();
+      const accepted = f.receiver.accept(packet).unwrap();
+      const groups = publicationDispatchGroups(accepted.frame);
+      expect(groups).toBeDefined();
+      expect(Object.isFrozen(accepted.frame.dispatch)).toBe(true);
+      expect(accepted.frame.dispatch.every(Object.isFrozen)).toBe(true);
+      expect(Object.isFrozen(source)).toBe(false);
+      for (const [index, row] of accepted.frame.renderables.entries()) {
+        expect(groups?.[index]).toEqual(
+          accepted.frame.dispatch.filter((entry) => entry.renderableIndex === index),
+        );
+        expect(row.entityKey).toBeGreaterThan(0);
+      }
+      if (source !== undefined) Object.assign(source, { renderableIndex: 1000 });
+      const first = accepted.frame.dispatch[0];
+      expect(first?.renderableIndex).toBe(0);
+      if (first !== undefined) {
+        first.tags.observed = 'live-nested-value';
+        expect(groups?.[0]?.[0]?.tags.observed).toBe('live-nested-value');
+      }
+      const late = f.receiver.snapshot(accepted);
+      expect(publicationDispatchGroups(late.frame)).toBeDefined();
+      expect(late.frame.dispatch.every(Object.isFrozen)).toBe(true);
+      expect(f.scene.consumePublication(late).renderables).toHaveLength(2);
+    } finally {
+      f.publisher.dispose();
+      f.receiver.dispose();
+      f.scene.dispose();
+    }
+  });
+
+  it('observes replacement borrowed dispatch and accessors instead of retaining accepted membership', () => {
+    const f = fixture();
+    const candidate = f.publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    try {
+      const accepted = f.receiver.accept(packet).unwrap();
+      let reads = 0;
+      const dispatch = accepted.frame.dispatch.map((entry) => ({
+        ...entry,
+        get renderableIndex() {
+          reads++;
+          return entry.renderableIndex;
+        },
+      }));
+      const borrowed = { ...accepted, frame: { ...accepted.frame, dispatch } };
+      expect(publicationDispatchGroups(borrowed.frame)).toBeUndefined();
+      const frame = f.scene.consumePublication(borrowed);
+      expect(reads).toBeGreaterThan(0);
+      expect(Object.isFrozen(dispatch)).toBe(false);
+      expect(dispatch.every((entry) => !Object.isFrozen(entry))).toBe(true);
+      expect(frame.dispatch.map((entry) => entry.materialHandle)).toEqual(
+        accepted.frame.dispatch.map((entry) => entry.materialHandle),
+      );
+    } finally {
+      f.publisher.dispose();
+      f.receiver.dispose();
+      f.scene.dispose();
+    }
+  });
+
   it.each([
     2, 3,
   ])('keeps custom packet getters isolated from a late failure (%s stable reads)', (stableReads) => {

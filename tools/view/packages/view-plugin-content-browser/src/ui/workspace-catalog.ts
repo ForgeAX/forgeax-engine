@@ -18,19 +18,29 @@ export interface PackSourceRow {
   diagnostic?: { code: string; hint: string };
 }
 
-/** Presentation of the Engine catalog, not a filesystem inventory. */
-export function projectCatalog(root: string, assets: readonly CatalogAsset[], sources: readonly PackSourceRow[] = [], htmlFiles: readonly string[] = []) {
-  const files = new Map<string, CBFile>();
+/** A source belongs to the browser only when it is inside an authored asset directory. */
+export function assetSourcePath(root: string, assetRoots: readonly string[], source: string) {
   const prefix = `${root.replaceAll('\\', '/').replace(/\/$/, '')}/`;
+  const normalized = source.replaceAll('\\', '/').replace(/^\.\//, '');
+  const path = normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+  if (path.startsWith('/') || /^[a-z]:\//i.test(path) || path.split('/').some(part => part === '..' || part === '.' || part === '')) return undefined;
+  return assetRoots.some(directory => path.startsWith(`${directory}/`)) ? path : undefined;
+}
+
+/** Presentation of configured authoring sources, never a filesystem inventory. */
+export function projectCatalog({ root, assetRoots, assets, sources = [], htmlFiles = [] }: {
+  root: string; assetRoots: readonly string[]; assets: readonly CatalogAsset[];
+  sources?: readonly PackSourceRow[]; htmlFiles?: readonly string[];
+}) {
+  const files = new Map<string, CBFile>();
   for (const asset of assets) {
-    const source = (asset.sourcePath ?? asset.path ?? asset.guid).replaceAll('\\', '/');
-    const relative = source.startsWith(prefix) ? source.slice(prefix.length) : source;
-    const external = relative.startsWith('/') || /^[a-z]:\//i.test(relative) || relative.split('/').includes('..');
-    // External catalog sources are a presentation group, never project navigation segments.
-    const path = external ? `External assets/${encodeURIComponent(source)}` : relative.replace(/^\.\//, '');
+    const source = asset.sourcePath ?? asset.path;
+    if (!source) continue;
+    const path = assetSourcePath(root, assetRoots, source);
+    if (!path) continue;
     let file = files.get(path);
     if (!file) {
-      file = { type: 'file', path, diskPath: source, name: source.split('/').at(-1)!,
+      file = { type: 'file', path, diskPath: source, name: path.split('/').at(-1)!,
         family: 'pack', assets: [], isAssetPackage: false, kindLabel: '' };
       files.set(path, file);
     }
@@ -42,8 +52,8 @@ export function projectCatalog(root: string, assets: readonly CatalogAsset[], so
     file.isAssetPackage = isPackSourceFileName(file.name) || isResourceGroup(file.assets.length);
   }
   for (const source of sources) {
-    const path = source.sourcePath.replaceAll('\\', '/');
-    if (path.startsWith('/') || path.split('/').includes('..') || !isPackSourceFileName(path)) continue;
+    const path = assetSourcePath(root, assetRoots, source.sourcePath);
+    if (!path || !isPackSourceFileName(path)) continue;
     let file = files.get(path);
     if (!file) {
       file = { type: 'file', path, diskPath: path, name: path.split('/').at(-1)!, family: 'pack', assets: [], isAssetPackage: true, kindLabel: '' };
@@ -52,8 +62,9 @@ export function projectCatalog(root: string, assets: readonly CatalogAsset[], so
     file.isAssetPackage = true;
     if (source.diagnostic) file.diagnostic = source.diagnostic;
   }
-  for (const path of htmlFiles) {
-    if (path.startsWith('/') || path.split('/').includes('..') || !path.toLowerCase().endsWith('.html')) continue;
+  for (const source of htmlFiles) {
+    const path = assetSourcePath(root, assetRoots, source);
+    if (!path || !path.toLowerCase().endsWith('.html')) continue;
     const existing = files.get(path);
     if (existing) {
       existing.diskPath = path;
@@ -65,8 +76,8 @@ export function projectCatalog(root: string, assets: readonly CatalogAsset[], so
     files.set(path, { type: 'file', path, diskPath: path, name: path.split('/').at(-1)!, family: 'ui', assets: [], isAssetPackage: false, kindLabel: 'HTML' });
   }
   const folders = new Map<string, CBFolder>();
-  for (const file of files.values()) {
-    const parts = file.path.split('/').filter(Boolean).slice(0, -1);
+  for (const source of [...assetRoots.map(path => `${path}/`), ...files.keys()]) {
+    const parts = source.split('/').slice(0, -1);
     for (let index = 0; index < parts.length; index++) {
       const path = parts.slice(0, index + 1).join('/');
       if (!folders.has(path)) folders.set(path, { type: 'folder', path, name: parts[index]!, childCount: 0 });

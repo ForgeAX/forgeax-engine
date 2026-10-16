@@ -23,6 +23,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, describe, expect, it } from 'vitest';
 import { readbackTexturePixels } from '../../../../../../packages/rhi-debug/src/readback';
+import { drawReadyFrame } from '../../../../../../scripts/test/ready-render-frame.mjs';
 import sceneCaseSchema from '../../../schemas/scene-case.schema.json' with { type: 'json' };
 import { createForgeaxAdapter } from '../../../src/adapters/forgeax-adapter';
 import { createThreeAdapter } from '../../../src/adapters/three-adapter';
@@ -476,14 +477,11 @@ async function capturePipelineEvidence(
     spawnHdrpScene(world, sceneCase, spotScene, falsifier, receiver, projectorEnabled);
     world.update().unwrap();
     for (let frame = 0; frame < captureFrames; frame += 1) {
-      const drawn = renderer.draw({
+      await drawReadyFrame(renderer, {
         leases: [lease],
         camera: { lease },
         environment: { lease },
       });
-      if (!drawn.ok) throw drawn.error;
-      const completed = await drawn.value.completed;
-      if (!completed.ok) throw completed.error;
       if (frame + 1 < captureFrames) world.update().unwrap();
     }
     return {

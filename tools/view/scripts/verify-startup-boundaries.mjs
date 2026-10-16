@@ -136,10 +136,21 @@ try {
       text.includes('startup-proof: graphics unavailable');
   }, undefined, { timeout: 60_000 });
   await page.locator('[data-page-id="page-display"]').click();
-  await page.getByLabel('Observed project path').fill(root);
-  await page.getByLabel('Observed run ID').fill('exact-missing-run');
-  await page.getByRole('button', { name: 'Observe run', exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('.fx-view-run-observer')?.textContent.includes('no longer active'));
+  await page.getByLabel('Capture source').selectOption('run');
+  assert.equal(await page.locator('.fx-view-run-observer input').count(), 0);
+  await page.getByRole('button', { name: 'View project run', exact: true }).click();
+  await page.getByText('No independent Engine run was found for this project.', { exact: true }).waitFor();
+  // Exact binding remains an API contract, separate from the context-derived UI.
+  await client.call('display.bind', { root, runId: 'exact-missing-run' });
+  const observationDeadline = Date.now() + 30_000;
+  let observed;
+  do {
+    observed = await client.call('display.status');
+    if (observed.status === 'unavailable') break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (Date.now() < observationDeadline);
+  assert.match(observed.error, /no longer active/);
+  assert.equal(observed.observation, null);
   assert.equal(await openDialog.count(), 0, 'the project dialog closes after opening a project');
   const snapshot = await client.getState();
   assert.equal(snapshot.project.root, await realpath(root));
@@ -151,8 +162,8 @@ try {
   assert.equal((await command('backend', 'status')).phase, 'ready');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.screenshot({ path: '/tmp/view-startup-renderer-failure.png' });
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('input[aria-label="Observed run ID"]')?.value === '');
+  await client.call('display.bind', { root: null });
+  assert.equal((await client.call('display.status')).binding, null);
   assert.equal((await command('view', 'stop')).phase, 'stopped');
   assert.equal((await command('backend', 'status')).phase, 'ready');
   const restarted = await command('view', 'start', '--input', viewStartInput);

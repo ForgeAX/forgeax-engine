@@ -13,7 +13,7 @@ export async function mountAssetPropertiesPanel(props: MountProps) {
   const root = createRoot(props.mountElement);
   root.render(
     <OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
-      <AssetPropertiesPanel client={props.client} />
+      <AssetPropertiesPanel client={props.client} assetActions={props.assetActions} />
     </OverlayRootProvider>,
   );
   return async () => root.unmount();

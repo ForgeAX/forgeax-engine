@@ -104,9 +104,12 @@ Consumers comparing a selected output with a live Catalog row must require the
 returned GUID to match. A ScriptablePack source inspection does not execute
 `build` to synthesize an authored payload.
 
-`listPackSources(projectRoot, limit)` from the Node-only `build` entry lists up
+`listPackSources(projectRoot, limit, assetRoots)` from the Node-only `build` entry lists up
 to 200 project-relative `.pack.json` / `.pack.ts` paths with a source SHA-256
-revision. It records diagnostics per source so malformed JSON does not hide
+revision. Optional project-relative `assetRoots` restrict traversal before either
+bound is applied; omitted roots scan the project, while `[]` scans nothing.
+Overlapping roots are visited once, and symlinked directories are not followed.
+It records diagnostics per source so malformed JSON does not hide
 healthy siblings. A v3 direct or instance Pack exposes its parsed `packageId`;
 an instance has no authored output until its parent is resolved. Scriptable
 sources are listed as unmaterialized without executing their module. `hasMore`
@@ -398,6 +401,8 @@ compiled closure on disk. The executor retains its existing 256 MiB
 old-generation limit.
 
 Path-only scans and explicit `metadataOnly` inventories read at most four ScriptablePack modules concurrently, each in its own isolated worker. They settle all started reads before reporting failure and publish declarations in source order. Inventories retaining build closures and scans using a caller-owned executor remain serial; metadata parallelism never shares or recycles those live leases.
+
+The filesystem authoring gateway requests metadata-only inventories: authoring operations consume declarations and source parameters, never retained Pack build closures. Their workers are released after metadata reads, and the same four-worker bound applies to gateway queries and edits. Caller-supplied inventories retain their own execution policy.
 
 | Standalone project stage | Worker ownership |
 |:--|:--|
@@ -853,7 +858,7 @@ copies declaration data, resolves executor/export pairs, and removes `exportName
 after the program key selects it. It never evaluates a module. Runtime-authored
 plugins use inline declarations; module-reference contracts require producer preparation.
 
-The build subpath exposes `collectAuthorPackClosure`: author Pack, statically declared modules/resources, Meta sidecars (including the required `.ui.html` / `.ui.css` pair) and referenced output owners, plus project WGSL module identities and transitive imports, with file digests and declared npm dependencies. Computed source-discoverable outputs are evaluated by the existing isolated Pack executor. A source that requires cooked reads is rejected for transfer with its owning path. The Pack authoring gateway delegates import/clone to DevKit's project transaction, which validates the dependency lock, complete candidate source closure, and candidate compilation. File-only cloning has been removed.
+The build subpath exposes `collectAuthorPackClosure(projectRoot, sourcePath, assetRoots)`: author Pack, statically declared modules/resources, Meta sidecars (including the required `.ui.html` / `.ui.css` pair) and referenced output owners, plus project WGSL module identities and transitive imports, with file digests and declared npm dependencies. Computed source-discoverable outputs are evaluated by the existing isolated Pack executor. A source that requires cooked reads is rejected for transfer with its owning path. The Pack authoring gateway delegates import/clone to DevKit's project transaction, which validates the dependency lock, complete candidate source closure, and candidate compilation. File-only cloning has been removed.
 
 ### Runtime binary data capture
 

@@ -86,7 +86,7 @@ buildSpriteWorld(world, unwrapHandle(handle));
 
 for (let frame = 0; frame < FRAMES; frame++) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) throw new Error(`${result.error.code}: ${result.error.hint}`);
 }
 await device.queue.onSubmittedWorkDone();

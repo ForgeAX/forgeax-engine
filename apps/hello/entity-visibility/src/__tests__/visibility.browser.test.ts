@@ -4,6 +4,7 @@ import { createRenderer } from '@forgeax/engine-runtime';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createVisibilityDemoWorld } from '../main';
 
 const CANVAS_WIDTH = 640;
@@ -170,6 +171,7 @@ describe('entity visibility browser visual red test', () => {
           throw new Error(`createRenderer failed: ${describeStructuredError(created.error)}`);
         }
         renderer = created.value;
+        const activeRenderer = created.value;
         unsubscribeLost = renderer.subscribe((event) => {
           if (event.kind === 'state-changed' && event.current === 'device-lost') {
             lostReason = 'device-lost';
@@ -189,21 +191,11 @@ describe('entity visibility browser visual red test', () => {
           const updateResult = scene.world.update(1 / 60);
           if (!updateResult.ok)
             throw new Error(`world.update failed: ${describeStructuredError(updateResult.error)}`);
-          const result = renderer?.draw({
+          await drawReadyFrame(activeRenderer, {
             leases: [attached.value],
             camera: { lease: attached.value },
             environment: { lease: attached.value },
           });
-          if (result === undefined || !result.ok) {
-            throw new Error(
-              `renderer.draw failed: ${result?.ok === false ? describeStructuredError(result.error) : 'missing-result'}`,
-            );
-          }
-          const completed = await result.value.completed;
-          if (!completed.ok)
-            throw new Error(
-              `renderer submission failed: ${describeStructuredError(completed.error)}`,
-            );
           await new Promise<void>((resolve) => setTimeout(resolve, 120));
           if (lostReason !== undefined) {
             if (lostReason === 'destroyed') {

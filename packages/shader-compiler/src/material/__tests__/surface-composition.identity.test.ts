@@ -46,7 +46,7 @@ const material: MaterialAsset = {
   parameters: [],
 };
 
-function catalog() {
+function catalog(helperSource = noise, surfaceSource = customSurface) {
   const result = buildMaterialSourceCatalog({
     engine: [
       { path: 'standard.wgsl', source: template },
@@ -67,8 +67,8 @@ struct SurfaceData {
       { path: 'default.wgsl', source: defaultSurface },
     ],
     project: [
-      { path: 'rusted-surface.wgsl', source: customSurface },
-      { path: 'noise.wgsl', source: noise },
+      { path: 'rusted-surface.wgsl', source: surfaceSource },
+      { path: 'noise.wgsl', source: helperSource },
     ],
   });
   if (!result.ok) throw new Error(result.error.message);
@@ -76,6 +76,45 @@ struct SurfaceData {
 }
 
 describe('Surface composition and identity contract', () => {
+  it('reuses only identical lowering inputs and validates every warm caller', () => {
+    const input = {
+      material: 'warm-owner',
+      pass: 'Forward',
+      templateModule: 'forgeax_material::standard',
+      surfaceModule: 'game::rusted_surface',
+      sources: catalog(),
+      generatedParameters: '#define_import_path forgeax_material::parameters\n',
+    };
+    const first = composeSurfaceSource(input);
+    expect(first.ok).toBe(true);
+    expect(composeSurfaceSource({ ...input, material: 'another-owner' })).toEqual(first);
+    const changedHelper = composeSurfaceSource({
+      ...input,
+      sources: catalog(noise.replace('value.x + value.y', 'value.x * value.y')),
+    });
+    const changedParameters = composeSurfaceSource({
+      ...input,
+      generatedParameters: `${input.generatedParameters}\nconst extra: f32 = 2.0;`,
+    });
+    const changedSurface = composeSurfaceSource({
+      ...input,
+      sources: catalog(noise, customSurface.replace('0.2, 0.8', '0.4, 0.6')),
+    });
+    for (const changed of [changedHelper, changedParameters, changedSurface]) {
+      expect(changed.ok).toBe(true);
+      if (changed.ok && first.ok) expect(changed.value).not.toEqual(first.value);
+    }
+    const invalid = composeSurfaceSource({
+      ...input,
+      material: 'invalid-owner',
+      sources: catalog(noise, `${customSurface}\n@group(1) @binding(0) var forbidden: sampler;`),
+    });
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: { code: 'material-surface-forbidden-interface' },
+    });
+  });
+
   it('resolves one slot and includes transitive source closure for custom Surface', () => {
     const result = composeSurfaceSource({
       material: 'rusted-iron',

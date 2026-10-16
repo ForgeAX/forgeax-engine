@@ -10,6 +10,7 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 
@@ -272,13 +273,11 @@ async function captureCase(testCase: AlphaCase): Promise<[number, number, number
       data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
     });
     world.update().unwrap();
-    const drawn = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    expect(drawn.ok).toBe(true);
-    if (!drawn.ok) throw new Error(`draw failed: ${drawn.error.code}`);
     await device.queue.onSubmittedWorkDone();
     if (target === undefined) throw new Error('runtime Dawn render target not configured');
     return await readCenter(device, target);
@@ -301,13 +300,15 @@ describe('M2 runtime PBR alpha readback', () => {
   // one opaque, one mask, and one blend boundary on overloaded PR runners;
   // local/nightly runs retain the complete threshold matrix.
   for (const testCase of DAWN_CASES) {
-    it(`${testCase.caseId}: Materials.standard single draw is observable`, async () => {
+    it(`${testCase.caseId}: Materials.standard first ready picture is observable`, async () => {
       const actual = await captureCase(testCase);
       const expected = testCase.clear.map((channel) => Math.round(channel * 255));
       const isClear = actual.every(
         (channel, index) => Math.abs(channel - (expected[index] ?? 0)) <= 3,
       );
-      expect(isClear, `${testCase.caseId} first draw clear state`).toBe(!expectedVisible(testCase));
+      expect(isClear, `${testCase.caseId} first ready picture clear state`).toBe(
+        !expectedVisible(testCase),
+      );
       if (expectedVisible(testCase)) expect(actual).not.toEqual(expected);
     }, 60_000);
   }

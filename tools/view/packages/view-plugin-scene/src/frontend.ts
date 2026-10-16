@@ -28,6 +28,7 @@ export default {
       showPanelRail: false,
       hideWhenInactive: true,
       resourceSelector: { kinds: ['scene'] },
+      resourcePresentation: 'preview',
       priority: 10,
       createController: () => createEditorPageTitleController(ctx.get('viewOperationClient')),
     });

@@ -11,6 +11,7 @@ import {
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createRenderer } from '../createRenderer';
 
@@ -98,10 +99,11 @@ it('projects managed shared material and mesh writes into two independent browse
       const counts = [];
       for (const { renderer, lease } of consumers) {
         for (let frame = 0; frame < 3; frame++) {
-          const receipt = renderer
-            .draw({ leases: [lease], camera: { lease }, environment: { lease } })
-            .unwrap();
-          (await receipt.completed).unwrap();
+          await drawReadyFrame(renderer, {
+            leases: [lease],
+            camera: { lease },
+            environment: { lease },
+          });
         }
       }
       progress(`${name}-submitted`);

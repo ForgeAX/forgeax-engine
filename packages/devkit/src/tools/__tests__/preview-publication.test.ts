@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { publishPreviewArtifacts } from '../browser-host.js';
+import { publishFailedPreviewCapture, publishPreviewArtifacts } from '../browser-host.js';
 import type { PreviewHostResult } from '../preview-host.js';
 
 function dataUri(bytes: Uint8Array, mediaType: string): string {
@@ -144,6 +144,35 @@ describe('resource preview artifact publication', () => {
       expect(publishedManifest.identity).toEqual(manifest.identity);
       expect(report).toMatchObject({ runId, snapshot: { digest: 'sha256:snapshot' } });
       expect(published.artifacts).toHaveLength(5);
+      const failed = await publishFailedPreviewCapture(projectRoot, 'failed-preview', {
+        recipe: {
+          backend: 'webgpu',
+          presentation: 'hidden',
+          viewport: { width: 1, height: 1 },
+          actions: [],
+          deltaSeconds: 1 / 60,
+          frames: 1,
+        },
+        snapshot: { revision: 1, digest: 'sha256:snapshot' },
+        trace: result.trace,
+        captureId: 'failed-capture',
+        actionTrace: [],
+        tape: result.tape,
+        profile: result.profile,
+        capturePng: result.capturePng,
+        executeDurationMs: 1,
+        captureDurationMs: 1,
+        appErrors: [],
+      });
+      expect(failed.map((artifact) => artifact.kind)).toEqual([
+        'rhi-tape',
+        'png',
+        'profile-capture',
+      ]);
+      const failedPng = failed.find((artifact) => artifact.kind === 'png');
+      if (!failedPng?.uri) throw new Error('Failed preview lost its capture image');
+      expect(await readFile(join(projectRoot, failedPng.uri))).toEqual(Buffer.from(captureBytes));
+      expect(failedPng.digest).toBe(digest(captureBytes));
       const tamperedResult = {
         ...result,
         manifest: {

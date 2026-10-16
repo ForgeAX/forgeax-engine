@@ -41,6 +41,7 @@ import { fingerprintNumericArray, InstanceBoundsCache } from '../instances-deriv
 import type { PointsLinesInspection } from '../points-lines/inspection';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderPublicationIdentity } from '../publication/contract';
+import { publicationDispatchGroups } from '../publication/dispatch-groups';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import type { PublishedRenderResources, RenderResourceScope } from '../publication/resource-scope';
 import { worldEntityKey } from '../record/frame-snapshot';
@@ -1396,6 +1397,16 @@ function dispatchEntriesBySlot(
   projection: RenderScene,
   bySlot = new Map<number, readonly DispatchEntry[]>(),
 ): Map<number, readonly DispatchEntry[]> {
+  const published = publicationDispatchGroups(frame);
+  if (published !== undefined) {
+    for (let index = 0; index < frame.renderables.length; index++) {
+      const renderable = frame.renderables[index];
+      if (renderable === undefined) continue;
+      const slot = projection.slot(renderable.worldId, renderable.entityKey);
+      if (slot !== undefined) bySlot.set(slot.slot, published[index] ?? []);
+    }
+    return bySlot;
+  }
   const byRenderable = new Map<number, DispatchEntry[]>();
   for (const entry of frame.dispatch) {
     const list = byRenderable.get(entry.renderableIndex);

@@ -52,6 +52,13 @@ root. Rotation uses shortest-arc quaternion interpolation. Reparenting, missed
 catch-up intervals and explicit resets discard unrelated history. Removing the
 last propagation lease retires the sampler and its World-local history.
 
+The synchronous sampler borrows current TRS and Children storage while computing
+matrices. These views never enter presentation history or escape the traversal;
+history still owns copied fixed poses. Reading a moving subtree therefore avoids
+materializing full component objects for joints and detached Children snapshots.
+TRS views returned by public World.get already borrow their current column bytes;
+this optimization does not claim to remove a byte copy from those TRS fields.
+
 ## Keyed SceneAsset authoring
 
 `SceneAsset` is authored as ordinary data. The key in `entities` is the only

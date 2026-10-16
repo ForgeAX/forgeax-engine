@@ -342,6 +342,26 @@ struct StandardSurfaceFactors {
 
 
 
+// Particle lighting is an authored renderer fact. A dedicated entry keeps all
+// implicit-derivative samples uniform while removing discarded lit evaluation.
+fn evaluateUnlitStandardSurface(in : VsOut, baseColor : vec4<f32>, emissive : vec3<f32>, emissiveIntensity : f32) -> StandardPbrOutput {
+  let baseUv = transformedMaterialUv(material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesMetadata, material.baseColorTextureCoordinatesRotation, in);
+  let baseSample = sampleMaterialTexture(baseColorTexture, baseColorTexture_sampler, baseUv, material.baseColorTextureCoordinatesMetadata.zw);
+  let vertexColor = materialVertexColor(in);
+  alphaTest(baseColor.a * baseSample.a * vertexColor.a);
+  let alpha = baseColor.a * baseSample.a * vertexColor.a;
+  let albedo = baseColor.rgb * baseSample.rgb * vertexColor.rgb;
+  let emissiveUv = transformedMaterialUv(material.emissiveTextureCoordinatesTransform, material.emissiveTextureCoordinatesMetadata, material.emissiveTextureCoordinatesRotation, in);
+  let emissiveSample = sampleMaterialTexture(emissiveTexture, emissiveTexture_sampler, emissiveUv, material.emissiveTextureCoordinatesMetadata.zw).rgb;
+  let color = albedo + emissive * emissiveIntensity * emissiveSample;
+  var output : StandardPbrOutput;
+  output.color = vec4<f32>(translucent_fog_transmission(view, in.worldPos, color, alpha, vec3<f32>(0.0), vec3<f32>(0.0)), alpha);
+#ifdef REFLECTION_FALLBACK_AVAILABLE
+  output.reflectionFallback = vec4<f32>(vec3<f32>(0.0), 1.0);
+#endif
+  return output;
+}
+
 fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> StandardPbrOutput {
   var useDirectDfgLut = false;
 #ifdef DIRECT_DFG_LUT_AVAILABLE

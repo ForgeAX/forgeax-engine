@@ -1850,7 +1850,7 @@ const appBootstrapPlugin = {
             return created.value;
           } } : {}),
           ...(workspaceGame ? { input: ctx.engineWorkspaceInput } : {}),
-          project: { id: ${JSON.stringify(facts.id)}, root: ${JSON.stringify(facts.root)}, name: ${JSON.stringify(facts.name)} },
+          project: { id: ${JSON.stringify(facts.id)}, root: ${JSON.stringify(facts.root)}, name: ${JSON.stringify(facts.name)}, assetRoots: ${JSON.stringify(facts.assetRoots)} },
           target: {
             sessionId: query.get('forgeaxWorkspaceSession'), targetId: query.get('forgeaxWorkspaceTarget'),
             worldId: app.world.identity, headed: query.get('forgeaxWorkspaceHeaded') !== '0',
@@ -2284,7 +2284,10 @@ export async function materializeViteDevPort(port: number): Promise<number> {
 }
 
 /** Await one build command; producer plugins retain their own lifecycle owners. */
-export async function buildProject(options: BuildOptions = {}): Promise<CommandResult<unknown>> {
+export async function buildProject(
+  options: BuildOptions = {},
+  initialSources?: PluginSourceInventory,
+): Promise<CommandResult<unknown>> {
   const previous = process.cwd();
   try {
     const facts = await readProjectFacts(options.root);
@@ -2297,6 +2300,7 @@ export async function buildProject(options: BuildOptions = {}): Promise<CommandR
     await viteBuild(
       await createViteConfig(facts.value, 'build', base, {
         outDir,
+        ...(initialSources === undefined ? {} : { initialSources }),
         ...(options.target === undefined ? {} : { target: options.target }),
         ...(options.animation === undefined ? {} : { animation: options.animation }),
         ...(options.sourcemap === undefined ? {} : { sourcemap: options.sourcemap }),
@@ -2533,6 +2537,7 @@ export async function createViteConfig(
   command: 'serve' | 'build',
   base = '/',
   options: {
+    readonly initialSources?: PluginSourceInventory;
     readonly materialProfile?: BuildOptions['materialProfile'];
     readonly bootstrapRoot?: BootstrapRoot;
     readonly outDir?: string;
@@ -2632,7 +2637,10 @@ export async function createViteConfig(
         ? isResourcePreviewIgnoredPath
         : isProjectSourceIgnoredPath;
     const ignorePath = (path: string) => ignoreSource(path) || failedSources.has(path);
-    const sourceSnapshot = createScriptablePackSourceSnapshot();
+    if (options.initialSources !== undefined)
+      await assertPluginSourceInputs(options.initialSources, facts.root);
+    const sourceSnapshot =
+      options.initialSources?.sourceSnapshot ?? createScriptablePackSourceSnapshot();
     // Both operations read current disk state and own no shared mutable
     // preparation. Keep their lifetime within this invocation: a later Play
     // must discover fresh project and Engine sources even without a watcher.
@@ -2688,12 +2696,9 @@ export async function createViteConfig(
     // The plugin scan is a superset of the builtins/material scan. Reuse its
     // validated declarations instead of loading every authored Pack twice.
     timing('plugin-assets-start');
-    const sourceInventory = await discoverPluginAssets(
-      facts,
-      scanned.value,
-      sourceSnapshot,
-      productCache,
-    );
+    const sourceInventory =
+      options.initialSources ??
+      (await discoverPluginAssets(facts, scanned.value, sourceSnapshot, productCache));
     const shaderPaths = await sourceSnapshot.observePaths(facts.root, () =>
       listMaterialSourcePaths(projectRoots),
     );
@@ -2821,15 +2826,11 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
     let initialSourceSnapshot: typeof sourceSnapshot | undefined = sourceSnapshot;
     const pack = pluginPack({
       roots,
-      ...(command === 'serve'
-        ? {
-            takeInitialSourceSnapshot: () => {
-              const taken = initialSourceSnapshot;
-              initialSourceSnapshot = undefined;
-              return taken;
-            },
-          }
-        : {}),
+      takeInitialSourceSnapshot: () => {
+        const taken = initialSourceSnapshot;
+        initialSourceSnapshot = undefined;
+        return taken;
+      },
       runtimeBinding,
       // The catalog is consumed by project tools and editors, regardless of
       // where this DevKit package or Vite's generated entry lives. Keep

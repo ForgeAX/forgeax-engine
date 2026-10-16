@@ -5,9 +5,10 @@ import type { HostCallerIdentity, HostTransportServer } from '@forgeax/engine-ho
 import { workspaceDiagnosticRecord } from './command-error.ts';
 import { randomUUID } from 'node:crypto';
 import { runWorkspaceToolApi } from './tool-runtime.ts';
+import { createPresentationRelay, isPresentationOperation } from './presentation.ts';
 import {
   VIEW_DISPLAY_TAB_ID, VIEW_WORKSPACE_TAB_ID, VIEW_WORKSPACE_API_VERSION,
-  VIEW_FILE_GET_SERVICE, VIEW_HTML_FILES_SERVICE, VIEW_PACK_SOURCES_SERVICE, VIEW_PACK_REVEAL_TOPIC, VIEW_PACK_REVEAL_ACK_SERVICE, VIEW_WORKSPACE_SERVICES, VIEW_WORKSPACE_STATE_TOPIC, VIEW_WORKSPACE_OPERATIONS,
+  VIEW_FILE_GET_SERVICE, VIEW_HTML_FILES_SERVICE, VIEW_PACK_SOURCES_SERVICE, VIEW_PACK_REVEAL_TOPIC, VIEW_PACK_REVEAL_ACK_SERVICE, VIEW_WORKSPACE_SERVICES, VIEW_WORKSPACE_STATE_TOPIC, VIEW_WORKSPACE_OPERATIONS, VIEW_WORKSPACE_CORE_OPERATION_EFFECTS,
   assertWorkspaceRequest, cloneWorkspaceValue, requireWorkspaceString,
   serializeWorkspaceState, serializeWorkspaceAsset, serializeWorkspaceInspection,
   serializeWorkspaceOpenRequest, workspaceCapabilities, workspaceError,
@@ -32,7 +33,7 @@ import {
 export type WorkspaceAuthorization = (input: { clientId: string; operation: string; request: Pick<WorkspaceRequest, 'operation' | 'args' | 'clientId'> & Partial<WorkspaceRequest>; caller?: ToolCallerIdentity; signal?: AbortSignal }) => boolean | Promise<boolean>;
 export type WorkspaceCallContext = { signal?: AbortSignal; caller?: ToolCallerIdentity; clientId?: string; token?: string; requestId?: string };
 export type PackSourceListing = { sources: readonly { sourcePath: string; revision?: string; packageId?: string; outputs: readonly { guid: string; kind: string; sourceKey?: string }[]; diagnostic?: { code: string; hint: string } }[]; hasMore: boolean };
-export type BrokerOptions = { engine?: EngineWorkspaceRuntime; projectIntent?: () => string | undefined; engineForCaller?: (caller?: ToolCallerIdentity, targetId?: string) => EngineWorkspaceRuntime | undefined; toolApi?: ToolApi; display?: (caller?: ToolCallerIdentity) => { state?: string; occupancy?: Pick<WorkspaceTab, 'run' | 'target' | 'targetId'> | null } | undefined; accessToken?: string; authorize?: WorkspaceAuthorization; packSources?: (projectRoot: string) => Promise<PackSourceListing> };
+export type BrokerOptions = { engine?: EngineWorkspaceRuntime; projectIntent?: () => string | undefined; engineForCaller?: (caller?: ToolCallerIdentity, targetId?: string) => EngineWorkspaceRuntime | undefined; toolApi?: ToolApi; display?: (caller?: ToolCallerIdentity) => { state?: string; occupancy?: Pick<WorkspaceTab, 'run' | 'target' | 'targetId'> | null } | undefined; accessToken?: string; authorize?: WorkspaceAuthorization; packSources?: (projectRoot: string, assetRoots: readonly string[]) => Promise<PackSourceListing> };
 type Args = Record<string, unknown>;
 type WorkspaceDomainResult = Partial<EngineWorkspaceCameraResult> & { assets?: WorkspaceAsset[]; inspection?: WorkspaceInspection; preview?: WorkspacePreview; asset?: WorkspaceAsset; target?: WorkspacePreview['target']; entityId?: string | null };
 
@@ -94,6 +95,7 @@ export class ViewWorkspaceBroker {
   declare publishFingerprint: string;
   declare readonly pageSessions: Map<string, { broker: ViewWorkspaceBroker; unsubscribe: () => void }>;
   declare transport?: HostTransportServer;
+  declare presentation?: ReturnType<typeof createPresentationRelay>;
   declare readonly pendingReveals: Map<string, { connectionId: string; projectId: string; sourcePath: string; revision: string; settle: (value: unknown) => void }>;
   constructor({ engine, engineForCaller, projectIntent, toolApi, display = () => undefined, accessToken = randomUUID(), authorize, packSources }: BrokerOptions = {}, caller?: ToolCallerIdentity) {
     this.engine = engine;
@@ -285,7 +287,7 @@ export class ViewWorkspaceBroker {
   capabilities() {
     const descriptions = this.toolApi?.list().filter(record => record.callable && (record.owner.sourceId === ENGINE_SOURCE || record.descriptor.id.startsWith('view.display.')))
       .map(record => ({ id: record.descriptor.id.replace(/^(engine|view)\./, ''), path: record.descriptor.path, title: record.descriptor.title, summary: record.descriptor.summary, inputSchema: record.descriptor.inputSchema, outputSchema: record.descriptor.outputSchema })) ?? [];
-    const operations = [...Object.keys(UI_OPERATIONS), ...descriptions.map(item => item.id),
+    const operations = [...Object.keys(UI_OPERATIONS), ...(this.presentation ? Object.keys(VIEW_WORKSPACE_CORE_OPERATION_EFFECTS).filter(isPresentationOperation) : []), ...descriptions.map(item => item.id),
       ...VIEW_WORKSPACE_OPERATIONS.filter(id => id.startsWith('plugins.') && this.toolApi?.describe(id, 'view-backend').some(record => record.callable))]
       .filter(id => VIEW_WORKSPACE_OPERATIONS.includes(id));
     return { ...workspaceCapabilities({ ready: !!this.engine && !this.disposing, headed: this.projectTarget?.headed === true, operations }), descriptions };
@@ -298,9 +300,24 @@ export class ViewWorkspaceBroker {
   }
   async call(rawRequest: unknown, { signal, caller }: WorkspaceCallContext = {}): Promise<unknown> {
     const request = assertWorkspaceRequest(rawRequest);
+    if (isPresentationOperation(request.operation)) {
+      await this.authorizeRequest(request, caller);
+      if (!this.presentation) throw workspaceError('view-presentation-unavailable', 'an installed presentation transport', 'Connect the View frontend.');
+      const state = await this.presentation.call(request.operation, request.args, caller, signal);
+      const page = this.pageSessions.get(state.connectionId);
+      if (!page) throw workspaceError('view-page-gone', 'the selected View document to remain connected', 'Read pages.list before retrying.');
+      return { ...state, workspace: page.broker.summary() };
+    }
     if (request.operation === 'pages.list' || request.operation === 'pack.reveal') {
       await this.authorizeRequest(request, caller);
       return UI_OPERATIONS[request.operation](this, request.args, { signal, caller, clientId: request.clientId });
+    }
+    if(request.operation.startsWith('history.')&&this.transport){
+      await this.authorizeRequest(request,caller);
+      const id=this.resolvePageConnection(caller,request.args.connectionId);
+      const page=this.pageSessions.get(id)!;
+      const {connectionId:_connection,...args}=request.args;
+      return page.broker.call({...request,args},{signal,caller});
     }
     const page = caller?.connectionId && this.pageSessions.get(caller.connectionId);
     if (page) return page.broker.call(rawRequest, { signal, caller });
@@ -324,9 +341,11 @@ export class ViewWorkspaceBroker {
     return this.invoke(request.operation, request.args, { signal, caller, clientId: request.clientId, token: request.token, requestId: request.requestId });
   }
   async invoke(operation: string, args: Args = {}, { signal, caller, clientId = 'view-owner', token, requestId }: WorkspaceCallContext = {}) {
-    if (operation === 'asset.open' && this.assets?.find(asset => asset.guid === args.guid)?.previewable === false) {
+    const requestedAsset = operation === 'asset.open' ? this.assets?.find(asset => asset.guid === args.guid) : undefined;
+    if (operation === 'asset.open' && (args.detailsOnly === true || requestedAsset?.previewable === false
+      || (requestedAsset && !['scene', 'mesh', 'material', 'texture'].includes(requestedAsset.kind)))) {
       const result = await this.invoke('asset.inspect', args, { signal, caller, clientId, token, requestId });
-      this.recordOpenRequest({ requestId, result: result as WorkspaceDomainResult, guid: args.guid });
+      this.recordOpenRequest({ requestId, result: result as WorkspaceDomainResult, guid: args.guid, detailsOnly: true });
       this.changed();
       return this.snapshot();
     }
@@ -335,9 +354,16 @@ export class ViewWorkspaceBroker {
     if (tabId !== undefined) this.assertWorkspaceTab(tabId);
     const inspector = operation.startsWith('plugins.');
     const presentation = operation.startsWith('display.');
+    const history = operation.startsWith('history.');
+    if (history) {
+      if (!this.project) throw workspaceError('view-history-project-required', 'an open project', 'Open the project whose Engine operation history you want to read.');
+      input.root = this.project.root;
+      delete input.targetId;
+      delete input.targetGeneration;
+    }
     const id = inspector ? operation : `${presentation ? 'view' : 'engine'}.${operation}`;
     const sourceId = inspector || presentation ? 'view-backend' : ENGINE_SOURCE;
-    if (this.caller && !inspector && !presentation && !operation.startsWith('run.') && input.targetId === undefined && this.projectTarget)
+    if (this.caller && !inspector && !presentation && !history && !operation.startsWith('run.') && input.targetId === undefined && this.projectTarget)
       input.targetId = this.projectTarget.targetId;
     const owner = this.toolApi?.describe(id, sourceId).find(record => record.callable)?.owner;
     if (!owner) throw workspaceError('view-workspace-operation-unavailable', `Engine operation ${operation} to be installed`, 'Enable the Engine capability; UI plugins do not provide domain APIs.', { operation });
@@ -354,7 +380,7 @@ export class ViewWorkspaceBroker {
     const requestedPreview = [...this.previews(), this.engine?.play].find(preview => preview?.target.targetId === input.targetId);
     const terminal = await this.toolApi!.run<WorkspaceDomainResult>(id, inspector ? {
       apiVersion: 'forgeax.view.inspector/1', operation, args: input, ...input, clientId, token, requestId,
-    } : presentation ? input : { ...input, clientId }, { sourceId, providerId: owner.providerId, generation: owner.generation, caller, signal }).terminal;
+    } : presentation || history ? input : { ...input, clientId }, { sourceId, providerId: owner.providerId, generation: owner.generation, caller, signal }).terminal;
     if (terminal.outcome === 'failed') {
       const resolved = resolveWorkspaceFailure(terminal.failure);
       const addressesWorkspace = input.targetId === undefined ||
@@ -384,7 +410,7 @@ export class ViewWorkspaceBroker {
       this.previewProjection.cameraVersion = result?.version;
       this.previewProjection.interaction = result?.interaction ?? null;
     }
-    if (!['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'assets.thumbnails'].includes(operation)) this.changed();
+    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'assets.thumbnails'].includes(operation)) this.changed();
     if (['project.open', 'project.close', 'project.reopen', 'asset.open', 'preview.close', 'camera.abort', 'play.start', 'play.ready', 'play.stop'].includes(operation)) {
       if (operation === 'project.open' || operation === 'project.reopen') this.workspaceTargetLost = false;
       return this.snapshot();
@@ -482,7 +508,7 @@ export class ViewWorkspaceBroker {
     const editorId = this.editorPreview()?.target?.targetId;
     if (editorId !== undefined) this.previewTargetId = editorId;
   }
-  recordOpenRequest({ requestId, result, guid }: { requestId?: string; result: WorkspaceDomainResult; guid?: unknown }) {
+  recordOpenRequest({ requestId, result, guid, detailsOnly = false }: { requestId?: string; result: WorkspaceDomainResult; guid?: unknown; detailsOnly?: boolean }) {
     const requested = typeof guid === 'string' && guid.trim() !== '' ? guid : undefined;
     const editor = this.editorPreview();
     const editorIds = editorSceneTargetIds(
@@ -537,12 +563,15 @@ export class ViewWorkspaceBroker {
         : createWorkspaceId('open'),
       sequence: this.openRequestSequence,
       asset,
-      preview: recordedPreview,
+      preview: detailsOnly ? undefined : recordedPreview,
+      ...(detailsOnly ? { detailsOnly: true } : {}),
       ...(inspection === undefined ? {} : { inspection }),
     });
     this.resourceOpens.set(asset.kind, {
       asset,
-      preview: recordedPreview,
+      preview: detailsOnly ? undefined : recordedPreview,
+      sequence: this.openRequestSequence,
+      ...(detailsOnly ? { detailsOnly: true } : {}),
     });
     logResourceOpen('open-request-recorded', {
       requestId: this.openRequest.requestId,
@@ -632,7 +661,7 @@ export class ViewWorkspaceBroker {
     const project = page.broker.project;
     if (!project || project.id !== input.projectId) return { ok: false, code: 'view-project-stale' };
     if (!this.packSources) return { ok: false, code: 'view-pack-sources-unavailable' };
-    const source = (await this.packSources(project.root)).sources.find(row => row.sourcePath === input.sourcePath);
+    const source = (await this.packSources(project.root, project.assetRoots ?? [])).sources.find(row => row.sourcePath === input.sourcePath);
     if (signal?.aborted) return { ok: false, code: 'view-reveal-cancelled' };
     if (!source || source.revision !== input.revision || (input.packageId && source.packageId !== input.packageId))
       return { ok: false, code: 'view-pack-stale' };
@@ -664,8 +693,24 @@ export class ViewWorkspaceBroker {
       transport.publish(VIEW_PACK_REVEAL_TOPIC, intent, { connectionId });
     });
   }
+  resolvePageConnection(caller:ToolCallerIdentity|undefined,requested:unknown) {
+      const own = caller && this.pageSessions.has(caller.connectionId) ? caller.connectionId : undefined;
+      if (caller?.kind === 'frontend') {
+        if (!own || (requested !== undefined && requested !== own)) throw workspaceError('view-presentation-page-denied', 'the frontend\'s own accepted View document', 'Use this document\'s connection identity.');
+        return own;
+      }
+      if (requested !== undefined) {
+        const id = requireWorkspaceString(requested, 'connectionId');
+        if (!this.pageSessions.has(id)) throw workspaceError('view-page-gone', 'a connected View document', 'Read pages.list.');
+        return id;
+      }
+      if (this.pageSessions.size !== 1) throw workspaceError(this.pageSessions.size ? 'view-page-ambiguous' : 'view-page-unavailable', 'one connected View document', 'Read pages.list and pass its connectionId.');
+      return this.pageSessions.keys().next().value!;
+  }
   registerTransport(transport: HostTransportServer, { routeThroughTools = false } = {}) {
     this.transport = transport;
+    const presentation = createPresentationRelay(transport, (caller, requested) => this.resolvePageConnection(caller,requested));
+    this.presentation = presentation;
     const capabilities = transport.register(VIEW_WORKSPACE_SERVICES.capabilities, () => this.capabilities());
     const call = transport.register<WorkspaceRequest, unknown>(VIEW_WORKSPACE_SERVICES.call, async ({ payload, signal, caller }) => {
         try {
@@ -703,7 +748,7 @@ export class ViewWorkspaceBroker {
       const project = (this.pageSessions.get(caller.connectionId)?.broker ?? this).project;
       if (!project || payload?.projectId !== project.id) throw workspaceError('view-project-stale', 'the currently open project', 'Refresh the workspace before listing Pack sources.');
       if (!this.packSources) throw workspaceError('view-pack-sources-unavailable', 'an installed Pack source provider', 'Update the View Host Pack.');
-      return this.packSources(project.root);
+      return this.packSources(project.root, project.assetRoots ?? []);
     });
     const revealAck = transport.register<{ requestId?: unknown; shown?: unknown; projectId?: unknown; sourcePath?: unknown; revision?: unknown; reason?: unknown }, unknown>(VIEW_PACK_REVEAL_ACK_SERVICE, async ({ payload, caller }) => {
       const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
@@ -714,7 +759,7 @@ export class ViewWorkspaceBroker {
       const page = this.pageSessions.get(caller.connectionId);
       const project = page?.broker.project;
       const source = project && this.packSources
-        ? (await this.packSources(project.root)).sources.find(row => row.sourcePath === pending.sourcePath) : undefined;
+        ? (await this.packSources(project.root, project.assetRoots ?? [])).sources.find(row => row.sourcePath === pending.sourcePath) : undefined;
       // A visible old card cannot confirm a changed source, project or retired page.
       if (this.pendingReveals.get(requestId) !== pending) return { ok: false, code: 'view-reveal-stale' };
       if (!project || project.id !== pending.projectId || source?.revision !== pending.revision) {
@@ -760,10 +805,11 @@ export class ViewWorkspaceBroker {
       }
       this.publishPageSessions();
     });
-    return () => { if (this.transport === transport) this.transport = undefined; capabilities(); call(); fileGet(); htmlFiles(); packSources(); revealAck(); subscription(); removeConnect(); removeDisconnect(); engineSubscription(); observer.close(); };
+    return () => { presentation.dispose(); if (this.presentation === presentation) this.presentation = undefined; if (this.transport === transport) this.transport = undefined; capabilities(); call(); fileGet(); htmlFiles(); packSources(); revealAck(); subscription(); removeConnect(); removeDisconnect(); engineSubscription(); observer.close(); };
   }
   async dispose() {
     this.selectionAbort?.abort(); this.disposing = true; this.listeners.clear();
+    this.presentation?.dispose(); this.presentation = undefined;
     for (const [requestId, pending] of this.pendingReveals) {
       this.pendingReveals.delete(requestId);
       pending.settle({ ok: false, code: 'view-page-gone', requestId });

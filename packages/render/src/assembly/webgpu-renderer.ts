@@ -51,7 +51,6 @@ import {
 } from '../point-shadow-inspection';
 import { type PublishedRenderFrameInput, RenderPublicationError } from '../publication/contract';
 import { type PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
-import type { FirstEntryMap } from '../record/first-entry-map';
 import { encodeFrameObservationCapture } from '../record/observation-capture';
 import {
   configureSurface,
@@ -61,6 +60,7 @@ import {
 import { isFrameObservationDomain } from '../render-contract';
 import { registerRenderSourceSystems } from '../scene/source-systems';
 import { createTerrainReceiptOwner } from '../terrain/submitted.js';
+import { prepareVolumePrograms } from '../volume/programs';
 import { createCameraViews } from './camera-views';
 import { inspectDeviceCapabilities } from './device-feature-admission';
 import { type FrameRecording, submitFrameRecordings } from './frame-recording';
@@ -69,6 +69,10 @@ import {
   MaterialPipelineRequestCache,
   materialPipelineRequestFacts,
 } from './material/pipeline-request-cache';
+import {
+  type PreparedRenderPipelineOwner,
+  preparedRenderPipelineOwner,
+} from './material/prepared-pipeline-owner';
 import { resolveFeatureShaderSource } from './material-shader-policy';
 import { createPublishedMeshResidencyHost } from './published-mesh-residency';
 import { createUiCompositor } from './ui-compositor';
@@ -215,9 +219,8 @@ import {
 } from './recovery/failure-location';
 import { type GenerationPublication, publishGeneration } from './recovery/generation';
 import {
+  createRendererPipelineCacheState,
   createRendererRecovery,
-  type PerShaderMaterialLayoutCacheEntry,
-  type PreparedMaterialPipelineLayoutCacheEntry,
   type RendererCandidateState,
   type RendererGeneration,
   type RendererPipelineCacheState,
@@ -545,6 +548,13 @@ async function makeWebGPURenderer(
     }
     return state.sharedShaderModuleAdapter;
   };
+  // The loading and live volume owners share the exact factory identity;
+  // the adapter is still selected at call time for recovery candidates.
+  const renderShaderModuleFactory = {
+    createShaderModule: (
+      descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
+    ) => getShaderModuleAdapter().createShaderModule(descriptor),
+  };
   const getImmediateShaderModuleAdapter = (): ShaderDeviceAdapterInternal => {
     const state = candidateShaderState ?? activeShaderState;
     if (state.sharedImmediateShaderModuleAdapter === null) {
@@ -842,55 +852,12 @@ async function makeWebGPURenderer(
     gpuStore.bindDeviceScope(activeDeviceScope);
   };
   let readySettled = false;
-  const materialShaderPipelineCache = new Map<string, RenderPipeline>();
+  let activePipelineCacheState = createRendererPipelineCacheState();
   const materialShaderPipelineGroup2Contracts = new WeakMap<object, PipelineGroup2Contract>();
-  // Variant resolution only depends on the requested axes, device capability
-  // axes, and the manifest entry that owns the declarations. Cache it by the
-  // manifest's variants-array identity so hot replacement naturally gets a
-  // fresh result without adding a global strong reference to shader metadata.
-  const materialShaderVariantResolutionCache = new WeakMap<
-    object,
-    Map<string, string | undefined>
-  >();
-  const group0MaterialLayout: {
-    materialBgl: BindGroupLayout;
-    pipelineLayout: PipelineLayout;
-  } | null = null;
-  const viewOnlyMaterialPipelineLayout: PipelineLayout | null = null;
-  const viewAndSceneDepthMaterialPipelineLayout: PipelineLayout | null = null;
-  const group0ResourceLayouts = new Map<
-    string,
-    { materialBgl: BindGroupLayout; pipelineLayout: PipelineLayout }
-  >();
-  const preparedMaterialPipelineLayoutCache = new Map<
-    string,
-    PreparedMaterialPipelineLayoutCacheEntry
-  >();
-  // Cache authored material layouts by their exact mesh and lighting contract.
-  const perShaderMaterialLayoutCache = new Map<
-    string,
-    FirstEntryMap<number | string, PerShaderMaterialLayoutCacheEntry>
-  >();
-  const createRendererPipelineCacheState = (): RendererPipelineCacheState => ({
-    materialShaderPipelineCache: new Map(),
-    materialShaderVariantResolutionCache: new WeakMap(),
-    group0MaterialLayout: null,
-    viewOnlyMaterialPipelineLayout: null,
-    viewAndSceneDepthMaterialPipelineLayout: null,
-    group0ResourceLayouts: new Map(),
-    preparedMaterialPipelineLayoutCache: new Map(),
-    perShaderMaterialLayoutCache: new Map(),
-  });
-  let activePipelineCacheState: RendererPipelineCacheState = {
-    materialShaderPipelineCache,
-    materialShaderVariantResolutionCache,
-    group0MaterialLayout,
-    viewOnlyMaterialPipelineLayout,
-    viewAndSceneDepthMaterialPipelineLayout,
-    group0ResourceLayouts,
-    preparedMaterialPipelineLayoutCache,
-    perShaderMaterialLayoutCache,
-  };
+  // Variant keys include device capability axes; this manifest-identity cache
+  // remains shared across the renderer's recovery candidates.
+  const materialShaderVariantResolutionCache =
+    activePipelineCacheState.materialShaderVariantResolutionCache;
   let candidatePipelineCacheState: RendererPipelineCacheState | undefined;
   let candidateMaterialShaderUvSetCounts: Map<string, number> | undefined;
   let emptyPostProcessBgl: BindGroupLayout | null = null;
@@ -1166,7 +1133,12 @@ async function makeWebGPURenderer(
         registerDepthOfFieldBuiltins(renderSystem, entries);
         depthOfFieldRegistered = true;
       },
-      (sources: VolumetricFogShaderSources) => {
+      async (sources: VolumetricFogShaderSources) => {
+        await prepareVolumePrograms(
+          { device, deviceScope: scope, shaderModuleFactory: renderShaderModuleFactory },
+          sources,
+          HDR_COLOR_ATTACHMENT_FORMAT,
+        );
         internals.volumetricFogShaders = sources;
       },
       (sources: SsrShaderSources, pyramid: DepthPyramidShaderSources) => {
@@ -1376,6 +1348,10 @@ async function makeWebGPURenderer(
    * and returns it. Returns null on build failure (firing errorRegistry
    * for non-transient errors).
    */
+  const preparedPipelineOwners = new WeakMap<
+    RendererPipelineCacheState,
+    PreparedRenderPipelineOwner
+  >();
   const buildAndCachePipeline = (
     cacheKey: string,
     entry: MaterialShaderEntry,
@@ -1407,19 +1383,9 @@ async function makeWebGPURenderer(
     // antialias setting), not a material renderState value. Default 1 preserves
     // byte-identity of every existing pre-M2 cache slot + descriptor.
     sampleCount: number = 1,
-    // feat-20260625-refactor-sprite-as-transparent-mesh R2 fix-up: LDR-color
-    // override for sub-passes that write to a non-default attachment view.
-    // Pre-feat the dedicated `forgeax::default-sprite` SPEC_CONST entries
-    // (SPRITE_ATTACHMENTS_LDR_S1/S4) targeted the swap-chain STORAGE format
-    // (non-sRGB) directly. Post-w14 sprite falls into the generic lazy build
-    // path which defaults to `pipelineState.colorAttachmentFormat` (the sRGB
-    // VIEW format used by the geometry pass) — incompatible with the sprite
-    // sub-pass's non-sRGB attachment view (bgra8unorm / rgba8unorm), firing
-    // a per-frame "Attachment state ... not compatible" validation error.
-    // The sprite sub-pass call site passes `pipelineState.format` (storage,
-    // non-sRGB) here so the resulting PSO matches the encoder's attachment
-    // state. Undefined preserves the default (sRGB view) path used by every
-    // pre-fix-up caller. Ignored when `isHdr=true` or `passKind='shadow-caster'`.
+    // Transparent split passes use the swap-chain storage view. Preserve its
+    // explicit non-sRGB format in both the PSO key and descriptor; HDR and
+    // depth-only passes select their own attachment formats.
     colorFormatOverride?: GPUTextureFormat,
     // Prepared graphics passes use `null` to request an explicit color-only
     // pipeline; omitted preserves the material forward depth default.
@@ -1435,6 +1401,7 @@ async function makeWebGPURenderer(
     particleInputLanes?: number,
     coverageOnly = false,
     constants?: Readonly<Record<string, number>>,
+    pipelinePreparation = false,
   ): RenderPipeline | null => {
     const declaredGroup2Contract = resolveMaterialPipelineGroup2Contract(
       getShader().materialProgram(entry.source).group2,
@@ -1464,6 +1431,18 @@ async function makeWebGPURenderer(
       particleInputLanes,
     );
     if (ctx === null) return null;
+    const cache = currentPipelineCacheState();
+    const prepared =
+      pipelinePreparation && ctx.device.createRenderPipelineAsync !== undefined
+        ? preparedRenderPipelineOwner(
+            preparedPipelineOwners,
+            cache,
+            ctx.device,
+            candidateBuildState?.scope ?? activeDeviceScope,
+            () => pipelineRequests.delete(cache),
+          )
+        : undefined;
+
     const currentState = currentPipelineState();
     if (currentState === null) return null;
     const ldrColorFormat = colorFormatOverride ?? currentState.colorAttachmentFormat;
@@ -1476,55 +1455,61 @@ async function makeWebGPURenderer(
         : undefined);
     // Public view clipping is dynamic coverage even on opaque casters.
     // Preserve the producer's fragment stage so depth and color agree.
-    const built = buildPipelineForMaterialShader(
-      cacheKey,
-      // The catalog entry is projected into the material-shader entry shape.
-      entry,
-      {
-        ...ctx,
-        colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat,
-        colorFormats:
-          additionalColorFormats === undefined
-            ? undefined
-            : [
-                renderState?.outputs?.[0]?.format ??
-                  (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
-                ...additionalColorFormats,
-              ],
-        depthFormat:
-          depthFormatOverride === null
-            ? undefined
-            : passKindPolicyTable[passKind]?.shape === 'depth-only'
-              ? (depthFormatOverride ?? 'depth32float')
-              : (depthFormatOverride ?? DEPTH_TEXTURE_FORMAT),
-        coverageOnly,
-        ...(constants === undefined ? {} : { constants }),
-        label,
-        // feat-20260604 w16-b: the shader-MODULE cache identity. Stable across
-        // per variant. See PipelineBuilderContext.moduleLabel.
-        moduleLabel,
-      },
-      renderState,
-      // w8/w15: pack topology (+ stripIndexFormat) into the builder's geometry
-      // param. Strip topologies bake stripIndexFormat into the immutable PSO
-      // (WebGPU spec: only valid for line-strip / triangle-strip). The record
-      // stage (w9 + w15) threads each mesh's topology + indexFormat here; when
-      // the caller omits stripIndexFormat we fall back to 'uint32' (the engine
-      // procedural index width: createBoxGeometry etc. emit Uint32 indices).
-      topology !== undefined
-        ? {
-            topology,
-            ...(isStripTopology(topology)
-              ? { stripIndexFormat: stripIndexFormat ?? ('uint32' as const) }
-              : {}),
-          }
-        : undefined,
-      resolvedVertexEntry,
-      fragmentEntry,
-      undefined, // defines — none
-      passKind,
-      sampleCount,
-    );
+    const built =
+      prepared?.lookup(cacheKey, entry.source, ctx.pipelineLayout) ??
+      buildPipelineForMaterialShader(
+        cacheKey,
+        // The catalog entry is projected into the material-shader entry shape.
+        entry,
+        {
+          ...ctx,
+          createRenderPipeline:
+            prepared === undefined
+              ? undefined
+              : (descriptor) => prepared.request(cacheKey, entry.source, descriptor),
+          colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat,
+          colorFormats:
+            additionalColorFormats === undefined
+              ? undefined
+              : [
+                  renderState?.outputs?.[0]?.format ??
+                    (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
+                  ...additionalColorFormats,
+                ],
+          depthFormat:
+            depthFormatOverride === null
+              ? undefined
+              : passKindPolicyTable[passKind]?.shape === 'depth-only'
+                ? (depthFormatOverride ?? 'depth32float')
+                : (depthFormatOverride ?? DEPTH_TEXTURE_FORMAT),
+          coverageOnly,
+          ...(constants === undefined ? {} : { constants }),
+          label,
+          // feat-20260604 w16-b: the shader-MODULE cache identity. Stable across
+          // per variant. See PipelineBuilderContext.moduleLabel.
+          moduleLabel,
+        },
+        renderState,
+        // w8/w15: pack topology (+ stripIndexFormat) into the builder's geometry
+        // param. Strip topologies bake stripIndexFormat into the immutable PSO
+        // (WebGPU spec: only valid for line-strip / triangle-strip). The record
+        // stage (w9 + w15) threads each mesh's topology + indexFormat here; when
+        // the caller omits stripIndexFormat we fall back to 'uint32' (the engine
+        // procedural index width: createBoxGeometry etc. emit Uint32 indices).
+        topology !== undefined
+          ? {
+              topology,
+              ...(isStripTopology(topology)
+                ? { stripIndexFormat: stripIndexFormat ?? ('uint32' as const) }
+                : {}),
+            }
+          : undefined,
+        resolvedVertexEntry,
+        fragmentEntry,
+        undefined, // defines — none
+        passKind,
+        sampleCount,
+      );
     if (!built.ok) {
       if (built.error.code !== 'rhi-not-available') {
         internals.errorRegistry.fire(built.error);
@@ -1544,10 +1529,7 @@ async function makeWebGPURenderer(
     variantSet?: string,
     passKind: PassKind = 'forward',
     meshAttributes?: VertexAttributeMap,
-    // bug-20260615 M2 / m2-1: sampleCount is threaded through to the cache key,
-    // buildAndCachePipeline, and ultimately buildPipelineForMaterialShader which
-    // sets the multisample descriptor field. Default 1 preserves byte-identity
-    // of every pre-M2 caller.
+    // Camera sample count belongs to both the immutable PSO key and descriptor.
     sampleCount: number = 1,
     // feat-20260625-refactor-sprite-as-transparent-mesh R2 fix-up: LDR-color
     // override for sub-passes that write to a non-default attachment view.
@@ -1583,6 +1565,7 @@ async function makeWebGPURenderer(
     fragmentEntry?: string,
     particleInputLanes?: number,
     constants?: Readonly<Record<string, number>>,
+    pipelinePreparation = false,
   ): RenderPipeline | null => {
     const coverageOnly =
       passKind === 'temporal' && variantSet?.split('+').includes('COVERAGE_ONLY=true') === true;
@@ -1723,7 +1706,11 @@ async function makeWebGPURenderer(
     const requestCounter = pipelineRequests.get(currentPipelineCacheState());
     if (requestCounter !== undefined) requestCounter.keyCharacters += cacheKey.length;
     const cached = currentPipelineCacheState().materialShaderPipelineCache.get(cacheKey);
-    if (cached !== undefined) return cached;
+    const prepare =
+      currentBuildDevice().createRenderPipelineAsync !== undefined &&
+      (pipelinePreparation ||
+        preparedPipelineOwners.get(currentPipelineCacheState())?.has(cacheKey) === true);
+    if (cached !== undefined && !prepare) return cached;
     if (pipelineState === null) return null;
     const lookup = getShader().findMaterialArtifact(pipelineShaderId);
     if (!lookup.ok) {
@@ -1780,6 +1767,7 @@ async function makeWebGPURenderer(
           undefined,
           coverageOnly,
           constants,
+          prepare,
         );
       }
       const pbrEntry = findStandardPbrEntry(effectiveVariantSet);
@@ -1848,6 +1836,7 @@ async function makeWebGPURenderer(
         undefined,
         coverageOnly,
         constants,
+        prepare,
       );
     }
     // feat-20260609 M4 / w31: resolve variant WGSL from manifest when
@@ -1953,6 +1942,7 @@ async function makeWebGPURenderer(
       particleInputLanes,
       coverageOnly,
       constants,
+      prepare,
     );
   };
   const pipelineRequests = new WeakMap<
@@ -1980,6 +1970,7 @@ async function makeWebGPURenderer(
       pipelineRequests.set(owner, requests);
     }
     const facts = materialPipelineRequestFacts(args);
+    facts.push(args[22] === true);
     facts.push(
       currentMaterialShaderUvSetCounts().get(artifactId),
       registry,
@@ -2055,6 +2046,20 @@ async function makeWebGPURenderer(
             },
           }),
     };
+  };
+  const prepareMaterialShaderPipeline = (
+    ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>
+  ) => {
+    const request: Parameters<typeof buildMaterialShaderPipeline> = [...args];
+    request[22] = true;
+    return getMaterialShaderPipeline(...request);
+  };
+  const prepareMaterialShaderPipelineEntry = (
+    ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>>
+  ) => {
+    const request: Parameters<typeof buildMaterialShaderPipeline> = [...args];
+    request[22] = true;
+    return getMaterialShaderPipelineEntry(...request);
   };
   const getParamSchema = (materialShaderId: string) => {
     const lookup = getShader().findMaterialArtifact(materialShaderId);
@@ -2188,9 +2193,7 @@ async function makeWebGPURenderer(
       internals.featureHost = host;
     },
     // Resolve the adapter at call time so recovered devices get fresh modules.
-    shaderModuleFactory: {
-      createShaderModule: (descriptor) => getShaderModuleAdapter().createShaderModule(descriptor),
-    },
+    shaderModuleFactory: renderShaderModuleFactory,
     immediateShaderModuleFactory: {
       createShaderModule: (descriptor) =>
         getImmediateShaderModuleAdapter().createShaderModule(descriptor),
@@ -2281,6 +2284,8 @@ async function makeWebGPURenderer(
     },
     getMaterialShaderPipeline,
     getMaterialShaderPipelineEntry,
+    prepareMaterialShaderPipeline,
+    prepareMaterialShaderPipelineEntry,
     getMaterialShaderBindingContract: getMaterialShaderBindingContract,
     getFeatureShaderSource: (identifier) =>
       resolveFeatureShaderSource(getShader(), internals.device, identifier),
@@ -4012,7 +4017,6 @@ async function makeWebGPURenderer(
     getActiveDeviceScope: () => activeDeviceScope,
     getActiveShaderState: () => activeShaderState,
     getMaterialShaderUvSetCounts: () => materialShaderUvSetCounts,
-    createRendererPipelineCacheState,
     prepareGpuPassTimingState,
     getCandidateBuildState: () => candidateBuildState,
     setCandidateBuildState(state) {
@@ -4041,6 +4045,8 @@ async function makeWebGPURenderer(
     buildPipeline,
     getMaterialShaderPipeline,
     getMaterialShaderPipelineEntry,
+    prepareMaterialShaderPipeline,
+    prepareMaterialShaderPipelineEntry,
     getMaterialShaderArtifact,
     getMaterialShaderBindingContract,
     getParamSchema,

@@ -2,6 +2,7 @@
   "id": "template-game-3d",
   "name": "Game 3D",
   "schemaVersion": "3.0.0",
+  "assetRoots": ["assets"],
   "roots": {
     "engine": "acd36c75-755b-577d-9c5a-e6deebb0ed40",
     "frontend": "62f18971-a9ff-584c-aa55-f695fefadba6"

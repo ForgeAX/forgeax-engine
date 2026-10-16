@@ -45,6 +45,11 @@ export const PARTICLE_INPUT_SHADER_IDENTIFIERS = Object.freeze({
   beam: 'forgeax::vfx-render.particles.beam-inputs',
 });
 
+export const PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS = Object.freeze({
+  mesh: 'forgeax::vfx-render.particles.mesh-unlit',
+  inputs: 'forgeax::vfx-render.particles.mesh-inputs-unlit',
+});
+
 export interface TopologyResourcePlan {
   readonly topology: ParticleTopologyKind;
   readonly capacity: number;
@@ -189,6 +194,7 @@ export function particleMaterialPass(
     readonly projection: MaterialRenderProjection;
     readonly context: RenderFeaturePlanContext['materialContext'];
   },
+  unlitMesh = false,
 ): ParticleMaterialPass {
   const passName = `particle-${kind}`;
   const cookedPass = publication?.projection.passes.find(
@@ -233,9 +239,13 @@ export function particleMaterialPass(
   return {
     shader:
       pass?.program.module ??
-      (hasParticleInputs
-        ? PARTICLE_INPUT_SHADER_IDENTIFIERS[kind]
-        : PARTICLE_SHADER_IDENTIFIERS[kind]),
+      (kind === 'mesh' && unlitMesh
+        ? hasParticleInputs
+          ? PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS.inputs
+          : PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS.mesh
+        : hasParticleInputs
+          ? PARTICLE_INPUT_SHADER_IDENTIFIERS[kind]
+          : PARTICLE_SHADER_IDENTIFIERS[kind]),
     ...(pass?.program.sceneDepth === undefined ? {} : { sceneDepth: pass.program.sceneDepth }),
     ...(renderState === undefined ? {} : { renderState: renderState as MaterialRenderState }),
   };

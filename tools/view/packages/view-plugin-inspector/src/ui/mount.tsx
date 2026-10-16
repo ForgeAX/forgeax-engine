@@ -12,7 +12,7 @@ export async function mountInspectorPanel(props: ComponentProps<typeof Inspector
   const root = createRoot(props.mountElement);
   root.render(
     <PanelVisibilityProvider element={props.mountElement}><ClipboardProvider writeText={props.writeClipboard}><OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
-      <InspectorPanel client={props.client} />
+      <InspectorPanel client={props.client} assetReferences={props.assetReferences} browseAsset={props.browseAsset} />
     </OverlayRootProvider></ClipboardProvider></PanelVisibilityProvider>,
   );
   return async () => root.unmount();

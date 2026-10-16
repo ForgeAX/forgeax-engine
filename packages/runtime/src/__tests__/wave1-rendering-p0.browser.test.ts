@@ -17,6 +17,7 @@ import type { Handle, MeshAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
 
 interface ScreenshotPixels {
@@ -218,16 +219,12 @@ async function submitFrame(
   cameraEntity?: number,
 ): Promise<FrameReceipt> {
   propagateTransforms(world).unwrap();
-  const drawn = renderer.draw({
+  const receipt = await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease, ...(cameraEntity === undefined ? {} : { entityKey: cameraEntity }) },
     environment: { lease },
     fixedStep: world.getResource(FixedTime).tick,
   });
-  if (!drawn.ok) throw drawn.error;
-  const receipt = drawn.value;
-  const completed = await receipt.completed;
-  if (!completed.ok) throw completed.error;
   return receipt;
 }
 

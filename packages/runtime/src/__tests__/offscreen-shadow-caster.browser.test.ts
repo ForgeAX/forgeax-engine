@@ -13,6 +13,7 @@ import {
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 it('retains the same ground shadow when its caster moves behind the camera', async () => {
@@ -80,15 +81,12 @@ it('retains the same ground shadow when its caster moves behind the camera', asy
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const drawn = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
       fixedStep: world.getResource(FixedTime).tick,
     });
-    if (!drawn.ok) throw drawn.error;
-    const completed = await drawn.value.completed;
-    if (!completed.ok) throw completed.error;
   };
   const snapshot = async (name: string) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

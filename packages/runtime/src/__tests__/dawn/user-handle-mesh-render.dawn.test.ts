@@ -229,7 +229,7 @@ describe('T-M2-1 user-handle mesh render regression (AC-10 / AC-11, dawn)', () =
       },
     );
 
-    const drawn = drawPublished(renderer, world);
+    const drawn = await drawPublished(renderer, world);
     expect(drawn.ok).toBe(true);
 
     const device = sharedDevice;

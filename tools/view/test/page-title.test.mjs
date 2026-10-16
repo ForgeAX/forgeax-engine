@@ -3,7 +3,10 @@ import { describe, it } from 'node:test';
 
 import {
   createEditorPageTitleController,
+  createResourcePageTitleController,
   editorPageTitleFromWorkspace,
+  resourceAssetName,
+  resourcePageTitleFromWorkspace,
 } from '../packages/view-workspace-core/src/page-title.ts';
 
 function createFakeWorkspaceClient(initial) {
@@ -77,4 +80,44 @@ describe('editor page title from workspace', () => {
     unsubscribe();
     controller.dispose();
   });
+});
+
+describe('mesh resource page title', () => {
+  const cube = { guid: 'cube-guid', kind: 'mesh', sourceKey: 'mesh/cube' };
+
+  it('uses the opened asset name or source key instead of the generic page label', () => {
+    assert.equal(resourceAssetName({ ...cube, name: 'Painted Cube' }), 'Painted Cube');
+    assert.equal(resourceAssetName(cube), 'cube');
+    assert.equal(resourcePageTitleFromWorkspace({ openRequest: { asset: cube } }, ['mesh']), 'cube');
+    assert.equal(resourcePageTitleFromWorkspace({
+      openRequest: { asset: { guid: 'cube-guid', kind: 'mesh' }, inspection: { asset: cube } },
+    }, ['mesh']), 'cube');
+    assert.equal(resourcePageTitleFromWorkspace({
+      resourceOpens: { mesh: { asset: { guid: 'cube-guid', kind: 'mesh' } } }, assets: [cube],
+    }, ['mesh']), 'cube');
+    assert.equal(resourcePageTitleFromWorkspace({ openRequest: { asset: { guid: 'other', kind: 'mesh' } } }, ['mesh']), undefined);
+  });
+
+  it('retains the mesh title when a different asset page opens and follows later mesh opens', () => {
+    const client = createFakeWorkspaceClient({ resourceOpens: { mesh: { asset: cube } } });
+    const controller = createResourcePageTitleController(client, ['mesh']);
+    const seen = [];
+    const unsubscribe = controller.subscribeTitle(() => seen.push(controller.getTitle()));
+    assert.equal(controller.getTitle(), 'cube');
+    assert.deepEqual(controller.getResource(), { asset: { guid: cube.guid, kind: 'mesh' } });
+    client.publish({ openRequest: { asset: { guid: 'material-guid', kind: 'material', name: 'Paint' } },
+      resourceOpens: { mesh: { asset: { guid: 'cube-guid', kind: 'mesh' } } }, assets: [cube] });
+    assert.equal(controller.getTitle(), 'cube');
+    client.publish({ resourceOpens: { mesh: { asset: { ...cube, sourceKey: 'mesh/sphere' } } } });
+    assert.equal(controller.getTitle(), 'sphere');
+    assert.equal(seen.at(-1), 'sphere');
+    unsubscribe();
+    controller.dispose();
+  });
+});
+
+it('generic page titles stay idle for scene and dedicated preview opens', () => {
+  assert.equal(resourcePageTitleFromWorkspace({ openRequest: { asset: { guid: 'scene', kind: 'scene', name: 'Forest' } } }, []), undefined);
+  assert.equal(resourcePageTitleFromWorkspace({ openRequest: { asset: { guid: 'mesh', kind: 'mesh', name: 'Cube' } } }, []), undefined);
+  assert.equal(resourcePageTitleFromWorkspace({ openRequest: { detailsOnly: true, asset: { guid: 'audio', kind: 'audio', name: 'Ambient' } } }, []), 'Ambient');
 });

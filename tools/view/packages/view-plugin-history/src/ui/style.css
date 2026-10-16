@@ -1,0 +1,94 @@
+.fx-view-operation-history {
+  padding: var(--fx-ref-space-16);
+  box-sizing: border-box;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.fx-history-columns {
+  display: grid;
+  grid-template-columns: minmax(16rem, 28%) minmax(0, 1fr);
+  gap: var(--fx-ref-space-16);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.fx-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-ref-space-4);
+  overflow: auto;
+  min-height: 0;
+}
+.fx-history-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--fx-ref-space-4);
+  padding: var(--fx-ref-space-12);
+  text-align: left;
+  color: var(--fx-color-text-primary);
+  background: var(--fx-color-surface-sidebar);
+  border: 1px solid var(--fx-color-border-subtle);
+  border-radius: var(--fx-radius-control);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.fx-history-row[aria-pressed="true"] {
+  border-color: var(--fx-color-text-primary);
+  background: var(--fx-color-surface-raised);
+}
+.fx-history-row span {
+  color: var(--fx-color-text-muted);
+  font-size: var(--fx-type-caption-font-size);
+}
+.fx-history-detail {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.fx-history-detail h2 {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+.fx-history-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 28rem;
+  overflow: auto;
+}
+.fx-history-detail details {
+  margin-block: var(--fx-ref-space-12);
+}
+.fx-history-detail select {
+  display: block;
+  max-width: 100%;
+}
+.fx-history-image {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  margin-block: var(--fx-ref-space-12);
+}
+@media (max-width: 700px) {
+  .fx-history-columns {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(8rem, 30%) minmax(0, 1fr);
+  }
+  .fx-history-list {
+    overflow: auto;
+  }
+}
+.fx-history-toolbar {
+  padding-bottom: var(--fx-ref-space-12);
+  border-bottom: 1px solid var(--fx-color-border-subtle);
+}
+.fx-history-project {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fx-color-text-secondary);
+}

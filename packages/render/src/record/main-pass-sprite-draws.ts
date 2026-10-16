@@ -24,7 +24,7 @@ import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 import { SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET } from '../pbr-pipeline';
 import { buildBeginRenderPassDescriptor, standardTopologyVariantSet } from '../pipeline-spec';
 import type { DispatchEntry, MaterialSnapshot } from '../render-system-extract';
-import { resolveFoldInstanceBuffer } from './fold-instance-buffer';
+import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
 import { recordGeometryDraws, resolveGeometryInstancesBindGroup } from './main-pass-geometry';
 import {
   MAX_UNIFORM_INSTANCES,
@@ -419,6 +419,7 @@ function recordSpriteEntityDraws(
     foldDispatchPlan,
     materialSlotIndices,
   } = c;
+  const recordPresented = createFoldedDrawRecorder(c);
   let lastSpritePipelineHandle: RenderPipeline | null = null;
   let lastSpriteVertexBuffer: GpuBuffer | null = null;
   let lastSpriteIndexBuffer: GpuBuffer | null = null;
@@ -653,7 +654,12 @@ function recordSpriteEntityDraws(
     ]);
     spritePass.setBindGroup(3, spriteInstancesBg);
     spritePass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
-    c.onRenderableDraw?.(spriteEntry, 0);
+    recordPresented(
+      spriteEntry,
+      0,
+      undefined,
+      spriteInst === undefined ? foldHeadBucket : undefined,
+    );
   }
 }
 

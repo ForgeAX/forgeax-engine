@@ -368,3 +368,35 @@ it('clones project shader identities with their material references before publi
     await readFile(resolve(target, 'assets/original/assets/shaders/surface.wgsl'), 'utf8'),
   ).toContain('#define_import_path role::surface');
 });
+
+it('imports into an asset directory selected by the target project manifest', async () => {
+  const { source, target } = await fixture();
+  await mkdir(resolve(target, 'content'));
+  await writeFile(
+    resolve(target, 'forge.json'),
+    JSON.stringify({
+      id: 'transfer',
+      name: 'Transfer',
+      schemaVersion: '3.0.0',
+      roots: {},
+      assetRoots: ['content'],
+    }),
+  );
+  const result = await assetSourceImportCommand({
+    root: target,
+    sourceRoot: source,
+    sourcePath: 'assets/role.pack.json',
+    targetPath: 'content/role',
+  });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+  expect(await readFile(resolve(target, 'content/role/assets/role.pack.json'), 'utf8')).toContain(
+    namespace,
+  );
+  const outside = await assetSourceImportCommand({
+    root: target,
+    sourceRoot: source,
+    sourcePath: 'assets/role.pack.json',
+    targetPath: 'assets/other',
+  });
+  expect(outside).toMatchObject({ ok: false });
+});

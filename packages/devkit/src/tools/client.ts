@@ -16,6 +16,8 @@ import {
   toolJsonSchema,
 } from '@forgeax/engine-tool-runtime';
 import type { ProjectCookers } from '../build/cookers.js';
+import { discoverPluginAssets } from '../build/plugin-assets.js';
+import { createOperationHistoryStore } from '../operation-history.js';
 import { readProjectFacts } from '../project.js';
 import {
   createProjectToolCatalogAuthority,
@@ -113,13 +115,18 @@ function uniqueContributions(
 
 export async function createToolClient(options: ToolClientOptions): Promise<ToolClient> {
   const projectDiscovery = options.projectDiscovery;
+  let initialSources = options.inventory;
   const nativePreviewIds = new Set(
     (await import('./preview-catalog.js')).nativePreviewTools.map(
       ({ descriptor }) => descriptor.id,
     ),
   );
   const builtins = options.baseContributions ?? [
-    ...(await import('./contributions.js')).createDefaultContributions(options.projectRoot),
+    ...(await import('./contributions.js')).createDefaultContributions(options.projectRoot, () => {
+      const taken = initialSources;
+      initialSources = undefined;
+      return taken;
+    }),
     ...(await import('./unified-contributions.js')).createUnifiedCommandContributions(
       options.projectRoot,
     ),
@@ -132,9 +139,14 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
   let projectDiscoveryFailure: unknown;
   if (projectDiscovery === undefined) {
     try {
+      if (initialSources === undefined) {
+        const facts = await readProjectFacts(options.projectRoot);
+        if (!facts.ok) throw facts.error;
+        initialSources = await discoverPluginAssets(facts.value);
+      }
       project = await (await import('./project-tools.js')).discoverProjectTools(
         options.projectRoot,
-        options,
+        { ...options, inventory: initialSources },
       );
     } catch (error) {
       projectDiscoveryFailure = error;
@@ -333,7 +345,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
   const loaded = loadedResult.ok
     ? loadedResult.value
     : materializeToolDescriptorCatalog(descriptors, { authorityDigest: 'sha256:unbound-project' });
-  const runTool = async <TResult = unknown>(
+  const executeTool = async <TResult = unknown>(
     id: string,
     args: unknown,
     runOptions: ToolRunOptions = {},
@@ -433,6 +445,19 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
     }
     return terminal as ToolTerminal<TResult>;
   };
+  const runTool = async <TResult = unknown>(
+    id: string,
+    args: unknown,
+    runOptions: ToolRunOptions = {},
+  ) => {
+    const selectedRoot =
+      args && typeof args === 'object' && 'root' in args && typeof args.root === 'string'
+        ? args.root
+        : options.projectRoot;
+    return (await createOperationHistoryStore(selectedRoot)).track(id, args, () =>
+      executeTool<TResult>(id, args, runOptions),
+    );
+  };
   return {
     list: () => listTools(loaded),
     describe: (id) => describeTool(loaded, id),
@@ -453,6 +478,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
     },
     run: runTool,
     async dispose() {
+      initialSources = undefined;
       const failures: unknown[] = [];
       try {
         await (await buildSession)?.dispose();

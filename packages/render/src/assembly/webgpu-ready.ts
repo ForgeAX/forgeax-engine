@@ -214,8 +214,8 @@ export async function buildReadyWebGPU(
     readonly taaResolve?: string;
   }) => void,
   registerBuiltinDepthOfField: Parameters<typeof prewarmDepthOfField>[2],
-  /** Install manifest-owned volume utility sources only after all four modules compile. */
-  setVolumetricFogShaderSources: (sources: VolumetricFogShaderSources) => void,
+  /** Await canonical volume PSOs before promoting the manifest-owned utility sources. */
+  setVolumetricFogShaderSources: (sources: VolumetricFogShaderSources) => void | Promise<void>,
   /**
    * Install manifest-owned SSR and depth-pyramid utility sources only after
    * both bundles compile; SSR trace currently reads the pyramid.
@@ -819,7 +819,7 @@ export async function buildReadyWebGPU(
           });
         }
         for (const { label, module } of compiled) seedShaderModule(label, module);
-        setVolumetricFogShaderSources({
+        await setVolumetricFogShaderSources({
           inject: compiled.find(({ stage }) => stage === 'inject')?.source as string,
           temporal: compiled.find(({ stage }) => stage === 'temporal')?.source as string,
           integrate: compiled.find(({ stage }) => stage === 'integrate')?.source as string,

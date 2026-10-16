@@ -8,6 +8,10 @@ description: >-
 
 # ForgeaX View startup
 
+After startup, use [forgeax-view-cli](../forgeax-view-cli/SKILL.md) for View
+actions and demonstrations. It owns API/CLI naming, capability discovery and
+exact page/target arguments. Browser tools verify the resulting presentation.
+
 ## Open a project with one script
 
 Use the fixed `tools/view` source in the selected Engine checkout. The helper installs from the shared workspace and calls Engine `build:tools`, which supplies the native diagnostic plugins. For a known game project, run:

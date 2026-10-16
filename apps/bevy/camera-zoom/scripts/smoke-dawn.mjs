@@ -150,7 +150,7 @@ const cameraQuery = world.query({ read: [Camera], with: [Transform, ZoomCamera] 
 let framesObserved = 0, earlyFrame, lateFrame, earlyZoom = Number.NaN, finalCamera;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const r = drawSmokeFrame(renderer, world); if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`); framesObserved++;
+  const r = await drawSmokeFrame(renderer, world); if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`); framesObserved++;
   if (i === CAPTURE_EARLY) { earlyFrame = await capture(sharedDevice); earlyZoom = cameraZoomValue(world); }
   if (i === CAPTURE_LATE) lateFrame = await capture(sharedDevice);
   stepCameraZoom(world, { switchProjection: i === Math.floor(SMOKE_MIN_FRAMES * 0.4), wheelDelta: i < Math.floor(SMOKE_MIN_FRAMES * 0.2) || i > Math.floor(SMOKE_MIN_FRAMES * 0.5) ? 1 : 0 });

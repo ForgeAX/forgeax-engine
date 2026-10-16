@@ -30,6 +30,7 @@ import {
   recordBloomDownsamplePass,
   recordBloomUpsamplePass,
 } from './record/skybox-post-pass';
+import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import {
   encodeFullscreenPass,
@@ -250,6 +251,27 @@ export function addTypedScenePass(
   options: TypedScenePassOptions,
 ): Result<void, RenderGraphError> {
   const colorTargets = options.colorTargets ?? [options.color];
+  options.gpuDriven?.registerPipelinePreparation?.(
+    colorTargets.map((target) => target.format),
+    options.gpuDrivenFilter,
+    selectForwardFragmentEntry({
+      passKind: options.passKind ?? 'forward',
+      fragmentEntry:
+        options.passKind === 'temporal'
+          ? 'fs_temporal'
+          : options.passKind === 'deferred'
+            ? 'fs_gbuffer'
+            : options.recordMode === 'single-layer-medium-nearest-layer'
+              ? 'fs_nearest_layer'
+              : options.recordMode === 'single-layer-medium-color'
+                ? 'fs_color'
+                : undefined,
+      oitAccumulate: options.recordMode === 'oit-accumulate',
+      viewOffset: 0,
+      atmosphereCapture: false,
+    }),
+    options.coverageOnly,
+  );
   const bundleDescriptor = {
     colorFormats: colorTargets.map((target) => target.format as GPUTextureFormat),
     depthStencilFormat: options.depth.format as GPUTextureFormat,

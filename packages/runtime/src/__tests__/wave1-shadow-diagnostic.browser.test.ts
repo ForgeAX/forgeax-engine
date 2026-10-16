@@ -22,6 +22,7 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
@@ -321,11 +322,7 @@ async function submitFrame(
   lease: RenderWorldLease,
 ): Promise<FrameReceipt> {
   propagateTransforms(world).unwrap();
-  const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!drawn.ok) throw drawn.error;
-  const completed = await drawn.value.completed;
-  if (!completed.ok) throw completed.error;
-  return drawn.value;
+  return drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
 }
 
 async function renderVariant(

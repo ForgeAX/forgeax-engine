@@ -12,10 +12,12 @@ export async function mountContentBrowserPanel(props: ComponentProps<typeof Cont
   root.render(
     <ClipboardProvider writeText={props.writeClipboard}><OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
       <ContentBrowserPanel
+        assetReferences={props.assetReferences}
         client={props.client}
         pageHost={props.pageHost}
         revealPanel={props.revealPanel}
         addConversationReference={props.addConversationReference}
+        registerAssetReveal={props.registerAssetReveal}
       />
     </OverlayRootProvider></ClipboardProvider>,
   );

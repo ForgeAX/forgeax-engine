@@ -105,7 +105,6 @@ const viewportSurfacePlugin = {
       shell = new ViewWorkspaceShell({ document, element: mainSurface, mountId: element.id,
         api, presentation,
         resourceBrowser: false, inspectorPanel: false, presentationOnly: true,
-        onNavigationSpeed: speed => play?.setNavigationSpeed(speed),
       });
       ctx.provide('viewWorkspaceShell', shell);
       ctx.effect(() => attachEngineFatalBanner({ document, host: mainSurface, writeClipboard: ctx.get('frontendPlatform', false)?.writeClipboard }));

@@ -102,7 +102,7 @@ for (let i = 0; i < FRAMES; i++) {
   positions.push(motion.x);
   directions.push(Math.sign(motion.velocity));
   world.update().unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`${draw.error.code}: ${draw.error.hint}`);
   if (i === 5) earlyFrame = await capture();
   if (i === FRAMES - 1) lateFrame = await capture();

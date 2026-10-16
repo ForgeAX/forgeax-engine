@@ -9,6 +9,7 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import {
   Camera,
@@ -353,20 +354,12 @@ async function renderCase(
     let lastDraw: FrameReceipt | undefined;
     for (let frame = 0; frame < frameCount; frame += 1) {
       if (frame > 0) world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
+      const drawn = await drawReadyFrame(renderer, {
         leases: [lease.value],
         camera: { lease: lease.value },
         environment: { lease: lease.value },
       });
-      expect(
-        drawn.ok,
-        drawn.ok ? undefined : JSON.stringify({ error: drawn.error, events: errors }),
-      ).toBe(true);
-      if (!drawn.ok) throw drawn.error;
-      const completed = await drawn.value.completed;
-      expect(completed.ok, completed.ok ? undefined : JSON.stringify(completed.error)).toBe(true);
-      if (!completed.ok) throw completed.error;
-      lastDraw = drawn.value;
+      lastDraw = drawn;
     }
     if (lastDraw === undefined) throw new Error('transmission smoke did not submit a frame');
     const observation = await renderer.observe(lastDraw, { include: ['draws', 'bindings'] });

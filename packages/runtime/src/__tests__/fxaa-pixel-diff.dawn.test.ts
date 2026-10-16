@@ -177,7 +177,7 @@ describe('feat-20260528-fxaa-post-processing M3 w16: AC-03 pixel diff + AC-04 to
     // Render with antialias='none' — baseline.
     const worldNone = new World();
     spawnCubeScene(worldNone, ANTIALIAS_NONE);
-    const drawnNone = drawPublished(renderer, worldNone);
+    const drawnNone = await drawPublished(renderer, worldNone);
     expect(drawnNone.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
@@ -187,7 +187,7 @@ describe('feat-20260528-fxaa-post-processing M3 w16: AC-03 pixel diff + AC-04 to
     // Render with antialias='fxaa' — FXAA active.
     const worldFxaa = new World();
     spawnCubeScene(worldFxaa, ANTIALIAS_FXAA);
-    const drawnFxaa = drawPublished(renderer, worldFxaa);
+    const drawnFxaa = await drawPublished(renderer, worldFxaa);
     expect(drawnFxaa.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
@@ -283,7 +283,7 @@ describe('feat-20260528-fxaa-post-processing M3 w16: AC-03 pixel diff + AC-04 to
     const world = new World();
     spawnCubeScene(world, ANTIALIAS_FXAA, TONEMAP_NONE);
 
-    const drawn = drawPublished(renderer, world);
+    const drawn = await drawPublished(renderer, world);
     expect(drawn.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
 

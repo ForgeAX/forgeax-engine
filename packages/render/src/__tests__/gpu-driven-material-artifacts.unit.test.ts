@@ -1024,3 +1024,47 @@ it('reuses only the producer dispatch program index while resolving current shad
   expect(projection.project(changed)).not.toBe(replacement);
   expect(projection.project(changed).overlays).not.toBe(replacement.overlays);
 });
+
+it('uses only explicit hidden preparation passes for the accepted scene-index program pair', () => {
+  const r = row(0);
+  const caster = dispatch(0, 'hidden-direct-caster');
+  const forward = { ...caster, tags: { LightMode: 'Forward' }, materialShaderId: 'material-0' };
+  const material = {
+    ...r.source.material,
+    materialProgramKeys: { color: 'material-0', shadow: 'hidden-direct-caster' },
+    materialSceneIndexProgramKeys: {
+      color: { pass: 'forward' as const, specializationKey: 'hidden-scene-color' },
+      shadow: { pass: 'shadow' as const, specializationKey: 'hidden-scene-caster' },
+    },
+  };
+  const source = {
+    ...r.source,
+    authorVisible: false,
+    material,
+    materials: [material],
+    pipelinePreparation: [forward, caster],
+  };
+  const input = {
+    rows: [{ ...r, source }],
+    dispatch: [],
+    resolve: (id: string) => artifact(id),
+    clustered: false,
+    shadowViews: true,
+    reflectionFallback: false,
+  };
+  const hidden = collectGpuDrivenMaterialArtifacts(input);
+  expect([...hidden.materialArtifacts.values()][0]?.specializationKey).toBe('hidden-scene-color');
+  expect([...hidden.shadowMaterialArtifacts.values()][0]?.specializationKey).toBe(
+    'hidden-scene-caster',
+  );
+  expect([...hidden.shadowMaterialArtifacts.values()][0]?.vertexEntry).toBe(caster.vertexEntry);
+  expect(input.dispatch).toEqual([]);
+  expect(source.authorVisible).toBe(false);
+  // A stale preparation roster on an ordinary visible row cannot replace dispatch ownership.
+  expect(
+    collectGpuDrivenMaterialArtifacts({
+      ...input,
+      rows: [{ ...r, source: { ...source, authorVisible: true } }],
+    }).shadowMaterialArtifacts.size,
+  ).toBe(0);
+});

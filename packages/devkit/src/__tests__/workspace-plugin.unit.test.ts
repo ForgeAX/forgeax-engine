@@ -1,11 +1,66 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { EngineWorkspaceProvider } from '@forgeax/engine-app';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { describe, expect, it, vi } from 'vitest';
+import { createOperationHistoryStore } from '../operation-history.js';
 import { devKitWorkspacePlugin } from '../workspace-plugin.js';
 
 // Native Host/ToolApi lifecycle evidence; this fixture does not render.
 describe('Engine workspace capability plugin', () => {
+  it('reads only the admitted frontend project history and ignores a forged root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-history-access-'));
+    const first = join(root, 'first'),
+      second = join(root, 'second');
+    await Promise.all([mkdir(first), mkdir(second)]);
+    vi.stubEnv('FORGEAX_HISTORY_DIR', join(root, 'history'));
+    const backend = await createBackendHost({});
+    const provider: EngineWorkspaceProvider = {
+      openProject: ({ root }) => ({ project: { id: root, root } }),
+      closeProject() {},
+      listAssets: () => [],
+      openPreview() {
+        throw new Error('unused');
+      },
+    };
+    const client = backend.transport.connect({ kind: 'frontend', sourceId: 'view-frontend' });
+    const foreign = backend.transport.connect({ kind: 'frontend', sourceId: 'unadmitted' });
+    try {
+      for (const project of [first, second])
+        await (await createOperationHistoryStore(project)).track(project, {}, async () => ({
+          outcome: 'succeeded',
+          result: {},
+          artifacts: [],
+        }));
+      const fiber = await backend.context.plugin(devKitWorkspacePlugin, {
+        provider,
+        hostBinding: { backend },
+      });
+      await fiber.await();
+      const call = (operation: string, args: Record<string, unknown>) =>
+        client.request('engine.workspace.call', { operation, args });
+      await expect(call('engine.history.list', { root: second })).rejects.toThrow();
+      await call('engine.project.open', { root: first });
+      expect(await call('engine.history.list', { root: second })).toMatchObject({
+        root: await realpath(first),
+        items: [{ operation: first }],
+      });
+      await expect(
+        foreign.request('engine.workspace.call', {
+          operation: 'engine.history.list',
+          args: { root: first },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      client.close();
+      foreign.close();
+      await backend.dispose();
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('derives plugin ownership from Host callers and releases a disconnected project connection before any preview', async () => {
     const backend = await createBackendHost({});
     const target = {

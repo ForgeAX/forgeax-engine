@@ -1,24 +1,31 @@
 .fx-view-run-observer {
+  box-sizing: border-box;
   height: 100%;
   overflow: auto;
-  padding: var(--fx-ref-space-8);
+  padding: var(--fx-ref-space-16);
 }
-
-.fx-view-run-observer img {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  pointer-events: none;
-}
-
-.fx-view-run-observer img[hidden] { display: none; }
-.fx-view-run-observer pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-
-.fx-view-run-observer form {
+.fx-capture-toolbar, .fx-capture-toolbar label {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--fx-ref-space-8);
-  max-width: 70rem;
 }
-.fx-view-run-observer form .fx-input { flex: 1 1 16rem; }
+.fx-capture-toolbar { padding-bottom: var(--fx-ref-space-12); border-bottom: 1px solid var(--fx-color-border-subtle); }
+.fx-capture-toolbar select { width: auto; max-width: 100%; color-scheme: inherit; }
+.fx-capture-project { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fx-color-text-secondary); }
+.fx-view-run-observer [role="status"] { font-weight: 500; }
+.fx-capture-metadata, .fx-capture-hint { color: var(--fx-color-text-muted); font-size: var(--fx-type-caption-font-size); }
+.fx-view-run-observer img {
+  display: block;
+  max-width: 100%;
+  max-height: 65vh;
+  height: auto;
+  object-fit: contain;
+  border-radius: var(--fx-radius-control);
+  background: var(--fx-color-surface-inset);
+  pointer-events: none;
+}
+.fx-view-run-observer [hidden] { display: none; }
+.fx-view-run-observer details { margin-block: var(--fx-ref-space-12); }
+.fx-view-run-observer summary { cursor: pointer; color: var(--fx-color-text-secondary); }
+.fx-view-run-observer pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; }

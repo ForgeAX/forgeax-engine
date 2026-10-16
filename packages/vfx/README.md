@@ -261,6 +261,28 @@ visibility even when a paused player has no pending fixed-tick intent. It
 admits new Players and retires despawned entities and removed `ParticleEffectPlayer` components from
 the pending and committed state before extraction, without advancing World time.
 
+`ParticleEffectPlayer.preparePipelines` defaults to `false`.
+
+| `playing` | `preparePipelines` | Work |
+| --- | --- | --- |
+| `true` | Either | Ordinary reset, simulation and presentation |
+| `false` | `false` | Existing paused, frozen-render behavior |
+| `false` | `true` | Retain actual programs and capacity buffers; no simulation intent, copy, dispatch or draw |
+
+A prepared player starts through the ordinary reset/spawn boundary and uses the
+same resource owner. Returning it to paused preparation retires unconsumed ticks
+by exact sequence acknowledgement and stops retained drawing, including an old
+emitter definition. No reset, simulation or copy executes while it is parked.
+Remove the component or despawn it to release ownership.
+Explicit preparation keeps frame presentation pending until the requested
+compute and raster pipelines resolve. Backends exposing native asynchronous
+creation are awaited; legacy synchronous providers retain their existing API
+semantics without a native compilation-completion guarantee.
+
+> [!IMPORTANT]
+> Loading an effect or publishing its source is not GPU readiness. CPU/NullRHI
+> contracts establish ownership and completion gates, not device timing or FPS.
+
 ## Culling policy
 
 | `simulationWhenCulled` | Hidden behavior | Visible transition |

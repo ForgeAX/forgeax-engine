@@ -17,7 +17,7 @@ function fixture(profile: boolean) {
     ok: true,
     value: { finish: () => ({ ok: true, value: { captureId: 'test-profile' } }) },
   }));
-  const world = { world: { update: () => ({ unwrap: () => undefined }) }, lease: {} };
+  const world = { world: { update: vi.fn(() => ({ unwrap: () => undefined })) }, lease: {} };
   return {
     baseline: world,
     treatment: world,
@@ -45,7 +45,7 @@ function fixture(profile: boolean) {
     renderer: {
       draw: () => {
         draws.push({ capture });
-        return { ok: true, value: { frameId: frameId++ } };
+        return { ok: true, value: { frameId: frameId++, presentation: 'ready', completed: Promise.resolve({ ok: true }) } };
       },
       observe: async (_receipt: unknown, options: { include: readonly string[] }) => {
         const draw = draws.at(-1);
@@ -97,6 +97,23 @@ it.each([
       });
     }
   }
+});
+
+it('retries a preparation receipt without consuming a logical frame or CPU sample', async () => {
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  const { captureCondition, WARMUP_SUBMITS, RETAINED_SAMPLES_PER_ORDER } = await import(SCRIPT);
+  const f = fixture(false);
+  const draw = f.renderer.draw;
+  vi.spyOn(f.renderer, 'draw').mockImplementationOnce(() => {
+    const result = draw();
+    return { ...result, value: { ...result.value, presentation: 'pending' } };
+  });
+  const captured = await captureCondition(f, 'baseline', 'baseline-treatment');
+  const logicalFrames = WARMUP_SUBMITS + RETAINED_SAMPLES_PER_ORDER / 2;
+  expect(f.baseline.world.update).toHaveBeenCalledTimes(logicalFrames);
+  expect(f.draws).toHaveLength(logicalFrames + 1);
+  expect(captured.facts.cpuSamples).toHaveLength(RETAINED_SAMPLES_PER_ORDER / 2);
+  expect(captured.facts.cpuSamples[0]?.frameId).toBe(WARMUP_SUBMITS + 1);
 });
 
 it('persists completed CPU and GPU observations when a retained timing read fails', async () => {

@@ -32,7 +32,14 @@ import {
   Skin,
   SkinInstancesCoexistForbiddenError,
 } from '@forgeax/engine-skinning';
-import type { Asset, Handle, MeshAsset, MeshLodLevel, SkeletonAsset } from '@forgeax/engine-types';
+import type {
+  Asset,
+  Handle,
+  MaterialAsset,
+  MeshAsset,
+  MeshLodLevel,
+  SkeletonAsset,
+} from '@forgeax/engine-types';
 import {
   ASSET_ERROR_HINTS,
   AssetError,
@@ -176,6 +183,102 @@ import { extractTerrainSources } from './terrain/source.js';
 
 function skinPaletteIdentity(world: World, entity: number): string {
   return `skin:${world.identity}:${entity}`;
+}
+
+// The existing persistent cache is scoped to one extraction owner. Skin and
+// vertex-color program contexts must never consume its ordinary mesh entries.
+const skinMaterialCaches = new WeakMap<
+  MaterialSnapshotCache,
+  Map<boolean, MaterialSnapshotCache>
+>();
+function skinMaterialCache(
+  owner: MaterialSnapshotCache | undefined,
+  vertexColor: boolean,
+): MaterialSnapshotCache | undefined {
+  if (owner === undefined) return undefined;
+  let contexts = skinMaterialCaches.get(owner);
+  if (contexts === undefined) {
+    contexts = new Map();
+    skinMaterialCaches.set(owner, contexts);
+  }
+  let cache = contexts.get(vertexColor);
+  if (cache === undefined) {
+    cache = new Map();
+    contexts.set(vertexColor, cache);
+  }
+  return cache;
+}
+
+// Self-contained Pack materials can prove immutability without invoking any
+// author getter or following a potentially mutable foreign parent. Inherited,
+// accessor-bearing and mutable skin sources keep their original projection.
+function frozenSkinMaterial(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== 'object') return ['string', 'number', 'boolean'].includes(typeof value);
+  if (seen.has(value)) return true;
+  try {
+    const root = seen.size === 0;
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      !Object.isFrozen(value) ||
+      (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null)
+    )
+      return false;
+    seen.add(value);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return false;
+      if (root && key === 'parent' && descriptor.value !== undefined) return false;
+      if (!frozenSkinMaterial(descriptor.value, seen)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A frozen author payload does not freeze the registry's accepted program
+// owner. Readiness and program replacement can occur without a catalog epoch.
+const frozenSkinMaterialOwners = new WeakMap<
+  MaterialSnapshot,
+  (assets: AssetRegistry) => boolean
+>();
+function rememberFrozenSkinMaterial(
+  snapshot: MaterialSnapshot,
+  material: MaterialAsset,
+  assets: AssetRegistry,
+  selections: readonly MaterialProgramSelection[] | undefined,
+): void {
+  const projection = assets.getMaterialProjectionForPayload(material);
+  const programs = (material.passes ?? []).map(({ program }) => ({
+    module: program.module,
+    artifact: assets.shaderRegistry.materialArtifact(program.module),
+  }));
+  const specializations = (selections ?? []).map(({ specializationKey }) => ({
+    key: specializationKey,
+    artifact: assets.getMaterialArtifact(specializationKey),
+  }));
+  frozenSkinMaterialOwners.set(
+    snapshot,
+    (current) =>
+      current === assets &&
+      current.getMaterialProjectionForPayload(material) === projection &&
+      programs.every(
+        ({ module, artifact }) => current.shaderRegistry.materialArtifact(module) === artifact,
+      ) &&
+      specializations.every(({ key, artifact }) => current.getMaterialArtifact(key) === artifact),
+  );
+}
+function frozenSkinMaterialSnapshotCurrent(
+  snapshot: MaterialSnapshot,
+  assets: AssetRegistry | undefined | null,
+): boolean {
+  try {
+    return assets != null && frozenSkinMaterialOwners.get(snapshot)?.(assets) === true;
+  } catch {
+    // Re-enter the original resolver, which owns the material diagnostic.
+    return false;
+  }
 }
 
 function materialProgramSelectionRequiresSkin(selection: {
@@ -824,6 +927,41 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   const materialTextureSourceCache: MaterialTextureSourceCache = new Map();
 
   const worldInternal = createWorldInternalView(world);
+  const admitSkinMaterial = (
+    entity: EntityHandle,
+    hasSkin: boolean,
+    skeleton: number | undefined,
+    shader: string | undefined,
+    selections: readonly MaterialProgramSelection[] | undefined,
+    mesh: number | undefined,
+  ): boolean => {
+    const wantsSkin =
+      selections?.some(materialProgramSelectionRequiresSkin) === true ||
+      isStandardPbrSkinMaterialShader(shader);
+    if (hasSkin && skeleton !== undefined && skeleton !== 0 && !wantsSkin) {
+      worldInternal._routeError(new SkinMaterialMismatchError(entity, shader), {
+        severity: Severity.Error,
+        systemName: 'RenderSystem.extract (skin-material-mismatch)',
+      });
+      return false;
+    }
+    if (wantsSkin && mesh !== undefined && mesh !== 0) {
+      const current = resolveAssetHandle<MeshAsset>(world, toShared<'MeshAsset'>(mesh));
+      if (current.ok) {
+        const indices = current.value.attributes.skinIndex !== undefined;
+        const weights = current.value.attributes.skinWeight !== undefined;
+        if (!indices || !weights) {
+          const missing = !indices && !weights ? 'both' : !indices ? 'skinIndex' : 'skinWeight';
+          worldInternal._routeError(new MaterialSkinAttrMissingError(entity, missing), {
+            severity: Severity.Error,
+            systemName: 'RenderSystem.extract (material-skin-attr-missing)',
+          });
+          return false;
+        }
+      }
+    }
+    return true;
+  };
   const {
     cameras,
     auxiliaryCameras,
@@ -971,6 +1109,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       });
       continue;
     }
+    const preparePipelines =
+      world[worldRead].getFieldValue(row.entity, MeshRenderer, 'preparePipelines') === 1;
     const hasTransform = row.has(Transform);
     const meshFilter = row.get(MeshFilter);
     const hasInstances = row.has(Instances);
@@ -1247,8 +1387,24 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         geometryMaterialCache = new Map();
         materialCaches.set(cacheKey, geometryMaterialCache);
       }
-      const geometryPersistentCache =
-        geometry === 'mesh' && !vertexColorAvailable ? persistentMaterialSnapshotCache : undefined;
+      const geometryPersistentCache = hasSkin
+        ? skinMaterialCache(persistentMaterialSnapshotCache, vertexColorAvailable)
+        : geometry === 'mesh' && !vertexColorAvailable
+          ? persistentMaterialSnapshotCache
+          : undefined;
+      // Secondary materials use the existing plain resolver. Its entries must
+      // never become primary skin admission records on another entity.
+      let secondaryMaterialCache = geometryMaterialCache;
+      if (hasSkin && materialHandles.length > 1) {
+        const secondaryKey = `${cacheKey}:secondary`;
+        let secondary = materialCaches.get(secondaryKey);
+        if (secondary === undefined) {
+          secondary = new Map();
+          materialCaches.set(secondaryKey, secondary);
+        }
+        secondaryMaterialCache = secondary;
+      }
+      const secondaryPersistentCache = hasSkin ? undefined : geometryPersistentCache;
       const geometryMaterialContext =
         context.materialContext === undefined
           ? undefined
@@ -1262,9 +1418,14 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       // i-th submesh draw.) -- feat-20260608 M5 amend / w11-a.
       const handleRaw = materialHandles[0] ?? 0;
 
-      const cachedMaterial =
-        handleRaw !== 0 && !hasSpriteRegionOverride && !hasSkin
+      const cachedCandidate =
+        handleRaw !== 0 && !hasSpriteRegionOverride
           ? geometryMaterialCache.get(handleRaw)
+          : undefined;
+      const cachedMaterial =
+        cachedCandidate !== undefined &&
+        (!hasSkin || frozenSkinMaterialSnapshotCurrent(cachedCandidate.snapshot, assets))
+          ? cachedCandidate
           : undefined;
 
       let materialSnap: MaterialSnapshot;
@@ -1272,6 +1433,19 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
 
       if (cachedMaterial !== undefined) {
         materialSnap = cachedMaterial.snapshot;
+        materialProgramSelections = cachedMaterial.programSelections;
+        if (
+          hasSkin &&
+          !admitSkinMaterial(
+            entity,
+            hasSkin,
+            skinSkeletonView,
+            materialSnap.materialShaderId,
+            materialProgramSelections,
+            fAssetHandleVal,
+          )
+        )
+          continue;
         if (isRenderable) {
           appendMaterialDispatchEntries(
             pendingDispatch,
@@ -1290,18 +1464,30 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         materialSnap = defaultMaterialSnapshot(handleRaw);
       } else {
         const tagged = toShared<'MaterialAsset'>(handleRaw);
+        const stableCandidate = !hasSpriteRegionOverride
+          ? readStablePersistentMaterialSnapshot(geometryPersistentCache, handleRaw, assets, world)
+          : undefined;
         const stablePersistentCached =
-          !hasSpriteRegionOverride && !hasSkin
-            ? readStablePersistentMaterialSnapshot(
-                geometryPersistentCache,
-                handleRaw,
-                assets,
-                world,
-              )
+          stableCandidate !== undefined &&
+          (!hasSkin || frozenSkinMaterialSnapshotCurrent(stableCandidate.snapshot, assets))
+            ? stableCandidate
             : undefined;
         if (stablePersistentCached !== undefined) {
           geometryMaterialCache.set(handleRaw, stablePersistentCached);
           materialSnap = stablePersistentCached.snapshot;
+          materialProgramSelections = stablePersistentCached.programSelections;
+          if (
+            hasSkin &&
+            !admitSkinMaterial(
+              entity,
+              hasSkin,
+              skinSkeletonView,
+              materialSnap.materialShaderId,
+              materialProgramSelections,
+              fAssetHandleVal,
+            )
+          )
+            continue;
           if (isRenderable) {
             appendMaterialDispatchEntries(
               pendingDispatch,
@@ -1501,44 +1687,17 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             // Both cases route through `_routeError` + `continue` so a single
             // misconfigured entity does NOT abort the whole frame's draw list
             // (charter P3 explicit failure + plan-decisions D-5 over `return err`).
-            {
-              const hasSkinSkel =
-                hasSkin &&
-                skinSkeletonView !== undefined &&
-                skinSkeletonView !== undefined &&
-                skinSkeletonView !== 0;
-              const isPbrSkinMaterial =
-                materialProgramSelections?.some(materialProgramSelectionRequiresSkin) === true ||
-                isStandardPbrSkinMaterialShader(firstPassShader);
-              if (hasSkinSkel && !isPbrSkinMaterial) {
-                worldInternal._routeError(new SkinMaterialMismatchError(entity, firstPassShader), {
-                  severity: Severity.Error,
-                  systemName: 'RenderSystem.extract (skin-material-mismatch)',
-                });
-                continue;
-              }
-              if (isPbrSkinMaterial && fAssetHandleVal !== undefined && fAssetHandleVal !== 0) {
-                const meshHandleForSkinCheck = toShared<'MeshAsset'>(fAssetHandleVal);
-                const meshResForSkinCheck = resolveAssetHandle<MeshAsset>(
-                  world,
-                  meshHandleForSkinCheck,
-                );
-                if (meshResForSkinCheck.ok) {
-                  const meshAttrs = meshResForSkinCheck.value.attributes;
-                  const hasSkinIdx = meshAttrs.skinIndex !== undefined;
-                  const hasSkinWt = meshAttrs.skinWeight !== undefined;
-                  if (!hasSkinIdx || !hasSkinWt) {
-                    const missing: 'skinIndex' | 'skinWeight' | 'both' =
-                      !hasSkinIdx && !hasSkinWt ? 'both' : !hasSkinIdx ? 'skinIndex' : 'skinWeight';
-                    worldInternal._routeError(new MaterialSkinAttrMissingError(entity, missing), {
-                      severity: Severity.Error,
-                      systemName: 'RenderSystem.extract (material-skin-attr-missing)',
-                    });
-                    continue;
-                  }
-                }
-              }
-            }
+            if (
+              !admitSkinMaterial(
+                entity,
+                hasSkin,
+                skinSkeletonView,
+                firstPassShader,
+                materialProgramSelections,
+                fAssetHandleVal,
+              )
+            )
+              continue;
             // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w12 (D-3):
             // sprite materials now flow through the same generic paramSchema-
             // driven extract path PBR / unlit use. The narrow `forgeax::sprite`
@@ -1862,7 +2021,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               transparent: firstPassTransparent,
             };
 
-            if (!hasSpriteRegionOverride && !hasSkin) {
+            if (!hasSpriteRegionOverride && (!hasSkin || frozenSkinMaterial(asset))) {
               const stored = storeMaterialSnapshot(
                 geometryMaterialCache,
                 handleRaw,
@@ -1871,8 +2030,11 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 asset,
                 assets,
                 world,
+                materialProgramSelections,
               );
               materialSnap = stored.snapshot;
+              if (hasSkin)
+                rememberFrozenSkinMaterial(materialSnap, asset, assets, materialProgramSelections);
               if (stored.crossFrameSafe) geometryPersistentCache?.set(handleRaw, stored);
             }
 
@@ -2113,7 +2275,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         if (assets !== undefined && assets !== null) {
           for (let mi = 1; mi < materialHandles.length; mi++) {
             const subHandle = materialHandles[mi] ?? 0;
-            const subCache = geometryMaterialCache;
+            const subCache = secondaryMaterialCache;
             const cachedSubmaterial = subCache.get(subHandle);
             materialsArr.push(
               cachedSubmaterial?.snapshot ??
@@ -2122,7 +2284,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                   world,
                   assets,
                   subCache,
-                  geometryPersistentCache,
+                  secondaryPersistentCache,
                   geometryMaterialContext,
                   materialTextureSourceStats,
                   materialTextureSourceCache,
@@ -2136,8 +2298,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             const subHandle = materialHandles[mi] ?? 0;
             if (subHandle === handleRaw) continue;
             const subEntry =
-              geometryMaterialCache.get(subHandle) ??
-              readPersistentMaterialSnapshot(geometryPersistentCache, subHandle, assets, world);
+              secondaryMaterialCache.get(subHandle) ??
+              readPersistentMaterialSnapshot(secondaryPersistentCache, subHandle, assets, world);
             appendMaterialDispatchEntries(
               pendingDispatch,
               subEntry?.passes ?? (subHandle === 0 ? [DEFAULT_FORWARD_PASS] : []),
@@ -2428,6 +2590,12 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           }
         }
 
+        const pipelinePreparation = preparePipelines
+          ? pendingDispatch.map(
+              ({ entityIndex: _entityIndex, renderableIndex: _renderableIndex, ...pass }) => pass,
+            )
+          : undefined;
+
         // feat-20260528-frustum-culling M3 / w10: frustum culling check.
         // Skip the entity if a valid AABB exists AND ALL cameras' frusta
         // reject the world-space AABB. Missing or malformed AABBs are
@@ -2503,7 +2671,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 shadowFrusta.some((lightPlanes) =>
                   frustum.intersectsBox(lightPlanes, worldAabb as box3.Box3Like),
                 );
-              if (!shadowVisible) continue;
+              if (!shadowVisible && pipelinePreparation === undefined) continue;
               // Shadow-only renderables stay in the detached snapshot for the
               // depth passes, but must not leak their forward/transparent
               // dispatch entries into the main camera submission.
@@ -2603,7 +2771,14 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 ...(shadowReceiveDisabled ? { shadowReceiver: false as const } : {}),
               };
         flushPendingDispatch(pendingDispatch);
-        renderables.push(renderableWithShadowPasses);
+        renderables.push(
+          pipelinePreparation === undefined
+            ? renderableWithShadowPasses
+            : {
+                ...renderableWithShadowPasses,
+                pipelinePreparation,
+              },
+        );
       }
 
       // feat-20260520-2d-sprite-layer-mvp M-3 / w22 + w25: finalise the

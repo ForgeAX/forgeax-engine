@@ -18,6 +18,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { type LinearHdrImage, luminanceRgba16f } from './contact-shadow.fixture';
 
@@ -288,13 +289,13 @@ export async function verifyCapsuleShadow(
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const last = index === 5;
-      if (last) unwrap(renderer.requestObservation?.(['linear-hdr']));
       const pending = last && capture ? options.recorder?.captureFrame() : undefined;
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
-      const frame = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      const frame = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        last ? ['linear-hdr'] : undefined,
       );
-      unwrap(await frame.completed);
       if (pending !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
         await options.capture?.((await pending).unwrap(), variant);

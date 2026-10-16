@@ -7,12 +7,14 @@ import {
   operationCommandPath,
   type ToolContribution,
   type ToolDomainFailure,
+  type ToolExecutionContext,
   type ToolJsonSchema,
   type ToolRealm,
   toolJsonSchema,
 } from '@forgeax/engine-tool-runtime';
 import { animationPlayback, animationPlaybackSchema } from '../animation-playback.js';
 import { executionWorkers, executionWorkersSchema } from '../execution-workers.js';
+import { createOperationHistoryTools } from '../operation-history.js';
 import { readProjectStartupTimeoutMs } from '../project.js';
 import { RHI_INSPECT_INPUT_SCHEMA, RHI_READ_INPUT_SCHEMA } from '../rhi-debug/operations.js';
 import { createWorkspaceLiveTools } from '../workspace-live-tools.js';
@@ -274,7 +276,7 @@ export function command<TArgs extends Record<string, unknown>>(
   id: string,
   title: string,
   summary: string,
-  execute: (args: TArgs) => Promise<CommandValue>,
+  execute: (args: TArgs, context: ToolExecutionContext) => Promise<CommandValue>,
   realm: ToolRealm = 'build',
   options: {
     readonly schema?: ToolJsonSchema;
@@ -299,7 +301,7 @@ export function command<TArgs extends Record<string, unknown>>(
       ...(options.example === undefined ? {} : { example: options.example }),
       inputSchema: argsSchema as unknown as JsonValue,
     },
-    async (args) => result(await execute(args)),
+    async (args, context) => result(await execute(args, context)),
   );
 }
 
@@ -488,7 +490,7 @@ export function createUnifiedCommandContributions(
     'asset.preview',
     'Preview an asset',
     'Produces canonical GUID-based resource evidence through the owning preview plugin.',
-    async (args) => {
+    async (args, context) => {
       const kind = typeof args.kind === 'string' ? args.kind : 'mesh';
       if (kind === 'scene') {
         const { runScenePreviewTool } = await import('./scene-preview.js');
@@ -517,7 +519,10 @@ export function createUnifiedCommandContributions(
       const terminal = await nativePreview.runNativePreviewTool(
         contribution as ToolContribution<unknown, unknown>,
         request,
-        {},
+        {
+          signal: context.signal,
+          ...(context.snapshot === undefined ? {} : { snapshot: context.snapshot }),
+        },
         projectRoot,
         {
           ...(args.backend === 'auto' || args.backend === 'hardware' || args.backend === 'software'
@@ -705,6 +710,7 @@ export function createUnifiedCommandContributions(
     profile('compare', 'Compares two profile ArtifactRefs without starting a browser.'),
   ];
   return [
+    ...createOperationHistoryTools(projectRoot),
     ...(['start', 'status', 'stop'] as const).map((operation) =>
       command(
         `backend.${operation}`,

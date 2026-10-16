@@ -68,16 +68,17 @@ async function localFile(from: string, specifier: string): Promise<string> {
 export async function collectAuthorPackClosure(
   projectRoot: string,
   sourcePath: string,
+  assetRoots: readonly string[],
 ): Promise<AuthorPackClosure> {
   const root = await realpath(projectRoot);
   const entry = await realpath(resolve(root, sourcePath));
   if (!inside(root, entry) || !/\.pack\.(?:json|ts)$/.test(entry))
     invalid(sourcePath, 'expected a project-local Pack source');
-  const scanned = await scanInventory([resolve(root, 'assets')]);
+  const scanned = await scanInventory(assetRoots.map((directory) => resolve(root, directory)));
   if (!scanned.ok) throw scanned.error;
   const declarations = scanned.value.declarations;
   if (!declarations.has(entry))
-    invalid(sourcePath, 'Pack source must be in the project assets tree');
+    invalid(sourcePath, 'Pack source must be inside a configured asset directory');
   const identityOwners = new Map<string, string>();
   const identities = new Map<string, { packageId?: string; sourceKey?: string }>();
   const outputs = new Map<string, unknown>();

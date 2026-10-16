@@ -2,16 +2,15 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 
 /** Exercise the real observer UI against the independent run owned by the fixture. */
-export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateImage }) {
+export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateImage, bindExact }) {
   await page.locator('[data-page-id="page-display"]').click();
   const surface = page.locator('.fx-view-run-observer');
   const picture = surface.getByRole('img', { name: 'Latest Engine run capture', includeHidden: true });
   const summary = surface.getByRole('status');
-  const bind = async id => {
-    await surface.getByLabel('Observed project path').fill(root);
-    await surface.getByLabel('Observed run ID').fill(id);
-    await surface.getByRole('button', { name: 'Observe run', exact: true }).click();
-  };
+  const metadata = surface.locator('.fx-capture-metadata');
+  await surface.getByLabel('Capture source').selectOption('run');
+  assert.equal(await surface.locator('input').count(), 0, 'known project and runtime identities must never require typing');
+  const bind = () => surface.getByRole('button', { name: /View project run|Reconnect current run/ }).click();
   const waitForImage = async () => {
     await picture.waitFor({ state: 'visible', timeout: 30_000 });
     await page.waitForFunction(() => {
@@ -19,9 +18,9 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
       return image?.complete && image.naturalWidth === 1280 && image.naturalHeight === 720;
     });
   };
-  await bind(runId);
+  await bind();
   await waitForImage();
-  assert.match(await summary.innerText(), new RegExp(`Run ${runId.slice(0, 8)}`));
+  assert.match(await surface.locator('details pre').last().textContent(), new RegExp(`Run: ${runId}`));
   // The independent run owns these DOM and Shadow DOM markers. Sampling the
   // displayed image proves this page presents the run's pixels, not the Editor.
   await page.waitForFunction(() => {
@@ -32,7 +31,7 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
     context.drawImage(image, 0, 0);
     return JSON.stringify([Array.from(context.getImageData(50, 60, 1, 1).data), Array.from(context.getImageData(50, 160, 1, 1).data)]) === '[[255,0,255,255],[0,255,255,255]]';
   }, undefined, { timeout: 30_000 });
-  const firstFrame = Number((await summary.innerText()).match(/Frame (\d+)/)?.[1]);
+  const firstFrame = Number((await metadata.innerText()).match(/Frame (\d+)/)?.[1]);
   assert.ok(firstFrame >= 300);
   await page.screenshot({ path: '/tmp/view-runtime-capture-before.png' });
   await updateImage();
@@ -46,11 +45,11 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
   }, undefined, { timeout: 30_000 });
   await page.waitForFunction(() => document.querySelector('.fx-view-run-observer pre')?.textContent.includes('Runtime capture live update'), undefined, { timeout: 30_000 });
   await page.waitForFunction(frame => {
-    const summary = document.querySelector('.fx-view-run-observer [role="status"]')?.textContent;
+    const summary = document.querySelector('.fx-view-run-observer .fx-capture-metadata')?.textContent;
     return Number(summary?.match(/Frame (\d+)/)?.[1]) > frame;
   }, firstFrame, { timeout: 30_000 });
-  const refreshedFrame = Number((await summary.innerText()).match(/Frame (\d+)/)?.[1]);
-  assert.doesNotMatch(await summary.innerText(), /Stale image/);
+  const refreshedFrame = Number((await metadata.innerText()).match(/Frame (\d+)/)?.[1]);
+  assert.doesNotMatch(await metadata.innerText(), /Last captured image/);
   assert.equal(await surface.locator('canvas, iframe').count(), 0);
   await page.screenshot({ path: '/tmp/view-runtime-capture.png' });
 
@@ -66,22 +65,22 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
   await page.locator('[data-page-id="page-editor"]').click();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('[data-page-id="page-display"]').click();
-  assert.equal(await surface.getByLabel('Observed run ID').inputValue(), runId);
+  assert.match(await surface.locator('details pre').last().textContent(), new RegExp(`Run: ${runId}`));
   await waitForImage();
 
-  await bind('missing-runtime-capture-proof');
+  await bindExact({ root, runId: 'missing-runtime-capture-proof' });
   await page.waitForFunction(() => document.querySelector('.fx-view-run-observer [role="status"]')?.textContent.includes('no longer active'));
   assert.equal(await picture.getAttribute('src'), null, 'a wrong binding must clear the previous picture');
   await page.screenshot({ path: '/tmp/view-runtime-capture-missing.png' });
   await sameRun();
   await surface.getByRole('button', { name: 'Disconnect', exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('.fx-view-run-observer [role="status"]')?.textContent === 'No Engine run is connected.');
-  assert.equal(await surface.getByLabel('Observed run ID').inputValue(), '');
-  assert.equal(await surface.getByLabel('Observed project path').inputValue(), '');
+  await page.waitForFunction(() => document.querySelector('.fx-view-run-observer [role="status"]')?.textContent === 'Connect to view the current project’s independent Engine run.');
+  assert.equal(await surface.locator('input').count(), 0);
+  assert.equal(await surface.getByRole('button', { name: 'Disconnect', exact: true }).isVisible(), false);
   assert.equal(await picture.getAttribute('src'), null);
   await page.screenshot({ path: '/tmp/view-runtime-capture-disconnected.png' });
   await sameRun();
-  await bind(runId);
+  await bind();
   await waitForImage();
   await sameRun();
   await page.locator('[data-page-id="page-editor"]').click();

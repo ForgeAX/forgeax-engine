@@ -78,7 +78,7 @@ for (let i = 0; i < MIN_FRAMES; i++) {
   }
   propagateTransforms(world);
   world.update().unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`draw failed: ${draw.error.code}`);
   frames++;
   if (i === Math.min(10, MIN_FRAMES - 1)) {

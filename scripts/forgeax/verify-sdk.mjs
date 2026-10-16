@@ -592,6 +592,17 @@ if (selected('project')) {
     maxBuffer: 128 * 1024 * 1024,
   });
 
+  async function verifyStandaloneDocumentBoundary(outputRoot) {
+    const scripts = (await filesUnder(outputRoot)).filter((path) => /\.(?:js|mjs)$/.test(path));
+    if (scripts.length === 0) throw new Error('sdk-game-javascript-missing');
+    for (const path of scripts) {
+      const source = await readFile(path, 'utf8');
+      if (/\blocation\s*\.\s*(?:assign|replace)\s*\(/.test(source))
+        throw new Error(`sdk-game-document-navigation: ${relative(outputRoot, path)}`);
+    }
+    return scripts.length;
+  }
+
   const staticOutput = resolve(unpackRoot, 'static-game');
   await execFileAsync(
     'pnpm',
@@ -615,6 +626,8 @@ if (selected('project')) {
   ) {
     throw new Error('sdk-static-build-output-closure');
   }
+
+  const staticDocumentScripts = await verifyStandaloneDocumentBoundary(staticOutput);
 
   async function verifyGamePackage(projectRoot, output) {
     const packageResult = await execFileAsync(
@@ -642,7 +655,13 @@ if (selected('project')) {
     const envelope = JSON.parse(packageResult.stdout.trim().split(/\r?\n/).at(-1) ?? '{}');
     if (JSON.stringify(envelope.value?.documents) !== JSON.stringify(documents))
       throw new Error('sdk-game-package-document-report');
-    return { output, documents };
+    return {
+      output,
+      documents,
+      documentScriptsWithoutNavigation: await verifyStandaloneDocumentBoundary(
+        resolve(projectRoot, 'dist'),
+      ),
+    };
   }
 
   const packagedProject = await verifyGamePackage(
@@ -1479,6 +1498,7 @@ if (selected('project')) {
       output: staticOutput,
       base: staticManifest.base,
       artifacts: staticManifest.artifacts.length,
+      documentScriptsWithoutNavigation: staticDocumentScripts,
     },
     previewUrl,
   };

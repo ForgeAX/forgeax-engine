@@ -23,6 +23,26 @@ async function project(fields: object = {}, packageFields: object = {}) {
   return root;
 }
 describe('readProjectFacts', () => {
+  it('uses the asset directories declared in forge.json', async () => {
+    const assetRoots = ['content/art', 'shared'];
+    expect(await readProjectFacts(await project({ assetRoots }))).toMatchObject({
+      ok: true,
+      value: { assetRoots },
+    });
+    for (const path of [
+      '../outside',
+      '/absolute',
+      'C:/outside',
+      'assets/../src',
+      '.',
+      'assets\\models',
+    ]) {
+      expect(await readProjectFacts(await project({ assetRoots: [path] }))).toMatchObject({
+        ok: false,
+        error: { code: 'project-manifest-invalid' },
+      });
+    }
+  });
   it('reads root references without resolving or executing runtime code', async () => {
     const roots = { engine: guid, host: guid, build: guid };
     const root = await project({ roots });

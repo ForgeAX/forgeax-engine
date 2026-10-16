@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // instances-shadow.dawn.test.ts -- feat-20260604-instances-per-instance-transform-shader-group3-bin
 // M2 / w10.
@@ -315,15 +316,14 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
     const attachment = renderer.attach(world);
     expect(attachment.ok).toBe(true);
     if (!attachment.ok) throw attachment.error;
-    let drawErrors = 0;
+    const drawErrors = 0;
     for (let i = 0; i < 60; i++) {
       world.update(1 / 60).unwrap();
-      const r = renderer.draw({
+      await drawReadyFrame(renderer, {
         leases: [attachment.value],
         camera: { lease: attachment.value },
         environment: { lease: attachment.value },
       });
-      if (!r.ok) drawErrors++;
     }
     expect(drawErrors).toBe(0);
     // The integrated request owner covers scene passes, including shadows.

@@ -30,6 +30,7 @@ import {
   type ImportAssetProduct,
   type TerminalImportProduct,
 } from './import-product.js';
+import { orderedPackPreparation } from './ordered-pack-preparation.js';
 import type {
   AssetOutputProducer,
   AssetOutputProducerRegistry,
@@ -832,76 +833,85 @@ export async function buildScriptablePackWorklist(
     let progress = false;
     const waiting = new Set<string>();
     const pass = [...pending];
-    for (let start = 0; start < pass.length; start += maxConcurrency) {
-      const visible = new Map(staged);
-      const completed = await Promise.allSettled(
-        pass.slice(start, start + maxConcurrency).map(async ([key, subject]) => {
-          const report = (phase: 'cache' | 'cook' | 'persist' | 'ready', cache?: 'hit' | 'miss') =>
-            options.onProgress?.({
-              phase,
-              sourcePath: subject.sourcePath,
-              completed: results.size,
-              total: orderedSubjects.length,
-              ...(cache === undefined ? {} : { cache }),
-            });
-          report('cache');
-          const cached = await options.cache?.read(subject);
-          if (cached === undefined) report('cook', 'miss');
-          const result =
-            cached === undefined
-              ? await buildScriptablePack({
-                  definition: subject.definition,
-                  sourcePath: subject.sourcePath,
-                  ...(subject.subjectPackageId === undefined
-                    ? {}
-                    : { subjectPackageId: subject.subjectPackageId }),
-                  ...(subject.values === undefined ? {} : { values: subject.values }),
-                  ...(subject.inheritedValues === undefined
-                    ? {}
-                    : { inheritedValues: subject.inheritedValues }),
-                  ...(subject.sourceClosure === undefined
-                    ? {}
-                    : { sourceClosure: subject.sourceClosure }),
-                  ...(subject.publicationGeneration === undefined
-                    ? {}
-                    : { publicationGeneration: subject.publicationGeneration }),
-                  outputs: options.outputs,
-                  ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
-                  assetSource: stagedSource(visible, options.assetSource),
-                  availableGuids: new Set([...availableGuids, ...visible.keys()]),
-                  deferReferenceValidation: true,
-                })
-              : ok(cached);
-          return { key, subject, cached, result, report };
-        }),
-      );
-      // Join every admitted subject before stable publication or an error return.
-      for (const outcome of completed) {
-        if (outcome.status === 'rejected') throw outcome.reason;
-        const { key, subject, cached, result, report } = outcome.value;
-        if (result.ok) {
-          if (cached === undefined && options.cache !== undefined) {
-            report('persist', 'miss');
-            await options.cache.write(subject, result.value);
-          }
-          results.set(key, result.value);
-          report('ready', cached === undefined ? 'miss' : 'hit');
-          for (const output of result.value.stagedOutputs)
-            staged.set(AssetGuid.format(output.guid).toLowerCase(), output);
-          pending.delete(key);
-          progress = true;
+    const prepared = orderedPackPreparation(
+      pass,
+      maxConcurrency,
+      async ([key, subject]) => {
+        const visible = new Map(staged);
+        const report = (phase: 'cache' | 'cook' | 'persist' | 'ready', cache?: 'hit' | 'miss') =>
+          options.onProgress?.({
+            phase,
+            sourcePath: subject.sourcePath,
+            completed: results.size,
+            total: orderedSubjects.length,
+            ...(cache === undefined ? {} : { cache }),
+          });
+        report('cache');
+        const cached = await options.cache?.read(subject);
+        if (cached === undefined) report('cook', 'miss');
+        const result =
+          cached === undefined
+            ? await buildScriptablePack({
+                definition: subject.definition,
+                sourcePath: subject.sourcePath,
+                ...(subject.subjectPackageId === undefined
+                  ? {}
+                  : { subjectPackageId: subject.subjectPackageId }),
+                ...(subject.values === undefined ? {} : { values: subject.values }),
+                ...(subject.inheritedValues === undefined
+                  ? {}
+                  : { inheritedValues: subject.inheritedValues }),
+                ...(subject.sourceClosure === undefined
+                  ? {}
+                  : { sourceClosure: subject.sourceClosure }),
+                ...(subject.publicationGeneration === undefined
+                  ? {}
+                  : { publicationGeneration: subject.publicationGeneration }),
+                outputs: options.outputs,
+                ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
+                assetSource: stagedSource(visible, options.assetSource),
+                availableGuids: new Set([...availableGuids, ...visible.keys()]),
+                deferReferenceValidation: true,
+              })
+            : ok(cached);
+        return { key, subject, cached, result, report, visible };
+      },
+      ({ result }) => !result.ok && errorCode(result.error) !== 'asset-not-found',
+    );
+    for await (const outcome of prepared) {
+      if (outcome.status === 'rejected') throw outcome.reason;
+      const { key, subject, cached, result, report, visible } = outcome.value;
+      if (result.ok) {
+        // Retry speculative content reads replaced by an earlier producer.
+        const staleReads = result.value.externalEvidence.filter(({ guid }) => {
+          const key = guid.toLowerCase();
+          return staged.has(key) && staged.get(key) !== visible.get(key);
+        });
+        if (staleReads.length > 0) {
+          for (const { guid } of staleReads) waiting.add(guid.toLowerCase());
           continue;
         }
-        if (errorCode(result.error) === 'asset-not-found') {
-          const detail =
-            record(result.error) && record(result.error.detail) ? result.error.detail : undefined;
-          const guid =
-            detail !== undefined && typeof detail.guid === 'string' ? detail.guid : undefined;
-          if (guid !== undefined) waiting.add(guid.toLowerCase());
-          continue;
+        if (cached === undefined && options.cache !== undefined) {
+          report('persist', 'miss');
+          await options.cache.write(subject, result.value);
         }
-        return result;
+        results.set(key, result.value);
+        report('ready', cached === undefined ? 'miss' : 'hit');
+        for (const output of result.value.stagedOutputs)
+          staged.set(AssetGuid.format(output.guid).toLowerCase(), output);
+        pending.delete(key);
+        progress = true;
+        continue;
       }
+      if (errorCode(result.error) === 'asset-not-found') {
+        const detail =
+          record(result.error) && record(result.error.detail) ? result.error.detail : undefined;
+        const guid =
+          detail !== undefined && typeof detail.guid === 'string' ? detail.guid : undefined;
+        if (guid !== undefined) waiting.add(guid.toLowerCase());
+        continue;
+      }
+      return result;
     }
     if (pending.size === 0) break;
     if (!progress) {

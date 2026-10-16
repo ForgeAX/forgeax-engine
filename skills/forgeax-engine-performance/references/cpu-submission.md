@@ -113,6 +113,42 @@ payloads are different ownership boundaries; transfer a proven owned payload and
 retain a valid source for later consumers/recovery. Count receiver allocations,
 not just apparent sender savings.
 
+## Publish only the owner changes
+
+Check whether an unchanged payload still marks its consumers dirty. At the
+producer of a numeric vector, compare the live destination in its stored
+representation before submitting; f32 rounding and signed zero are part of that
+comparison. Read the current destination so external author edits are restored.
+Keep invalid/non-finite handling and logical clocks/events on their existing path.
+Do not apply this rule to all `World.set` payloads: managed aliases and explicit
+publications can carry work even when an identity or byte comparison looks equal.
+
+Inside a synchronous internal reader, check whether a public snapshot API builds
+an entire component object or copies arrays merely to inspect current values.
+A view can already borrow bytes while still paying unrelated field dispatch;
+keep those costs distinct. Use an existing borrowed-column seam
+only while those values are consumed before the next World mutation. Fixed pose
+history, transport payloads and public caller snapshots retain their own storage.
+The [Scene presentation owner](../../../packages/scene/reports/borrowed-presentation-owner-20261016.json)
+compares the complete moving character subtree with and without those copies;
+its separate work-count probe is not the uninstrumented timing result.
+
+Immutable device programs have a different lifetime from graph resources. A
+graph replacement can reuse an identical PSO/layout only inside its current live
+device scope and with its complete shader/attachment contract. Keep graph views
+and physical bind groups local, clear retired ownership and preserve retryable
+creation errors. The [deferred lighting owner](../../../packages/render/reports/retained-deferred-program-owner-20261016.json)
+uses complete native descriptor equality; repeated labels alone were different
+variants elsewhere and did not authorize reuse.
+
+For reverse dependencies, retain the existing accepted binding until its full
+handles change. Keep an owned comparison copy when a published array can escape;
+TypeScript readonly does not make caller-owned bytes immutable. Exercise rebind,
+shared consumers, removal, generation reuse and discard before timing reuse.
+The [dated animation/publication case](cases/full-scene-resources-20261016.md#pose-and-publication-change-frequency)
+records complete-owner gains and a rejected byte-copy optimization with extra
+retention. Fewer copies or allocations select an experiment, not its verdict.
+
 ## Retain cooked programs across Worker admission
 
 Source loader ownership is realm-local. Exercise `structuredClone` and the
@@ -138,7 +174,34 @@ WeakSet accidentally bundled into a downstream package. Measure signature CPU
 and preparation on completed frames; isolated traversal savings do not establish
 whole-game FPS.
 
+## Separate VFX program, Player and frame ownership
+
+Use a small real producer before a full game: one Player exposes steady/retry
+behavior, three can expose repeated shared-material capture, and the scoped
+nine-firing-schedule case includes overlap, retirement and source ACKs. These
+are diagnostic populations, not a required Engine-wide matrix.
+
+| Reusable owner | Keep live or invalidating |
+| --- | --- |
+| One stock per-World extraction material capture | Start fresh for every candidate; preserve custom provider reads, absence/error behavior and mutable author fields |
+| Stateless immutable emitter program | Share code/layout across Players; retain a preparation request while any consumer needs it; keep each Player's buffers, seed, ticks and feedback independent |
+| Detached immutable binding/no-upload buffer metadata | Match the exact logical resource schema; raw/mutable declarations, current uploads, force fields and data-interface providers keep their normal path |
+| Successful roster retirement, abort or device recovery | Retire unused templates only at their owning successful boundary; abort preserves accepted state; a new device rebuilds physical resources and requalifies readiness |
+
+Reuse the existing ownership brand across the real published package closure.
+A source-only WeakSet from another Render bundle is not receiver evidence.
+The [full-effects case](cases/full-scene-resources-20261016.md#full-effects-program-publication-and-preparation-lifetimes)
+links the complete producer comparisons and the rejected permanent-Player pool.
+
 ## Validate invalidation and memory
+
+For authored scene batching, count published rows, retained mesh assets,
+topology candidates, encoded draws and per-instance culling independently.
+Collections can already share one GPU batch while retaining separate CPU
+publication/preparation work. Hiding an original parent can retain every source
+draw and add aggregate storage; verify the actual suppression boundary. The
+[scene batching case](cases/full-scene-resources-20261016.md#scene-batching-has-several-independent-populations)
+records both outcomes and the retained geometry tradeoff.
 
 | Transition | Observe |
 | --- | --- |

@@ -28,6 +28,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 export async function verifyMultiCamera(
   renderer: Renderer,
@@ -45,7 +46,6 @@ export async function verifyMultiCamera(
   warmupFrames = 60,
 ) {
   const world = new World();
-  const requestObservation = required(renderer.requestObservation).bind(renderer);
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -127,47 +127,51 @@ export async function verifyMultiCamera(
   const lease = publisher === undefined ? renderValue(renderer.attach(world)) : undefined;
   let time = 0;
   let invalidateSharedTexture = false;
-  const draw = async () => {
+  const draw = async (observation?: readonly ['final-display']) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     time += 1 / 60;
-    const candidate = publisher?.prepare(time).unwrap();
-    let packet =
-      candidate === undefined
-        ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
-          });
-    candidate?.accept();
-    if (packet !== undefined && invalidateSharedTexture) {
-      // A legal resource invalidation must happen once before all camera records.
-      packet = { ...packet, invalidatedAssets: [...packet.invalidatedAssets, sharedTexture] };
-      invalidateSharedTexture = false;
-    }
-    try {
-      const result = renderer.draw(
-        packet === undefined
-          ? {
-              leases: [required(lease)],
-              camera: { lease: required(lease) },
-              environment: { lease: required(lease) },
-            }
-          : { publication: packet },
-      );
-      if (!result.ok) throw new Error(JSON.stringify({ failure: result.error, errors }));
-      renderValue(await result.value.completed);
-      return result.value;
-    } finally {
-      if (packet !== undefined)
-        required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-    }
+    return completeReadyFrame(async () => {
+      if (observation !== undefined)
+        renderValue(required(renderer.requestObservation).call(renderer, observation));
+      const candidate = publisher?.prepare(time).unwrap();
+      let packet =
+        candidate === undefined
+          ? undefined
+          : structuredClone(candidate.packet, {
+              transfer: renderPublicationTransfers(candidate.packet),
+            });
+      candidate?.accept();
+      if (packet !== undefined && invalidateSharedTexture) {
+        // A legal resource invalidation must happen once before all camera records.
+        packet = { ...packet, invalidatedAssets: [...packet.invalidatedAssets, sharedTexture] };
+        invalidateSharedTexture = false;
+      }
+      try {
+        const result = renderer.draw(
+          packet === undefined
+            ? {
+                leases: [required(lease)],
+                camera: { lease: required(lease) },
+                environment: { lease: required(lease) },
+              }
+            : { publication: packet },
+        );
+        if (!result.ok) throw new Error(JSON.stringify({ failure: result.error, errors }));
+        renderValue(await result.value.completed);
+        return result.value;
+      } finally {
+        if (packet !== undefined)
+          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      }
+    });
   };
   try {
     for (let i = 0; i < warmupFrames; i++) await draw();
     if (publisher !== undefined) {
       invalidateSharedTexture = true;
-      renderValue(requestObservation(['final-display']));
-      const receipt = await draw();
+
+      const receipt = await draw(['final-display']);
       const refreshed = required(
         required(
           renderValue(
@@ -382,10 +386,10 @@ export async function verifyMultiCamera(
     expect(
       required(renderer.inspect().views).every((view) => !view.passes.includes('ssao-calc')),
     ).toBe(true);
-    renderValue(requestObservation(['final-display']));
+
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const receipt = await draw();
+    const receipt = await draw(['final-display']);
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
     await save('split.rhitape', capture.bytes);
@@ -553,8 +557,7 @@ export async function verifyMultiCamera(
       )
       .unwrap();
     const observeMap = async () => {
-      renderValue(requestObservation(['final-display']));
-      const receipt = await draw();
+      const receipt = await draw(['final-display']);
       return required(
         required(
           renderValue(
@@ -615,8 +618,8 @@ export async function verifyMultiCamera(
     expect(required(afterCut[1]).temporal.frameIndex).toBe(
       required(beforeCut[1]).temporal.frameIndex + 1,
     );
-    renderValue(requestObservation(['final-display']));
-    const miniReceipt = await draw();
+
+    const miniReceipt = await draw(['final-display']);
     const mini = required(
       required(
         renderValue(await renderer.observe(miniReceipt, { include: ['final-display'] }))
@@ -644,8 +647,8 @@ export async function verifyMultiCamera(
     ).toBe(1);
     for (const camera of [...cameras, minimap])
       world.set(camera, CameraView, { enabled: false }).unwrap();
-    renderValue(requestObservation(['final-display']));
-    const empty = await draw();
+
+    const empty = await draw(['final-display']);
     const emptyPixels = required(
       required(
         renderValue(await renderer.observe(empty, { include: ['final-display'] })).observations,
@@ -706,10 +709,10 @@ export async function verifyMultiCamera(
       required(renderer.inspect().views).find((v) => v.entityKey === Number(monitorCamera)),
     );
     expect([targetView.output, targetView.width, targetView.height]).toEqual(['texture', 32, 32]);
-    renderValue(requestObservation(['final-display']));
+
     const monitorPending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const monitorReceipt = await draw();
+    const monitorReceipt = await draw(['final-display']);
     (await recorder.frameBoundary()).unwrap();
     const monitorCapture = (await monitorPending).unwrap();
     await save('monitor.rhitape', monitorCapture.bytes);

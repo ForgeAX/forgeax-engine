@@ -1,4 +1,5 @@
-import {navigateBrowserDocument, type FrontendPlatform} from '@forgeax/engine-host/platform';
+import type { FrontendPlatform } from '@forgeax/engine-host/platform';
+import { navigateBrowserDocument } from './document-navigation.ts';
 import type { WorkspaceState } from './contract.ts';
 import type { ViewWorkspaceClient } from './client.ts';
 export type ProjectSessionWindow = Pick<Window, 'location' | 'localStorage' | 'sessionStorage' | 'performance' | 'history' | 'addEventListener' | 'removeEventListener'> & { fetch: typeof fetch };

@@ -71,6 +71,38 @@ both values rather than inventing an equality check or replacing one silently.
 Report raw bytes with an explicit MB/MiB convention, duration and sample interval.
 Millions of allocated bytes do not mean those bytes survive simultaneously.
 
+## Inventory retained representations
+
+Trace strong references after the consumer has accepted its own packed payload.
+A static producer can retain both its canonical prepared geometry and a complete
+derived JavaScript array graph even when idle-frame allocation is low.
+
+| Representation | Check before releasing or changing it |
+| --- | --- |
+| Canonical prepared coordinates/indices | Required precision, later cut/projection input and exact author/material order |
+| Derived number arrays, vertex objects or flattened projections | Which live consumer still needs them after packing; whether rebuilding from the canonical owner is valid |
+| Typed views and shared backing stores | Active bytes versus capacity; count one backing buffer once across views and owners |
+| Decoded source Mesh roots | Whether processing needs only base geometry or the complete render dependency closure; use an owned source-data API while preserving explicit material readiness |
+| Native collider/GPU copies | Accepted lifetime, recovery and teardown; reducing a source reference must not retire a live device/body resource |
+
+Keep logical element-byte estimates, after-GC `heapUsed`, `external`,
+`arrayBuffers` and RSS as distinct measurements. In Node, `arrayBuffers` is
+included in `external`; adding them double-counts storage. JavaScript number-array
+logical bytes are not exact V8 heap size. Preserve the original coordinate width
+when cuts or ownership require it; replacing binary64 input with f32 is a
+semantic change, not a free memory optimization. The
+[static projection case](cases/full-scene-resources-20261016.md#retained-static-projection)
+removed a redundant representation while retaining its prepared Float64 source.
+
+When a producer already owns an independent prepared representation, use the
+published root's geometry-read capability rather than retaining a complete
+render Asset solely as processing input. Count actual recursive default
+references separately from author overrides and explicit ground preloads.
+Preserve ordinary `loadByGuid` readiness, artifact validation and invalidation
+fences. `invalidate` changes publication authority; it is not a safe memory
+eviction operation. The [source-read case](cases/full-scene-resources-20261016.md#decoded-source-roots-and-render-readiness)
+records the public API, full producer proof and measured limits.
+
 ## Remove work at its existing authority
 
 | Observed source | Structural change | Required falsifier |

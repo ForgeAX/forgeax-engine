@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // RectAreaLight sourceTexture Dawn witness. One renderer and one World cycle
 // through four phases: uniform -> textured -> mirrored -> uniform. Each phase
 // reads the real presentation target back and checks colour ROIs:
@@ -281,9 +282,7 @@ async function renderPhase(index, source, frames) {
   let firstFrameDispatches = 0;
   for (let frame = 0; frame < frames; frame++) {
     world.update().unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!drawn.ok) fail(`phase ${source} frame ${frame}: ${drawn.error.code} - ${drawn.error.hint}`);
-    latestReceipt = drawn.value;
+    latestReceipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
     totalFrames++;
     if (frame === 0) {
       // The switch frame carries any slice rebuild; steady frames follow.
@@ -331,9 +330,7 @@ for (const [offset, source] of [...compressed.keys()].entries()) {
 async function drawBlock(frames) {
   for (let frame = 0; frame < frames; frame++) {
     world.update().unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!drawn.ok) fail(`perf frame ${frame}: ${drawn.error.code} - ${drawn.error.hint}`);
-    latestReceipt = drawn.value;
+    latestReceipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
     totalFrames++;
   }
   await sharedDevice.queue.onSubmittedWorkDone();

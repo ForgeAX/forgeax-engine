@@ -1,4 +1,4 @@
-import { err, ok, RhiError, type ShaderModule } from '@forgeax/engine-rhi';
+import { err, ok, type Result, RhiError, type ShaderModule } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import {
@@ -120,6 +120,94 @@ describe('recovery variant admission', () => {
     );
     expect(adapter.hasModule('module-material#drawn')).toBe(true);
     expect(adapter.hasModule('module-material#unused')).toBe(false);
+  });
+});
+
+describe('pending material module request lifetime', () => {
+  function fixture() {
+    const complete: ((result: Result<ShaderModule, RhiError>) => void)[] = [];
+    const compile = vi.fn(
+      () => new Promise<Result<ShaderModule, RhiError>>((resolve) => complete.push(resolve)),
+    );
+    const adapter = makeShaderDeviceAdapter(
+      {} as never,
+      new RhiErrorListenerRegistry(),
+      compile,
+      undefined,
+    );
+    return { adapter, complete, compile };
+  }
+
+  it('retains one structured pending signal across retries and retires it on completion', async () => {
+    const { adapter, complete, compile } = fixture();
+    const desc = { code: 'valid source', label: 'actual-shared-module' };
+    const first = adapter.createShaderModule(desc);
+    expect(first.ok).toBe(false);
+    if (first.ok) throw Error('Expected a pending module');
+    expect(first.error).toMatchObject({
+      code: 'rhi-not-available',
+      expected: 'shader module pre-bake to complete asynchronously',
+    });
+    expect(first.error.hint).toContain(desc.label);
+    for (let retry = 0; retry < 256; retry++) {
+      const result = adapter.createShaderModule(desc);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw Error('Pending module became ready without completion');
+      expect(result.error).toBe(first.error);
+    }
+    expect(compile).toHaveBeenCalledTimes(1);
+    const module = {} as ShaderModule;
+    complete[0]?.(ok(module));
+    await Promise.resolve();
+    expect(adapter.createShaderModule(desc)).toEqual(ok(module));
+    expect(adapter.hasModule(desc.label)).toBe(true);
+  });
+
+  it('starts a distinct request after invalidation and ignores late old completion', async () => {
+    const { adapter, complete, compile } = fixture();
+    const desc = { code: 'first source', label: 'replaced-module' };
+    const first = adapter.createShaderModule(desc);
+    adapter.invalidateModule(desc.label);
+    const second = adapter.createShaderModule({ ...desc, code: 'replacement source' });
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    if (first.ok || second.ok) throw Error('Expected pending requests');
+    expect(second.error).not.toBe(first.error);
+    complete[0]?.(ok({ old: true } as unknown as ShaderModule));
+    await Promise.resolve();
+    expect(adapter.createShaderModule(desc)).toEqual(err(second.error));
+    expect(adapter.hasModule(desc.label)).toBe(false);
+    const terminal = new RhiError({
+      code: 'shader-compile-failed',
+      expected: 'replacement source compiles',
+      hint: 'intentional failure',
+    });
+    complete[1]?.(err(terminal));
+    await Promise.resolve();
+    expect(adapter.createShaderModule(desc)).toEqual(err(terminal));
+    adapter.invalidateModule(desc.label);
+    const third = adapter.createShaderModule(desc);
+    expect(third.ok).toBe(false);
+    if (third.ok) throw Error('Expected another pending request');
+    expect(third.error).not.toBe(second.error);
+    expect(third.error).not.toBe(terminal);
+    expect(compile).toHaveBeenCalledTimes(3);
+  });
+
+  it('isolates device adapters and keeps seeded modules ready during pending compilation', async () => {
+    const first = fixture(),
+      second = fixture(),
+      desc = { code: 'source', label: 'same-label' };
+    const a = first.adapter.createShaderModule(desc),
+      b = second.adapter.createShaderModule(desc);
+    if (a.ok || b.ok) throw Error('Expected independent pending requests');
+    expect(a.error).not.toBe(b.error);
+    const seeded = {} as ShaderModule;
+    first.adapter.seedModule(desc.label, seeded);
+    expect(first.adapter.createShaderModule(desc)).toEqual(ok(seeded));
+    expect(second.adapter.createShaderModule(desc)).toEqual(err(b.error));
+    expect(first.compile).toHaveBeenCalledTimes(1);
+    expect(second.compile).toHaveBeenCalledTimes(1);
   });
 });
 

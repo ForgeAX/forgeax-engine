@@ -97,7 +97,7 @@ for (let i = 0; i < frames; i += 1) {
   if (!stepRotateToCursor(world, scene, screenX, height * 0.5, width, height)) throw new Error(`[smoke] cursor ray missed at frame ${i}`);
   propagateTransforms(world);
   world.update().unwrap();
-  const drawn = drawSmokeFrame(renderer, world);
+  const drawn = await drawSmokeFrame(renderer, world);
   if (!drawn.ok) throw new Error(`${drawn.error.code}: ${drawn.error.hint}`);
   if (i === Math.max(1, Math.floor(frames * 0.05))) { early = await capture(); earlyRotation = readShipRotation(world, scene); }
   if (i === frames - 1) { late = await capture(); lateRotation = readShipRotation(world, scene); }

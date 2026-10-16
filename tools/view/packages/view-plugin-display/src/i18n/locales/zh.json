@@ -1,8 +1,43 @@
 {
   "display": {
-    "title": "运行时截图",
+    "title": "运行观察",
     "idle": "View 就绪（空闲）",
     "running": "运行中 {{service}}:{{run}}",
-    "error": "View 连接错误：{{message}}"
+    "error": "View 连接错误：{{message}}",
+    "source": "截图来源",
+    "play": "Editor Play",
+    "independent": "独立 Engine 运行",
+    "noProject": "未打开项目",
+    "connect": "查看当前项目运行",
+    "reconnect": "连接当前运行",
+    "disconnect": "断开观察",
+    "connecting": "正在连接当前项目的运行…",
+    "noPlay": "当前没有 Play。请在 Scene 页启动 Play，即可在这里查看截图。",
+    "noRun": "当前项目没有独立的 Engine 运行。",
+    "notConnected": "连接后可查看当前项目的独立 Engine 运行。",
+    "ended": "运行已结束 · 保留最后一次截图",
+    "captured": "截图时间 {{time}}",
+    "frame": "第 {{frame}} 帧",
+    "lastImage": "最后一次截图",
+    "image": "最新运行时截图",
+    "playHint": "此页只读；可见时约每秒更新截图。请在 Scene 页操作游戏。",
+    "runHint": "此页仅观察运行。Engine 最快每五秒生成一次截图，断开观察不会停止游戏。",
+    "logs": "运行日志",
+    "details": "运行详情",
+    "omitted": "已省略之前的 {{count}} 条日志。",
+    "phase": {
+      "ready": "运行中",
+      "running": "运行中",
+      "starting": "正在启动…",
+      "preparing": "正在准备…",
+      "stopping": "正在停止…",
+      "stopped": "已停止 · 保留最后一次截图",
+      "failed": "运行失败",
+      "error": "运行失败",
+      "waiting": "等待运行时就绪…",
+      "reloading": "正在重新加载…",
+      "unreachable": "运行时已断开连接",
+      "idle": "空闲"
+    }
   }
 }

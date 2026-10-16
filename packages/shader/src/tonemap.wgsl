@@ -20,7 +20,8 @@ struct TonemapParams {
   ditherEnabled : f32,
   // OUTPUT_GAMUT_* written by the renderer at record time.
   outputGamut : u32,
-  padA : u32,
+  // Used only by the fused LUT entry; the other entries retain this padding.
+  lutStrength : f32,
   // Actual destination view extent, including its selected mip.
   outputSize : vec2<f32>,
 };
@@ -218,4 +219,19 @@ fn fs_encode_only(in : FullscreenOutput) -> @location(0) vec4<f32> {
 fn fs_present(in : FullscreenOutput) -> @location(0) vec4<f32> {
   // Receipt capture retains the encoded endpoint when the surface is not copyable.
   return sampleOutputSource(in.position.xy);
+}
+
+// The LUT path has the same two binary16 stores as tone -> LUT -> encode.
+// Keep both rounding boundaries even though no intermediate textures are written.
+@group(2) @binding(0) var outputLut : texture_3d<f32>;
+@group(2) @binding(1) var outputLutSampler : sampler;
+
+@fragment
+fn fs_tone_lut_encode(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let source = sampleOutputSource(in.position.xy);
+  let toned = quantizeToF16(vec4<f32>(mapTonemap(source.rgb), source.a));
+  let mapped = textureSampleLevel(outputLut, outputLutSampler,
+    clamp(toned.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 0.0);
+  let graded = quantizeToF16(vec4<f32>(mix(toned.rgb, mapped.rgb, params.lutStrength), toned.a));
+  return encodeFinal(graded.rgb, graded.a, in.position);
 }

@@ -89,7 +89,7 @@ export async function createViewBackend({ platform, capabilities, frontendConfig
       workspaceEngine,
       workspaceAccessToken: token,
       workspaceAuthorize,
-      packSources: listPackSources,
+      packSources: (root, assetRoots) => listPackSources(root, 200, assetRoots),
     },
     frontendConfig: config,
     disabledPages,

@@ -8,7 +8,6 @@ import type {
   BindGroup,
   BindGroupLayout,
   Buffer,
-  ComputePipeline,
   RenderPipeline,
   Sampler,
   TextureView,
@@ -18,6 +17,8 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
+import { resolveVolumetricFogProfile } from '../pipeline/standard-profile';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { VolumetricFogFrameContext, VolumetricFogShaderSources } from '../render-contract';
 import type {
@@ -26,16 +27,22 @@ import type {
   RenderPipelineTopology,
 } from '../render-pipeline';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from './component';
+import { volumeCompositeScissor } from './composite-scissor';
+import {
+  additionalVolumeDensityBinding,
+  type ComputeState,
+  type VolumeProgramContext,
+  volumeCompositeState,
+  volumeComputeState,
+} from './programs';
 import type { VolumetricFogResources } from './resources';
 import {
   createVolumetricFogResources,
-  VOLUME_FROXEL_FORMAT,
-  VOLUME_HISTORY_FORMAT,
   VOLUME_PACKING_Z,
-  VOLUME_RESOLVED_FORMAT,
   VOLUMETRIC_FOG_PARAMS_BYTES,
 } from './resources';
 export interface VolumetricFogPassInputs {
+  readonly compositeNeighbors?: 2 | 4 | 8;
   readonly resources: VolumetricFogResources;
   readonly linearHdr: RenderPipelineTarget;
   readonly sceneDepth: GraphTextureView;
@@ -67,40 +74,18 @@ function shaderSource(frame: RenderPipelineFrame, stage: keyof VolumetricFogShad
   if (source === undefined) throw pipelineError(`${stage} shader source`);
   return source;
 }
-interface ComputeState {
-  readonly pipeline: ComputePipeline;
-  readonly layout: BindGroupLayout;
+function volumeContext(frame: RenderPipelineFrame): VolumeProgramContext {
+  const runtime = (frame as _InternalRenderPipelineContext).runtime;
+  if (runtime.shaderModuleFactory === undefined) throw pipelineError('shader module factory');
+  return {
+    device: runtime.device,
+    deviceScope: runtime.deviceScope,
+    shaderModuleFactory: runtime.shaderModuleFactory,
+  };
 }
-/** Density slots continue after the atmosphere texture/sampler at 25/26. */
-export function additionalVolumeDensityBinding(index: number): number {
-  return index < 7 ? 18 + index : 20 + index;
-}
-function computeState(
-  frame: RenderPipelineFrame,
-  source: string,
-  label: string,
-  entries: readonly unknown[],
-  entryPoint = label,
-): ComputeState {
-  const factory = frame.runtime.shaderModuleFactory;
-  if (factory === undefined) throw pipelineError(label);
-  const module = factory.createShaderModule({ code: source, label });
-  if (!module.ok) throw module.error;
-  const layout = frame.runtime.device.createBindGroupLayout({ entries: entries as never });
-  if (!layout.ok) throw layout.error;
-  const pipelineLayout = frame.runtime.device.createPipelineLayout({
-    label: `${label}.layout`,
-    bindGroupLayouts: [layout.value],
-  });
-  if (!pipelineLayout.ok) throw pipelineLayout.error;
-  const pipeline = frame.runtime.device.createComputePipeline({
-    label,
-    layout: pipelineLayout.value,
-    compute: { module: module.value, entryPoint },
-  });
-  if (!pipeline.ok) throw pipeline.error;
-  return { pipeline: pipeline.value, layout: layout.value };
-}
+
+export { additionalVolumeDensityBinding } from './programs';
+
 type VolumeBinding =
   | {
       readonly binding: number;
@@ -322,6 +307,8 @@ export function addAuthoredVolumetricFogPasses(
   if (!resources.ok) return resources;
   return addVolumetricFogPasses(graph, {
     ...imported.value,
+    compositeNeighbors:
+      resolveVolumetricFogProfile(topology.standardProfile ?? {}).quality === 'low' ? 4 : 8,
     atmosphereTransmittance,
     resources: resources.value,
   });
@@ -363,24 +350,11 @@ export function addVolumetricFogPasses(
       { resource: inputs.spotShadow, usage: 'sampled-read' },
     ],
     encode: ({ pass, frame, resources }) => {
-      inject ??= computeState(frame, shaderSource(frame, 'inject'), 'volume_inject', [
-        { binding: 0, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 3, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
-        { binding: 4, visibility: 4, sampler: { type: 'comparison' } },
-        { binding: 5, visibility: 4, buffer: { type: 'uniform' } },
-        {
-          binding: 6,
-          visibility: 4,
-          storageTexture: {
-            access: 'write-only',
-            format: VOLUME_FROXEL_FORMAT,
-            viewDimension: '2d-array',
-          },
-        },
-        { binding: 7, visibility: 4, buffer: { type: 'read-only-storage' } },
-        { binding: 8, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 9, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
-      ]);
+      inject ??= volumeComputeState(
+        volumeContext(frame),
+        shaderSource(frame, 'inject'),
+        'volume_inject',
+      );
       const shadow = resources.textureView(shadowResource);
       const spotShadow = resources.textureView(inputs.spotShadow);
       if (!spotShadow.ok) throw spotShadow.error;
@@ -443,55 +417,11 @@ export function addVolumetricFogPasses(
         : [{ resource: inputs.cloudShadow, usage: 'sampled-read' as const }]),
     ],
     encode: ({ pass, frame, resources }) => {
-      integrate ??= computeState(frame, shaderSource(frame, 'integrate'), 'volume_integrate', [
-        { binding: 0, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d-array' } },
-        { binding: 1, visibility: 4, texture: { sampleType: 'depth', viewDimension: '2d' } },
-        {
-          binding: 2,
-          visibility: 4,
-          storageTexture: {
-            access: 'write-only',
-            format: VOLUME_RESOLVED_FORMAT,
-            viewDimension: '2d',
-          },
-        },
-        { binding: 3, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 4, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 5, visibility: 4, sampler: { type: 'filtering' } },
-        { binding: 6, visibility: 4, texture: { sampleType: 'float', viewDimension: '3d' } },
-        { binding: 7, visibility: 4, sampler: { type: 'filtering' } },
-        {
-          binding: 8,
-          visibility: 4,
-          storageTexture: {
-            access: 'write-only',
-            format: VOLUME_HISTORY_FORMAT,
-            viewDimension: '2d',
-          },
-        },
-        {
-          binding: 9,
-          visibility: 4,
-          storageTexture: {
-            access: 'write-only',
-            format: VOLUME_HISTORY_FORMAT,
-            viewDimension: '2d',
-          },
-        },
-        { binding: 10, visibility: 4, buffer: { type: 'read-only-storage' } },
-        { binding: 11, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 12, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
-        { binding: 13, visibility: 4, sampler: { type: 'filtering' } },
-        { binding: 16, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
-        { binding: 17, visibility: 4, sampler: { type: 'filtering' } },
-        { binding: 25, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
-        { binding: 26, visibility: 4, sampler: { type: 'filtering' } },
-        ...Array.from({ length: MAX_VOLUMETRIC_FOG_OWNERS - 1 }, (_, index) => ({
-          binding: additionalVolumeDensityBinding(index),
-          visibility: 4,
-          texture: { sampleType: 'float' as const, viewDimension: '3d' as const },
-        })),
-      ]);
+      integrate ??= volumeComputeState(
+        volumeContext(frame),
+        shaderSource(frame, 'integrate'),
+        'volume_integrate',
+      );
       const froxel = resources.textureView(inputs.resources.froxelView);
       const depth = resources.textureView(inputs.sceneDepth);
       const density = resources.textureView(inputs.density);
@@ -613,21 +543,11 @@ export function addVolumetricFogPasses(
       { resource: inputs.view, usage: 'uniform-read' },
     ],
     encode: ({ pass, frame, resources }) => {
-      temporal ??= computeState(frame, shaderSource(frame, 'temporal'), 'volume_temporal', [
-        { binding: 0, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
-        { binding: 1, visibility: 4, texture: { sampleType: 'float', viewDimension: '2d' } },
-        {
-          binding: 2,
-          visibility: 4,
-          storageTexture: {
-            access: 'write-only',
-            format: VOLUME_HISTORY_FORMAT,
-            viewDimension: '2d',
-          },
-        },
-        { binding: 3, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 4, visibility: 4, buffer: { type: 'uniform' } },
-      ]);
+      temporal ??= volumeComputeState(
+        volumeContext(frame),
+        shaderSource(frame, 'temporal'),
+        'volume_temporal',
+      );
       const current = resources.textureView(inputs.resources.resolvedView);
       const history = resources.textureView(
         frame.volumetricFog?.historyReadSlot === 0
@@ -679,60 +599,16 @@ export function addVolumetricFogPasses(
       },
     ],
     encode: ({ pass, frame, resources }) => {
-      composite ??= (() => {
-        const factory = frame.runtime.shaderModuleFactory;
-        if (factory === undefined) throw pipelineError('volume_composite');
-        const module = factory.createShaderModule({
-          code: shaderSource(frame, 'composite'),
-          label: 'volume_composite',
-        });
-        if (!module.ok) throw module.error;
-        const layout = frame.runtime.device.createBindGroupLayout({
-          label: 'volume_composite.bind-group-layout',
-          entries: [
-            {
-              binding: 0,
-              visibility: 2 | 1,
-              texture: { sampleType: 'float', viewDimension: '2d' },
-            },
-            { binding: 1, visibility: 2 | 1, sampler: { type: 'filtering' } },
-            {
-              binding: 2,
-              visibility: 2 | 1,
-              texture: { sampleType: 'depth', viewDimension: '2d' },
-            },
-            { binding: 3, visibility: 2 | 1, buffer: { type: 'uniform' } },
-          ],
-        });
-        if (!layout.ok) throw layout.error;
-        const pipelineLayout = frame.runtime.device.createPipelineLayout({
-          label: 'volume_composite.layout',
-          bindGroupLayouts: [layout.value],
-        });
-        if (!pipelineLayout.ok) throw pipelineLayout.error;
-        const created = frame.runtime.device.createRenderPipeline({
-          label: 'volume_composite',
-          layout: pipelineLayout.value,
-          vertex: { module: module.value, entryPoint: 'volume_vs', buffers: [] },
-          fragment: {
-            module: module.value,
-            entryPoint: 'volume_fs',
-            targets: [
-              {
-                format: inputs.linearHdr.format,
-                blend: {
-                  color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-                  alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-                },
-              },
-            ],
-          },
-          primitive: { topology: 'triangle-list' },
-        });
-        if (!created.ok) throw created.error;
-        compositeLayout = layout.value;
-        return created.value;
-      })();
+      if (composite === undefined) {
+        const state = volumeCompositeState(
+          volumeContext(frame),
+          shaderSource(frame, 'composite'),
+          inputs.linearHdr.format,
+          inputs.compositeNeighbors ?? 8,
+        );
+        composite = state.pipeline;
+        compositeLayout = state.layout;
+      }
       const resolved = resources.textureView(
         frame.volumetricFog?.historyWriteSlot === 0
           ? inputs.resources.historyView
@@ -764,7 +640,30 @@ export function addVolumetricFogPasses(
       if (!bindings.ok) throw bindings.error;
       pass.setPipeline(composite);
       pass.setBindGroup(0, bindings.value);
+      let scissor: readonly [number, number, number, number] | undefined;
+      let scissorExtent: { readonly width: number; readonly height: number } | undefined;
+      if (
+        frame.volumetricFog?.compositeProjectedBounds !== undefined &&
+        frame.camera.captureProjection === undefined &&
+        frame.camera.target === undefined &&
+        frame.camera.view === undefined
+      ) {
+        const extent = resources.textureViewExtent(inputs.linearHdr.view);
+        if (!extent.ok) throw extent.error;
+        scissorExtent = extent.value;
+        scissor = volumeCompositeScissor(
+          frame.volumetricFog.compositeProjectedBounds,
+          extent.value.width,
+          extent.value.height,
+          inputs.resources.resolvedExtent.width,
+          inputs.resources.resolvedExtent.height,
+        );
+        if (scissor !== undefined) pass.setScissorRect(...scissor);
+      }
       pass.draw(3);
+      // Keep later commands correct if compatible raster work shares an encoder.
+      if (scissor !== undefined && scissorExtent !== undefined)
+        pass.setScissorRect(0, 0, scissorExtent.width, scissorExtent.height);
     },
   });
 }

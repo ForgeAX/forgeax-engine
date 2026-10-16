@@ -140,7 +140,7 @@ async function capture(label) {
 for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
   world.set(timeValue, RuntimeMaterialValue, { value: [frame / 60] }).unwrap();
   world.update().unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) console.error(`[smoke] draw frame ${frame} error: ${draw.error.code}`);
   await delay(0);
   if (frame === Math.floor(FRAME_COUNT / 5)) await capture('early');

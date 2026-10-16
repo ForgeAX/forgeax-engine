@@ -25,7 +25,6 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
   Object.assign(element.style, { display: 'flex', flexDirection: 'column', height: '100%' });
   element.append(toolbar, surface);
   let state: WorkspaceState | null = null;
-  let navigationSpeed = 4;
   let errorText = '';
   let disposed = false;
   let playRequest: AbortController | undefined;
@@ -33,7 +32,6 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
   const pending = new Set<string>();
   const buttons: { button: HTMLButtonElement; label: () => string; icon: () => IconName; available: () => boolean; visible: () => boolean }[] = [];
   const status = document.createElement('span');
-  status.title = 'WASD/QE: move · Shift: boost · RMB drag: look / fly · RMB + wheel: speed · MMB: pan · Alt + drag: orbit/pan/dolly · F: focus · Esc: release';
   status.setAttribute('role', 'status');
   status.style.color = 'var(--fx-color-text-secondary)';
   // Always-visible navigation hint in the viewport corner; pointer-events stay
@@ -130,17 +128,15 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
     }
     const target = state?.targetBinding ?? 'editor';
     if (surface.dataset.forgeaxToolTarget !== target) surface.dataset.forgeaxToolTarget = target;
-    let nextStatus = errorText || (state?.play
-      ? `${state.targetBinding === 'play' ? 'Game' : 'Editor'} tools · ${state.play.phase}${control() === 'observer' ? ' · Free camera' : ''}`
-      : pending.has('Play') ? (playStage || 'Preparing Play…') : 'Editor tools');
-    if (!errorText && state?.targetBinding !== 'play')
-      nextStatus += ' · Speed ' + navigationSpeed.toFixed(2);
+    const nextStatus = errorText || (pending.has('Stop') ? 'Stopping…'
+      : pending.has('Play') ? (playStage || 'Preparing Play…')
+      : state?.play?.phase === 'starting' ? 'Preparing Play…' : '');
+    status.hidden = !nextStatus;
     if (status.textContent !== nextStatus) status.textContent = nextStatus;
   };
   const reader = createWorkspaceStateReader(client);
   const unsubscribe = reader.subscribe(() => { if (!disposed) { state = reader.getSnapshot(); render(); } });
   render();
   return { surface,
-    setNavigationSpeed(speed: number) { navigationSpeed = speed; if (!disposed) render(); },
     dispose() { disposed = true; playRequest?.abort(); unsubscribe(); toolbar.remove(); surface.remove(); } };
 }

@@ -7,6 +7,7 @@ import { Context, startNativePlugin } from '@forgeax/engine-plugin';
 import { expect, it } from 'vitest';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 import { createBrowserCapture } from '../software-capture.js';
+import { waitForBrowserToolHost } from '../tools/browser-host.js';
 
 it.each([
   'before-frame',
@@ -83,6 +84,11 @@ it.each([
     expect(await session.page.locator('#forgeax-fatal').isVisible()).toBe(true);
     expect(session.report().pageErrors).toEqual([]);
     expect(session.report().consoleErrors).toEqual([]);
+    const failureObservedAt = performance.now();
+    await expect(
+      waitForBrowserToolHost(session.page, '__forgeaxToolHost', 3000),
+    ).rejects.toMatchObject({ code: 'tool-preview-startup-failed' });
+    expect(performance.now() - failureObservedAt).toBeLessThan(1000);
     const evidence = resolve(import.meta.dirname, '../../../../artifacts/capture-startup-failure');
     await mkdir(evidence, { recursive: true });
     await expect(

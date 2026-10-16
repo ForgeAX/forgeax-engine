@@ -56,3 +56,31 @@ export function resolveFoldInstanceBuffer(
   }
   return resident.buffer.handle;
 }
+
+/** Attribute a recorded instanced fold to its complete source roster. */
+export function createFoldedDrawRecorder(
+  c: Pick<_InternalRenderPipelineContext, 'validatedOrdered' | 'onRenderableDraw'>,
+) {
+  let members: ReadonlyMap<number, NonNullable<(typeof c.validatedOrdered)[number]>> | undefined;
+  return (
+    entry: NonNullable<(typeof c.validatedOrdered)[number]>,
+    submesh?: number,
+    receipt?: import('./gpu-draw-receipts').RenderableDrawReceipt,
+    bucket?: FoldBucket,
+  ): void => {
+    if (c.onRenderableDraw === undefined) return;
+    if (bucket === undefined) {
+      c.onRenderableDraw(entry, submesh, receipt);
+      return;
+    }
+    members ??= new Map(
+      c.validatedOrdered.flatMap((row) =>
+        row === undefined ? [] : [[row.renderableIndex, row] as const],
+      ),
+    );
+    for (const member of bucket.entries) {
+      const presented = members.get(member.renderableIndex);
+      if (presented !== undefined) c.onRenderableDraw(presented, submesh, receipt);
+    }
+  };
+}

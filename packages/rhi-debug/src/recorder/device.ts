@@ -10,10 +10,12 @@ import type {
   Buffer,
   BufferDescriptor,
   CommandEncoderDescriptor,
+  ComputePipeline,
   ComputePipelineDescriptor,
   PipelineLayoutDescriptor,
   QuerySet,
   QuerySetDescriptor,
+  RenderPipeline,
   RenderPipelineDescriptor,
   RhiCommandEncoder,
   RhiDevice,
@@ -54,6 +56,101 @@ const UNKNOWN_EXTERNAL = 'externalTexture:unknown' as HandleId;
 
 export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): RhiDevice {
   const proxiedQueue = createQueueProxy(s, realDevice.queue);
+
+  const captureRenderPipeline = (
+    desc: RenderPipelineDescriptor,
+  ): Extract<RhiCallEvent, { kind: 'createRenderPipeline' }> => {
+    let layoutId: HandleId;
+    if (typeof desc.layout === 'string') {
+      layoutId = 'layout:auto';
+    } else {
+      layoutId = getHandleId(s, desc.layout as object, 'pipelineLayout');
+    }
+    let vertexShaderModuleHandleId: HandleId | undefined;
+    if (desc.vertex !== undefined) {
+      vertexShaderModuleHandleId = getHandleId(s, desc.vertex.module as object, 'shaderModule');
+    }
+    let fragmentShaderModuleHandleId: HandleId | undefined;
+    if (desc.fragment !== undefined) {
+      fragmentShaderModuleHandleId = getHandleId(s, desc.fragment.module as object, 'shaderModule');
+    }
+    const { module: _vertexModule, constants: vertexConstants, ...vertexFields } = desc.vertex;
+    const recordedVertex =
+      vertexConstants === undefined
+        ? vertexFields
+        : { ...vertexFields, constants: vertexConstants };
+    const recordedFragment =
+      desc.fragment === undefined
+        ? undefined
+        : (() => {
+            const {
+              module: _fragmentModule,
+              constants: fragmentConstants,
+              ...fragmentFields
+            } = desc.fragment;
+            return fragmentConstants === undefined
+              ? fragmentFields
+              : { ...fragmentFields, constants: fragmentConstants };
+          })();
+    const event: Extract<RhiCallEvent, { kind: 'createRenderPipeline' }> = {
+      kind: 'createRenderPipeline',
+      handleId: '' as HandleId,
+      desc: {
+        ...(desc.label === undefined ? {} : { label: desc.label }),
+        vertex: recordedVertex,
+        primitive: desc.primitive,
+        depthStencil: desc.depthStencil,
+        multisample: desc.multisample,
+        ...(recordedFragment === undefined ? {} : { fragment: recordedFragment }),
+      },
+      layoutHandleId: layoutId,
+      vertexShaderModuleHandleId,
+      fragmentShaderModuleHandleId,
+    };
+    return { ...event, desc: structuredClone(event.desc) };
+  };
+  const captureComputePipeline = (
+    desc: ComputePipelineDescriptor,
+  ): Extract<RhiCallEvent, { kind: 'createComputePipeline' }> => {
+    let layoutId: HandleId;
+    if (typeof desc.layout === 'string') {
+      layoutId = 'layout:auto';
+    } else {
+      layoutId = getHandleId(s, desc.layout as object, 'pipelineLayout');
+    }
+    const computeShaderModuleHandleId = getHandleId(
+      s,
+      desc.compute.module as object,
+      'shaderModule',
+    );
+    const event: RhiCallEvent = {
+      kind: 'createComputePipeline',
+      handleId: '' as HandleId,
+      desc: {
+        ...(desc.label === undefined ? {} : { label: desc.label }),
+        compute: JSON.parse(JSON.stringify(desc.compute)),
+      },
+      layoutHandleId: layoutId,
+      computeShaderModuleHandleId,
+    };
+    return { ...event, desc: structuredClone(event.desc) };
+  };
+  const recordComputePipeline = (
+    pipeline: ComputePipeline,
+    event: Extract<RhiCallEvent, { kind: 'createComputePipeline' }>,
+  ): Result<ComputePipeline, RhiError> => {
+    const pipelineId = registerHandle(s, pipeline as object, 'computePipeline', event);
+    pushEvent(s, event);
+    return makeOk(wrapPipeline(s, pipeline, pipelineId));
+  };
+  const recordRenderPipeline = (
+    pipeline: RenderPipeline,
+    event: Extract<RhiCallEvent, { kind: 'createRenderPipeline' }>,
+  ): Result<RenderPipeline, RhiError> => {
+    const pipelineId = registerHandle(s, pipeline as object, 'renderPipeline', event, realDevice);
+    pushEvent(s, event);
+    return makeOk(wrapPipeline(s, pipeline, pipelineId));
+  };
 
   // Expose the real RhiDevice for standalone createShaderModule calls.
   // engine-rhi-webgpu's createShaderModule uses RAW_DEVICE_MAP (WeakMap)
@@ -348,96 +445,40 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
     createRenderPipeline(desc: RenderPipelineDescriptor) {
       const res = realDevice.createRenderPipeline(desc);
       if (!res.ok) return res;
-      let layoutId: HandleId;
-      if (typeof desc.layout === 'string') {
-        layoutId = 'layout:auto';
-      } else {
-        layoutId = getHandleId(s, desc.layout as object, 'pipelineLayout');
-      }
-      let vertexShaderModuleHandleId: HandleId | undefined;
-      if (desc.vertex !== undefined) {
-        vertexShaderModuleHandleId = getHandleId(s, desc.vertex.module as object, 'shaderModule');
-      }
-      let fragmentShaderModuleHandleId: HandleId | undefined;
-      if (desc.fragment !== undefined) {
-        fragmentShaderModuleHandleId = getHandleId(
-          s,
-          desc.fragment.module as object,
-          'shaderModule',
-        );
-      }
-      const { module: _vertexModule, constants: vertexConstants, ...vertexFields } = desc.vertex;
-      const recordedVertex =
-        vertexConstants === undefined
-          ? vertexFields
-          : { ...vertexFields, constants: vertexConstants };
-      const recordedFragment =
-        desc.fragment === undefined
-          ? undefined
-          : (() => {
-              const {
-                module: _fragmentModule,
-                constants: fragmentConstants,
-                ...fragmentFields
-              } = desc.fragment;
-              return fragmentConstants === undefined
-                ? fragmentFields
-                : { ...fragmentFields, constants: fragmentConstants };
-            })();
-      const event: RhiCallEvent = {
-        kind: 'createRenderPipeline',
-        handleId: '' as HandleId,
-        desc: {
-          ...(desc.label === undefined ? {} : { label: desc.label }),
-          vertex: recordedVertex,
-          primitive: desc.primitive,
-          depthStencil: desc.depthStencil,
-          multisample: desc.multisample,
-          ...(recordedFragment === undefined ? {} : { fragment: recordedFragment }),
-        },
-        layoutHandleId: layoutId,
-        vertexShaderModuleHandleId,
-        fragmentShaderModuleHandleId,
-      };
-      const pipelineId = registerHandle(
-        s,
-        res.value as object,
-        'renderPipeline',
-        event,
-        realDevice,
-      );
-      pushEvent(s, event);
-      return makeOk(wrapPipeline(s, res.value, pipelineId));
+      return recordRenderPipeline(res.value, captureRenderPipeline(desc));
     },
+    ...(realDevice.createRenderPipelineAsync === undefined
+      ? {}
+      : {
+          async createRenderPipelineAsync(desc: RenderPipelineDescriptor) {
+            const create = realDevice.createRenderPipelineAsync;
+            if (create === undefined) return realDevice.createRenderPipeline(desc);
+            // Capture the native call's descriptor before its completion permits caller mutation.
+            const completion = create.call(realDevice, desc);
+            const event = captureRenderPipeline(desc);
+            // forgeax-async-whitelist: dom-native - preserve backend pipeline completion through capture.
+            const result = await completion;
+            return result.ok ? recordRenderPipeline(result.value, event) : result;
+          },
+        }),
 
     createComputePipeline(desc: ComputePipelineDescriptor) {
-      const res = realDevice.createComputePipeline(desc);
-      if (!res.ok) return res;
-      let layoutId: HandleId;
-      if (typeof desc.layout === 'string') {
-        layoutId = 'layout:auto';
-      } else {
-        layoutId = getHandleId(s, desc.layout as object, 'pipelineLayout');
-      }
-      const computeShaderModuleHandleId = getHandleId(
-        s,
-        desc.compute.module as object,
-        'shaderModule',
-      );
-      const event: RhiCallEvent = {
-        kind: 'createComputePipeline',
-        handleId: '' as HandleId,
-        desc: {
-          ...(desc.label === undefined ? {} : { label: desc.label }),
-          compute: JSON.parse(JSON.stringify(desc.compute)),
-        },
-        layoutHandleId: layoutId,
-        computeShaderModuleHandleId,
-      };
-      const pipelineId = registerHandle(s, res.value as object, 'computePipeline', event);
-      pushEvent(s, event);
-      return makeOk(wrapPipeline(s, res.value, pipelineId));
+      const result = realDevice.createComputePipeline(desc);
+      return result.ok ? recordComputePipeline(result.value, captureComputePipeline(desc)) : result;
     },
+    ...(realDevice.createComputePipelineAsync === undefined
+      ? {}
+      : {
+          async createComputePipelineAsync(desc: ComputePipelineDescriptor) {
+            const create = realDevice.createComputePipelineAsync;
+            if (create === undefined) return realDevice.createComputePipeline(desc);
+            const completion = create.call(realDevice, desc);
+            const event = captureComputePipeline(desc);
+            // forgeax-async-whitelist: dom-native - preserve native compute completion through capture.
+            const result = await completion;
+            return result.ok ? recordComputePipeline(result.value, event) : result;
+          },
+        }),
 
     createQuerySet(desc: QuerySetDescriptor) {
       const res = realDevice.createQuerySet(desc);

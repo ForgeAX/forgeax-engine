@@ -859,6 +859,7 @@ describe('DevKit workspace provider', () => {
       id: 'workspace-game',
       root: canonicalRoot,
       name: 'Workspace Game',
+      assetRoots: ['assets'],
     });
     const target = opened.target;
     if (target === undefined) throw new Error('provider fixture did not return a target');

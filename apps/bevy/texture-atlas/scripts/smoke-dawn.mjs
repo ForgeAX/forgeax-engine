@@ -51,7 +51,7 @@ for (const [variant, filter] of [['unpadding', 'linear'], ['padding', 'nearest']
 buildTextureAtlasWorld(world, variants);
 for (let i = 0; i < frames; i += 1) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) throw new Error(`${result.error.code}: ${result.error.hint}`);
 }
 await device.queue.onSubmittedWorkDone();

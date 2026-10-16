@@ -146,8 +146,10 @@ import {
 } from './registry/instantiate.js';
 import {
   loadByGuid as loadByGuidImpl,
+  type MeshGeometrySource,
   parseAndReturnAsset as parseAndReturnAssetImpl,
   parseAssetPayload as parseAssetPayloadImpl,
+  readMeshGeometryByGuid,
   registerPackagesFromIndex,
 } from './registry/load-by-guid.js';
 import { LoadStateStore } from './registry/load-state.js';
@@ -2074,6 +2076,17 @@ export class AssetRegistry {
     },
   ): Promise<Result<T, AssetError | ImageError | RhiError>> {
     return loadByGuidImpl<T>(this, guid, parentContext);
+  }
+
+  /**
+   * Read independently owned base Mesh geometry for source processing. This
+   * does not publish a Ready Asset, load default materials/LODs, or retain the
+   * decoded root in this Registry. Use loadByGuid for rendering/instantiation.
+   */
+  async readMeshGeometry(
+    guid: AssetGuid,
+  ): Promise<Result<MeshGeometrySource, AssetError | ImageError | RhiError>> {
+    return readMeshGeometryByGuid(this, guid);
   }
 
   /**

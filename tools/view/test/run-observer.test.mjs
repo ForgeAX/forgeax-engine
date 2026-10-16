@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
+import { setLocale } from '../packages/view-plugin-display/src/i18n/index.ts';
+setLocale('en');
 import { ViewDisplayStatus } from '../packages/view-plugin-display/src/status.ts';
 import { ViewDisplayStatus as PublicDisplayStatus } from '../packages/view-plugin-display/src/frontend.ts';
 import { mountRunObserver } from '../packages/view-plugin-display/src/ui/run-observer.ts';
@@ -24,104 +26,94 @@ class Element extends EventTarget {
 function mount(client = { call: async () => ({}) }) {
   const surface = new Element();
   const status = new ViewDisplayStatus();
-  const dispose = mountRunObserver({ document: { createElement: () => new Element() }, surface, status, client });
-  const [form, summary, picture, logs] = surface.children;
-  const [project, run, connect, disconnect] = form.children;
-  return { status, dispose, form, summary, picture, logs, project, run, connect, disconnect };
+  const project = { id: 'project', root: '/project', name: 'Project' };
+  const dispose = mountRunObserver({ document: { createElement: () => new Element() }, surface, status, client: {
+    subscribe(listener) { listener({ revision: 1, project }); return () => {}; }, ...client,
+  } });
+  const [toolbar, summary, metadata, picture, hint, logDetails, identityDetails] = surface.children;
+  const [label, context, connect, disconnect] = toolbar.children;
+  const [, source] = label.children;
+  const [, logs] = logDetails.children;
+  const [, identity] = identityDetails.children;
+  const choose = value => { source.value = value; source.dispatchEvent(new Event('change')); };
+  return { status, dispose, summary, metadata, picture, hint, logs, logDetails, identity, source, context, connect, disconnect, choose };
 }
 
-it('preserves the public status class and renders only exact observed run snapshots', () => {
+it('presents exact snapshots and folded diagnostics without authoring identity fields', () => {
   assert.equal(PublicDisplayStatus, ViewDisplayStatus);
   const ui = mount();
   try {
-    assert.equal(ui.summary.textContent, 'No Engine run is connected.');
+    assert.match(ui.summary.textContent, /No Play session/);
+    ui.choose('run');
     assert.equal(ui.picture.hidden, true);
     ui.status.update({ binding: { root: '/project', runId: 'run-1234' }, observation: {
       status: { phase: 'ready', runId: 'run-1234', revision: 1 },
       image: { png: 'data:image/png;base64,test', capturedAt: '2000-01-01T00:00:00.000Z', revision: 1, frameId: 42 },
       droppedLogs: 2, logs: [{ sequence: 3, level: 'info', text: '<script>not markup</script>' }],
     } });
-    assert.equal(ui.project.value, '/project');
-    assert.equal(ui.run.value, 'run-1234');
-    assert.match(ui.summary.textContent, /Run run-1234.*Frame 42.*Stale image/);
-    assert.equal(ui.picture.hidden, false);
+    assert.equal(ui.context.textContent, 'Project');
+    assert.match(ui.identity.textContent, /Run: run-1234/);
+    assert.match(ui.metadata.textContent, /Frame 42.*Last captured image/);
     assert.equal(ui.picture.getAttribute('src'), 'data:image/png;base64,test');
     assert.match(ui.logs.textContent, /2 earlier log entries omitted.*\n\[3\] info: <script>not markup<\/script>/);
-    const previousLogs = ui.logs.textContent;
-    const logsWrites = [];
-    Object.defineProperty(ui.logs, 'textContent', {
-      configurable: true,
-      get() { return this._text ?? ''; },
-      set(value) { logsWrites.push(value); this._text = value; },
-    });
-    ui.logs._text = previousLogs;
-    ui.status.update({ binding: { root: '/project', runId: 'run-1234' }, observation: {
-      status: { phase: 'ready', runId: 'run-1234', revision: 1 },
-      image: { png: 'data:image/png;base64,test', capturedAt: '2000-01-01T00:00:00.000Z', revision: 1, frameId: 42 },
-      droppedLogs: 2, logs: [{ sequence: 3, level: 'info', text: '<script>not markup</script>' }],
-    } });
-    assert.equal(logsWrites.length, 0);
-    ui.status.update({ error: 'Observation unavailable' });
-    assert.equal(ui.summary.textContent, 'Observation unavailable');
-    assert.equal(ui.picture.hidden, true);
-    assert.equal(ui.picture.getAttribute('src'), null);
+    assert.notEqual(ui.logDetails.open, true);
+    ui.status.update({ status: 'unavailable', error: 'Run replaced', binding: { root: '/project', runId: 'run-1234' }, observation: ui.status.snapshot().observation });
+    assert.equal(ui.summary.textContent, 'Run replaced');
+    assert.equal(ui.picture.hidden, false, 'the last exact snapshot survives the run ending');
+    ui.status.update({ binding: { root: '/project', runId: 'another' }, observation: null });
+    assert.equal(ui.picture.getAttribute('src'), null, 'a different identity never inherits old pixels');
   } finally { ui.dispose(); }
   assert.equal(ui.status.listeners.size, 0);
 });
 
-it('submits binding only and ignores late replies after its owning Fiber disposes the mount', async () => {
+it('binds from accepted project context and ignores a reply after disposal', async () => {
   const calls = [];
   let complete;
   const ui = mount({ call(operation, args) {
     calls.push([operation, args]);
     return new Promise(resolve => { complete = resolve; });
   } });
-  ui.project.value = '/project';
-  ui.run.value = 'exact-run';
-  ui.form.dispatchEvent(new Event('submit', { cancelable: true }));
-  assert.deepEqual(calls, [['display.bind', { root: '/project', runId: 'exact-run' }]]);
+  ui.choose('run');
+  ui.connect.dispatchEvent(new Event('click'));
+  assert.deepEqual(calls, [['display.bind', { root: '/project' }]]);
   assert.equal(ui.connect.disabled, true);
   const before = ui.status.snapshot();
   ui.dispose();
   complete({ status: 'running', binding: { root: '/project', runId: 'exact-run' } });
   await Promise.resolve();
   assert.equal(ui.status.snapshot(), before);
-  ui.form.dispatchEvent(new Event('submit'));
+  ui.connect.dispatchEvent(new Event('click'));
   ui.disconnect.dispatchEvent(new Event('click'));
   assert.equal(calls.length, 1);
-  assert.equal(ui.status.listeners.size, 0);
 });
 
-it('captures the running Play target instead of binding an independent run', async () => {
+it('captures only the selected Play source and retains its last frame after Stop', async () => {
   const calls = [];
+  let publish;
+  const project = { id: 'project', root: '/project', name: 'Project' };
   const play = { phase: 'running', target: { targetId: 'play-target', generation: 3 } };
   const ui = mount({
-    subscribe(listener) {
-      listener({ revision: 1, play });
-      return () => {};
-    },
-    getState: async () => ({ revision: 1, play }),
-    capture(args) {
-      calls.push(['preview.capture', args]);
-      return { png: 'data:image/png;base64,play', frameId: 7, width: 8, height: 8 };
-    },
-    call(...args) { calls.push(args); return {}; },
+    subscribe(listener) { publish = listener; listener({ revision: 1, project, play }); return () => {}; },
+    capture(args) { calls.push(args); return { png: 'data:image/png;base64,play', frameId: 7 }; },
+    call() { throw new Error('No game control operation is allowed'); },
   });
   try {
     await Promise.resolve();
-    assert.equal(ui.form.hidden, true);
+    assert.equal(ui.source.value, 'play');
+    assert.equal(ui.connect.hidden, true);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0][0], 'preview.capture');
-    assert.equal(calls[0][1].targetId, 'play-target');
-    assert.equal(calls[0][1].targetGeneration, 3);
-    assert.equal(calls[0][1].reportError, false);
-    assert.equal(calls[0][1].signal.aborted, false);
-    assert.equal(ui.picture.hidden, false);
+    assert.equal(calls[0].targetGeneration, 3);
     assert.equal(ui.picture.getAttribute('src'), 'data:image/png;base64,play');
-    assert.match(ui.summary.textContent, /Play · running · Frame 7/);
-    ui.form.dispatchEvent(new Event('submit', { cancelable: true }));
-    ui.disconnect.dispatchEvent(new Event('click'));
-    assert.equal(calls.length, 1);
+    ui.choose('run');
+    assert.equal(calls[0].signal.aborted, true);
+    assert.equal(ui.picture.getAttribute('src'), null);
+    ui.choose('play');
+    await Promise.resolve();
+    publish({ revision: 2, project, play: null });
+    assert.match(ui.summary.textContent, /Run ended/);
+    assert.equal(ui.picture.getAttribute('src'), 'data:image/png;base64,play');
+    publish({ revision: 3, project: { ...project, root: '/other' }, play: null });
+    assert.equal(ui.picture.getAttribute('src'), null);
   } finally { ui.dispose(); }
 });
 
@@ -129,48 +121,35 @@ it('keeps the last Play frame when capture is busy with the camera', async () =>
   const calls = [];
   const play = { phase: 'running', target: { targetId: 'play-target', generation: 3 } };
   const ui = mount({
-    subscribe(listener) {
-      listener({ revision: 1, play });
-      return () => {};
-    },
+    subscribe(listener) { listener({ revision: 1, play }); return () => {}; },
     capture(args) {
       calls.push(args);
-      if (calls.length === 1) return { png: 'data:image/png;base64,play', frameId: 4, width: 8, height: 8 };
-      const error = new Error('view-workspace-target-busy: Engine workspace preview capture is busy');
-      error.code = 'view-workspace-target-busy';
-      throw error;
+      if (calls.length === 1) return { png: 'data:image/png;base64,play', frameId: 4 };
+      throw Object.assign(new Error('Engine workspace preview capture is busy'), { code: 'view-workspace-target-busy' });
     },
     call() { throw new Error('display.bind must not run during Play'); },
   });
   try {
     await Promise.resolve();
-    assert.equal(ui.picture.getAttribute('src'), 'data:image/png;base64,play');
     await new Promise(resolve => setTimeout(resolve, 1100));
     assert.equal(calls.length >= 2, true);
     assert.equal(ui.picture.getAttribute('src'), 'data:image/png;base64,play');
-    assert.match(ui.summary.textContent, /Play · running · Frame 4/);
+    assert.match(ui.metadata.textContent, /Frame 4/);
     assert.equal(ui.summary.textContent.includes('busy'), false);
   } finally { ui.dispose(); }
 });
 
-it('keeps the independent run form until Play is running', async () => {
+it('requires an accepted project and disconnects without stopping any run', async () => {
   const calls = [];
-  const ui = mount({ call: async (...args) => { calls.push(args); return {}; } });
+  const ui = mount({ call: async (...args) => { calls.push(args.slice(0, 2)); return { binding: null }; } });
   try {
-    ui.form.dispatchEvent(new Event('submit', { cancelable: true }));
-    assert.deepEqual(calls, []);
-    assert.match(ui.summary.textContent, /Provide root and exact runId/);
-    assert.equal(ui.summary.textContent.includes('Play'), false);
-  } finally { ui.dispose(); }
-});
-
-it('disconnects observation without issuing game control operations', async () => {
-  const calls = [];
-  const ui = mount({ call: async (...args) => { calls.push(args); return { binding: null }; } });
-  try {
+    ui.choose('run');
     ui.disconnect.dispatchEvent(new Event('click'));
     await Promise.resolve();
     assert.deepEqual(calls, [['display.bind', { root: null }]]);
     assert.equal(ui.disconnect.disabled, false);
   } finally { ui.dispose(); }
+  const empty = mount({ subscribe(listener) { listener({ revision: 1 }); return () => {}; }, call: async () => ({}) });
+  try { empty.choose('run'); assert.equal(empty.connect.disabled, true); }
+  finally { empty.dispose(); }
 });

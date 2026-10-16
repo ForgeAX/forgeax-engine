@@ -1,3 +1,4 @@
+import { type BrowserFrameCompleted, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { expect } from 'vitest';
 import { page } from 'vitest/browser';
@@ -51,10 +52,15 @@ export async function verifyRenderWorkerContent(mode: string): Promise<void> {
     ).unwrap();
     const errors: unknown[] = [];
     app.onError((error) => errors.push(error));
-    const completed = () =>
-      tier === 'render-worker'
-        ? (app.execution?.report().render?.completedFrame ?? 0)
-        : (app.execution?.report().frame.completed ?? 0);
+    let readyFrames = 0;
+    const onCompleted = (event: Event) => {
+      const frame = (event as CustomEvent<BrowserFrameCompleted>).detail;
+      if (frame.presentation === 'ready') readyFrames++;
+    };
+    // Execution counters include native preparation barriers. Only the App's
+    // completed ready-picture signal qualifies the before/after pixel oracle.
+    canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+    const completed = () => readyFrames;
     const request = (command: string) =>
       new Promise<{
         acknowledgments: number;
@@ -120,6 +126,7 @@ export async function verifyRenderWorkerContent(mode: string): Promise<void> {
       images.push([before, after]);
     } finally {
       const currentCanvas = app.canvas;
+      canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
       await app.dispose();
       channel.port1.close();
       currentCanvas?.remove();

@@ -200,6 +200,13 @@ export interface RenderFeature<FrameData> {
   extract(context: RenderFeatureExtractContext): Result<FrameData, RenderError>;
   /** GUID closures or exact immutable handles consumed by the declarative plan. */
   assetDependencies?(data: FrameData): readonly (string | Handle<string, 'shared'>)[];
+  /**
+   * Explicit source resource intent that must survive a failed plan. Returning
+   * true keeps presentation pending when this frame cannot be planned/prepared.
+   * This observes the detached extract value only; it grants no GPU authority.
+   * Omitted/false preserves the ordinary optional-feature failure behavior.
+   */
+  requiresPreparation?(data: FrameData): boolean;
   plan(data: FrameData, context: RenderFeaturePlanContext): Result<RenderFeaturePlan, RenderError>;
   /**
    * Consume frame-owned producer state only after the compiled graph reached

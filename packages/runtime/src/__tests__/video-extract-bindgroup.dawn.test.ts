@@ -49,7 +49,6 @@ import {
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
 import { constructRuntimeRendererHost } from '../renderer-host';
-import { drawPublished } from './draw-published';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
 const WIDTH = 128;
@@ -295,7 +294,10 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
       )
       .unwrap();
 
-    const drawn = drawPublished(renderer, world);
+    // This is an expected unsupported-resource submission, not a ready picture.
+    const lease = renderer.attach(world).unwrap();
+    world.update(1 / 60).unwrap();
+    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
     expect(drawn.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     if (typeof unsub === 'function') unsub();
@@ -383,7 +385,10 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
       )
       .unwrap();
 
-    const drawn = drawPublished(renderer, world);
+    // This is an expected unsupported-resource submission, not a ready picture.
+    const lease = renderer.attach(world).unwrap();
+    world.update(1 / 60).unwrap();
+    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
     expect(drawn.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     if (typeof unsub === 'function') unsub();

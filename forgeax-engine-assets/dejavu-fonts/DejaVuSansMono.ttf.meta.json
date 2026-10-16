@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "font",
+  "source": "DejaVuSansMono.ttf",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "none"
+  },
+  "subAssets": [
+    {
+      "guid": "d7b931cf-5835-4341-94e7-281939db018e",
+      "sourceIndex": 0,
+      "sourceKey": "font:texture",
+      "kind": "texture",
+      "name": "DejaVuSansMono TTF MSDF atlas"
+    },
+    {
+      "guid": "852a14da-4f2d-4da9-b199-819b92f29606",
+      "sourceIndex": 1,
+      "sourceKey": "font:sampler",
+      "kind": "sampler",
+      "name": "DejaVuSansMono TTF sampler"
+    },
+    {
+      "guid": "57db8d79-bb62-4b2a-8400-67c9601870cd",
+      "sourceIndex": 2,
+      "sourceKey": "font:font",
+      "kind": "font",
+      "name": "DejaVuSansMono TTF font"
+    }
+  ]
+}

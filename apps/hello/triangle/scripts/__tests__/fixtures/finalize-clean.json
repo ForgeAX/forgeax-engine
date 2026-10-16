@@ -1,0 +1,10 @@
+{
+  "specVersion": 1,
+  "step": "finalize",
+  "featureId": "feat-test-clean",
+  "stage": "merging",
+  "prUrl": "https://github.com/example/repo/pull/100",
+  "mergeSha": null,
+  "mergeCommand": "gh pr merge https://github.com/example/repo/pull/100 --squash --delete-branch",
+  "conflictHandling": null
+}

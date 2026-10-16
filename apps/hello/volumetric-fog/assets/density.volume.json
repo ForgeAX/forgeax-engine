@@ -1,0 +1,9 @@
+{
+  "format": "forgeax-volumetric-density",
+  "width": 128,
+  "height": 128,
+  "depth": 128,
+  "noise": "improved-perlin",
+  "scale": 10,
+  "repeatFactor": 5
+}

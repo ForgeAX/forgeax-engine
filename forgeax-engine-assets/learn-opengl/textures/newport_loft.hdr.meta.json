@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "newport_loft.hdr",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "auto",
+    "addressMode": "clamp-to-edge",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019e4a26-3c29-7420-af5d-20f2724a16b0",
+      "sourceIndex": 0,
+      "kind": "equirect"
+    }
+  ]
+}

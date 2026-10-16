@@ -1,0 +1,9 @@
+{
+  "name": "drift-detected-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bug-20260514 M2 T-007 minimal dependabot-style workspace; package.json + pnpm-lock.yaml updated, bun.lock left at old payload to simulate drift.",
+  "dependencies": {
+    "example-pkg": "1.2.3"
+  }
+}

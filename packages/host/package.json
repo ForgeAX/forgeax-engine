@@ -1,0 +1,92 @@
+{
+  "name": "@forgeax/engine-host",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Engine-owned thin frontend/backend plugin hosts and backend-derived assembly protocol.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/index.mjs",
+      "import": "./dist/index.mjs"
+    },
+    "./frontend": {
+      "types": "./dist/frontend.d.ts",
+      "browser": "./dist/frontend.mjs",
+      "import": "./dist/frontend.mjs"
+    },
+    "./backend": {
+      "types": "./dist/backend.d.ts",
+      "node": "./dist/backend.mjs",
+      "import": "./dist/backend.mjs",
+      "default": null
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "browser": "./dist/protocol.mjs",
+      "import": "./dist/protocol.mjs"
+    },
+    "./transport": {
+      "types": "./dist/transport.d.ts",
+      "browser": "./dist/transport.mjs",
+      "import": "./dist/transport.mjs"
+    },
+    "./package.json": "./package.json",
+    "./platform": {
+      "types": "./dist/platform.d.ts",
+      "browser": "./dist/platform.mjs",
+      "import": "./dist/platform.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.8.3",
+    "vitest": "4.1.11",
+    "ws": "^8.21.0"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "host control plane has no frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "host control plane is not a benchmark surface"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm -F @forgeax/engine-host test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "production host package"
+      }
+    }
+  }
+}

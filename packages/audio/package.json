@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/engine-audio",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Realm-neutral ForgeaX audio: ECS components, tick/plugin, backend protocol, POD clips, and closed Host intent transport.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "runtime tick and intent producer are covered by package build/tests; no standalone player bundle is emitted"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "realm-neutral package has no canvas; frame impact is measured by consuming apps"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "intent production is linear in changed sources; end-to-end cost is measured by the multithreaded execution app"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; test surface coverage runs as part of pnpm test:unit + tsc -b"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; this is a production MVP per plan-strategy D-1 (dual-package split)"
+      }
+    }
+  }
+}

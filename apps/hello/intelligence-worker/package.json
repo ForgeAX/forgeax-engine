@@ -1,0 +1,204 @@
+{
+  "name": "@forgeax/hello-intelligence-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Real Engine Worker browser gauntlets for bounded Host-owned intelligence recovery.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "pnpm build && node scripts/smoke-browser.mjs",
+    "gauntlet": "pnpm build && node scripts/m27-smoke-browser.mjs --gauntlet && node scripts/m28-smoke-browser.mjs --gauntlet && node scripts/m29-smoke-browser.mjs --gauntlet && node scripts/m30-smoke-browser.mjs --gauntlet && node scripts/m31-smoke-browser.mjs --gauntlet && node scripts/m32-smoke-browser.mjs --gauntlet && node scripts/m33-smoke-browser.mjs --gauntlet && node scripts/m34-smoke-browser.mjs --gauntlet && node scripts/m35-smoke-browser.mjs --gauntlet && node scripts/m36-smoke-browser.mjs --gauntlet && node scripts/m37-smoke-browser.mjs --gauntlet && node scripts/m38-smoke-browser.mjs --gauntlet"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-intelligence-worker smoke",
+    "gauntletScenario": {
+      "id": "hello-m38-intelligence-worker-host-poll-response-fault-recovery",
+      "script": "gauntlet",
+      "domains": [
+        "World and host contract",
+        "Simulation and media implementations"
+      ],
+      "packages": [
+        "@forgeax/engine-app",
+        "@forgeax/engine-assets-runtime",
+        "@forgeax/engine-ecs",
+        "@forgeax/engine-intelligence",
+        "@forgeax/engine-render",
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-scene"
+      ],
+      "risks": [
+        "baseline",
+        "worker",
+        "transport",
+        "fault",
+        "capacity",
+        "recovery",
+        "cleanup",
+        "falsifier",
+        "host-rejection",
+        "optimistic-capacity",
+        "provider-mismatch",
+        "session-scope",
+        "multi-provider",
+        "poll-credit",
+        "backlog",
+        "starvation"
+      ],
+      "phaseInputs": [
+        "explicit engine-worker tier",
+        "Host MessageChannel.port1 provider runtime",
+        "Worker bootstrapPort client and ECS Update polling",
+        "Host provider close rejection after an active Worker activity",
+        "close enters terminal runtime state before provider callbacks",
+        "provider close failure cannot strand the Worker client close",
+        "idempotent client and Host binding close",
+        "late provider callbacks are quarantined during close",
+        "fresh same-page MessageChannel/runtime/client recovery",
+        "Worker optimistic maxConcurrentActivities=2 differs from Host maxConcurrentActivities=1",
+        "Host rejection becomes one structured failed terminal and releases the rejected activity",
+        "same-SessionRef retry succeeds after the live sibling completes",
+        "dropped intelligence-rejected is caught by a real browser falsifier",
+        "provider A terminal SessionRef is rejected synchronously by provider B's Worker client",
+        "provider mismatch allocates no B activity/session identity, capacity, submit message, runtime acceptance, provider start, or World authority",
+        "same-page provider-B success and provider-A same-session retry preserve both providers",
+        "bypassed provider guard is caught by the browser falsifier at the Host runtime seam",
+        "two Worker clients, Host bindings, providers, and App stop cleanup are idempotent with zero active work",
+        "Host and Worker maxPollEvents are both one",
+        "two provider activities emit interleaved text and terminal events",
+        "one poll credit permits no more than one outstanding Host poll",
+        "per-activity sequence is exactly once and neither activity starves",
+        "terminal observation releases same-client optimistic capacity",
+        "duplicated event is caught by a real browser falsifier",
+        "terminal-only authoritative World mutation",
+        "idempotent provider and App stop cleanup",
+        "deliberate pre-terminal mutation, pre-fix close-ordering, and dropped-rejection falsifiers",
+        "Host binding close while a Worker activity and poll are live",
+        "Host direct close sends intelligence-closed and clears Worker active, received, rejected, and poll-credit state",
+        "post-close submit, cancel, poll, identity, capacity, transport, provider, and World effects are absent",
+        "late Host and provider callbacks are quarantined after binding close",
+        "same-page provider-A client remains usable and a fresh provider-C MessageChannel recovers without reload",
+        "Host close notification suppression catches logical-open and hanging client close falsifiers",
+        "repeated client, binding, provider, and App cleanup settles idempotently",
+        "Host binding publishes intelligence-closed through a synchronously throwing MessagePort",
+        "publication failure is contained while runtime/provider close remains exactly once",
+        "Host listener and physical MessagePort release remain authoritative after notification failure",
+        "late provider callbacks remain quarantined after the throwing notification",
+        "fresh same-page provider-C binding recovers while the provider-B transport is faulted",
+        "throwing notification with suppressed physical release is caught by the red falsifier",
+        "Worker client publishes intelligence-close through a synchronously throwing MessagePort",
+        "client close resolves while listener and physical client MessagePort release happen exactly once",
+        "client close clears active, received, rejected, and poll-credit state",
+        "post-close submit, cancel, and poll have no Host/provider/World effects",
+        "Host binding cleanup explicitly closes the provider after the lost client close command",
+        "late provider callbacks remain quarantined after client command loss",
+        "fresh same-page binding accepts the retained provider-scoped SessionRef",
+        "client command publication failure with uncontained release is caught by the red falsifier",
+        "Worker client submit allocates an optimistic activity before command publication",
+        "synchronous submit publication failure returns intelligence-closed instead of throwing",
+        "submit fault clears optimistic activity, capacity, received events, rejected events, and poll credit",
+        "submit fault releases the client listener and physical MessagePort exactly once",
+        "failed submit produces no Host runtime acceptance, provider start, or World authority",
+        "post-fault submit, cancel, and poll have no identity or transport effects",
+        "late callbacks are quarantined after submit fault and Host cleanup",
+        "fresh same-page provider-C binding recovers with the retained provider SessionRef",
+        "uncontained submit publication failure is caught by the real headed red falsifier",
+        "one normal maxPollEvents=1 credit buffers a real Host event outside World",
+        "synchronous Worker client poll publication failure never reaches the Host",
+        "poll fault terminally clears active, received, rejected, and poll-credit state",
+        "poll fault removes the Worker listener and closes the physical client port exactly once",
+        "the failed poll returns no staged event and makes no partial or post-fault World mutation",
+        "post-fault submit, cancel, and poll return intelligence-closed or empty without identity or traffic",
+        "explicit Host binding cleanup closes the provider once and quarantines late callbacks",
+        "fresh same-page channel, client, and binding recover with a retained SessionRef and new ActivityId",
+        "the old staged-event removal and pollPending=true uncontained poll is caught by a real headed red falsifier",
+        "Worker client cancel allocates an optimistic activity before command publication",
+        "synchronous cancel publication failure returns intelligence-closed instead of throwing",
+        "cancel fault clears active, received, rejected, and poll-credit state",
+        "cancel fault removes the Worker listener and closes the physical client port exactly once",
+        "failed cancel produces no Host runtime cancel, provider cancel, or World authority",
+        "post-fault submit, cancel, and poll have no identity or transport effects",
+        "late provider callbacks are quarantined after cancel fault and Host cleanup",
+        "fresh same-page provider-C binding recovers with the retained provider SessionRef",
+        "the old uncontained cancel publication failure is caught by a real headed red falsifier",
+        "Host poll-response publication faults are injected only after a real non-empty runtime poll",
+        "a destructive Host poll response fault becomes a terminal binding without an unhandled normal-page error",
+        "drained target events are neither delivered to the Worker nor projected into authoritative World state",
+        "Host runtime/provider cleanup cancels active work once, quarantines late callbacks, and closes the physical port once",
+        "the Worker client explicitly settles after the failed response cannot notify it, with no peer-loss or heartbeat protocol",
+        "a fresh same-page binding resumes the retained control SessionRef with a distinct ActivityId",
+        "the pre-M38 uncontained Host poll-response fault is caught by a real headed falsifier with live listener, runtime, active work, and poll credit"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "browser-app",
+          "browser-webgpu",
+          "ecs-world",
+          "execution-report"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "M30_INTELLIGENCE_WORKER_PASS",
+          "M31_INTELLIGENCE_WORKER_PASS",
+          "M32_INTELLIGENCE_WORKER_PASS",
+          "M33_INTELLIGENCE_WORKER_PASS",
+          "M34_INTELLIGENCE_WORKER_PASS",
+          "M35_INTELLIGENCE_WORKER_PASS",
+          "M36_INTELLIGENCE_WORKER_PASS",
+          "M37_INTELLIGENCE_WORKER_PASS",
+          "M38_INTELLIGENCE_WORKER_PASS"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "The scenario measures cross-realm correctness; package bundle metrics own size evidence."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The scenario has a real WebGPU canvas witness but makes no frame-rate claim."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Provider fault and lifecycle timings are deterministic correctness evidence, not a benchmark."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-intelligence-worker gauntlet"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This is a production contract consumer, not a spike."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-intelligence": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.56.1",
+    "vite": "8.0.16"
+  }
+}

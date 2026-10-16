@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeaX 深度 Agent 反馈基线</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      html, body { margin: 0; min-height: 100%; background: #07111f; color: #e5eefc; }
+      body { display: grid; place-items: center; }
+      main { width: min(94vw, 960px); padding: 24px; }
+      canvas { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid #3e648e; border-radius: 8px; }
+      #game-ui { margin-top: 14px; padding: 12px 16px; border: 1px solid #35547a; border-radius: 8px; background: #10243b; }
+      #status { color: #9fe7c0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <canvas id="app" width="960" height="540" aria-label="ForgeaX 反馈基线画布"></canvas>
+      <section id="game-ui" aria-label="证据状态">
+        <strong>深度 Agent 反馈基线</strong>
+        <div id="status">正在初始化 focused evidence carrier…</div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

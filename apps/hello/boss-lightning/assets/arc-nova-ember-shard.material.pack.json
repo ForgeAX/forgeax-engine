@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "cd16a32c-0fd2-4c02-861d-a5537baaa794",
+      "kind": "material",
+      "execution": "cooked",
+      "name": "Arc Nova Ember Facet",
+      "payload": {
+        "kind": "material",
+        "staticSwitches": { "clearcoat": true },
+        "passes": [
+          {
+            "name": "forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "cullMode": "none",
+              "depthCompare": "less-equal",
+              "depthWriteEnabled": true,
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            1,
+            0.12,
+            0.015,
+            1
+          ],
+          "metallic": 0.64,
+          "roughness": 0.18,
+          "emissive": [
+            1,
+            0.025,
+            0.002
+          ],
+          "emissiveIntensity": 3.8,
+          "clearcoat": 0.68,
+          "clearcoatRoughness": 0.08
+        }
+      },
+      "refs": []
+    }
+  ]
+}

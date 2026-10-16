@@ -1,0 +1,17 @@
+{
+  "kind": "external-asset-package",
+  "importer": "gltf",
+  "schemaVersion": "1.0.0",
+  "source": "triangle-mesh.stub",
+  "importSettings": {
+    "geometry": "procedural",
+    "note": "triangle geometry generated at runtime by @forgeax/engine-runtime"
+  },
+  "subAssets": [
+    {
+      "guid": "22592f07-d967-5116-b29c-fa9781929ba8",
+      "sourceIndex": 0,
+      "kind": "mesh"
+    }
+  ]
+}

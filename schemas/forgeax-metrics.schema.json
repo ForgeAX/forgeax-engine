@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/forgeax-metrics.schema.json",
+  "title": "forgeax.metrics",
+  "description": "Schema for package.json#forgeax.metrics declarations. Closed MetricKind union (5 members, declaration order locked): bundle-size / fps / bench / gate / spike-report. Each member must declare enabled (boolean). When enabled=false, reason (non-empty string) is required. Members may declare an optional baseline { source, threshold }. See AGENTS.md ## Metric registry for evolution contract (minor: add member only; major: rename / delete / reorder).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bundle-size", "fps", "bench", "gate", "spike-report"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional JSON Schema reference for IDE autocomplete; not interpreted by the drift detector."
+    },
+    "bundle-size": {
+      "$ref": "#/$defs/bundleSize",
+      "description": "MetricKind 'bundle-size' (member 1/5). Reports built artifact size (gzip or brotli) for a workspace's dist entry; used by generic runner to compute status against baseline.threshold. Required fields when enabled: path, compression."
+    },
+    "fps": {
+      "$ref": "#/$defs/fps",
+      "description": "MetricKind 'fps' (member 2/5). Reports steady-state frame rate from a vite preview run; only meaningful for apps with a runtime canvas. Most packages declare enabled=false with a reason."
+    },
+    "bench": {
+      "$ref": "#/$defs/bench",
+      "description": "MetricKind 'bench' (member 3/5). Reports vitest bench JSON output for perf-critical surfaces (e.g. @forgeax/engine-math); status compares median ns/op against baseline.threshold."
+    },
+    "gate": {
+      "$ref": "#/$defs/gate",
+      "description": "MetricKind 'gate' (member 4/5). Generalised gate-class metric covering smoke / grep / lockfile-equivalence and similar binary checks. Status reflects pass / fail of a sub-process invocation. Registered gates: dup-check, ci-perf-regression-guard."
+    },
+    "spike-report": {
+      "$ref": "#/$defs/spikeReport",
+      "description": "MetricKind 'spike-report' (member 5/5). Reports persisted spike artefacts (research, dual-impl). Most workspaces declare enabled=false; spike apps declare enabled=true and point reportPath at the artefact tree."
+    }
+  },
+  "$defs": {
+    "baseline": {
+      "type": "object",
+      "description": "Optional baseline anchor: where the comparison value comes from (source) and what threshold defines status === 'ok' (threshold). The exact unit is metric-kind-specific; bundle-size uses bytes, fps uses frames-per-second floor, bench uses ns/op ceiling.",
+      "additionalProperties": false,
+      "required": ["source", "threshold"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Origin of the baseline value, e.g. a git commit sha, a relative file path under report/, or the literal 'inline' for hand-pinned numbers."
+        },
+        "threshold": {
+          "type": "number",
+          "description": "Numeric threshold for the metric kind. status='ok' iff the measured value passes this threshold (kind-specific direction)."
+        }
+      }
+    },
+    "memberCommon": {
+      "type": "object",
+      "description": "Shared shape across all five MetricKind members: enabled is required; when enabled=false, reason becomes required (conditional via if/then); baseline is optional.",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this metric kind is exercised for the workspace. true => generic runner dispatches the corresponding reporter; false => runner skips and drift detector still requires a reason."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty rationale for enabled=false. Required iff enabled=false (charter proposition 4 explicit failure: opt-out must justify itself)."
+        },
+        "baseline": { "$ref": "#/$defs/baseline" }
+      },
+      "if": {
+        "properties": { "enabled": { "const": false } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "required": ["enabled", "reason"]
+      }
+    },
+    "bundleSize": {
+      "allOf": [{ "$ref": "#/$defs/memberCommon" }],
+      "description": "bundle-size kind body: path is required (relative to workspace root) and compression must be either 'gzip' or 'brotli' (default gzip per K-8 + research F-2; explicit field per charter proposition 4).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": true,
+        "reason": true,
+        "baseline": true,
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative path from workspace root to the built artifact whose compressed size is measured."
+        },
+        "compression": {
+          "type": "string",
+          "enum": ["gzip", "brotli"],
+          "description": "Compression algorithm applied before size measurement. 'gzip' matches the legacy bundle-size-reporter.mjs default; 'brotli' is the alternative. Required when enabled=true."
+        },
+        "expected": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional hand-pinned expected byte size of the compressed artifact (locked anchor referenced from AGENTS.md, e.g. wgpu-wasm 1.17 MB gzip). Independent of baseline.threshold which drives the runner's status check; expected is human/AI-grep documentation only."
+        }
+      },
+      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+      "then": { "required": ["enabled", "path", "compression"] }
+    },
+    "fps": {
+      "allOf": [{ "$ref": "#/$defs/memberCommon" }],
+      "description": "fps kind body: optional sampleCount + frameCount knobs mirror the legacy fps-bench.mjs (5 samples * 120 frames). Only required for apps with a runtime canvas; packages typically opt out.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": true,
+        "reason": true,
+        "baseline": true,
+        "sampleCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many independent samples to capture (matches legacy fps-bench.mjs N parameter)."
+        },
+        "frameCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Frames per sample after warm-up (matches legacy fps-bench.mjs M parameter)."
+        },
+        "compareKey": {
+          "enum": ["median", "p95"],
+          "description": "Which sample-window statistic drives status==='ok' vs 'metric-status-not-ok' (M4 D-6). 'median' = legacy hello-triangle behaviour (default when omitted). 'p95' = lowest-5% floor; required by AC-09 (apps/parity/instancing-static 10k cube grid: P95 >= 60 fps, median masks 30 ms jitter false-pass). scripts/metrics/run-fps.mjs reads this field and forwards through resolveFpsStatus."
+        }
+      }
+    },
+    "bench": {
+      "allOf": [{ "$ref": "#/$defs/memberCommon" }],
+      "description": "bench kind body: optional reportPath + suite identifier. Generic runner consumes vitest bench JSON and compares median ns/op to baseline.threshold (lower is better). reportSchema selects an executable app-owned report protocol; gpu-frame-samples resolves reportPath from the package root and delegates complete validation to the app producer. Optional pixelDiff sub-field (feat-20260512 T-013 minor add) redirects the dispatcher to scripts/bench/pixel-parity.mjs instead of the vitest-bench path.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": true,
+        "reason": true,
+        "baseline": true,
+        "reportPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative path from the workspace/package root to the bench JSON output (e.g. report/bench.json). App-owned report protocols must keep their evidence under that package root."
+        },
+        "suite": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional vitest bench suite name to filter against when multiple suites coexist in one workspace."
+        },
+        "reportSchema": {
+          "type": "string",
+          "enum": ["vfx-batch-b", "gpu-frame-samples"],
+          "description": "Optional executable report protocol consumed by a benchmark dispatcher. 'vfx-batch-b' is the Batch B VFX report; 'gpu-frame-samples' is an app-owned GPU timestamp report whose reportPath is resolved from the package root and validated by the app producer."
+        },
+        "pixelDiff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threshold"],
+          "description": "Optional two-layer pixel-parity gate (feat-20260512 D-P2). Presence redirects the bench dispatcher to scripts/bench/pixel-parity.mjs (M3 T-015) and the report file to report/pixel-parity.json (schema validated under $defs.benchReportPixelParity).",
+          "properties": {
+            "threshold": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Layer B aggregate cap: maxDiffPixels integer upper bound on pixelmatch numDiffPixels. Bump in explicit PR commit (append-only audit; charter proposition 4 explicit failure)."
+            },
+            "perPixelThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.1,
+              "description": "Layer A per-pixel YIQ color tolerance, pixelmatch float threshold [0,1]; default 0.1 when omitted (pixelmatch upstream default; evaluator + runner both fallback to this constant)."
+            }
+          }
+        }
+      }
+    },
+    "gate": {
+      "allOf": [{ "$ref": "#/$defs/memberCommon" }],
+      "description": "gate kind body: optional command + cwd identify the sub-process invocation whose exit status is the metric. Covers smoke / grep / lockfile-equivalence style binary checks.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": true,
+        "reason": true,
+        "baseline": true,
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shell command literal (single string; runner spawns via shell=false splitting on whitespace) executed to evaluate the gate."
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Working directory for the gate sub-process, relative to repo root. Defaults to the workspace root."
+        }
+      }
+    },
+    "spikeReport": {
+      "allOf": [{ "$ref": "#/$defs/memberCommon" }],
+      "description": "spike-report kind body: optional reportPath points at the persisted spike artefact tree (research / dual-impl reports). 'unavailable' status is not a thing here; not-applicable spikes set enabled=false + reason.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": true,
+        "reason": true,
+        "baseline": true,
+        "reportPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative path from workspace root to the spike report artefact (markdown / json directory)."
+        }
+      }
+    },
+    "benchReportPixelParity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diffPixelCount",
+        "diffPercent",
+        "maxChannelDelta",
+        "threshold",
+        "perPixelThreshold",
+        "verdict"
+      ],
+      "description": "Schema-as-Contract for report/pixel-parity.json — the output file written by scripts/bench/pixel-parity.mjs (feat-20260512 D-P12, T-020). AI users grep this $defs node to discover the complete field set without reading the runner source. The runner validates this shape at entry/exit (fail-fast, architecture-principles #3 + #5).",
+      "properties": {
+        "leftCapture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes"],
+          "description": "Left-fixture (three.js) capture envelope. Only populated on verdict=pass; fail paths omit captures when the failure precedes readback.",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Byte length of the Uint8Array captured via window.__captureLeft (expected = width * height * 4)."
+            }
+          }
+        },
+        "rightCapture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes"],
+          "description": "Right-fixture (forgeax engine) capture envelope. Mirrors leftCapture; bytes must equal leftCapture.bytes when both pages succeed.",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Byte length of the Uint8Array captured via window.__captureRight (expected = width * height * 4)."
+            }
+          }
+        },
+        "diffPixelCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Aggregate count of pixels above the Layer A per-pixel threshold; the Layer B aggregate cap (threshold) gates this value."
+        },
+        "diffPercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "diffPixelCount / (width * height); derived, redundant with the integer count to ease human reading."
+        },
+        "maxChannelDelta": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Maximum absolute single-channel delta across all RGBA pixels (R/G/B only, alpha excluded). Saturates at 255."
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Layer B aggregate cap snapshot at the moment of the report write; mirrors the fixture package.json#forgeax.metrics.bench.pixelDiff.threshold field."
+        },
+        "perPixelThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Layer A per-pixel YIQ tolerance snapshot; mirrors the fixture pixelDiff.perPixelThreshold field (default 0.1)."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["pass", "fail"],
+          "description": "Top-level outcome literal. 'pass' iff diffPixelCount <= threshold AND no capture failure. 'fail' carries a code + expected + hint + detail envelope below."
+        },
+        "code": {
+          "type": "string",
+          "enum": ["pixel-parity-threshold-exceeded", "pixel-parity-capture-failed"],
+          "description": "MetricErrorCode literal for verdict=fail — only the `pixel-parity-*` subset of the 6-member MetricErrorCode closed union is owned by the bench runner (the 4 legacy `metric-*` members are emitted by scripts/metrics/run-all.mjs, never by report/pixel-parity.json). Omitted when verdict=pass."
+        },
+        "expected": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable expectation that failed; mirrors MetricError.expected. Required when verdict=fail."
+        },
+        "hint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Actionable remediation hint; mirrors MetricError.hint. Required when verdict=fail."
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "description": "MetricErrorDetail variant payload; shape varies per code (ParityThresholdDetail vs ParityCaptureDetail). May be null when the failure path produced no auxiliary fields."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "verdict": { "const": "fail" } } },
+          "then": { "required": ["code", "expected", "hint"] }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "name": "@forgeax/hello-dsh-federation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Real Engine browser surface consumed by the DSH-native federation panel.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "pnpm --filter @forgeax/engine-dsh test:visual"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-dsh-federation smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "verification app bundle is downstream of tracked package bundles"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "the federation gate checks unchanged frame topology rather than a new FPS target"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "visual federation consumer, not a benchmark owner"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "external interoperability gate requires a user- or CI-provisioned DSH executable"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-dsh": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16"
+  }
+}

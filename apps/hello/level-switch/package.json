@@ -1,0 +1,87 @@
+{
+  "name": "@forgeax/hello-level-switch",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "feat-20260616 M7 state-machine demo -- defineState + setNextState + getState keyboard-driven level switch.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-level-switch smoke",
+    "gauntletScenario": {
+      "id": "hello-level-switch-dawn",
+      "script": "smoke",
+      "domains": [
+        "World and host contract",
+        "Rendering and shader construction"
+      ],
+      "packages": [
+        "@forgeax/engine-assets-runtime",
+        "@forgeax/engine-ecs",
+        "@forgeax/engine-rhi-wgpu",
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-state"
+      ],
+      "risks": ["baseline", "dynamic", "churn", "recovery", "gpu", "behavioral"],
+      "phaseInputs": ["baseline", "dynamic", "churn", "recovery"],
+      "evidence": {
+        "frontDoors": ["dawn-node"],
+        "legs": ["semantic", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[smoke] GATE 2 PASS: playerCount === 1, player survived cross-state",
+          "[smoke] GATE 4/5 PASS: falsification check",
+          "[smoke] M29 PASS: partial commit, later-token abort, fresh-World recovery, exact-once callback, cleanup",
+          "[smoke] PASS - all gates GREEN: 10 switches perf OK"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "state-machine validation demo; fps tracked by hello-triangle"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "demo app; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-level-switch smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-state": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

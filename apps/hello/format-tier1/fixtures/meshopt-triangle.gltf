@@ -1,0 +1,29 @@
+{
+  "asset": { "version": "2.0" },
+  "extensionsUsed": ["EXT_meshopt_compression"],
+  "extensionsRequired": ["EXT_meshopt_compression"],
+  "buffers": [{
+    "uri": "data:application/octet-stream;base64,oAAAATwAAAD//wE8AAAAfn0AAAEMAAAA/wEMAAAAfgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAP6AAAAE8AAAA//8BPAAAAH59AAABDAAAAP8BDAAAAH4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD/h8AB2h1ZneKmGZYlomAFpAAA=",
+    "byteLength": 242
+  }],
+  "bufferViews": [
+    { "buffer": 0, "byteLength": 0, "extensions": { "EXT_meshopt_compression": { "buffer": 0, "byteOffset": 0, "byteLength": 67, "byteStride": 12, "count": 3, "mode": "ATTRIBUTES" } } },
+    { "buffer": 0, "byteLength": 0, "extensions": { "EXT_meshopt_compression": { "buffer": 0, "byteOffset": 67, "byteLength": 45, "byteStride": 12, "count": 3, "mode": "ATTRIBUTES" } } },
+    { "buffer": 0, "byteLength": 0, "extensions": { "EXT_meshopt_compression": { "buffer": 0, "byteOffset": 112, "byteLength": 63, "byteStride": 8, "count": 3, "mode": "ATTRIBUTES" } } },
+    { "buffer": 0, "byteLength": 0, "extensions": { "EXT_meshopt_compression": { "buffer": 0, "byteOffset": 175, "byteLength": 49, "byteStride": 16, "count": 3, "mode": "ATTRIBUTES" } } },
+    { "buffer": 0, "byteLength": 0, "extensions": { "EXT_meshopt_compression": { "buffer": 0, "byteOffset": 224, "byteLength": 18, "byteStride": 2, "count": 3, "mode": "TRIANGLES" } } }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+    { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" },
+    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4" },
+    { "bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR" }
+  ],
+  "meshes": [{
+    "primitives": [{
+      "attributes": { "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2, "TANGENT": 3 },
+      "indices": 4
+    }]
+  }]
+}

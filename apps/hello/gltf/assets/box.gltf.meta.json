@@ -1,0 +1,38 @@
+{
+  "kind": "external-asset-package",
+  "importer": "gltf",
+  "importSettings": {
+    "defaultSceneIndex": 0,
+    "standardMaterialGuid": "be94bbad-4b1f-5f05-a24a-e1c05a324c9a",
+    "diagnostics": {
+      "matrixTrsCoexistNodes": [],
+      "nodeNames": [
+        "Box",
+        "MainCamera"
+      ],
+      "unsupportedExtensions": []
+    }
+  },
+  "schemaVersion": 1,
+  "source": "box.gltf",
+  "subAssets": [
+    {
+      "guid": "019e2b88-aece-7b6e-bbfe-45d6453d21f3",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh"
+    },
+    {
+      "guid": "019e2b88-aecf-7e78-9888-655f0ec62ebc",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material"
+    },
+    {
+      "guid": "019e2b88-aecf-7e78-9888-6560222ee28a",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene"
+    }
+  ]
+}

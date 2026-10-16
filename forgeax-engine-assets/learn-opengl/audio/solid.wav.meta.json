@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "solid.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019ee3df-a914-78df-8ff9-47418dc705d1",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

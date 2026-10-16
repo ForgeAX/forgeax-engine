@@ -1,0 +1,24 @@
+{
+  "caseId": "direct-spot-urp",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "light": {
+    "authorityId": "threeR184SquaredWindow",
+    "kind": "spot",
+    "color": [1, 0.5, 0.25],
+    "intensity": 8,
+    "range": 5,
+    "direction": [2, -2, 1],
+    "innerConeDeg": 15,
+    "outerConeDeg": 35
+  },
+  "import": {
+    "source": "none",
+    "intensityScale": 1,
+    "rangeZero": "no-cutoff",
+    "cone": "radians-to-degrees"
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 255 }
+}

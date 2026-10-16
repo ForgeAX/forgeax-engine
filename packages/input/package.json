@@ -1,0 +1,72 @@
+{
+  "name": "@forgeax/engine-input",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Frame-start scanned, frozen InputSnapshot Resource (logical keyboard key and physical code held/press/release edges + mouse.position/movementDelta + mouse.button(0|1|2)) + browser PointerLock backend for forgeax-engine.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./controller-db": {
+      "types": "./dist/controller-db.d.ts",
+      "import": "./dist/controller-db.mjs"
+    },
+    "./controller-db-data": {
+      "types": "./dist/controller-db-data.d.ts",
+      "import": "./dist/controller-db-data.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip",
+        "baseline": {
+          "source": "packages/input/reports/roi-20-gamepad-haptics/README.md#bundle-size",
+          "threshold": 17600
+        },
+        "reason": "Measured 16132 B gzip with the bounded dual-rumble producer and Host actuator lifecycle (up from the prior 12069 B input surface); 17600 B allows approximately 10% headroom for this explicit capability addition. Physical-device validation remains pending; this is a byte-size budget, not haptic performance acceptance."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "library package, no runtime canvas; fps is reported by hello-* / learn-render apps that consume engine.input.snapshot()"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Contract load benchmark: bun packages/input/scripts/benchmark-feedback.ts. Host dispatch and POD roundtrip report 1/2/4 targets at idle, event and unchanged 32-command burst load. This report is not the metric registry benchmark harness and does not establish physical throughput; full App frame and hardware acceptance remain required."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; AC-07 surface coverage runs as part of pnpm test:unit + tsc -b"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; this is a production MVP per plan-strategy D-5 (input internalisation minimal surface)"
+      }
+    }
+  }
+}

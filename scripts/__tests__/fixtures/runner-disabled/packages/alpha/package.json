@@ -1,0 +1,28 @@
+{
+  "name": "alpha",
+  "private": true,
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "fixture exercises the all-disabled skip path; runner must produce zero report files for this workspace"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fixture exercises skip path"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "fixture exercises skip path"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "fixture exercises skip path"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "fixture exercises skip path"
+      }
+    }
+  }
+}

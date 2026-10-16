@@ -1,0 +1,149 @@
+{
+  "name": "@forgeax/hello-m8-integrated-capstone",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M8 integrated capstone: one long-lived content, ECS, simulation, audio, picking, rendering, inspection, fault, and recovery journey.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:dawn": "node scripts/smoke-dawn.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-rhi-debug.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m8-integrated-capstone smoke",
+    "rhiDebug": {
+      "riskFamilies": [
+        "programmable-pipelines"
+      ]
+    },
+    "gauntletScenario": {
+      "id": "hello-m8-integrated-capstone",
+      "script": "smoke",
+      "domains": [
+        "Asset schemas, import, and delivery",
+        "World and host contract",
+        "Rendering and shader construction",
+        "Simulation and media implementations",
+        "Inspection, debugging, and development bridges"
+      ],
+      "packages": [
+        "@forgeax/engine-app",
+        "@forgeax/engine-assets-runtime",
+        "@forgeax/engine-audio",
+        "@forgeax/engine-audio-webaudio",
+        "@forgeax/engine-ecs",
+        "@forgeax/engine-physics",
+        "@forgeax/engine-picking",
+        "@forgeax/engine-render",
+        "@forgeax/engine-rhi-debug",
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-scene",
+        "@forgeax/engine-state"
+      ],
+      "risks": [
+        "baseline",
+        "content",
+        "dynamic",
+        "churn",
+        "fault",
+        "recovery",
+        "cleanup",
+        "behavioral",
+        "visual"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "content",
+        "dynamic",
+        "churn",
+        "fault",
+        "recovery",
+        "cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "browser-long-lived",
+          "dawn-shared-scene",
+          "remote-live",
+          "rhi-debug",
+          "physics-audio",
+          "picking"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m8-capstone] browser long-lived journey: PASS",
+          "[m8-capstone] content reimport/HMR: PASS",
+          "[m8-capstone] Dawn shared-scene journey: PASS",
+          "[m8-capstone] remote-live mutation: PASS",
+          "[m8-capstone] RHI capture/inspect: PASS",
+          "[m8-capstone] structured fault/recovery: PASS",
+          "[m8-capstone] PASS - M8 integrated capstone gates GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "capstone correctness is covered by semantic/GPU/behavioral evidence"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fixed-step counters are correctness evidence, not an FPS budget"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "long-lived composition has no independent benchmark contract"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-m8-integrated-capstone smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-audio": "workspace:*",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-state": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.50.0",
+    "pngjs": "^7.0.0",
+    "typescript": "~5.8.3",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

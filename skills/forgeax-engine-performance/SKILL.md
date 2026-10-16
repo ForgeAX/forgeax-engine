@@ -1,0 +1,72 @@
+---
+name: forgeax-engine-performance
+description: >-
+  Evidence-driven ForgeaX CPU and GPU optimization. Use when diagnosing slow
+  frames, Worker GC or physics costs, reducing submission or shader work,
+  comparing benchmarks, or adding reusable performance techniques.
+---
+
+# forgeax-engine-performance
+
+Identify the expensive owner, remove work at its actual change frequency, and
+verify the same workload through the requested runtime. Follow the checkout's
+[delivery and rendering gates](../../AGENTS.md); this skill supplies diagnosis
+and reusable analysis, rather than another delivery state machine.
+
+## Select the relevant reference
+
+| Current question | Read |
+| --- | --- |
+| Establish a baseline, separate CPU/GPU clocks, compare captures | [Measurement](references/measurement.md) |
+| Measure cache hit/miss, invalidation, rebuild and maintenance populations | [Cache measurement](references/measurement.md#cache-populations-and-window-deltas) |
+| Extreme picture intervals, Worker task costs, completion waits or catch-up bursts | [Slow frames and scheduling](references/slow-frames.md) |
+| Native physics phases, contact complexity, wake costs or redundant Game submissions | [Physics pressure](references/physics.md) |
+| Expensive preparation, submission, cache checks or uploads | [CPU preparation and data ownership](references/cpu-submission.md) |
+| String/composite keys, numeric slots or object identity | [Key representation](references/cpu-submission.md#choose-keys-from-existing-identity) |
+| Worker GC, short-lived allocation sources, heap/source attribution or retention | [GC and allocation ownership](references/gc.md) |
+| Texture work, static features, shader variants or uniform-derived math | [Materials and shaders](references/materials-shaders.md) |
+| Shadow pass cost, coverage, resolution or sampling | [Shadows](references/shadows.md) |
+| Analyze an existing capture or choose a collection tool | [Toolbox](references/toolbox.md) |
+| Add another session's technique, script or scoped case | [Contributing](references/contributing.md) |
+| Understand the initial UV/static-switch integration and its limits | [Material specialization case](references/cases/material-specialization.md) |
+| Inspect compiled feature/input pruning and heterogeneous GPU material rows | [Compiled graph case](references/cases/compiled-material-pruning.md) |
+| Interpret a real cache audit across a material ABI change | [Cache maintenance case](references/cases/cache-maintenance-20261014.md) |
+| Optimize scene ownership, draw-key lookup and cold-path cost | [Persistent scene case](references/cases/persistent-scene-prefix.md) |
+| Audit render string keys and collection-local chunk maintenance | [String-key case](references/cases/render-string-keys.md) |
+| Reduce feature transaction copying while preserving abort and completion leases | [Feature reference case](references/cases/feature-transaction-references.md) |
+
+## Drive the optimization
+
+1. Record the actual source/build, backend, quality settings, scene and completed
+   work. Preserve the baseline and original failures. An unexplained visual
+   failure first follows [RHI Debug](../forgeax-engine-rhi-debug/SKILL.md).
+2. Attribute the hotspot with the cheapest applicable tool. Keep intrusive
+   diagnosis separate from final uninstrumented throughput. For an extreme
+   frame, join its actual tasks and completion events before selecting a small
+   sampled hotspot; follow [Slow frames](references/slow-frames.md).
+3. Change the owning producer or invalidation boundary. Derive CPU layout,
+   shader macros and publication from their existing authority. Measure work
+   counts as well as time; a cache hit can still perform expensive preparation.
+4. Compare a matched workload and check the cases that should invalidate reuse.
+   Report implementation proof, measured improvement and unfinished target
+   acceptance separately. A quality/configuration change starts a new profile.
+
+The tools below read local artifacts and use Node built-ins. They do not launch a
+browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
+
+| Tool | Input and useful result |
+| --- | --- |
+| [analyze_cpu_profile.mjs](scripts/analyze_cpu_profile.mjs) | CDP/V8 profile; sampled self/inclusive time, recursion-safe symbol totals and unobserved interval |
+| [summarize_gpu_timing.mjs](scripts/summarize_gpu_timing.mjs) | Engine GPU observations; semantic pass costs, completeness, interval union and timestamp envelope |
+| [analyze_heap_profile.mjs](scripts/analyze_heap_profile.mjs) | SamplingHeapProfile; conserved direct/ancestor/unresolved byte partitions and source owner distribution |
+| [symbolize_heap_profile.mjs](scripts/symbolize_heap_profile.mjs) | Captured script digests and frozen hidden maps; source locations authenticated to the selected profile |
+| [summarize_native_gc.mjs](scripts/summarize_native_gc.mjs) | Owned-thread native trace; Minor/Major/finalization durations and bounded allocation/promotion counters |
+| [compare_samples.mjs](scripts/compare_samples.mjs) | Raw sample arrays plus selected workload identity; matched descriptive statistics or explicit mismatch |
+
+Run an entrypoint with `--help`; [Toolbox](references/toolbox.md) owns arguments,
+exit meanings and capture adapters. Use private output paths and retain raw
+inputs. These summaries establish their stated analytical boundary only.
+
+For a later contribution, update the topic's existing authority and its routing
+links. Keep a dated result in a scoped case; do not promote one experiment's
+numbers, quality settings or host paths into a universal default.

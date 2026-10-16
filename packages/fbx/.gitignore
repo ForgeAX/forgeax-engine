@@ -1,0 +1,13 @@
+# ufbx source files (downloaded, not committed)
+src/native/ufbx.h
+src/native/ufbx.c
+
+# build output
+dist/
+
+# Zero-binary invariant (mirrors packages/wgpu-wasm/.gitignore): the emcc
+# output pair (fbx-wasm.wasm binary + its fbx-wasm.mjs glue) is NOT committed
+# -- both are machine-generated together by `pnpm build:wasm` (needs the
+# Emscripten emcc toolchain). Rebuild locally / in CI, never check in. pkg/
+# holds nothing but that pair, so the whole dir is ignored. See build-wasm.mjs.
+pkg/

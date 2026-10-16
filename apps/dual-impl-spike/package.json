@@ -1,0 +1,49 @@
+{
+  "name": "dual-impl-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Dual-impl RHI spike (feat-20260511-asset-system-v1 M6 / w17). Uploads a 4x4 RGBA8unorm texture via queue.writeTexture through both @forgeax/engine-rhi-webgpu and @forgeax/engine-rhi-wgpu, round-trips the pixels through a 256-byte-row-stride padded readback buffer, and asserts byte-exact (ε=0) equality vs the source Uint8Array. Independent of hello-room smoke (ε=0.05) per D-P6. Backs the spike-report metric kind (M6 / w18).",
+  "scripts": {
+    "smoke": "node scripts/texture-4x4.mjs",
+    "test": "vitest run"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "spike harness is a scripts/*.mjs cell (no vite build output); bundle size is tracked at @forgeax/engine-rhi-webgpu + @forgeax/engine-wgpu-wasm package level per D-P6"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "static one-shot upload + readback cell; no raf loop or canvas, so fps is not meaningful. Runtime fps coverage stays at apps/hello/triangle (K-12 baseline anchor)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "spike exercises ε=0 correctness (byte-exact upload round-trip), not wall-clock performance; bench focus stays on @forgeax/engine-math + pixel-parity fixture"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "metric 'gate' is reserved for smoke/grep/lockfile binary checks; this spike's binary verdict rides the spike-report kind (D-P6 + AC-19) via report/dual-impl-spike/spike-report.json"
+      },
+      "spike-report": {
+        "enabled": true,
+        "reportPath": "report/texture-4x4.json",
+        "baseline": {
+          "source": "inline",
+          "threshold": 0
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

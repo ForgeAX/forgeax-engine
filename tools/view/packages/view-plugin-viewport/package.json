@@ -1,0 +1,49 @@
+{
+  "name": "@forgeax/view-plugin-viewport",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ForgeaX View product plugin: read-only human viewport.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./frontend": "./src/frontend.ts",
+    "./presentation": "./src/presentation.ts",
+    "./presentation-identity": "./src/presentation-identity.ts",
+    "./identity": "./src/identity.ts",
+    "./schema": "./src/schema.ts",
+    "./workspace-shell": "./src/workspace-shell.ts",
+    "./input": "./src/input.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/view-workspace-core": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  },
+  "devDependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*"
+  }
+}

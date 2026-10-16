@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "shader",
+  "source": "hit-flash.wgsl",
+  "importSettings": {
+    "materialShaderIdentifier": "game_default::hit_flash"
+  },
+  "subAssets": [
+    {
+      "guid": "019e7535-5e5e-45fe-a328-0b08e3a72748",
+      "sourceIndex": 0,
+      "kind": "material-shader"
+    }
+  ],
+  "paramSchema": [
+    { "name": "baseColor", "type": "color" },
+    { "name": "intensity", "type": "f32" }
+  ]
+}

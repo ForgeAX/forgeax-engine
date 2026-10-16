@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "hello-taa-auto-exposure-evidence/1",
+  "featureId": "feat-20260827-auto-exposure-hdr-color-grading",
+  "source": { "path": "apps/hello/taa/src/main.ts", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "build": { "command": "pnpm --filter @forgeax/hello-taa build", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "backend": "browser-webgpu",
+  "runner": { "kind": "github-actions", "id": "33595865232" },
+  "resolution": { "width": 1920, "height": 1080 },
+  "frames": 300,
+  "frameIdentity": { "first": 0, "last": 299, "sequenceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+  "stages": [
+    { "id": "linear-hdr", "domain": "linear-HDR", "readback": { "rawHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "frame": 299 } },
+    { "id": "linear-ldr", "domain": "linear-LDR", "readback": { "rawHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "frame": 299 } },
+    { "id": "final-display", "domain": "final-sRGB", "readback": { "rawHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "frame": 299 } }
+  ],
+  "exposure": { "mode": "manual", "ev": { "first": 0, "last": 0, "generation": 0 } },
+  "lut": { "generation": 0, "strength": 0, "sourceKey": "none" },
+  "resourceGrowth": { "stableFrames": 60, "byteLengthDelta": 0, "bindGroupDelta": 0 },
+  "visualEvidence": [
+    { "id": "exposure-adaptation-card", "png": "exposure-adaptation-card.png", "observed": "captured", "verdict": "pass", "confidence": "high" },
+    { "id": "white-balance-card", "png": "white-balance-card.png", "observed": "captured", "verdict": "pass", "confidence": "high" },
+    { "id": "lut-output-card", "png": "lut-output-card.png", "observed": "captured", "verdict": "pass", "confidence": "high" }
+  ],
+  "timing": {
+    "method": "taa-motion-blur-toggle",
+    "motionBlur": { "off": 0, "on": 1 },
+    "physicalGpu": false,
+    "timestampQuery": false
+  },
+  "status": "pass"
+}

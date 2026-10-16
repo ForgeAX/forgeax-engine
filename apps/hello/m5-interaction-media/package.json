@@ -1,0 +1,50 @@
+{
+  "name": "@forgeax/hello-m5-interaction-media",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M5 interaction/media gauntlet: screen picking, debug overlays, pixel falsification, and lifecycle contracts.",
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m5-interaction-media smoke",
+    "gauntletScenario": {
+      "id": "hello-m5-interaction-media",
+      "script": "smoke",
+      "domains": ["Inspection, debugging, and development bridges", "Rendering and shader construction", "Simulation and media implementations", "World and host contract"],
+      "packages": ["@forgeax/engine-picking", "@forgeax/engine-debug-draw", "@forgeax/engine-math", "@forgeax/engine-assets-runtime", "@forgeax/engine-font", "@forgeax/engine-runtime", "@forgeax/engine-app"],
+      "risks": ["baseline", "dynamic", "churn", "behavioral", "fault", "recovery", "cleanup", "visual"],
+      "phaseInputs": ["baseline", "dynamic", "churn", "behavioral", "fault", "recovery"],
+      "evidence": {
+        "frontDoors": ["picking-app", "picking-browser", "debug-draw-app", "debug-draw-browser", "picking-unit", "debug-draw-unit", "text-dawn", "tilemap-dawn", "video-texture-browser", "video-cutscene-browser"],
+        "legs": ["semantic", "gpu", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m5-interactive] picking front door: PASS",
+          "[m5-interactive] picking browser front door: PASS",
+          "[m5-interactive] debug-draw front door: PASS",
+          "[smoke-browser] PASS - createApp(canvas) auto-attached app.debugDraw and survived live resize; normalForeground=1809, normalResizedForeground=1320, falsifiedForeground=0, falsifiedResizedForeground=0.",
+          "[m5-interactive] runtime debug-draw browser front door: PASS",
+          "[m5-interactive] debug-draw falsifier: PASS",
+          "[m5-interactive] picking contracts: PASS",
+          "[m5-interactive] debug-draw contracts: PASS",
+          "[m5-interactive] text Dawn front door: PASS",
+          "[m5-interactive] tilemap Dawn front door: PASS",
+          "[m5-interactive] video texture browser front door: PASS",
+          "[m5-interactive] video cutscene browser front door: PASS",
+          "[m5-interactive] PASS - M5 interaction/media gates GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {"enabled": false, "reason": "headless composition scenario has no dedicated bundle"},
+      "fps": {"enabled": false, "reason": "frame counts verify rendering progress but are not a performance benchmark"},
+      "bench": {"enabled": false, "reason": "picking/debug overlay correctness is covered by consumer and package tests"},
+      "gate": {"enabled": true, "command": "pnpm --filter @forgeax/hello-m5-interaction-media smoke"},
+      "spike-report": {"enabled": false, "reason": "not a spike app"}
+    }
+  }
+}

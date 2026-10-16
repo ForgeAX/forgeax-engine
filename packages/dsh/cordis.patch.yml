@@ -1,0 +1,5 @@
+- insert:
+    - id: forgeax-engine-federation
+      name: '@forgeax/engine-dsh'
+      config:
+        engineEndpoint: !!js process.env.FORGEAX_ENGINE_ENDPOINT

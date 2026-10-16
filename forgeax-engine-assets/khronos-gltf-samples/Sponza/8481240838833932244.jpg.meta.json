@@ -1,0 +1,19 @@
+{
+  "importer": "image",
+  "importSettings": {
+    "addressMode": "repeat",
+    "colorSpace": "srgb",
+    "filterMode": "linear",
+    "mipmap": "auto"
+  },
+  "kind": "external-asset-package",
+  "schemaVersion": "1.0.0",
+  "source": "8481240838833932244.jpg",
+  "subAssets": [
+    {
+      "guid": "019e4fe2-5242-75d1-8d64-1b36d8fd8332",
+      "kind": "texture",
+      "sourceIndex": 0
+    }
+  ]
+}

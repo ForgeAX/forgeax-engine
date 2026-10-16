@@ -1,0 +1,325 @@
+export type CorpusExpectation = 'native' | 'normalizable' | 'runtime-bound';
+
+export interface ProfileCorpusCase {
+  readonly name: string;
+  readonly html: string;
+  readonly css: string;
+  readonly expectation: CorpusExpectation;
+  readonly blocking: boolean;
+  readonly warningCodes?: readonly string[];
+}
+
+const nativeCases: readonly ProfileCorpusCase[] = [
+  {
+    name: 'semantic-section',
+    html: '<section data-ui-part="root">Text</section>',
+    css: '.panel { color: red; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'heading',
+    html: '<h1 data-ui-part="title">Title</h1>',
+    css: '.title { font-size: 2rem; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'paragraph',
+    html: '<p>Copy</p>',
+    css: '.copy { line-height: 1.4; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'list',
+    html: '<ul><li>One</li><li>Two</li></ul>',
+    css: 'ul { display: grid; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'form',
+    html: '<form><label for="name">Name</label><input id="name" /></form>',
+    css: 'form { gap: 4px; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'button',
+    html: '<button data-ui-action="save">Save</button>',
+    css: 'button { cursor: pointer; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'image',
+    html: '<img src="icons/panel.png" alt="Panel" />',
+    css: '.image { object-fit: cover; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'template',
+    html: '<template data-ui-template="row"><li>Row</li></template>',
+    css: '.row { display: flex; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'aria',
+    html: '<div role="status" aria-live="polite">Ready</div>',
+    css: '[role="status"] { opacity: 1; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'framework-island',
+    html: '<div data-framework-island="inventory"></div>',
+    css: '.inventory { contain: content; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'namespace-variable',
+    html: '<div data-ui-part="card">Card</div>',
+    css: '.card { color: var(--fx-hud-accent); }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'font-face',
+    html: '<p data-ui-part="label">Label</p>',
+    css: '@font-face { font-family: Hud; src: url("fonts/hud.woff2"); }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'keyframes',
+    html: '<div data-ui-part="pulse"></div>',
+    css: '@keyframes pulse { from { opacity: 0; } to { opacity: 1; } }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'media',
+    html: '<aside>Panel</aside>',
+    css: '@media (min-width: 10px) { aside { display: block; } }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'supports',
+    html: '<main>Main</main>',
+    css: '@supports (display: grid) { main { display: grid; } }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'multiple-hooks',
+    html: '<div data-ui-part="root" data-ui-action="open">Open</div>',
+    css: '.root { padding: 1px; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'accessible-label',
+    html: '<label for="email">Email</label><input id="email" />',
+    css: 'input { border: 0; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'fragment-link',
+    html: '<a href="#details">Details</a>',
+    css: 'a { color: inherit; }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'relative-background',
+    html: '<div data-ui-part="art"></div>',
+    css: '.art { background: url("images/art.webp"); }',
+    expectation: 'native',
+    blocking: false,
+  },
+  {
+    name: 'data-hook',
+    html: '<div data-ui-template="menu">Menu</div>',
+    css: '.menu { display: block; }',
+    expectation: 'native',
+    blocking: false,
+  },
+];
+
+const nonNativeCases: readonly ProfileCorpusCase[] = [
+  {
+    name: 'inline-style',
+    html: '<div style="color:red">Inline</div>',
+    css: '.x { color: red; }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'root-selector',
+    html: '<div>Root</div>',
+    css: 'html { color: red; }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'body-selector',
+    html: '<div>Body</div>',
+    css: 'body { margin: 0; }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'root-pseudo',
+    html: '<div>Root</div>',
+    css: ':root { --fx-hud-color: red; }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'absolute-url',
+    html: '<img src="icons/panel.png" alt="Panel" />',
+    css: '.x { background: url("/panel.png"); }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'generated-class',
+    html: '<div class="css-123">Generated</div>',
+    css: '.css-123 { color: red; }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'script',
+    html: '<script>alert(1)</script>',
+    css: '.x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'event-handler',
+    html: '<button onclick="save()">Save</button>',
+    css: '.x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'remote-image',
+    html: '<img src="https://example.com/a.png" alt="Remote" />',
+    css: '.x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'protocol-relative',
+    html: '<img src="//example.com/a.png" alt="Remote" />',
+    css: '.x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'css-import',
+    html: '<div>Import</div>',
+    css: '@import "theme.css";',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'css-runtime-url',
+    html: '<div>Runtime</div>',
+    css: '.x { background: url("data:image/png;base64,abc"); }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'css-in-js-marker',
+    html: '<div>Runtime</div>',
+    css: '/* styled-components */ .x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'empty-hook',
+    html: '<div data-ui-part="">Empty</div>',
+    css: '.x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'unknown-hook',
+    html: '<div data-ui-unknown="x">Unknown</div>',
+    css: '.x { color: red; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'escaping-url',
+    html: '<div>Escape</div>',
+    css: '.x { background: url("../escape.png"); }',
+    expectation: 'normalizable',
+    blocking: true,
+  },
+  {
+    name: 'missing-label',
+    html: '<input id="name" />',
+    css: 'input { border: 0; }',
+    expectation: 'native',
+    blocking: false,
+    warningCodes: ['missing-accessible-label'],
+  },
+  {
+    name: 'duplicate-part',
+    html: '<div data-ui-part="root"></div><span data-ui-part="root"></span>',
+    css: '.x { color: red; }',
+    expectation: 'native',
+    blocking: false,
+    warningCodes: ['duplicate-ui-part'],
+  },
+  {
+    name: 'public-variable',
+    html: '<div data-ui-part="root"></div>',
+    css: '.x { color: var(--accent); }',
+    expectation: 'native',
+    blocking: false,
+    warningCodes: ['unscoped-custom-property'],
+  },
+  {
+    name: 'unknown-property',
+    html: '<div data-ui-part="root"></div>',
+    css: '.x { totally-unknown: value; }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'remote-font',
+    html: '<div>Font</div>',
+    css: '@font-face { src: url("https://example.com/font.woff2"); }',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'remote-import',
+    html: '<div>Import</div>',
+    css: '@import url("https://example.com/theme.css");',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+  {
+    name: 'unsupported-at-rule',
+    html: '<div>Rule</div>',
+    css: '@custom-media --small (max-width: 10px);',
+    expectation: 'runtime-bound',
+    blocking: true,
+  },
+];
+
+export const profileCorpus: readonly ProfileCorpusCase[] = [...nativeCases, ...nonNativeCases];
+
+export const validProfileCorpus = profileCorpus.filter((entry) => !entry.blocking);
+export const invalidProfileCorpus = profileCorpus.filter((entry) => entry.blocking);

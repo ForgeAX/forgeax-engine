@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-1000-7000-8000-000000000106",
+  "assets": {
+    "material/base": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-unlit"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.6,
+            0.6,
+            0.6,
+            1
+          ]
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  }
+}

@@ -1,0 +1,17 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
+import { defineConfig } from 'vite';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const monorepoRoot = resolve(here, '..', '..', '..');
+
+// forgeaxShader emits the engine shader manifest the dawn smoke loads from dist/.
+export default defineConfig({
+  plugins: [forgeaxShader() as never],
+  server: { fs: { allow: [monorepoRoot] } },
+  build: {
+    target: 'esnext',
+    rollupOptions: { input: { main: resolve(here, 'index.html') } },
+  },
+});

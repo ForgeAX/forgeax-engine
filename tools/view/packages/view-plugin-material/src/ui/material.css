@@ -1,0 +1,261 @@
+.fx-asset-editor {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--fx-color-surface-canvas);
+  color: var(--fx-color-text-primary);
+}
+
+.fx-asset-preview {
+  overflow: hidden;
+}
+
+.fx-material-preview {
+  position: relative;
+}
+
+.fx-material-preview-toolbar {
+  position: absolute;
+  top: var(--fx-ref-space-8, 8px);
+  right: var(--fx-ref-space-8, 8px);
+  z-index: 2;
+}
+
+.fx-material-restore-error {
+  position: absolute;
+  top: calc(var(--fx-ref-space-8, 8px) + 2.5rem);
+  right: var(--fx-ref-space-8, 8px);
+  z-index: 2;
+  margin: 0;
+  max-width: 16rem;
+}
+
+.fx-asset-preview-surface {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: stretch;
+  justify-content: stretch;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.fx-material {
+  --material-preview: var(--fx-color-brand-accent);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  background: var(--fx-color-surface-canvas);
+  color: var(--fx-color-text-primary);
+}
+
+.fx-material-actions {
+  flex: 0 0 auto;
+  gap: var(--fx-space-control);
+}
+
+.fx-material-actions > .fx-panel-header__slot:nth-child(2) {
+  flex: 1;
+}
+
+.fx-material-actions > .fx-panel-header__slot:last-child {
+  justify-content: flex-end;
+}
+
+.fx-material-actions [data-active="true"] {
+  color: var(--fx-color-status-warning-fg);
+}
+
+.fx-material-search-field {
+  width: 100%;
+}
+
+.fx-material-search-field > .fx-field__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.fx-material-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.fx-material-search > .fx-icon {
+  position: absolute;
+  left: var(--fx-ref-space-8);
+  z-index: 1;
+  color: var(--fx-color-text-muted);
+  pointer-events: none;
+}
+
+.fx-material-search .fx-input {
+  height: var(--fx-component-control-height-compact);
+  padding-left: var(--fx-ref-space-32);
+}
+
+.fx-material-head {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-space-control);
+  min-height: var(--fx-component-panel-header-height);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-12);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+}
+
+.fx-material-icon {
+  display: grid;
+  place-items: center;
+  width: var(--fx-component-control-height-default);
+  height: var(--fx-component-control-height-default);
+  flex: 0 0 auto;
+  border: var(--fx-border-width) solid var(--fx-color-border-default);
+  border-radius: var(--fx-radius-control);
+  background: var(--material-preview);
+  color: var(--fx-color-text-inverse);
+}
+
+.fx-material-title {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.fx-material-title strong {
+  overflow: hidden;
+  font-weight: var(--fx-ref-font-weight-500);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-material-title small,
+.fx-material-texture small,
+.fx-material-foot {
+  color: var(--fx-color-text-muted);
+  font: var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size)/var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+}
+
+.fx-material-toolbar {
+  justify-content: space-between;
+  min-height: var(--fx-component-navigation-row-height);
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-12);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+}
+
+.fx-material-preview-status {
+  color: var(--fx-color-text-secondary);
+}
+
+.fx-material-filtered {
+  display: none;
+}
+
+.fx-material-count {
+  color: var(--fx-color-text-muted);
+  font: var(--fx-type-code-font-weight) var(--fx-type-code-font-size)/var(--fx-type-code-line-height) var(--fx-type-code-font-family);
+}
+
+.fx-material .fx-collapsible__content {
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-8) var(--fx-ref-space-8);
+}
+
+.fx-material-color,
+.fx-material-range {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--fx-ref-space-6);
+}
+
+.fx-material-color i {
+  width: var(--fx-component-control-height-compact);
+  height: var(--fx-component-control-height-compact);
+  flex: 0 0 auto;
+  border: var(--fx-border-width) solid var(--fx-color-border-control);
+  border-radius: var(--fx-radius-control);
+  background: var(--material-preview);
+}
+
+.fx-material-preview-status .fx-icon {
+  color: var(--material-preview);
+  fill: currentColor;
+}
+
+.fx-material-color .fx-input,
+.fx-material-range .fx-input {
+  height: var(--fx-component-control-height-compact);
+  font-family: var(--fx-type-code-font-family);
+  font-size: var(--fx-type-caption-font-size);
+}
+
+.fx-material-range > input[type="range"] {
+  flex: 1;
+  min-width: var(--fx-ref-space-32);
+  accent-color: var(--fx-color-brand-accent);
+}
+
+.fx-material-range .fx-input {
+  flex: 0 0 52px;
+  text-align: right;
+}
+
+.fx-material-texture {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-space-control);
+  min-height: var(--fx-component-navigation-row-height);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+}
+
+.fx-material-texture:hover {
+  background: var(--fx-color-surface-hover);
+}
+
+.fx-material-thumb {
+  display: grid;
+  place-items: center;
+  width: var(--fx-component-control-height-default);
+  height: var(--fx-component-control-height-default);
+  flex: 0 0 auto;
+  border: var(--fx-border-width) dashed var(--fx-color-border-control);
+  border-radius: var(--fx-radius-control);
+  background: var(--fx-color-surface-inset);
+  color: var(--fx-color-text-muted);
+}
+
+.fx-material-texture-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.fx-material-texture strong {
+  color: var(--fx-color-text-secondary);
+  font-weight: var(--fx-ref-font-weight-400);
+}
+
+.fx-material-preview {
+  overflow: hidden;
+}
+
+.fx-material-preview-surface {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}

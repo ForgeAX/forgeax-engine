@@ -1,0 +1,9 @@
+{
+  "format": "m8-capstone-blob",
+  "version": 1,
+  "title": "M8 Capstone Content",
+  "markers": [
+    { "id": "marker-0", "x": -0.8 },
+    { "id": "marker-1", "x": 0.8 }
+  ]
+}

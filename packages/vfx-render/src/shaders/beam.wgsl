@@ -1,0 +1,45 @@
+#define_import_path forgeax::vfx-render.particles.beam
+#pragma variant_axis ATMOSPHERE_AVAILABLE
+#pragma variant_axis STORAGE_BUFFER_AVAILABLE
+#import forgeax_view::common::{View, view}
+#import forgeax_view::fog::{translucent_fog, ndc_world}
+
+struct BeamInput {
+  @location(0) start: vec3<f32>,
+  @location(1) endpoint: vec3<f32>,
+  @location(2) color: vec4<f32>,
+  @location(3) properties: vec2<f32>,
+}
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) color: vec4<f32>,
+  @location(2) across: f32,
+  @location(1) clip_position: vec3<f32>,
+}
+
+@vertex
+fn vs_main(input: BeamInput, @builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  let corners = array<vec2<f32>, 6>(
+    vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    vec2<f32>(0.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0)
+  );
+  let corner = corners[vertexIndex];
+  let delta = input.endpoint.xy - input.start.xy;
+  let normal = normalize(vec2<f32>(-delta.y, delta.x) + vec2<f32>(0.000001, 0.0));
+  let point = mix(input.start, input.endpoint, corner.x);
+  let clipPosition = vec3<f32>(point.xy + normal * corner.y * input.properties.x, point.z);
+  var output: VertexOutput;
+  output.position = vec4<f32>(clipPosition, 1.0);
+  output.across = corner.y;
+  output.color = input.color;
+  output.clip_position = clipPosition;
+  return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+  let alpha = input.color.a * (1.0 - smoothstep(0.15, 1.0, abs(input.across)));
+  let fogged = translucent_fog(view, ndc_world(view, input.clip_position), input.color.rgb * alpha, alpha);
+  return vec4<f32>(fogged, alpha);
+}

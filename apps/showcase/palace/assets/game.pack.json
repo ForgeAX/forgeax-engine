@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb7ce-4400-7000-8000-000000000000",
+  "assets": {
+    "plugin/engine": {
+      "kind": "plugin",
+      "payload": {
+        "module": {
+          "specifier": "./plugin.ts"
+        },
+        "config": {
+          "scene": {
+            "$asset": "79a24d10-e54b-5bfc-a961-995b35bf9e40"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "name": "@forgeax/engine-wgpu-wasm",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Merged wgpu 30 + naga 30 wasm-bindgen crate exposing RHI + shader-pipeline raw bindings to JS; consumed by @forgeax/engine-rhi-wgpu + @forgeax/engine-naga thin shells. AI engine users do not import this package directly.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./pkg": {
+      "types": "./pkg/wgpu_wasm.d.ts",
+      "import": "./pkg/wgpu_wasm.js"
+    },
+    "./package.json": "./package.json",
+    "./native-build": "./scripts/native-build.mjs",
+    "./native-host": {
+      "types": "./dist/native-host.d.ts",
+      "import": "./dist/native-host.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "pkg/package.json",
+    "pkg/README.md",
+    "pkg/provenance.json",
+    "pkg/wgpu_wasm.js",
+    "pkg/wgpu_wasm.d.ts",
+    "pkg/wgpu_wasm_bg.wasm",
+    "pkg/wgpu_wasm_bg.wasm.d.ts",
+    "src",
+    "scripts",
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.sh",
+    "rust-toolchain.toml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:wasm": "bash build.sh",
+    "fetch-wasm": "node scripts/fetch-wasm.mjs",
+    "postinstall": "node scripts/ensure-wasm.mjs",
+    "prebuild": "node scripts/verify-current.mjs",
+    "build": "tsup",
+    "test": "vitest run",
+    "test:wasm": "wasm-pack test --node"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "pkg/wgpu_wasm_bg.wasm",
+        "compression": "gzip",
+        "expected": 1168019,
+        "baseline": {
+          "source": ".forgeax-harness/forgeax-loop/feat-20260511-naga-rhi-wgpu-merge/bundle-size-baseline.json",
+          "threshold": 5242880
+        }
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "merged wasm crate is consumed by thin shells; fps reported by hello-triangle / hello-cube apps that drive rhi-wgpu / naga"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no hot path bench at the merged wasm boundary; naga compile-time bench pending feat-future-shader-compile-time, wgpu hot path bench pending feat-future-rhi-bench"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "smoke gate is anchored at apps/hello/triangle smoke + browser test renderer-wgpu-wasm.browser.test.ts; merged wasm crate has no standalone binary gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; this is the productionised merge of two archived legacy crates (naga wasm shim + packages/rhi-wgpu/crate; feat-20260511-naga-rhi-wgpu-merge M1), sized by the bundle-size MetricKind above"
+      }
+    }
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.2.0"
+  }
+}

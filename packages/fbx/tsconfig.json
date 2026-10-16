@@ -1,0 +1,26 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../math" },
+    { "path": "../types" },
+    { "path": "../ecs" },
+    { "path": "../pack" },
+    { "path": "../import" },
+    { "path": "../runtime" },
+    { "path": "../picking" },
+    { "path": "../skinning" },
+    { "path": "../geometry" }
+  ]
+}

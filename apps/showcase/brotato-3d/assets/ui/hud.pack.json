@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-3000-7000-8000-000000000091",
+  "assets": {
+    "ui/hud": {
+      "kind": "ui",
+      "payload": {
+        "browserExtensions": ["backdrop-filter"],
+        "html": "<section class=\"brotato3d-hud\" aria-label=\"Brotato 3D status\"><div class=\"brotato3d-vignette\"></div><section class=\"brotato3d-card\"><p class=\"brotato3d-title\">BROTATO 3D / NEON HARVEST</p><div class=\"brotato3d-score\" data-ui-slot=\"score\">00000</div><div class=\"brotato3d-row\"><span>Kills</span><b data-ui-slot=\"kills\">0</b></div><div class=\"brotato3d-row\"><span>Threats</span><b data-ui-slot=\"enemies\">0</b></div><div class=\"brotato3d-row\"><span>Run time</span><b data-ui-slot=\"time\">00:00</b></div><div class=\"brotato3d-health\" data-ui-slot=\"health\" aria-label=\"Player health\"></div><div class=\"brotato3d-wave\" data-ui-slot=\"wave\">Wave 1</div></section><div class=\"brotato3d-state\" data-ui-slot=\"state\">RUN OVER - PRESS R</div><div class=\"brotato3d-help\"><b>WASD</b> move - auto aim fire<br><b>Space / click</b> overclock fire rate - <b>R</b> restart</div></section>",
+        "css": ".brotato3d-hud{position:absolute;inset:0;pointer-events:none;color:#eef7ff;font:500 14px/1.4 ui-sans-serif,system-ui,sans-serif;text-shadow:0 2px 10px #000;letter-spacing:.02em}.brotato3d-card{position:absolute;top:22px;left:22px;min-width:230px;padding:16px 18px;border:1px solid #5ee6ff66;border-radius:14px;background:linear-gradient(145deg,#08162ce8,#10182bd9);box-shadow:0 12px 38px #0008,0 0 24px #22c8ff1c;backdrop-filter:blur(10px)}.brotato3d-title{margin:0 0 8px;color:#65e7ff;font-size:12px;letter-spacing:.18em;text-transform:uppercase}.brotato3d-score{font-size:30px;font-weight:800;line-height:1;color:#fff}.brotato3d-row{display:flex;justify-content:space-between;gap:16px;margin-top:9px;color:#a9bfd5}.brotato3d-row b{color:#f4fbff;font-weight:700}.brotato3d-health{display:flex;gap:4px;margin-top:12px}.brotato3d-heart{width:20px;height:8px;border-radius:5px;background:#ff5578;box-shadow:0 0 12px #ff416577}.brotato3d-heart.empty{background:#243447;box-shadow:none}.brotato3d-wave{margin-top:10px;color:#ffd36a;font-weight:700}.brotato3d-help{position:absolute;right:22px;bottom:22px;max-width:320px;padding:12px 14px;border:1px solid #ffffff22;border-radius:12px;background:#07111cd4;color:#aac1d3;text-align:right}.brotato3d-help b{color:#fff}.brotato3d-state{position:absolute;left:50%;top:16%;transform:translateX(-50%);padding:12px 22px;border-radius:999px;background:#ff4664dd;color:#fff;font-size:18px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;opacity:0;transition:opacity .2s}.brotato3d-state.visible{opacity:1}.brotato3d-vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 42%,#02061144 100%)}",
+        "actions": {}
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  }
+}

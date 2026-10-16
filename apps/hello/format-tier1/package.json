@@ -1,0 +1,44 @@
+{
+  "name": "@forgeax/hello-format-tier1",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Feature-owned browser dogfood producer for the format-tier1 evidence matrix.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-format-tier1 build",
+    "metrics": {
+      "bundle-size": { "enabled": false, "reason": "Evidence producer UI is not a shipped engine bundle." },
+      "fps": { "enabled": false, "reason": "Visual evidence is correctness-focused; no performance claim is made." },
+      "bench": { "enabled": false, "reason": "The producer has no benchmark surface." },
+      "gate": { "enabled": true, "command": "pnpm --filter @forgeax/hello-format-tier1 build" },
+      "spike-report": { "enabled": false, "reason": "This is a feature-owned evidence producer, not a spike." }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16"
+  }
+}

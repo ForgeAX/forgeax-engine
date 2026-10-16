@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="data:," />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Hello Audio (collision-triggered spatial SFX)</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1a1a22; color: #e8e8ef; font-family: ui-monospace, monospace; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #overlay {
+        position: fixed; left: 12px; top: 12px;
+        background: rgba(0, 0, 0, 0.45); padding: 8px 12px;
+        border-radius: 6px; line-height: 1.6; pointer-events: none;
+        font-size: 13px;
+      }
+      #overlay b { color: #ffe57c; }
+      #audio-controls { position: fixed; right: 20px; top: 20px; width: 400px; padding: 20px; background: #101827ee; border: 1px solid #314459; border-radius: 12px; font-family: system-ui, sans-serif; }
+      #audio-controls h2 { margin: 0; font-size: 22px; }
+      #audio-controls p { color: #acbfd0; font-size: 13px; }
+      #audio-controls button, #audio-controls select { background: #21364a; border: 1px solid #45647f; color: #fff; border-radius: 5px; padding: 8px 12px; }
+      #audio-controls label { display: flex; align-items: center; justify-content: space-between; margin: 16px 0; font-size: 14px; }
+      #audio-controls canvas { width: 400px; height: 120px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="overlay">
+      <b>spacebar</b> = one-shot SFX &amp; resume AudioContext<br />
+      <b>WASD</b> = move listener<br />
+      distance = -- | pan = --<br />
+      <span id="physics-status">collision=0 | cleanup=0</span><br />
+      <span id="audio-status">audio=booting | active=-- | starts=0</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

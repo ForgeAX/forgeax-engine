@@ -1,0 +1,92 @@
+{
+  "name": "@forgeax/hello-multithreaded-execution",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "m0": "pnpm m0:self-test && node m0/scripts/run-capability-matrix.mjs && node m0/scripts/run-raw-kernel.mjs",
+    "m0:self-test": "node m0/scripts/run-capability-matrix.mjs --self-test && node m0/scripts/run-raw-kernel.mjs --self-test",
+    "smoke:browser": "pnpm build && node scripts/smoke-browser.mjs",
+    "gauntlet": "pnpm build && node scripts/smoke-browser.mjs --gauntlet",
+    "smoke": "pnpm smoke:browser",
+    "gate": "pnpm smoke:browser && pnpm bench:production",
+    "bench:product": "node scripts/bench-threshold-self-test.mjs && pnpm build && node scripts/bench-browser.mjs",
+    "bench:production": "pnpm bench:product",
+    "bench:raw": "vitest bench --config m0/vitest.config.ts m0/bench/raw-kernel.bench.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.56.1",
+    "vite": "8.0.16"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-multithreaded-execution smoke",
+    "gauntletScenario": {
+      "id": "hello-m12-execution-poison-rebuild",
+      "script": "gauntlet",
+      "domains": ["World and host contract", "Simulation and media implementations"],
+      "packages": [
+        "@forgeax/engine-app",
+        "@forgeax/engine-assets-runtime",
+        "@forgeax/engine-ecs",
+        "@forgeax/engine-input",
+        "@forgeax/engine-render",
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-scene"
+      ],
+      "risks": [
+        "baseline",
+        "dynamic",
+        "fault",
+        "recovery",
+        "cleanup",
+        "input",
+        "frame-credit",
+        "rendering",
+        "capability-refusal"
+      ],
+      "phaseInputs": [
+        "main-serial baseline",
+        "engine-worker baseline",
+        "shared baseline",
+        "render-worker baseline",
+        "auto combined render and kernel baseline",
+        "shared partial-write fault",
+        "explicit unavailable Engine Worker policy",
+        "same-process execution.rebuild()",
+        "reverse-order idempotent cleanup"
+      ],
+      "evidence": {
+        "frontDoors": ["browser-app", "browser-webgpu", "ecs-world", "execution-report"],
+        "legs": ["semantic", "live", "gpu", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": ["M12_EXECUTION_POISON_REBUILD_PASS"]
+      }
+    },
+    "metrics": {
+      "bundle-size": { "enabled": false, "reason": "Vite app bundle shape is downstream of the tracked App, ECS, Runtime, and RHI package bundles" },
+      "fps": { "enabled": true, "sampleCount": 15, "frameCount": 60 },
+      "bench": { "enabled": false, "reason": "custom Host-frame p95 evidence is an explicit bench:production diagnostic" },
+      "gate": { "enabled": false, "reason": "dedicated CI owns Worker capability, recovery and raw-kernel speedup; bench:production requires stable benchmark conditions" },
+      "spike-report": { "enabled": false, "reason": "production worker-policy consumer, not a spike" }
+    }
+  }
+}

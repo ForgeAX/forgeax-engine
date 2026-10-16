@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "7a0e0000-0000-7000-8000-000000000002",
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "forward",
+            "program": { "module": "forgeax::default-unlit" },
+            "renderState": {
+              "tags": { "LightMode": "Forward" },
+              "queue": 3000,
+              "depthCompare": "always",
+              "blend": {
+                "color": { "srcFactor": "one", "dstFactor": "one", "operation": "add" },
+                "alpha": { "srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add" }
+              },
+              "depthWriteEnabled": false
+            }
+          }
+        ],
+        "values": { "baseColor": [0.06, 0.62, 1, 0.92] }
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

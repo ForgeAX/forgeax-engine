@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeaX M8 Integrated Capstone</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #10131a; color: #e9edf5; font-family: ui-monospace, monospace; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #overlay { position: fixed; left: 12px; top: 12px; padding: 10px 12px; border-radius: 6px; background: rgba(0, 0, 0, .55); line-height: 1.55; font-size: 12px; pointer-events: none; }
+      #overlay b { color: #ffe38a; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="overlay">
+      <b>Space</b> = audio gesture · <b>Click</b> = pick<br />
+      <span id="status">phase=boot content=loading fixed=0 pick=0 render=standard fault=none recovery=0</span><br />
+      <span id="audio-status">audio=booting active=0 starts=0</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

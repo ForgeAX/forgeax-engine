@@ -1,0 +1,78 @@
+{
+  "name": "@forgeax/engine-remote",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "ForgeaX live eval/introspection transport with structural World, renderer, assets, profiler, and execution roots. DevKit owns the public dev command surface.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.mjs"
+    },
+    "./execute": {
+      "types": "./dist/execute.d.ts",
+      "import": "./dist/execute.mjs"
+    },
+    "./introspect": {
+      "types": "./dist/introspect.d.ts",
+      "import": "./dist/introspect.mjs"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.10"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/server.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "inspector tooling, not a render hot path; no canvas / frame loop in this package"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "inspector tooling, not on render hot path; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/engine-remote test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; spike report lives in feature loop directory"
+      }
+    }
+  }
+}

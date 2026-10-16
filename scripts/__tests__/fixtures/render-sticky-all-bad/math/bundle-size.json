@@ -1,0 +1,10 @@
+{
+  "package": "math",
+  "member": "packages/math",
+  "kind": "bundle-size",
+  "enabled": true,
+  "status": "missing",
+  "value": null,
+  "threshold": 102400,
+  "details": { "compression": "gzip", "message": "artefact missing" }
+}

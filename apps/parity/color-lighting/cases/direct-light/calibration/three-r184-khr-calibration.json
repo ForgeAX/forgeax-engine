@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "revision": "three-r184",
+  "status": "blocked",
+  "mapping": null,
+  "expected": null,
+  "blockingEvidence": [
+    "revision-specific world-unit convention",
+    "exposure interaction with direct-light intensity",
+    "glTF KHR_lights_punctual import numeric mapping"
+  ]
+}

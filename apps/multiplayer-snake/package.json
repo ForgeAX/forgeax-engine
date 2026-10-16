@@ -1,0 +1,124 @@
+{
+  "name": "@forgeax/multiplayer-snake",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "pnpm --filter @forgeax/engine-assets-runtime build",
+    "build": "vite build",
+    "dev": "vite",
+    "server": "bun scripts/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:process-e2e": "vitest run src/__tests__/process-e2e.test.ts",
+    "gauntlet": "node scripts/m17-gauntlet.mjs",
+    "e2e:browser": "FORGEAX_ENGINE_RHI_DEBUG=1 node scripts/browser-e2e.mjs",
+    "smoke:rhi-debug": "FORGEAX_ENGINE_RHI_DEBUG=1 node scripts/browser-e2e.mjs"
+  },
+  "forgeax": {
+    "gauntletScenario": {
+      "id": "m17-network-reconnect-chaos-gauntlet",
+      "script": "gauntlet",
+      "domains": [
+        "World and host contract",
+        "Simulation and media implementations"
+      ],
+      "packages": [
+        "@forgeax/engine-net",
+        "@forgeax/engine-net-websocket",
+        "@forgeax/multiplayer-snake"
+      ],
+      "risks": [
+        "baseline",
+        "live",
+        "behavioral",
+        "fault",
+        "recovery",
+        "identity",
+        "cleanup"
+      ],
+      "phaseInputs": [
+        "real Node WebSocket baseline",
+        "replacement/add/remove/spawn/despawn convergence",
+        "malformed terminal fault",
+        "trusted-state preservation",
+        "same-process same-session reconnect with replacement PeerId",
+        "fresh authority baseline at a new epoch before delta",
+        "bounded ACK accounting and pre-baseline command rejection",
+        "real WebSocket proxy controls for disconnect, duplicate, out-of-order, delayed delivery, and late join",
+        "three complete process/browser chaos matrix repeats with authority-derived roster convergence",
+        "one named sabotage per chaos control fails only its intended invariant",
+        "structured browser recovery trace and visual falsifiers",
+        "terminal cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "node-websocket-listener",
+          "node-websocket-client",
+          "multiplayer-snake-process-e2e",
+          "multiplayer-snake-browser-e2e",
+          "multiplayer-snake-real-websocket-chaos-proxy"
+        ],
+        "legs": ["semantic", "live", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m17-net] sabotage m17-disconnect-recovery: PASS",
+          "[m17-net] sabotage m17-duplicate-exactly-once: PASS",
+          "[m17-net] sabotage m17-out-of-order-baseline: PASS",
+          "[m17-net] sabotage m17-delayed-delivery: PASS",
+          "[m17-net] sabotage m17-late-join-baseline: PASS",
+          "[m17-net] complete real-WebSocket chaos matrix repeats=3: PASS"
+        ]
+      }
+    },
+    "rhiDebug": {
+      "riskFamilies": ["materials-textures"]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "E2E proof app bundle shape is not a performance baseline"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "E2E proof app, not a performance benchmark"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no performance benchmarks"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm -F @forgeax/multiplayer-snake test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/engine-net": "workspace:*",
+    "@forgeax/engine-net-websocket": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.27.2",
+    "ws": "^8.20.0",
+    "vite": "8.0.16",
+    "vitest": "4.1.11"
+  }
+}

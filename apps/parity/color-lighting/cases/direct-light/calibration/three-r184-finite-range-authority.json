@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "authorityId": "threeR184SquaredWindow",
+  "status": "ready",
+  "revision": "three@0.184.0",
+  "source": {
+    "package": "three",
+    "path": "src/nodes/lighting/LightUtils.js",
+    "sha256": "a129fdeb6a255b4a659f9e915bc40cff8b05ce8e65a04bf858fc47a0f2950ff2",
+    "symbol": "getDistanceAttenuation"
+  },
+  "config": {
+    "decayExponent": 2,
+    "worldUnitMeters": 1,
+    "exposure": 1,
+    "directLightIntensityUnits": {
+      "directional": "lux",
+      "point": "candela",
+      "spot": "candela"
+    },
+    "gltfIntensityScale": 1,
+    "range": {
+      "finiteRangeUnit": "meters",
+      "noCutoffValues": ["missing", "0", "+Infinity"]
+    },
+    "cone": {
+      "sourceUnit": "radians",
+      "componentUnit": "degrees",
+      "snapshotFields": ["cosInner", "cosOuter"]
+    },
+    "direction": {
+      "sourceAxis": "-Z",
+      "normalizationOwner": "extract",
+      "downstreamNormalization": "forbidden"
+    }
+  },
+  "threeR184SquaredWindow": {
+    "expression": "clamp(1 - (d / c)^4, 0, 1)^2",
+    "normalizedDistanceSamples": [
+      { "input": 0, "expected": 1 },
+      { "input": 0.25, "expected": 0.9922027587890625 },
+      { "input": 0.5, "expected": 0.87890625 },
+      { "input": 0.75, "expected": 0.4673004150390625 },
+      { "input": 1, "expected": 0 },
+      { "input": 1.25, "expected": 0 }
+    ]
+  },
+  "threeR184NoCutoff": {
+    "expression": "1 / max(d^2, 0.01)",
+    "distanceSamples": [
+      { "input": 0, "expected": 100 },
+      { "input": 0.5, "expected": 4 },
+      { "input": 1, "expected": 1 },
+      { "input": 2, "expected": 0.25 }
+    ]
+  },
+  "khrUnsquaredReference": {
+    "expression": "clamp(1 - (d / r)^4, 0, 1) / d^2",
+    "normalizedDistanceWindowSamples": [
+      { "input": 0, "expected": 1 },
+      { "input": 0.25, "expected": 0.99609375 },
+      { "input": 0.5, "expected": 0.9375 },
+      { "input": 0.75, "expected": 0.68359375 },
+      { "input": 1, "expected": 0 },
+      { "input": 1.25, "expected": 0 }
+    ],
+    "runtimeAuthority": "reference-only"
+  }
+}

@@ -1,0 +1,599 @@
+{
+  "importSettings": {
+    "defaultSceneIndex": 0,
+    "diagnostics": {
+      "matrixTrsCoexistNodes": [],
+      "nodeNames": [],
+      "unsupportedExtensions": []
+    },
+    "meshDistanceField": {
+      "voxelSize": 64
+    },
+    "meshCards": {
+      "resolution": 32,
+      "maxCards": 64
+    }
+  },
+  "importer": "gltf",
+  "kind": "external-asset-package",
+  "schemaVersion": 1,
+  "source": "Sponza.gltf",
+  "subAssets": [
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccb904b73468",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh:0"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccbafbf337a0",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material:0"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccbb1a26f6e2",
+      "kind": "material",
+      "sourceIndex": 1,
+      "sourceKey": "material:1"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccbca3fbe957",
+      "kind": "material",
+      "sourceIndex": 2,
+      "sourceKey": "material:2"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccbdd377322e",
+      "kind": "material",
+      "sourceIndex": 3,
+      "sourceKey": "material:3"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccbe260a74e0",
+      "kind": "material",
+      "sourceIndex": 4,
+      "sourceKey": "material:4"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccbf004d1c1d",
+      "kind": "material",
+      "sourceIndex": 5,
+      "sourceKey": "material:5"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc03db133d6",
+      "kind": "material",
+      "sourceIndex": 6,
+      "sourceKey": "material:6"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc1229bc142",
+      "kind": "material",
+      "sourceIndex": 7,
+      "sourceKey": "material:7"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc23b679a8f",
+      "kind": "material",
+      "sourceIndex": 8,
+      "sourceKey": "material:8"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc3b085cf05",
+      "kind": "material",
+      "sourceIndex": 9,
+      "sourceKey": "material:9"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc4c1bbc59a",
+      "kind": "material",
+      "sourceIndex": 10,
+      "sourceKey": "material:10"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc5bc67f23e",
+      "kind": "material",
+      "sourceIndex": 11,
+      "sourceKey": "material:11"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc6bca6cd6b",
+      "kind": "material",
+      "sourceIndex": 12,
+      "sourceKey": "material:12"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc7a0cb8c8d",
+      "kind": "material",
+      "sourceIndex": 13,
+      "sourceKey": "material:13"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc801eb613e",
+      "kind": "material",
+      "sourceIndex": 14,
+      "sourceKey": "material:14"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccc92314b777",
+      "kind": "material",
+      "sourceIndex": 15,
+      "sourceKey": "material:15"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccca509fe38c",
+      "kind": "material",
+      "sourceIndex": 16,
+      "sourceKey": "material:16"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-cccb1958f7e1",
+      "kind": "material",
+      "sourceIndex": 17,
+      "sourceKey": "material:17"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-cccc9bbd29a1",
+      "kind": "material",
+      "sourceIndex": 18,
+      "sourceKey": "material:18"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-cccde5fe4380",
+      "kind": "material",
+      "sourceIndex": 19,
+      "sourceKey": "material:19"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccceb42bb940",
+      "kind": "material",
+      "sourceIndex": 20,
+      "sourceKey": "material:20"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-cccf8e8987b4",
+      "kind": "material",
+      "sourceIndex": 21,
+      "sourceKey": "material:21"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccd076afcfe6",
+      "kind": "material",
+      "sourceIndex": 22,
+      "sourceKey": "material:22"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccd17f070d38",
+      "kind": "material",
+      "sourceIndex": 23,
+      "sourceKey": "material:23"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccd2f18adac2",
+      "kind": "material",
+      "sourceIndex": 24,
+      "sourceKey": "material:24"
+    },
+    {
+      "guid": "019e4fe2-523b-7506-99e5-ccd39795ecda",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene:0"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63226708af65",
+      "kind": "texture",
+      "sourceIndex": 0,
+      "sourceKey": "texture:8773302468495022225"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6323f05623f1",
+      "kind": "texture",
+      "sourceIndex": 1,
+      "sourceKey": "texture:5061699253647017043"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632439349408",
+      "kind": "texture",
+      "sourceIndex": 2,
+      "sourceKey": "texture:11872827283454512094"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632543a6c14e",
+      "kind": "texture",
+      "sourceIndex": 3,
+      "sourceKey": "texture:12501374198249454378"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63269f161555",
+      "kind": "texture",
+      "sourceIndex": 4,
+      "sourceKey": "texture:8006627369776289000"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63272c4d55ae",
+      "kind": "texture",
+      "sourceIndex": 5,
+      "sourceKey": "texture:715093869573992647"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632864fb3ea2",
+      "kind": "texture",
+      "sourceIndex": 6,
+      "sourceKey": "texture:4477655471536070370"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63298484bdf8",
+      "kind": "texture",
+      "sourceIndex": 7,
+      "sourceKey": "texture:7268504077753552595"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632a9571421d",
+      "kind": "texture",
+      "sourceIndex": 8,
+      "sourceKey": "texture:8503262930880235456"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632be17eadff",
+      "kind": "texture",
+      "sourceIndex": 9,
+      "sourceKey": "texture:13982482287905699490"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632c775a7122",
+      "kind": "texture",
+      "sourceIndex": 10,
+      "sourceKey": "texture:8750083169368950601"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632db586701d",
+      "kind": "texture",
+      "sourceIndex": 11,
+      "sourceKey": "texture:16885566240357350108"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632e0c4f1fd5",
+      "kind": "texture",
+      "sourceIndex": 12,
+      "sourceKey": "texture:16299174074766089871"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-632f37e018a6",
+      "kind": "texture",
+      "sourceIndex": 13,
+      "sourceKey": "texture:5792855332885324923"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63306bd4006c",
+      "kind": "texture",
+      "sourceIndex": 14,
+      "sourceKey": "texture:11968150294050148237"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6331119bf76b",
+      "kind": "texture",
+      "sourceIndex": 15,
+      "sourceKey": "texture:2051777328469649772"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6332982b06ba",
+      "kind": "texture",
+      "sourceIndex": 16,
+      "sourceKey": "texture:14650633544276105767"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63336824bfba",
+      "kind": "texture",
+      "sourceIndex": 17,
+      "sourceKey": "texture:4871783166746854860"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6334d4430490",
+      "kind": "texture",
+      "sourceIndex": 18,
+      "sourceKey": "texture:10388182081421875623"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6335c00daeb0",
+      "kind": "texture",
+      "sourceIndex": 19,
+      "sourceKey": "texture:15295713303328085182"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63360fa25ba1",
+      "kind": "texture",
+      "sourceIndex": 20,
+      "sourceKey": "texture:9916269861720640319"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6337ae5d0d07",
+      "kind": "texture",
+      "sourceIndex": 21,
+      "sourceKey": "texture:15722799267630235092"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6338be555465",
+      "kind": "texture",
+      "sourceIndex": 22,
+      "sourceKey": "texture:6047387724914829168"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633975f5d0ed",
+      "kind": "texture",
+      "sourceIndex": 23,
+      "sourceKey": "texture:8051790464816141987"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633a15663ea5",
+      "kind": "texture",
+      "sourceIndex": 24,
+      "sourceKey": "texture:14267839433702832875"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633b635b7ac0",
+      "kind": "texture",
+      "sourceIndex": 25,
+      "sourceKey": "texture:5823059166183034438"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633ce8a08f52",
+      "kind": "texture",
+      "sourceIndex": 26,
+      "sourceKey": "texture:13824894030729245199"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633d5c959b19",
+      "kind": "texture",
+      "sourceIndex": 27,
+      "sourceKey": "texture:6667038893015345571"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633ef58bea4b",
+      "kind": "texture",
+      "sourceIndex": 28,
+      "sourceKey": "texture:7441062115984513793"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-633f2a0e0738",
+      "kind": "texture",
+      "sourceIndex": 29,
+      "sourceKey": "texture:8114461559286000061"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634026296b7b",
+      "kind": "texture",
+      "sourceIndex": 30,
+      "sourceKey": "texture:3628158980083700836"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63418d19c9ba",
+      "kind": "texture",
+      "sourceIndex": 31,
+      "sourceKey": "texture:11490520546946913238"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63421f7262d2",
+      "kind": "texture",
+      "sourceIndex": 32,
+      "sourceKey": "texture:3455394979645218238"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6343ef667f98",
+      "kind": "texture",
+      "sourceIndex": 33,
+      "sourceKey": "texture:7645212358685992005"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634488f128c2",
+      "kind": "texture",
+      "sourceIndex": 34,
+      "sourceKey": "texture:6151467286084645207"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634544d81eef",
+      "kind": "texture",
+      "sourceIndex": 35,
+      "sourceKey": "texture:8783994986360286082"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63460327aa9c",
+      "kind": "texture",
+      "sourceIndex": 36,
+      "sourceKey": "texture:2299742237651021498"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63472340acc1",
+      "kind": "texture",
+      "sourceIndex": 37,
+      "sourceKey": "texture:4975155472559461469"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634816e80bfc",
+      "kind": "texture",
+      "sourceIndex": 38,
+      "sourceKey": "texture:3371964815757888145"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6349568b2e63",
+      "kind": "texture",
+      "sourceIndex": 39,
+      "sourceKey": "texture:7056944414013900257"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634a853595d5",
+      "kind": "texture",
+      "sourceIndex": 40,
+      "sourceKey": "texture:4675343432951571524"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634b9e055be8",
+      "kind": "texture",
+      "sourceIndex": 41,
+      "sourceKey": "texture:7815564343179553343"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634c55227ee8",
+      "kind": "texture",
+      "sourceIndex": 42,
+      "sourceKey": "texture:2374361008830720677"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634d13cb00a1",
+      "kind": "texture",
+      "sourceIndex": 43,
+      "sourceKey": "texture:2775690330959970771"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634ed1c6539f",
+      "kind": "texture",
+      "sourceIndex": 44,
+      "sourceKey": "texture:332936164838540657"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-634fbe1c174a",
+      "kind": "texture",
+      "sourceIndex": 45,
+      "sourceKey": "texture:2185409758123873465"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63503ade6774",
+      "kind": "texture",
+      "sourceIndex": 46,
+      "sourceKey": "texture:6593109234861095314"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6351cb61a20e",
+      "kind": "texture",
+      "sourceIndex": 47,
+      "sourceKey": "texture:17876391417123941155"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6352bfd8ea0a",
+      "kind": "texture",
+      "sourceIndex": 48,
+      "sourceKey": "texture:466164707995436622"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63533ccebd70",
+      "kind": "texture",
+      "sourceIndex": 49,
+      "sourceKey": "texture:4601176305987539675"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6354f3bb2a0d",
+      "kind": "texture",
+      "sourceIndex": 50,
+      "sourceKey": "texture:11474523244911310074"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6355ae0e917b",
+      "kind": "texture",
+      "sourceIndex": 51,
+      "sourceKey": "texture:4910669866631290573"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63561c7a0a33",
+      "kind": "texture",
+      "sourceIndex": 52,
+      "sourceKey": "texture:9288698199695299068"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6357c2a6774d",
+      "kind": "texture",
+      "sourceIndex": 53,
+      "sourceKey": "texture:14170708867020035030"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6358c87ddaae",
+      "kind": "texture",
+      "sourceIndex": 54,
+      "sourceKey": "texture:16275776544635328252"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635974321a77",
+      "kind": "texture",
+      "sourceIndex": 55,
+      "sourceKey": "texture:1219024358953944284"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635ab71ee675",
+      "kind": "texture",
+      "sourceIndex": 56,
+      "sourceKey": "texture:3827035219084910048"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635b98ede2ed",
+      "kind": "texture",
+      "sourceIndex": 57,
+      "sourceKey": "texture:755318871556304029"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635c09f37d1f",
+      "kind": "texture",
+      "sourceIndex": 58,
+      "sourceKey": "texture:2411100444841994089"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635d84d11ea6",
+      "kind": "texture",
+      "sourceIndex": 59,
+      "sourceKey": "texture:10381718147657362067"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635e6b386c4d",
+      "kind": "texture",
+      "sourceIndex": 60,
+      "sourceKey": "texture:8481240838833932244"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-635fa026991b",
+      "kind": "texture",
+      "sourceIndex": 61,
+      "sourceKey": "texture:17556969131407844942"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63603b31eb09",
+      "kind": "texture",
+      "sourceIndex": 62,
+      "sourceKey": "texture:759203620573749278"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6361747e9cf1",
+      "kind": "texture",
+      "sourceIndex": 63,
+      "sourceKey": "texture:6772804448157695701"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6362e11ae483",
+      "kind": "texture",
+      "sourceIndex": 64,
+      "sourceKey": "texture:13196865903111448057"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63637ec7895a",
+      "kind": "texture",
+      "sourceIndex": 65,
+      "sourceKey": "texture:14118779221266351425"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-63643a804eae",
+      "kind": "texture",
+      "sourceIndex": 66,
+      "sourceKey": "texture:2969916736137545357"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-636597e1405a",
+      "kind": "texture",
+      "sourceIndex": 67,
+      "sourceKey": "texture:8747919177698443163"
+    },
+    {
+      "guid": "019ea7c6-da89-7418-9217-6366a47acd5f",
+      "kind": "texture",
+      "sourceIndex": 68,
+      "sourceKey": "texture:white"
+    }
+  ]
+}

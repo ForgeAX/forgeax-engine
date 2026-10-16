@@ -1,0 +1,11 @@
+{
+  "name": "@fixture/badstatus",
+  "private": true,
+  "forgeax": {
+    "bevyExample": {
+      "name": "sprite",
+      "category": "2D Rendering",
+      "status": "kinda-done"
+    }
+  }
+}

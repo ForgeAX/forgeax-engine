@@ -1,0 +1,7 @@
+{
+  "name": "metrics-decl-happy-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

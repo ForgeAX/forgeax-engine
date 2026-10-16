@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": [
+      "@webgpu/types",
+      "node"
+    ]
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../geometry"
+    },
+    {
+      "path": "../import"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../gltf"
+    }
+  ]
+}

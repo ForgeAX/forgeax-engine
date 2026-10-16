@@ -1,0 +1,7 @@
+@import './styles/tokens.css';
+@import './styles/components.css';
+@import './styles/inspector-form.css';
+@import './styles/page-tab-strip.css';
+
+.fx-clipboard-error { position: fixed; z-index: 10000; right: 1rem; bottom: 1rem; max-width: 32rem; padding: 0.75rem; background: var(--fx-color-surface-raised); color: var(--fx-color-text-primary); border: 1px solid var(--fx-color-border-default); border-radius: 4px; }
+.fx-clipboard-error button { margin-left: 0.75rem; }

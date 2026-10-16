@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schemas/native-ray-query-triangle-report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "verdict",
+    "mode",
+    "wgpuVersion",
+    "tauriVersion",
+    "rustVersion",
+    "executable",
+    "capabilities",
+    "scene",
+    "positive",
+    "resized",
+    "restored",
+    "emptyTlas",
+    "emptyTlasVerdict",
+    "coreCases",
+    "error"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "verdict": { "enum": ["ok", "unsupported", "failed"] },
+    "mode": { "const": "packaged-tauri-smoke" },
+    "wgpuVersion": { "const": "30.0.1" },
+    "tauriVersion": { "type": "string", "minLength": 1 },
+    "rustVersion": { "type": "string", "minLength": 1 },
+    "executable": { "type": "string", "minLength": 1 },
+    "capabilities": {
+      "anyOf": [
+        { "$ref": "#/$defs/capabilities" },
+        { "type": "null" }
+      ]
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blasCount", "tlasInstanceCount", "triangleCount"],
+      "properties": {
+        "blasCount": { "const": 1 },
+        "tlasInstanceCount": { "const": 1 },
+        "triangleCount": { "const": 1 }
+      }
+    },
+    "positive": {
+      "anyOf": [
+        { "$ref": "#/$defs/frame" },
+        { "type": "null" }
+      ]
+    },
+    "resized": {
+      "anyOf": [
+        { "$ref": "#/$defs/frame" },
+        { "type": "null" }
+      ]
+    },
+    "restored": {
+      "anyOf": [
+        { "$ref": "#/$defs/frame" },
+        { "type": "null" }
+      ]
+    },
+    "emptyTlas": {
+      "anyOf": [
+        { "$ref": "#/$defs/frame" },
+        { "type": "null" }
+      ]
+    },
+    "emptyTlasVerdict": {
+      "anyOf": [
+        { "const": "triangle-not-visible" },
+        { "type": "null" }
+      ]
+    },
+    "coreCases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "detail"],
+        "properties": {
+          "id": { "enum": ["CREATE-01", "RQ-01", "TLAS-06", "STAB-03", "STAB-04"] },
+          "status": { "enum": ["pass", "fail"] },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "detail"],
+          "properties": {
+            "code": {
+              "enum": [
+                "native-backend-unavailable",
+                "ray-query-unsupported",
+                "gpu-initialization-failed",
+                "render-failed",
+                "evidence-failed"
+              ]
+            },
+            "detail": { "type": "string", "minLength": 1 }
+          }
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "verdict": { "const": "ok" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "allOf": [
+              { "$ref": "#/$defs/capabilities" },
+              {
+                "type": "object",
+                "properties": { "rayQuery": { "const": true } }
+              }
+            ]
+          },
+          "positive": { "$ref": "#/$defs/frame" },
+          "resized": { "$ref": "#/$defs/frame" },
+          "restored": { "$ref": "#/$defs/frame" },
+          "emptyTlas": { "$ref": "#/$defs/frame" },
+          "emptyTlasVerdict": { "const": "triangle-not-visible" },
+          "coreCases": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "contains": { "type": "object", "properties": { "status": { "const": "pass" } }, "required": ["status"] },
+            "minContains": 5,
+            "maxContains": 5
+          },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "verdict": { "const": "unsupported" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "positive": { "type": "null" },
+          "resized": { "type": "null" },
+          "restored": { "type": "null" },
+          "emptyTlas": { "type": "null" },
+          "emptyTlasVerdict": { "type": "null" },
+          "coreCases": { "type": "array", "maxItems": 0 },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "enum": ["native-backend-unavailable", "ray-query-unsupported"]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "rayQuery", "adapter"],
+      "properties": {
+        "backend": { "enum": ["Vulkan", "Metal", "Dx12"] },
+        "rayQuery": { "type": "boolean" },
+        "adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "vendor", "device", "deviceType", "driver", "driverInfo"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "vendor": { "type": "integer", "minimum": 0 },
+            "device": { "type": "integer", "minimum": 0 },
+            "deviceType": { "type": "string", "minLength": 1 },
+            "driver": { "type": "string" },
+            "driverInfo": { "type": "string" }
+          }
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "nonBlackPixelCount",
+        "triangleVisible",
+        "barycentricVariation",
+        "centerPixel",
+        "cornerPixel"
+      ],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "nonBlackPixelCount": { "type": "integer", "minimum": 0 },
+        "triangleVisible": { "type": "boolean" },
+        "barycentricVariation": { "type": "boolean" },
+        "centerPixel": { "$ref": "#/$defs/pixel" },
+        "cornerPixel": { "$ref": "#/$defs/pixel" }
+      }
+    },
+    "pixel": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+    }
+  }
+}

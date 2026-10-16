@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><title>ForgeaX Sponza path reference</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#15191e;color:#e9eef3}body{margin:28px auto;max-width:1320px;padding:0 24px}h1{font-size:26px;margin-bottom:8px}p{color:#b7c2ce;line-height:1.55}.controls{display:flex;gap:18px;flex-wrap:wrap;align-items:end;margin:24px 0}label{display:grid;gap:7px}button,select{font:inherit;padding:8px 12px;background:#26313e;color:inherit;border:1px solid #627284;border-radius:5px}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.panels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}figure{margin:0}canvas{width:100%;height:auto;background:#090b0e;display:block}figcaption{margin:10px 0;font-weight:600}.diagnostics{grid-template-columns:repeat(2,minmax(0,1fr));max-width:866px;margin-top:20px}#status{min-height:24px;color:#85d8b7}pre{white-space:pre-wrap;background:#1b232d;padding:16px;overflow:auto}small{color:#bac7d6}@media(max-width:760px){.panels{grid-template-columns:1fr}}
+</style><body><h1>Sponza · shared material path reference</h1>
+<p>Complete imported scene, including masked foliage and fabric. Compare direct lighting with one additional surface bounce at the same exposure.</p>
+<div class="controls">
+<label>Sun and sky<select id="light"><option value="1">On</option><option value="0">Off</option></select></label>
+<label>Camera<select id="camera"><option value="0">Atrium</option><option value="4">Side aisle</option></select></label>
+<label>Resolution<select id="resolution"><option>128</option><option>256</option><option>64</option></select></label>
+<label>Samples<select id="samples"><option>8</option><option>32</option><option>64</option><option>2</option><option>1</option></select></label>
+<button type="button" id="render">Render scene</button><button type="button" id="capture" disabled>Download RHI capture</button></div>
+<div id="status" role="status">Preparing GPU</div>
+<div class="panels"><figure><canvas id="direct-reference"></canvas><figcaption>Path reference · direct lighting (1 bounce)</figcaption></figure><figure><canvas id="indirect-reference"></canvas><figcaption>Path reference · direct + indirect (2 bounces)</figcaption></figure></div>
+<p>Both views trace triangles. This reference establishes a material and lighting baseline for future SDF/probe GI; it is not real-time Lumen or hardware Ray Query.</p>
+<p><small>Sponza: Crytek / Frank Meinl, Morgan McGuire, Alexandre Pestana, Khronos Group. CC BY 3.0.</small></p>
+<details><summary>Capture report</summary><pre id="report"></pre></details><script type="module" src="./browser.mjs"></script></body></html>

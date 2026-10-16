@@ -1,0 +1,61 @@
+{
+  "name": "@forgeax/engine-rhi",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Pure-interface RHI surface for forgeax-engine — shape-aligned with @webgpu/types, op-set is wgpu superset capability-gated, opaque handles, math-free.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "pure-interface RHI surface, no runtime canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "interface-only package with no hot path; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "r12-lint runs at repo root via root package.json#scripts.r12-lint; not modelled as a per-package metric gate yet"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

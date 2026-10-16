@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "outDir": "./dist",
+    "rootDir": "..",
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "types": ["@webgpu/types", "node"]
+  },
+  "include": [
+    "src/**/*"
+  ]
+}

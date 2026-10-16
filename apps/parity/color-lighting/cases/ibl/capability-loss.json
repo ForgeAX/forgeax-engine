@@ -1,0 +1,7 @@
+{
+  "caseId": "ibl-capability-loss",
+  "requiredCapability": "rgba16floatRenderable",
+  "fallbackArtifact": "white-cube",
+  "expectedVerdict": "failed",
+  "expectedExecutionStatus": "notExecuted"
+}

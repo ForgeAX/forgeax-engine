@@ -1,0 +1,59 @@
+{
+  "name": "@forgeax/parity-color-lighting",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Minimal real-browser color and lighting parity gate.",
+  "exports": {
+    ".": {
+      "types": "./src/cli/run-parity.ts",
+      "import": "./src/cli/run-parity.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test:extended-lighting:consumer": "vitest run cases/extended-lighting/__tests__ --typecheck.enabled=false",
+    "falsify:hdrp-spot-shadow": "node scripts/falsify-hdrp-spot-shadow.mjs"
+  },
+  "parityMatrix": {
+    "statusIndex": "report/color-lighting-parity/status-index.json",
+    "requiredBackends": ["browser-webgpu", "dawn", "chromium-webgl2"],
+    "requiredPipelines": ["standard"]
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": { "enabled": false, "reason": "M0 gate fixture; bundle size is not a parity contract." },
+      "fps": { "enabled": false, "reason": "M0 captures one bounded frame per adapter." },
+      "bench": { "enabled": false, "reason": "CaseReport records per-case analytic and ROI parity evidence, not an aggregate pixel-diff benchmark." },
+      "gate": { "enabled": true, "command": "pnpm bench:color-lighting-parity" },
+      "spike-report": { "enabled": false, "reason": "M0 is a contract gate, not a rendering spike." }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-render-graph": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "three": "0.184.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^20.14.0",
+    "@webgpu/types": "^0.1.74",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "alpha",
+  "private": true,
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "pkg-out/index.mjs",
+        "compression": "gzip",
+        "baseline": {
+          "source": "inline",
+          "threshold": 8
+        }
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "no runtime canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no perf-critical surface"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "covered by repo-root gates"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

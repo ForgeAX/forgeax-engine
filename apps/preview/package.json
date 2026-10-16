@@ -1,0 +1,148 @@
+{
+  "name": "@forgeax/preview",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Vite host that mounts an asset-resident Cordis gameplay plugin into createApp. Local smoke host for engine/templates.",
+  "scripts": {
+    "dev": "vite",
+    "dev:water": "FORGEAX_SURFACE_ONLY=1 FORGEAX_WATER_DEMO=1 vite --open /water.html",
+    "test:preview-port": "pnpm build && node scripts/preview-port.integration.mjs",
+    "test:catalog-refresh": "pnpm --dir ../.. build:app preview && node scripts/catalog-host-refresh.browser.mjs",
+    "smoke:production-material-edit": "pnpm --dir ../.. build:app preview && node scripts/smoke-production-material-edit.mjs",
+    "smoke:ui-production": "pnpm --dir ../.. build:app preview && node scripts/smoke-ui-production.mjs",
+    "smoke:production-ui-edit": "pnpm --dir ../.. build:app preview && node scripts/smoke-production-ui-edit.mjs",
+    "smoke:scriptable-pack": "pnpm --dir ../.. build:app preview && node scripts/smoke-scriptable-pack.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke:ui-authoring": "node scripts/smoke-ui-authoring.mjs",
+    "smoke:custom-mesh": "node scripts/smoke-custom-mesh.mjs",
+    "smoke:projectile-sprite": "node scripts/smoke-projectile-sprite.mjs",
+    "smoke:mesh-handle-swap": "node scripts/smoke-mesh-handle-swap.mjs",
+    "smoke:gamepad": "node scripts/smoke-gamepad.mjs",
+    "smoke:character-controller": "node scripts/smoke-character-controller.mjs",
+    "smoke:render-evidence": "node scripts/smoke-render-evidence.mjs",
+    "bench:score-hitch": "node scripts/bench-score-hitch.mjs",
+    "smoke:render-evidence-production": "pnpm --dir ../.. build:app preview && FORGEAX_RENDER_EVIDENCE_MODE=production node scripts/smoke-render-evidence.mjs",
+    "smoke:depth-of-field": "node scripts/smoke-depth-of-field.mjs",
+    "smoke:fixed-state": "node scripts/smoke-fixed-state.mjs",
+    "smoke:asset-loop": "node scripts/smoke-asset-loop.mjs",
+    "smoke:asset-loop-production": "pnpm --dir ../.. build:app preview && FORGEAX_ASSET_LOOP_MODE=production node scripts/smoke-asset-loop.mjs",
+    "smoke:templates": "node scripts/smoke-templates.mjs",
+    "smoke:inspection-recovery": "node scripts/smoke-inspection-recovery.mjs",
+    "smoke:vfx-charge": "node scripts/smoke-vfx-charge.mjs",
+    "smoke:vfx-charge-production": "pnpm --dir ../.. build:app preview && FORGEAX_VFX_CHARGE_MODE=production node scripts/smoke-vfx-charge.mjs",
+    "smoke:hit-streak": "node scripts/smoke-hit-streak.mjs",
+    "smoke:hit-streak-production": "pnpm --dir ../.. build:app preview && FORGEAX_HIT_STREAK_MODE=production node scripts/smoke-hit-streak.mjs",
+    "smoke:counterattack": "node scripts/smoke-counterattack.mjs",
+    "smoke:counterattack-production": "pnpm --dir ../.. build:app preview && FORGEAX_COUNTERATTACK_MODE=production node scripts/smoke-counterattack.mjs",
+    "smoke:repair-cache": "node scripts/smoke-repair-cache.mjs",
+    "smoke:repair-cache-production": "pnpm --dir ../.. build:app preview && FORGEAX_REPAIR_CACHE_MODE=production node scripts/smoke-repair-cache.mjs",
+    "smoke:charged-barrier": "node scripts/smoke-charged-barrier.mjs",
+    "smoke:charged-barrier-production": "pnpm --dir ../.. build:app preview && FORGEAX_CHARGED_BARRIER_MODE=production node scripts/smoke-charged-barrier.mjs",
+    "smoke:mission-progression": "node scripts/smoke-mission-progression.mjs",
+    "smoke:mission-progression-production": "pnpm --dir ../.. build:app preview && FORGEAX_MISSION_PROGRESS_MODE=production node scripts/smoke-mission-progression.mjs",
+    "smoke:sentinel-ranged-threat": "node scripts/smoke-sentinel-ranged-threat.mjs",
+    "smoke:sentinel-ranged-threat-production": "pnpm --dir ../.. build:app preview && FORGEAX_SENTINEL_MODE=production node scripts/smoke-sentinel-ranged-threat.mjs",
+    "smoke:boss-lightning-vfx-dawn": "pnpm --dir ../.. build:app preview && node scripts/smoke-boss-lightning-vfx-dawn.mjs",
+    "smoke:device-loss-reentry": "node scripts/smoke-device-loss-reentry.mjs",
+    "smoke:device-loss-reentry-production": "pnpm --dir ../.. build:app preview && FORGEAX_DEVICE_LOSS_MODE=production node scripts/smoke-device-loss-reentry.mjs",
+    "smoke:clean-copy-reentry": "node scripts/smoke-clean-copy-reentry.mjs",
+    "smoke:clean-copy-production": "pnpm --dir ../.. build:app preview && FORGEAX_CLEAN_COPY_MODE=production node scripts/smoke-clean-copy-reentry.mjs",
+    "smoke:cross-backend-replay": "node scripts/smoke-cross-backend-replay.mjs",
+    "smoke:planar-reflection": "node scripts/smoke-planar-reflection.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-cross-backend-replay.mjs",
+    "smoke:webgl2-material": "node scripts/smoke-webgl2-material.mjs",
+    "smoke:webgl2-production": "pnpm --dir ../.. build:app preview && FORGEAX_WEBGL2_MODE=production node scripts/smoke-webgl2-material.mjs"
+  },
+  "forgeax": {
+    "rhiDebug": {
+      "riskFamilies": [
+        "materials-textures",
+        "screen-space-post"
+      ]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "preview is a game-template host; bundle size is downstream of the loaded template"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "preview FPS is content-dependent; engine-level FPS tracked at hello-cube / hello-app"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no engine-level bench surface in preview host"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "engine-template browser smoke is CI-owned in shared-inputs-browser; preview has no standalone metric artifact"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    },
+    "assetRoots": [
+      "../../templates/game-3d/assets",
+      "../../apps/game-capability-lab/assets",
+      "../../forgeax-engine-assets/demo-assets/template-game-default/sky.hdr.meta.json",
+      "../../forgeax-engine-assets/sfx",
+      "../../forgeax-engine-assets/collectathon-audio/bgm-loop.wav.meta.json",
+      "../../forgeax-engine-assets/vendor/fbx-test",
+      "../../forgeax-engine-assets/khronos-gltf-samples/BoxTextured",
+      "../../forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf.meta.json",
+      "../../forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.atlas.png.meta.json",
+      "../../forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.font.pack.json",
+      "../../forgeax-engine-assets/demo-assets/hello-sprite-atlas"
+    ]
+  },
+  "dependencies": {
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-devkit": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-preview": "workspace:*",
+    "@forgeax/engine-audio": "workspace:*",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-font": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-rhi-null": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "pixelmatch": "^7.0.0",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

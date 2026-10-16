@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Remote Eval Demo</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      .overlay {
+        position: fixed; top: 8px; left: 8px;
+        background: rgba(0, 0, 0, 0.6); padding: 8px 12px;
+        border-radius: 4px; font-size: 12px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div class="overlay">
+      <div>remote-demo — createApp auto-wires app.remote</div>
+      <div>remote eval: client.eval(script) via defaultConnect</div>
+      <div>handle discovery: world.query({}) row iteration</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

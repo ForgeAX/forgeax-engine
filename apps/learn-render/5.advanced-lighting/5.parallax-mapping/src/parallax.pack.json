@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "6bab6a0e-7684-5556-8eb6-b12b6da6b2a0",
+      "kind": "material",
+      "sourceKey": "parallax.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "learn_render::5_5_parallax",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "heightScale",
+            "type": "f32",
+            "default": 0.1
+          },
+          {
+            "name": "algoMode",
+            "type": "f32",
+            "default": 0
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          },
+          {
+            "name": "normalTexture",
+            "type": "texture"
+          },
+          {
+            "name": "heightTexture",
+            "type": "texture"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

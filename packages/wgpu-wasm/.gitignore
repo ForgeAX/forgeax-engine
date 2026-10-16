@@ -1,0 +1,35 @@
+# packages/wgpu-wasm/.gitignore — productionised merge of the archived legacy
+# wasm-pack shims (naga + rhi-wgpu/crate; both packages were deleted in
+# feat-20260511-naga-rhi-wgpu-merge M5 — this single crate replaces both,
+# plan-strategy D-P1 + research F-2 / F-3 ship form).
+#
+# ufbx-style release (mirrors packages/fbx/.gitignore): the WHOLE pkg/ bundle
+# is a wasm-pack build artefact and is NOT committed. wasm-bindgen emits pkg/ as
+# an inseparable set — wgpu_wasm_bg.wasm + wgpu_wasm.js glue + wgpu_wasm.d.ts +
+# wgpu_wasm_bg.wasm.d.ts + package.json — where the .js/.d.ts are hand-generated
+# and cannot be regenerated from the .wasm alone, so committing "just the text"
+# reintroduces the exact .d.ts-vs-rhi.rs drift this refactor removes.
+#
+# How pkg/ is populated (no checked-in copy → no drift possible):
+# - Toolchain owners:  `pnpm -F @forgeax/engine-wgpu-wasm build:wasm` (build.sh,
+#   wasm-pack; needs Rust — see CONTRIBUTING §Rust toolchain).
+# - No-Rust consumers: `pnpm -F @forgeax/engine-wgpu-wasm fetch-wasm` downloads
+#   the content-keyed pkg/ tarball from the `wasm-artifacts` GitHub Release
+#   (scripts/fetch-wasm.mjs; also run non-fatally by root postinstall).
+# - CI publishes that tarball on main push (publish-wgpu-wasm-release job).
+#
+# Cargo.lock = application-level crate lock, MUST be checked in (CI cache key =
+#              hashFiles(.../Cargo.lock); bundle-size MetricKind cites the
+#              resolved wgpu / naga patches from this file; also a content-key
+#              input for the release asset name — see scripts/content-key.mjs).
+
+target/
+# Patched registry crates materialized by crate-patches/apply.mjs.
+vendor/
+node_modules/
+
+# Transient tarball written by scripts/fetch-wasm.mjs during download.
+.pkg-fetch.tar.gz
+
+# The whole wasm-pack output. Rebuilt by build.sh / fetched by fetch-wasm.mjs.
+pkg/

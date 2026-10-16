@@ -1,0 +1,6 @@
+{
+  "id": "game-3d",
+  "purpose": "three-dimensional game project",
+  "defaultIdentity": { "name": "game-3d", "packageName": "@local/game-3d" },
+  "journeys": ["typecheck", "unit", "browser", "dawn", "collision"]
+}

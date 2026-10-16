@@ -1,0 +1,82 @@
+{
+  "schema": "forgeax.direct-light.canonical-oracle/1",
+  "authorityId": "SPOT_SHADOW_SCENES",
+  "sceneId": "direct-spot-shadow-v1",
+  "sceneDigest": "sha256:fa26f36aa9b163d0ea8c7d3fdbfc9ae0ee8896b452994b50329668fab599a932",
+  "roiDigest": "sha256:4e81639f527edef72f10f307d53d990952a5368b74934ddbf8f8854c40263442",
+  "aggregation": {
+    "method": "linear-HDR channel-wise mean over every pixel in each named ROI",
+    "colorDomain": "linearHdr",
+    "rois": {
+      "lit": {
+        "x": 228,
+        "y": 120,
+        "width": 12,
+        "height": 12
+      },
+      "shadow": {
+        "x": 180,
+        "y": 132,
+        "width": 12,
+        "height": 12
+      }
+    }
+  },
+  "expected": {
+    "base": {
+      "rgb": [
+        0.15711115319609106,
+        0.18555738810996428,
+        0.19814011859669337
+      ],
+      "shadowRgb": [
+        0.060569466554715595,
+        0.08901570146858881,
+        0.09282191498792013
+      ],
+      "deltaRgb": [
+        0.09654168664137547,
+        0.09654168664137547,
+        0.10531820360877324
+      ]
+    },
+    "clearcoat": {
+      "rgb": [
+        0.17282226851570018,
+        0.20411312692096073,
+        0.21795413045636272
+      ],
+      "shadowRgb": [
+        0.06662641321018715,
+        0.09791727161544769,
+        0.10210410648671214
+      ],
+      "deltaRgb": [
+        0.10619585530551302,
+        0.10619585530551304,
+        0.11585002396965058
+      ]
+    },
+    "clearcoatDelta": {
+      "rgb": [
+        0.10619585530551302,
+        0.10619585530551304,
+        0.11585002396965058
+      ]
+    }
+  },
+  "epsilonAbs": 0.05,
+  "pairwiseEpsilonAbs": 0.05,
+  "provenance": {
+    "generatorPath": "apps/parity/color-lighting/cases/direct-light/generate-canonical-direct-light-oracle.mjs",
+    "generatorSha256": "sha256:65177ab6f6f1fe327c339cc5d89391a444c8bdf49e6418bd3f9ebd1151ec1606",
+    "inputDigest": "sha256:f0b80c1410657cce7ef653943a7784ba8ad55f13a771796c4f277fbfdba1f727",
+    "formula": "linear RGB: sum directional and four colored point Lambert terms; spot=intensity*normalDot*clamp(1-(distance/range)^4,0,1)^2/distance^2*baseColor/pi; shadow=nonSpot*0.55; lit=shadow+spot*0.6; clearcoat=lit*(1+(1-0.9))",
+    "frozenSource": "SPOT_SHADOW_SCENES plus calibration/three-r184-finite-range-authority.json, the fixed directional/point setup and receiver baseColor/clearcoat constants in main.ts; no logs, GPU observations, or current observed values",
+    "sceneSourceSha256": "sha256:162525e8d2baca892cd1719974bb07634514bb2677412d04e376b89f90ee56e1",
+    "materialSourceSha256": "sha256:ac949c612eef74e2a11b3a3b9736314802f446e39e9fa511c2fc5a32e2d9e727",
+    "command": "node --experimental-strip-types apps/parity/color-lighting/cases/direct-light/generate-canonical-direct-light-oracle.mjs",
+    "payloadEncoding": "UTF-8 canonical JSON without whitespace; payload excludes this provenance field",
+    "payloadBytesSha256": "sha256:b7dffe74a5ee9e4b47d851bb348b6761f522514fdc54fa186c0cea27bee346af"
+  }
+}

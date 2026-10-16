@@ -1,0 +1,24 @@
+{
+  "caseId": "direct-khr-spot-urp",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "light": {
+    "authorityId": "threeR184SquaredWindow",
+    "kind": "spot",
+    "color": [0.9, 0.9, 1],
+    "intensity": 6,
+    "range": 4,
+    "direction": [0, 0, -1],
+    "innerConeDeg": 10,
+    "outerConeDeg": 40
+  },
+  "import": {
+    "source": "KHR_lights_punctual",
+    "intensityScale": 1,
+    "rangeZero": "no-cutoff",
+    "cone": "radians-to-degrees"
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 255 }
+}

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Spatial Audio 2D</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #071018; color: #e6f1ff; font-family: ui-monospace, monospace; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #overlay {
+        position: fixed; left: 12px; top: 12px; max-width: 430px;
+        background: rgba(3, 8, 14, 0.78); padding: 10px 13px;
+        border: 1px solid rgba(159, 205, 255, 0.25); border-radius: 7px;
+        line-height: 1.6; pointer-events: none; font-size: 13px;
+      }
+      #overlay b { color: #ffe38a; }
+      #audio-status { color: #9fe3b1; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="overlay">
+      <b>Space</b> = start/stop looping spatial SFX<br />
+      <b>Arrow keys</b> = move listener in 2D &nbsp; <b>A/D/W/S</b> also work<br />
+      <b>E</b> = toggle emitter motion &nbsp; <b>M</b> = mute SFX<br />
+      red = left ear &nbsp; green = right ear &nbsp; blue = emitter<br />
+      <span id="audio-status">audio=booting | active=0 | loaded=0</span><br />
+      <span id="spatial-status">listener=(0.0, 0.0) | emitter=(0.0, 1.2) | pan=R</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

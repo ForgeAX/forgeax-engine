@@ -1,0 +1,13 @@
+# Local toolchain override for packages/wgpu-wasm (plan-strategy D-P3).
+#
+# wgpu 30.0.x requires rust-version 1.93. This file scopes the bump to this
+# crate so the rest of the monorepo (including any remaining naga-only crates
+# that supported 1.87) is untouched. Mirrors the rhi-wgpu/crate precedent.
+#
+# build.sh asserts rustc >= 1.93 explicitly with a structured error message
+# (charter proposition 4 explicit failure) so a missing toolchain pin surfaces
+# at the .sh entry rather than as an opaque cargo error.
+[toolchain]
+channel = "1.93"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

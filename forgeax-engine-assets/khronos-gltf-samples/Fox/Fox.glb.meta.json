@@ -1,0 +1,97 @@
+{
+  "importSettings": {
+    "defaultSceneIndex": 0,
+    "diagnostics": {
+      "matrixTrsCoexistNodes": [],
+      "nodeNames": [
+        "root",
+        "fox",
+        "_rootJoint",
+        "b_Root_00",
+        "b_Hip_01",
+        "b_Spine01_02",
+        "b_Spine02_03",
+        "b_Neck_04",
+        "b_Head_05",
+        "b_RightUpperArm_06",
+        "b_RightForeArm_07",
+        "b_RightHand_08",
+        "b_LeftUpperArm_09",
+        "b_LeftForeArm_010",
+        "b_LeftHand_011",
+        "b_Tail01_012",
+        "b_Tail02_013",
+        "b_Tail03_014",
+        "b_LeftLeg01_015",
+        "b_LeftLeg02_016",
+        "b_LeftFoot01_017",
+        "b_LeftFoot02_018",
+        "b_RightLeg01_019",
+        "b_RightLeg02_020",
+        "b_RightFoot01_021",
+        "b_RightFoot02_022"
+      ],
+      "unsupportedExtensions": []
+    }
+  },
+  "importer": "gltf",
+  "kind": "external-asset-package",
+  "schemaVersion": 1,
+  "source": "Fox.glb",
+  "subAssets": [
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00bc68c09949",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh:fox1"
+    },
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00bd263bad8b",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material:fox_material"
+    },
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00be6d2f8774",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene:0"
+    },
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00bf461f95a8",
+      "kind": "texture",
+      "sourceIndex": 0,
+      "sourceKey": "texture:0"
+    },
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00c09fe9d1a9",
+      "kind": "skeleton",
+      "sourceIndex": 0,
+      "sourceKey": "skeleton:0"
+    },
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00c157402204",
+      "kind": "skin",
+      "sourceIndex": 0,
+      "sourceKey": "skin:0"
+    },
+    {
+      "guid": "019eb2ce-6232-74a0-8da7-00c2414d45c4",
+      "kind": "animation-clip",
+      "sourceIndex": 0,
+      "sourceKey": "animation-clip:Survey"
+    },
+    {
+      "guid": "019eb2ce-6233-74f3-a877-ebea0a513ea9",
+      "kind": "animation-clip",
+      "sourceIndex": 1,
+      "sourceKey": "animation-clip:Walk"
+    },
+    {
+      "guid": "019eb2ce-6233-74f3-a877-ebeb96c4f15d",
+      "kind": "animation-clip",
+      "sourceIndex": 2,
+      "sourceKey": "animation-clip:Run"
+    }
+  ]
+}

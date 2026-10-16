@@ -1,0 +1,15 @@
+{
+  "$schema": "forgeax-ufbx-source-lock/v1",
+  "version": "v0.23.0",
+  "baseUrl": "https://raw.githubusercontent.com/ufbx/ufbx/v0.23.0",
+  "files": {
+    "ufbx.h": {
+      "sha256": "942481725372d2ac4da5e77a062b47c20054a3440e7ee09a6043f99fe1f130ed",
+      "bytes": 223898
+    },
+    "ufbx.c": {
+      "sha256": "7d8d6ae4373f71692f295ff49ee0826466306ebcaa80b0e587c13ed047b98cea",
+      "bytes": 1181162
+    }
+  }
+}

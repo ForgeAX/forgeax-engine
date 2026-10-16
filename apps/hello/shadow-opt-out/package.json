@@ -1,0 +1,54 @@
+{
+  "name": "@forgeax/hello-shadow-opt-out",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "feat-20260609-pipeline-driven-pass-selector-shadowcaster-via-mat T-018: castShadow opt-out + custom cutout shadow shader demo. Three cubes (A casts shadow, B no shadow via castShadow:false, C cutout shadow via custom WGSL) + floor.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-shadow-opt-out smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle downstream of engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "shadow opt-out demo; bench focus on engine-math / pixel-parity"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "shadow opt-out demo; bench focus on engine-math / pixel-parity"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-shadow-opt-out smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; T-018 castShadow opt-out + cutout shadow demo"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

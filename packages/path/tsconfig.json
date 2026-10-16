@@ -1,0 +1,40 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../math"
+    },
+    {
+      "path": "../scene"
+    },
+    {
+      "path": "../physics"
+    },
+    {
+      "path": "../plugin"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../assets-runtime"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
+  ]
+}

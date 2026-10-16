@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/engine-terrain",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Landscape heightfield authoring, queries and deterministic section kernels.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./cook": {
+      "types": "./dist/cook.d.ts",
+      "import": "./dist/cook.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Terrain has no canvas owner; real scene timings are measured by hello-terrain."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "End-to-end terrain timings are measured by the real terrain scene; pure query microbenchmarks do not establish frame performance."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Terrain geometry, collision and submitted-query acceptance runs through hello-terrain on real backends."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Production Landscape foundation, not an experimental spike."
+      }
+    }
+  }
+}

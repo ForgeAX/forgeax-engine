@@ -1,0 +1,28 @@
+allowBuilds:
+  '@forgeax/engine-dawn-node': true
+  '@forgeax/engine-codec': true
+  '@forgeax/engine-fbx': true
+  '@forgeax/engine-wgpu-wasm': true
+  esbuild: true
+  webgpu: true
+
+minimumReleaseAgeExclude:
+  - '@forgeax/*'
+
+# The SDK ships this lockfile and its offline store as one verified unit. Do not
+# re-resolve its tarballs when a game changes only its own package identity.
+trustLockfile: true
+verifyDepsBeforeRun: warn
+enableGlobalVirtualStore: false
+
+supportedArchitectures:
+  os:
+    - darwin
+    - linux
+    - win32
+  cpu:
+    - x64
+    - arm64
+  libc:
+    - glibc
+    - musl

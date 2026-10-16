@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb7ce-4500-7000-8000-000000000000",
+  "assets": {
+    "plugin/engine": {
+      "kind": "plugin",
+      "payload": {
+        "module": {
+          "specifier": "./capability-matrix.plugin.ts"
+        },
+        "config": {
+          "scene": {
+            "$asset": "4a673a93-24b5-56d8-9413-0f2e4e82c088"
+          }
+        }
+      }
+    }
+  }
+}

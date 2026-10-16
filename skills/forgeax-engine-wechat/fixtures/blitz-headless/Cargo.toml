@@ -1,0 +1,22 @@
+[package]
+name = "forgeax-blitz-headless-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+blitz-dom = { path = "../blitz-source/packages/blitz-dom", default-features = false }
+blitz-html = { path = "../blitz-source/packages/blitz-html", default-features = false }
+blitz-paint = { path = "../blitz-source/packages/blitz-paint", default-features = false }
+blitz-traits = { path = "../blitz-source/packages/blitz-traits", default-features = false }
+anyrender = "=0.14.0"
+anyrender_vello_cpu = { version = "=0.18.0", default-features = false }
+wasm-bindgen = "=0.2.129"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

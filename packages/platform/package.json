@@ -1,0 +1,56 @@
+{
+  "name": "@forgeax/engine-platform",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Realm-neutral host clock, native frame, display and lifecycle contracts.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Host bindings are measured in each target consumer bundle."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Native scheduling does not establish rendering throughput; consumer receipts own frame evidence."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Host callbacks have no independent numerical benchmark."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Contract and target consumer tests run through the existing test gates."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Production host boundary, not a research spike."
+      }
+    }
+  }
+}

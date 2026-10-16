@@ -1,0 +1,11 @@
+{
+  "exports": {
+    "./inspector-client": {
+      "types": "./dist/inspector-client.d.ts",
+      "node": {
+        "import": "./dist/inspector-client.mjs"
+      },
+      "default": null
+    }
+  }
+}

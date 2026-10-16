@@ -1,0 +1,13 @@
+# bug-20260514 M3 T-011 fixture bun.lock - intentionally NOT updated for
+# example-pkg 1.2.3, mirroring the drift-detected fixture so that the
+# only behavioural axis under test is the actor identity (G1 gate).
+# Old payload pinning example-pkg 1.0.0; sha256 frozen by git.
+"name": "non-dependabot-actor-fixture"
+"lockfileVersion": 1
+"workspaces":
+  "":
+    "dependencies":
+      "example-pkg": "1.0.0"
+"packages":
+  "example-pkg@1.0.0":
+    "integrity": "sha512-FixtureOnlyOldVersionDoNotInstall="

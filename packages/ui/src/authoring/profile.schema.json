@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schemas/ui-authoring-profile-v1.json",
+  "title": "ForgeaX UI authoring profile",
+  "description": "Machine-readable boundary for parser-backed HTML and CSS authoring validation.",
+  "type": "object",
+  "required": ["version", "category", "blocking", "precedence", "diagnostics"],
+  "properties": {
+    "version": { "const": "1" },
+    "category": { "enum": ["native", "normalizable", "runtime-bound"] },
+    "blocking": { "type": "boolean" },
+    "precedence": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "runtime-bound" },
+        { "const": "normalizable" },
+        { "const": "native" }
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "sourcePath",
+          "sourceRange",
+          "rule",
+          "expected",
+          "actual",
+          "hint"
+        ],
+        "properties": {
+          "code": { "type": "string" },
+          "severity": { "enum": ["error", "warning"] },
+          "sourcePath": { "type": "string" },
+          "sourceRange": {
+            "type": "object",
+            "required": ["start", "end", "line", "column"],
+            "properties": {
+              "start": { "type": "integer", "minimum": 0 },
+              "end": { "type": "integer", "minimum": 1 },
+              "line": { "type": "integer", "minimum": 1 },
+              "column": { "type": "integer", "minimum": 1 }
+            }
+          },
+          "rule": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" },
+          "hint": { "type": "string" },
+          "relatedLocations": { "type": "array" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "mars.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": "auto",
+    "addressMode": "repeat",
+    "filterMode": "linear",
+    "downscaleMaxDimension": 2048
+  },
+  "subAssets": [
+    {
+      "guid": "019ea6b1-7e5e-7035-833e-e5a16a95307c",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

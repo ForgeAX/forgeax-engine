@@ -1,0 +1,51 @@
+{
+  "name": "tetris",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Tetris built on @forgeax/engine-runtime (ECS-driven, WebGPU).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu bundle sizes tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle owns the fps baseline anchor"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "playable demo app; bench focus lives on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "demo app; smoke gate stays on hello-triangle + hello-cube"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@webgpu/types": "^0.1.74"
+  }
+}

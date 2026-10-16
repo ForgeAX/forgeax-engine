@@ -1,0 +1,57 @@
+{
+  "name": "@forgeax/hello-room",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "feat-20260511-asset-system-v1 M7 convergence app - 3 mesh (box root + sphere child + plane child) + texture + hierarchy + dual-shading MeshRenderer (Unlit + Standard via MaterialAsset.shadingModel) + Camera + DirectionalLight. End-to-end proof of charter proposition 5 consistent abstraction spanning types / runtime / material / shader / smoke.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-room smoke",
+    "_comment": "smokeInvocation = hello-room SSOT for AC-05 / AC-17 / AC-25 (feat-20260511-asset-system-v1 D-P7 + AGENTS.md Smoke gate four-command expansion). Literal `pnpm --filter @forgeax/hello-room smoke` must match byte-for-byte across apps/hello/room/package.json#forgeax.smokeInvocation + .github/workflows/ci.yml + .claude/skills/forgeax-step-verify/SKILL.md + AGENTS.md#Smoke-gate. Each app still owns its own SSOT (K-12 stance preserved per-app; hello-triangle / hello-cube keep their own invocations).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle baseline anchor only; hello-room smoke covers 60-frame multi-mesh GPU path (AC-05)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "convergence integration app; bench focus stays on @forgeax/engine-math + @forgeax/engine-ecs"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-room smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; dual-impl texture spike lives in apps/dual-impl-spike (M6 texture-4x4 cell)"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

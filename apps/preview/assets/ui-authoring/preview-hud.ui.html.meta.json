@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "ui",
+  "source": "preview-hud.ui.html",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019f8354-6386-4386-849d-f2ab4b96229d",
+      "sourceIndex": 0,
+      "kind": "ui"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "alpha",
+  "private": true,
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "no dist artifact"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "no canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no perf surface"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "covered by root gates"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

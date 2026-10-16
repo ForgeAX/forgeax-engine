@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import ts from 'typescript';
+import * as navigation from '../dist/index.mjs';
+import {bakeNavigationMesh} from '../../import/dist/navigation-bake.mjs';
+import {runCrowd} from './crowd.mjs';
+import {floor,doorway,box,actor,settings} from './fixtures.mjs';
+const out=new URL('../../../artifacts/roi-navigation/',import.meta.url);mkdirSync(out,{recursive:true});
+const original=readFileSync(new URL('../dist/index.mjs',import.meta.url),'utf8');
+function mutation(name,predicate,replacement){const ast=ts.createSourceFile('navigation.mjs',original,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS),nodes=[];function visit(n){if(predicate(n))nodes.push(n);ts.forEachChild(n,visit);}visit(ast);assert.equal(nodes.length,1,name);const n=nodes[0],mutated=original.slice(0,n.getStart(ast))+replacement+original.slice(n.end);const file=new URL(`../dist/.roi-${name}.mjs`,import.meta.url);writeFileSync(file,mutated);writeFileSync(new URL(`mutant-${name}.mjs`,out),mutated);return file;}
+const noAvoidance=await import(mutation('avoidance',n=>ts.isFunctionDeclaration(n)&&n.name?.text==='solveNavigationAvoidance',`function solveNavigationAvoidance(input,options,acceptVelocity){return ok(input.map(a=>({id:a.id,x:!acceptVelocity||acceptVelocity(a,a.desiredX,a.desiredZ)?a.desiredX:0,z:!acceptVelocity||acceptVelocity(a,a.desiredX,a.desiredZ)?a.desiredZ:0,neighbors:0,saturated:false})));}`));
+const noPhysics=await import(mutation('physics',n=>ts.isCallExpression(n)&&n.expression.getText()==='physics.moveAndSlide',`(world.set(r.entity,Transform,{pos:[r.x+desired[0],r.y,r.z+desired[2]]}).unwrap(),vec3.create(desired[0],0,desired[2]))`));
+const head={name:'head-on',starts:[[-2,0],[2,0]],goals:[[2,0,0],[-2,0,0]],frames:900};
+const good=await runCrowd({...head,nav:navigation}),bad=await runCrowd({...head,nav:noAvoidance});
+assert.equal(good.arrived,2);assert.ok(bad.minimumSeparation < good.minimumSeparation - 0.03,'avoidance must preserve a measurable clearance above native physical contact');
+const scene={kind:'scene',entities:{floor:{components:floor().components},wall:{components:box(.2,3,10,0,1.5,0).components},'actor-0':{components:{...actor(-2).components,Name:{value:'0'}}}}};
+const obstacle={name:'physical-guard',geometry:[floor()],scene,starts:[[-2,0]],goals:[[2,0,0]],frames:1200};
+const physical=await runCrowd({...obstacle,nav:navigation}),bypass=await runCrowd({...obstacle,nav:noPhysics});
+assert.equal(physical.blocked,1);assert.ok(physical.states[0].position[0]<-.39);assert.equal(bypass.arrived,1);assert.ok(bypass.states[0].position[0]>1.9,'bypassed physical motor must identify the unbaked obstacle');
+const producer=new URL('../../import/dist/navigation-bake.mjs',import.meta.url),source=readFileSync(producer,'utf8');assert.equal(source.split('walkableRadius: Math.ceil(s.radius / s.cellSize)').length,2);
+const changed=source.replace('walkableRadius: Math.ceil(s.radius / s.cellSize)','walkableRadius: 0'),file=new URL('../../import/dist/.roi-no-clearance.mjs',import.meta.url);writeFileSync(file,changed);writeFileSync(new URL('mutant-clearance.mjs',out),changed);
+const mutant=await import(file),input={geometry:doorway(1.2),settings:{...settings,radius:.7}};
+const finite=await bakeNavigationMesh(input),point=await mutant.bakeNavigationMesh(input);
+const reaches=r=>r.ok&&navigation.createNavigationMesh(r.value).unwrap().findPath([-4,0,0],[4,0,0],{maxProjection:.3}).ok;
+assert.equal(reaches(finite),false);assert.equal(reaches(point),true,'clearance falsifier must expose a finite-radius false positive');
+const report={timestamp:new Date().toISOString(),runtimeHash:createHash('sha256').update(original).digest('hex'),avoidance:{good,bad},physics:{physical,bypass},clearance:{settings:input.settings,finite:finite.ok?finite.value:finite.error,point:point.ok?point.value:point.error,finiteReachable:reaches(finite),pointReachable:reaches(point)}};
+writeFileSync(new URL('falsifiers.json',out),JSON.stringify(report));console.log(JSON.stringify({avoidance:{enabled:good.arrived,disabled:bad.arrived},physics:{enabled:physical.states,disabled:bypass.states},clearance:{enabled:reaches(finite),disabled:reaches(point)}}));

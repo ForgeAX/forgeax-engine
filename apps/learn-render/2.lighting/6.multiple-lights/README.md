@@ -1,0 +1,3 @@
+# 2.6 Multiple lights
+
+LearnOpenGL section 2.6 (Multiple Lights) — the combined lighting scene: 1 DirectionalLight + 4 PointLight + 1 camera-attached SpotLight illuminate 10 textured cubes (container2.png diffuse + container2_specular.png metallic-roughness maps via StandardMaterialAsset). First-person camera with WASD + mouse look + scroll-wheel FoV zoom. Demonstrates the full engine lighting pipeline operating at the 4-point-light + 1-spot-light N cap.

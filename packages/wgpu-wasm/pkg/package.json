@@ -1,0 +1,17 @@
+{
+  "name": "wgpu-wasm",
+  "type": "module",
+  "description": "wgpu 30 + naga 30 + wasm-bindgen merged crate exposing RHI raw bindings (rhi.rs) + naga three-phase pipeline (naga.rs) to JS for @forgeax/engine-rhi-wgpu + @forgeax/engine-naga thin shells (feat-20260511-naga-rhi-wgpu-merge).",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "files": [
+    "wgpu_wasm_bg.wasm",
+    "wgpu_wasm.js",
+    "wgpu_wasm.d.ts"
+  ],
+  "main": "wgpu_wasm.js",
+  "types": "wgpu_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

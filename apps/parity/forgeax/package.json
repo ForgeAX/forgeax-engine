@@ -1,0 +1,67 @@
+{
+  "name": "@forgeax/parity-forgeax",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Right fixture for the three.js pixel-parity bench (feat-20260512). Renders an unlit cube via @forgeax/engine-runtime with locked 8-dimension parameters (D-P6) mirroring apps/parity/threejs (D-P5 case C: 0 light => PBR_FALLBACK_WGSL constant-shading path). Workspace skeleton only at M1 T-004; the full fixture lands at M2 T-006; the evaluator SDK at M2 T-008.",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "import": "./src/main.ts"
+    },
+    "./evaluate-parity": {
+      "types": "./src/evaluate-parity.ts",
+      "import": "./src/evaluate-parity.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "fixture-only bundle; size variance is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "static-frame fixture (rotation locked at (0.3, 0.5, 0); no raf loop). FPS measurement is hello-triangle territory (K-12 baseline anchor)"
+      },
+      "bench": {
+        "enabled": true,
+        "reportPath": "../../../report/pixel-parity.json",
+        "pixelDiff": {
+          "threshold": 999999
+        }
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; pixel-parity validation runs via scripts/bench/pixel-parity.mjs at the CI metrics-validate job (M3 T-016)"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; threshold spike data lives in plan-decisions.md (T-011), not in this workspace"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "pixelmatch": "^7.0.0",
+    "vite": "8.0.16"
+  }
+}

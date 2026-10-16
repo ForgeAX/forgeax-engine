@@ -1,0 +1,248 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "01a10a05-1600-7000-8000-000000000016",
+  "assets": {
+    "scene/path": {
+      "kind": "scene",
+      "payload": {
+        "entities": {
+          "rail": {
+            "components": {
+              "Name": {
+                "value": "rail"
+              },
+              "Path": {
+                "points": [
+                  -5,
+                  1,
+                  2,
+                  -4,
+                  3,
+                  -3,
+                  0,
+                  1,
+                  -4,
+                  5,
+                  2,
+                  -2,
+                  5,
+                  1,
+                  3,
+                  0,
+                  2,
+                  5
+                ],
+                "closed": true,
+                "parameterization": 1,
+                "subdivisions": 2048,
+                "up": [
+                  0,
+                  1,
+                  0
+                ]
+              }
+            }
+          },
+          "patrol0": {
+            "components": {
+              "Name": {
+                "value": "patrol0"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 0.0,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol1": {
+            "components": {
+              "Name": {
+                "value": "patrol1"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 3.5,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol2": {
+            "components": {
+              "Name": {
+                "value": "patrol2"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 7.0,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol3": {
+            "components": {
+              "Name": {
+                "value": "patrol3"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 10.5,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol4": {
+            "components": {
+              "Name": {
+                "value": "patrol4"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 14.0,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol5": {
+            "components": {
+              "Name": {
+                "value": "patrol5"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 17.5,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol6": {
+            "components": {
+              "Name": {
+                "value": "patrol6"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 21.0,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "patrol7": {
+            "components": {
+              "Name": {
+                "value": "patrol7"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 24.5,
+                "speed": 2,
+                "loop": true
+              },
+              "Transform": {
+                "scale": [
+                  0.28,
+                  0.4,
+                  0.65
+                ]
+              }
+            }
+          },
+          "platform": {
+            "components": {
+              "Name": {
+                "value": "platform"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 7,
+                "speed": 1,
+                "loop": true,
+                "motion": 1,
+                "followTangent": false
+              },
+              "Transform": {
+                "scale": [
+                  1.2,
+                  0.15,
+                  1.2
+                ]
+              }
+            }
+          },
+          "rail-camera": {
+            "components": {
+              "Name": {
+                "value": "rail-camera"
+              },
+              "PathFollower": {
+                "path": "rail",
+                "distance": 2,
+                "speed": 2,
+                "loop": true,
+                "forwardAxis": 5
+              }
+            }
+          }
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "name": "@forgeax/hello-picking",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "End-to-end screen-to-entity picking demonstration (feat-20260529-picking-raycasting-screen-to-entity M4 / w16).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "mesh_picking",
+      "category": "Picking",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-picking smoke",
+    "gauntletScenario": {
+      "id": "hello-picking-vertex-live-transform-recovery",
+      "script": "smoke",
+      "domains": [
+        "Rendering and shader construction",
+        "World and host contract"
+      ],
+      "packages": [
+        "@forgeax/engine-picking",
+        "@forgeax/engine-scene",
+        "@forgeax/engine-render",
+        "@forgeax/engine-runtime"
+      ],
+      "risks": ["baseline", "dynamic", "behavioral", "recovery", "cleanup"],
+      "phaseInputs": ["baseline", "dynamic", "behavioral", "recovery", "cleanup"],
+      "evidence": {
+        "frontDoors": ["dom-pointer", "vertex-query", "live-transform", "camera-projection"],
+        "legs": ["semantic", "live", "gpu", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[picking] M18 live vertex recovery: PASS",
+          "[smoke] PASS - 7 criteria GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "picking smoke covers GPU"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "picking bench not yet defined"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-picking smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

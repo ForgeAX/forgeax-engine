@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "footstep-2.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "8f87b826-bcec-4be1-9ea1-caa964b0a9ba",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

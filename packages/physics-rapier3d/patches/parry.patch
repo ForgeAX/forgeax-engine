@@ -1,0 +1,1122 @@
+diff --git a/crates/parry3d/tests/capsule_cuboid_closest_points.rs b/crates/parry3d/tests/capsule_cuboid_closest_points.rs
+new file mode 100644
+index 0000000..e8c0668
+--- /dev/null
++++ b/crates/parry3d/tests/capsule_cuboid_closest_points.rs
+@@ -0,0 +1,99 @@
++use parry3d::{
++    math::{Pose, Vector},
++    query,
++    shape::{Capsule, Cuboid},
++};
++fn axis_intersects(a: Vector, b: Vector, h: Vector) -> bool {
++    let mut lo = 0.0_f64;
++    let mut hi = 1.0_f64;
++    for i in 0..3 {
++        let ai = a[i] as f64;
++        let di = b[i] as f64 - ai;
++        let extent = h[i] as f64;
++        if di == 0.0 {
++            if ai < -extent || ai > extent {
++                return false;
++            }
++        } else {
++            let u = (-extent - ai) / di;
++            let v = (extent - ai) / di;
++            lo = lo.max(u.min(v));
++            hi = hi.min(u.max(v));
++        }
++    }
++    lo <= hi
++}
++#[test]
++fn segment_box_contacts_satisfy_closest_point_optimality() {
++    let mut checked = 0;
++    for scale in [0.01, 0.1, 1.0, 10.0, 100.0] {
++        let half = Vector::new(1.5, 0.75, 0.5) * scale;
++        let cuboid = Cuboid::new(half);
++        for endpoint in [
++            Vector::new(0.0, 0.55, 0.0),
++            Vector::new(0.6, 0.3, -0.4),
++            Vector::ZERO,
++        ] {
++            let capsule = Capsule::new(-endpoint * scale, endpoint * scale, 0.38 * scale);
++            for x in [-3.0, -1.4, -0.3, 0.1, 1.4, 3.0] {
++                for y in [-2.0, -0.7, -0.1, 0.3, 0.7, 2.0] {
++                    for z in [-2.0, -0.4, 0.1, 0.4, 2.0] {
++                        let pose = Pose::translation(x * scale, y * scale, z * scale);
++                        let a = pose * capsule.segment.a;
++                        let b = pose * capsule.segment.b;
++                        if axis_intersects(a, b, half) {
++                            continue;
++                        }
++                        let c = query::contact(&Pose::IDENTITY, &cuboid, &pose, &capsule, f32::MAX)
++                            .unwrap()
++                            .unwrap();
++                        let q = c.point2 + c.normal1 * capsule.radius;
++                        let d = b - a;
++                        let s = if d.length_squared() > 0.0 {
++                            (q - a).dot(d) / d.length_squared()
++                        } else {
++                            0.0
++                        };
++                        let tolerance = scale * 2.0e-5;
++                        assert!(
++                            s >= -2.0e-5 && s <= 1.00002,
++                            "axis parameter outside segment: s={s}, scale={scale} xyz={x},{y},{z}, endpoint={endpoint:?}, contact={c:?}, q={q:?}, a={a:?}, b={b:?}"
++                        );
++                        assert!(
++                            (q - (a + d * s)).length() <= tolerance,
++                            "axis error={} tolerance={tolerance} scale={scale} xyz={x},{y},{z} endpoint={endpoint:?} contact={c:?} a={a:?} b={b:?} q={q:?} s={s}", (q-(a+d*s)).length()
++                        );
++                        let closest = q.clamp(-half, half);
++                        assert!(
++                            (c.point1 - closest).length() <= tolerance,
++                            "box witness is not closest to axis witness"
++                        );
++                        let derivative = (q - c.point1).dot(d);
++                        let bound = scale * scale * 3.0e-5;
++                        if s > 2.0e-5 && s < 0.99998 {
++                            assert!(
++                                derivative.abs() <= bound,
++                                "interior optimum derivative {derivative}"
++                            );
++                        } else if s <= 2.0e-5 {
++                            assert!(
++                                derivative >= -bound,
++                                "start optimum derivative {derivative}"
++                            );
++                        } else {
++                            assert!(derivative <= bound, "end optimum derivative {derivative}");
++                        }
++                        let signed = (c.point2 - c.point1).dot(c.normal1);
++                        assert!(
++                            (signed - c.dist).abs() <= tolerance,
++                            "normal, distance and witnesses disagree"
++                        );
++                        assert!((c.normal1.length() - 1.0).abs() < 2.0e-6);
++                        checked += 1;
++                    }
++                }
++            }
++        }
++    }
++    println!("verified {checked} closest-point KKT certificates");
++}
+diff --git a/crates/parry3d/tests/capsule_cuboid_face_normal.rs b/crates/parry3d/tests/capsule_cuboid_face_normal.rs
+new file mode 100644
+index 0000000..b0a37db
+--- /dev/null
++++ b/crates/parry3d/tests/capsule_cuboid_face_normal.rs
+@@ -0,0 +1,41 @@
++use parry3d::{
++    math::{Pose, Vector},
++    query::{self, ShapeCastOptions},
++    shape::{Capsule, Cuboid},
++};
++#[test]
++fn flat_face_normal_and_real_approach() {
++    let wall = Cuboid::new(Vector::new(1.5, 0.75, 0.5));
++    let wall_pose = Pose::translation(-1., 1.25, 1.);
++    let capsule = Capsule::new_y(0.55, 0.38);
++    let pose = Pose::translation(-1.2755274, 2.46, 1.9099997);
++    let c = query::contact(&wall_pose, &wall, &pose, &capsule, 1.)
++        .unwrap()
++        .unwrap();
++    println!("contact={c:?}");
++    for approach in [0., 0.00001, 0.0001, 0.0005, 0.001, 0.01] {
++        let hit = query::cast_shapes(
++            &wall_pose,
++            Vector::ZERO,
++            &wall,
++            &pose,
++            Vector::new(0., 1., -approach),
++            &capsule,
++            ShapeCastOptions {
++                target_distance: 0.03,
++                max_time_of_impact: 0.53,
++                stop_at_penetration: false,
++                compute_impact_geometry_on_penetration: true,
++            },
++        )
++        .unwrap();
++        println!("approach={approach} hit={hit:?}");
++        if approach > 0. {
++            assert!(hit.is_some());
++        }
++    }
++    assert_eq!(
++        c.normal1.y, 0.,
++        "closest contact is in the vertical face interior"
++    );
++}
+diff --git a/crates/parry3d/tests/capsule_cuboid_initial_contact.rs b/crates/parry3d/tests/capsule_cuboid_initial_contact.rs
+new file mode 100644
+index 0000000..d24eb7a
+--- /dev/null
++++ b/crates/parry3d/tests/capsule_cuboid_initial_contact.rs
+@@ -0,0 +1,128 @@
++use parry3d::{
++    math::{Pose, Vector},
++    query::{self, ShapeCastOptions, ShapeCastStatus},
++    shape::{Capsule, Cuboid},
++};
++#[test]
++fn initial_contact_obeys_cast_options_and_shape_order() {
++    let cuboid = Cuboid::new(Vector::ONE);
++    let capsule = Capsule::new_y(0.2, 0.5);
++    for z in [0.0, 1.25, 1.5, 1.625] {
++        let pose = Pose::translation(0.0, 0.0, z);
++        for margin in [0.0, 0.125] {
++            for stop in [false, true] {
++                for geometry in [false, true] {
++                    for velocity in [-Vector::Z, Vector::ZERO, Vector::Z] {
++                        let options = ShapeCastOptions {
++                            target_distance: margin,
++                            max_time_of_impact: 0.0,
++                            stop_at_penetration: stop,
++                            compute_impact_geometry_on_penetration: geometry,
++                        };
++                        let contact =
++                            query::contact(&Pose::IDENTITY, &cuboid, &pose, &capsule, f32::MAX)
++                                .unwrap()
++                                .unwrap();
++                        let expected =
++                            contact.dist <= margin && (stop || contact.normal1.dot(velocity) < 0.0);
++                        let a = query::cast_shapes(
++                            &Pose::IDENTITY,
++                            Vector::ZERO,
++                            &cuboid,
++                            &pose,
++                            velocity,
++                            &capsule,
++                            options,
++                        )
++                        .unwrap();
++                        let b = query::cast_shapes(
++                            &pose,
++                            velocity,
++                            &capsule,
++                            &Pose::IDENTITY,
++                            Vector::ZERO,
++                            &cuboid,
++                            options,
++                        )
++                        .unwrap();
++                        assert_eq!(
++                            a.is_some(),
++                            expected,
++                            "z={z} margin={margin} stop={stop} velocity={velocity:?}"
++                        );
++                        assert_eq!(b.is_some(), a.is_some());
++                        if let Some(hit) = a {
++                            assert_eq!(hit.time_of_impact, 0.0);
++                            assert_eq!(
++                                hit.status,
++                                if contact.dist < margin {
++                                    ShapeCastStatus::PenetratingOrWithinTargetDist
++                                } else {
++                                    ShapeCastStatus::Converged
++                                }
++                            );
++                        }
++                        let negative = ShapeCastOptions {
++                            max_time_of_impact: -1.0,
++                            ..options
++                        };
++                        assert!(query::cast_shapes(
++                            &Pose::IDENTITY,
++                            Vector::ZERO,
++                            &cuboid,
++                            &pose,
++                            velocity,
++                            &capsule,
++                            negative
++                        )
++                        .unwrap()
++                        .is_none());
++                    }
++                }
++            }
++        }
++    }
++}
++#[test]
++fn contact_is_covariant_under_rigid_motion_and_shape_exchange() {
++    let cuboid = Cuboid::new(Vector::new(1.5, 0.75, 0.5));
++    let capsule = Capsule::new(
++        Vector::new(-0.6, -0.3, 0.4),
++        Vector::new(0.6, 0.3, -0.4),
++        0.38,
++    );
++    for position in [
++        Vector::new(0.1, 1.5, 0.1),
++        Vector::new(3.0, 2.0, 0.1),
++        Vector::new(-3.0, 2.0, 2.0),
++    ] {
++        let pose = Pose::from_translation(position);
++        let original = query::contact(&Pose::IDENTITY, &cuboid, &pose, &capsule, 100.0)
++            .unwrap()
++            .unwrap();
++        for axis in [
++            Vector::X,
++            Vector::Y,
++            Vector::Z,
++            Vector::new(1.0, 2.0, 3.0).normalize(),
++        ] {
++            let frame = Pose::from_parts(
++                Vector::new(0.25, -0.5, 0.125),
++                parry3d::glamx::Quat::from_axis_angle(axis, 0.7),
++            );
++            let transformed = query::contact(&frame, &cuboid, &(frame * pose), &capsule, 100.0)
++                .unwrap()
++                .unwrap();
++            let reverse = query::contact(&(frame * pose), &capsule, &frame, &cuboid, 100.0)
++                .unwrap()
++                .unwrap();
++            assert!((transformed.point1 - frame * original.point1).length() < 2.0e-5);
++            assert!((transformed.point2 - frame * original.point2).length() < 2.0e-5);
++            assert!((transformed.normal1 - frame.rotation * original.normal1).length() < 2.0e-5);
++            assert!((transformed.dist - original.dist).abs() < 2.0e-5);
++            assert!((reverse.point1 - transformed.point2).length() < 2.0e-5);
++            assert!((reverse.point2 - transformed.point1).length() < 2.0e-5);
++            assert!((reverse.normal1 + transformed.normal1).length() < 2.0e-5);
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/capsule_margin_cast.rs b/crates/parry3d/tests/capsule_margin_cast.rs
+new file mode 100644
+index 0000000..fcaa617
+--- /dev/null
++++ b/crates/parry3d/tests/capsule_margin_cast.rs
+@@ -0,0 +1,79 @@
++use parry3d::math::{Pose, Vector};
++use parry3d::query::{self, ShapeCastOptions};
++use parry3d::shape::{Capsule, Cuboid};
++
++#[test]
++fn downward_capsule_cast_respects_ground_clearance_near_target_margin() {
++    let ground = Cuboid::new(Vector::new(12.0, 0.5, 12.0));
++    let capsule = Capsule::new_y(0.55, 0.38);
++    let capsule_pose = Pose::translation(-4.8253173828125, 1.4600999355316162, -4.826419830322266);
++    for target_distance in [0.0, 0.015, 0.029999, 0.03, 0.030001] {
++        let hit = query::cast_shapes(
++            &Pose::IDENTITY,
++            Vector::ZERO,
++            &ground,
++            &capsule_pose,
++            -Vector::Y,
++            &capsule,
++            ShapeCastOptions {
++                target_distance,
++                max_time_of_impact: 0.24,
++                stop_at_penetration: false,
++                compute_impact_geometry_on_penetration: true,
++            },
++        )
++        .unwrap()
++        .expect("a downward cast over the cuboid should hit its top face");
++        let expected = 1.4600999355316162_f32 - (0.5 + 0.55 + 0.38) - target_distance;
++        println!(
++            "target={target_distance} toi={} normal={:?}",
++            hit.time_of_impact, hit.normal1
++        );
++        assert!(
++            (hit.time_of_impact - expected).abs() < 0.001,
++            "target {target_distance}: got {}, expected {expected}",
++            hit.time_of_impact
++        );
++        assert!(hit.normal1.y > 0.99, "ground top face normal is upward");
++    }
++}
++
++#[test]
++fn margin_cast_accuracy_scales_with_geometry_and_velocity() {
++    for scale in [0.1, 1.0, 10.0] {
++        let ground = Cuboid::new(Vector::new(12.0, 0.5, 12.0) * scale);
++        let capsule = Capsule::new_y(0.55 * scale, 0.38 * scale);
++        for lateral_shift in [-0.001, 0.0, 0.001] {
++            let pose = Pose::translation(
++                (-4.8253174 + lateral_shift) * scale,
++                1.4600999 * scale,
++                -4.82642 * scale,
++            );
++            for speed in [0.01, 1.0, 100.0] {
++                for margin in [0.015, 0.029999, 0.03, 0.030001] {
++                    let hit = query::cast_shapes(
++                        &Pose::IDENTITY,
++                        Vector::ZERO,
++                        &ground,
++                        &pose,
++                        -Vector::Y * speed * scale,
++                        &capsule,
++                        ShapeCastOptions {
++                            target_distance: margin * scale,
++                            max_time_of_impact: 0.24 / speed,
++                            stop_at_penetration: false,
++                            compute_impact_geometry_on_penetration: true,
++                        },
++                    )
++                    .unwrap()
++                    .unwrap();
++                    let expected = 1.4600999 - (0.5 + 0.55 + 0.38) - margin;
++                    assert!(
++                        (hit.time_of_impact * speed - expected).abs() < 0.001,
++                        "scale={scale} speed={speed} margin={margin}: {hit:?}"
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/grazing_capsule_cast.rs b/crates/parry3d/tests/grazing_capsule_cast.rs
+new file mode 100644
+index 0000000..3963354
+--- /dev/null
++++ b/crates/parry3d/tests/grazing_capsule_cast.rs
+@@ -0,0 +1,95 @@
++use parry3d::math::{Pose, Vector};
++use parry3d::query::{self, ShapeCastOptions};
++use parry3d::shape::{Capsule, Cuboid};
++
++#[test]
++fn a_cast_parallel_to_a_face_does_not_report_a_zero_time_obstruction() {
++    for (wall_y, half_height, pose) in [
++        (1.25, 0.75, Vector::new(-1.2755274, 2.46, 1.9099997)),
++        (1.5, 1.0, Vector::new(-0.505131, 2.9598898, 0.90999997)),
++    ] {
++        let wall = Cuboid::new(Vector::new(1.5, half_height, 0.5));
++        let wall_pose = Pose::translation(-1.0, wall_y, if wall_y == 1.25 { 1.0 } else { 0.0 });
++        let capsule = Capsule::new_y(0.55, 0.38);
++        let capsule_pose = Pose::from_translation(pose);
++        for speed in [0.01, 1.0, 100.0] {
++            let options = ShapeCastOptions {
++                target_distance: 0.03,
++                max_time_of_impact: 0.53 / speed,
++                stop_at_penetration: false,
++                compute_impact_geometry_on_penetration: true,
++            };
++            let parallel = query::cast_shapes(
++                &wall_pose,
++                Vector::ZERO,
++                &wall,
++                &capsule_pose,
++                Vector::Y * speed,
++                &capsule,
++                options,
++            )
++            .unwrap();
++            assert!(
++                parallel.is_none(),
++                "parallel speed={speed} produced {parallel:?}"
++            );
++            let approaching = query::cast_shapes(
++                &wall_pose,
++                Vector::ZERO,
++                &wall,
++                &capsule_pose,
++                (Vector::Y - Vector::Z * 0.01) * speed,
++                &capsule,
++                options,
++            )
++            .unwrap();
++            assert!(
++                approaching.is_some(),
++                "a direction approaching the face must remain blocked"
++            );
++        }
++    }
++}
++
++#[test]
++fn every_face_tangent_preserves_small_real_approaches() {
++    let cuboid = Cuboid::new(Vector::new(1.5, 0.75, 0.5));
++    let capsule = Capsule::new_y(0.55, 0.38);
++    let wall = Pose::translation(-1.0, 1.25, 1.0);
++    let pose = Pose::translation(-1.2755274, 2.46, 1.9099997);
++    for tangent in [
++        Vector::X,
++        -Vector::X,
++        Vector::Y,
++        -Vector::Y,
++        Vector::X + Vector::Y,
++    ] {
++        for speed in [0.01, 1.0, 100.0] {
++            for approach in [0.0, 0.00001, 0.0001, 0.001, 0.01] {
++                let vel = (tangent - Vector::Z * approach) * speed;
++                let options = ShapeCastOptions {
++                    target_distance: 0.03,
++                    max_time_of_impact: 0.53 / speed,
++                    stop_at_penetration: false,
++                    compute_impact_geometry_on_penetration: true,
++                };
++                let forward =
++                    query::cast_shapes(&wall, Vector::ZERO, &cuboid, &pose, vel, &capsule, options)
++                        .unwrap();
++                let reverse =
++                    query::cast_shapes(&pose, vel, &capsule, &wall, Vector::ZERO, &cuboid, options)
++                        .unwrap();
++                assert_eq!(
++                    forward.is_some(),
++                    approach > 0.0,
++                    "tangent={tangent:?} speed={speed} approach={approach} hit={forward:?}"
++                );
++                assert_eq!(
++                    reverse.is_some(),
++                    forward.is_some(),
++                    "shape-order symmetry failed"
++                );
++            }
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/thin_triangle_boundary.rs b/crates/parry3d/tests/thin_triangle_boundary.rs
+new file mode 100644
+index 0000000..72933aa
+--- /dev/null
++++ b/crates/parry3d/tests/thin_triangle_boundary.rs
+@@ -0,0 +1,78 @@
++use parry3d::math::Vector;
++use parry3d::query::{PointQuery, PointQueryWithLocation};
++use parry3d::shape::{Segment, Triangle};
++
++#[test]
++fn thin_triangle_projection_stays_inside_and_is_no_farther_than_edges() {
++    for length in [0.1, 1.0, 10.0, 100.0] {
++        for ratio in [1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6] {
++            for skew in [0.0, 0.5, 1.0, 2.0] {
++                let a = Vector::new(-length, 0.0, -length);
++                let b = Vector::new(length, 0.0, length);
++                let c = Vector::new(length * skew, length * ratio, length * skew);
++                for t in 0..101 {
++                    for offset in [-2.0, -1.0, 0.0, 0.5, 1.0, 2.0] {
++                        let pt = a
++                            + (b - a) * (t as f32 / 100.0)
++                            + Vector::new(0.0, length * ratio * offset, length * ratio);
++                        let triangle = Triangle::new(a, b, c);
++                        let (proj, loc) = triangle.project_local_point_and_get_location(pt, true);
++                        let coords = loc.barycentric_coordinates().unwrap();
++                        assert!(
++                            coords
++                                .iter()
++                                .all(|v| v.is_finite() && *v >= -1.0e-5 && *v <= 1.00001),
++                            "invalid barycentric {coords:?}; {triangle:?}, {pt:?}"
++                        );
++                        for (u, v) in [(a, b), (b, c), (a, c)] {
++                            let edge = Segment::new(u, v).project_local_point(pt, true).point;
++                            assert!(
++                                (proj.point - pt).length()
++                                    <= (edge - pt).length() + length * 1.0e-6,
++                                "farther than edge; {triangle:?}, {pt:?}, {proj:?}"
++                            );
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn oblique_thin_triangle_boundary_has_valid_barycentrics() {
++    let triangle = Triangle::new(
++        Vector::new(-7.1746826, -0.00009995699, -7.17358),
++        Vector::new(16.830624, -0.00013744831, 16.82804),
++        Vector::new(16.828835, -0.00011879206, 16.828178),
++    );
++    let ab = triangle.b - triangle.a;
++    let ac = triangle.c - triangle.a;
++    let normal = ab.cross(ac).normalize();
++    for t in -2..103 {
++        for u in [-0.001, 0.0, 0.001, 0.5, 0.999, 1.0, 1.001] {
++            for d in [-0.01, -0.0001, 0.0, 0.0001, 0.01] {
++                let pt = triangle.a + ab * (t as f32 / 100.0) + ac * u + normal * d;
++                let (proj, loc) = triangle.project_local_point_and_get_location(pt, true);
++                let coords = loc.barycentric_coordinates().unwrap();
++                assert!(
++                    coords
++                        .iter()
++                        .all(|v| v.is_finite() && *v >= -1.0e-5 && *v <= 1.00001),
++                    "invalid barycentric {coords:?} at {pt:?}; {proj:?}"
++                );
++                for (a, b) in [
++                    (triangle.a, triangle.b),
++                    (triangle.b, triangle.c),
++                    (triangle.a, triangle.c),
++                ] {
++                    let edge = Segment::new(a, b).project_local_point(pt, true).point;
++                    assert!(
++                        (proj.point - pt).length() <= (edge - pt).length() + 3.0e-6,
++                        "farther than edge at {pt:?}: {proj:?}"
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/thin_triangle_projection.rs b/crates/parry3d/tests/thin_triangle_projection.rs
+new file mode 100644
+index 0000000..95a474c
+--- /dev/null
++++ b/crates/parry3d/tests/thin_triangle_projection.rs
+@@ -0,0 +1,28 @@
++use parry3d::math::Vector;
++use parry3d::query::{PointQuery, PointQueryWithLocation};
++use parry3d::shape::{Segment, Triangle};
++
++#[test]
++fn face_projection_on_a_thin_triangle_is_no_farther_than_its_edges() {
++    let triangle = Triangle::new(
++        Vector::new(-7.1746826, -0.00009995699, -7.17358),
++        Vector::new(16.830624, -0.00013744831, 16.82804),
++        Vector::new(16.828835, -0.00011879206, 16.828178),
++    );
++    let point = Vector::ZERO;
++    let projection = triangle
++        .project_local_point_and_get_location(point, true)
++        .0
++        .point;
++    for (a, b) in [
++        (triangle.a, triangle.b),
++        (triangle.b, triangle.c),
++        (triangle.c, triangle.a),
++    ] {
++        let edge_projection = Segment::new(a, b).project_local_point(point, true).point;
++        assert!(
++            projection.length() <= edge_projection.length() + 1.0e-6,
++            "triangle projection {projection:?} is farther away than edge projection {edge_projection:?}"
++        );
++    }
++}
+diff --git a/src/query/contact/contact_cuboid_capsule.rs b/src/query/contact/contact_cuboid_capsule.rs
+new file mode 100644
+index 0000000..c60b455
+--- /dev/null
++++ b/src/query/contact/contact_cuboid_capsule.rs
+@@ -0,0 +1,103 @@
++#[cfg(not(feature = "std"))]
++use crate::math::ComplexField;
++use crate::math::{Pose, Real, Vector, DIM};
++use crate::query::{details, Contact};
++use crate::shape::{Capsule, Cuboid};
++
++/// Contact between a cuboid and a capsule, using segment-to-box distance.
++///
++/// For a segment point q(t), squared distance to the box is the sum of
++/// (q_i(t) - clamp(q_i(t), -h_i, h_i))^2. Between box-face crossings this is
++/// quadratic. Minimize each interval and select the global minimum. Wider
++/// intermediates preserve the active feature and its normal at small gaps.
++pub fn contact_cuboid_capsule(
++    pos12: &Pose,
++    cuboid: &Cuboid,
++    capsule: &Capsule,
++    prediction: Real,
++) -> Option<Contact> {
++    let a = pos12 * capsule.segment.a;
++    let b = pos12 * capsule.segment.b;
++    let a: [f64; DIM] = core::array::from_fn(|i| a[i] as f64);
++    let d: [f64; DIM] = core::array::from_fn(|i| b[i] as f64 - a[i]);
++    let h: [f64; DIM] = core::array::from_fn(|i| cuboid.half_extents[i] as f64);
++    let mut breaks = [0.0; 2 * DIM + 2];
++    breaks[1] = 1.0;
++    let mut count = 2;
++    for i in 0..DIM {
++        if d[i] != 0.0 {
++            for face in [-h[i], h[i]] {
++                let t = (face - a[i]) / d[i];
++                if t > 0.0 && t < 1.0 {
++                    breaks[count] = t;
++                    count += 1;
++                }
++            }
++        }
++    }
++    breaks[..count].sort_unstable_by(f64::total_cmp);
++    let point = |t: f64| -> [f64; DIM] { core::array::from_fn(|i| a[i] + d[i] * t) };
++    let clamp = |p: [f64; DIM]| -> [f64; DIM] { core::array::from_fn(|i| p[i].clamp(-h[i], h[i])) };
++    let mut best_distance = f64::INFINITY;
++    let mut best_axis = a;
++    let mut best_box = clamp(a);
++    for interval in breaks[..count].windows(2) {
++        let (lo, hi) = (interval[0], interval[1]);
++        let middle = point((lo + hi) * 0.5);
++        let mut numerator = 0.0;
++        let mut denominator = 0.0;
++        for i in 0..DIM {
++            if middle[i] < -h[i] || middle[i] > h[i] {
++                let face = middle[i].clamp(-h[i], h[i]);
++                numerator += d[i] * (a[i] - face);
++                denominator += d[i] * d[i];
++            }
++        }
++        let t = if denominator != 0.0 {
++            (-numerator / denominator).clamp(lo, hi)
++        } else {
++            lo
++        };
++        let axis_point = point(t);
++        let box_point = clamp(axis_point);
++        let distance: f64 = (0..DIM)
++            .map(|i| (axis_point[i] - box_point[i]).powi(2))
++            .sum();
++        if distance < best_distance {
++            best_distance = distance;
++            best_axis = axis_point;
++            best_box = box_point;
++        }
++    }
++    if best_distance == 0.0 {
++        // When the axis intersects the box, closest points cannot determine a
++        // penetration normal; keep the existing GJK/EPA penetration solver.
++        return details::contact_support_map_support_map(pos12, cuboid, capsule, prediction);
++    }
++    let distance = best_distance.sqrt();
++    let dist = distance as Real - capsule.radius;
++    if dist > prediction {
++        return None;
++    }
++    let mut normal1 = Vector::ZERO;
++    let mut point1 = Vector::ZERO;
++    let mut axis_point = Vector::ZERO;
++    for i in 0..DIM {
++        normal1[i] = ((best_axis[i] - best_box[i]) / distance) as Real;
++        point1[i] = best_box[i] as Real;
++        axis_point[i] = best_axis[i] as Real;
++    }
++    let point2 = pos12.inverse_transform_point(axis_point - normal1 * capsule.radius);
++    let normal2 = pos12.rotation.inverse() * -normal1;
++    Some(Contact::new(point1, point2, normal1, normal2, dist))
++}
++
++/// Symmetric capsule-cuboid contact, expressed in the original shape frames.
++pub fn contact_capsule_cuboid(
++    pos12: &Pose,
++    capsule: &Capsule,
++    cuboid: &Cuboid,
++    prediction: Real,
++) -> Option<Contact> {
++    contact_cuboid_capsule(&pos12.inverse(), cuboid, capsule, prediction).map(Contact::flipped)
++}
+diff --git a/src/query/contact/mod.rs b/src/query/contact/mod.rs
+index 2daacb8..3fe251f 100644
+--- a/src/query/contact/mod.rs
++++ b/src/query/contact/mod.rs
+@@ -33,3 +33,8 @@ mod contact_heightfield_shape;
+ mod contact_shape_shape;
+ #[cfg(feature = "alloc")]
+ mod contact_support_map_support_map;
++
++#[cfg(feature = "alloc")]
++pub use self::contact_cuboid_capsule::{contact_capsule_cuboid, contact_cuboid_capsule};
++#[cfg(feature = "alloc")]
++mod contact_cuboid_capsule;
+diff --git a/src/query/default_query_dispatcher.rs b/src/query/default_query_dispatcher.rs
+index 2c03f02..c7584fa 100644
+--- a/src/query/default_query_dispatcher.rs
++++ b/src/query/default_query_dispatcher.rs
+@@ -339,6 +339,18 @@ impl QueryDispatcher for DefaultQueryDispatcher {
+                 pos12, shape1, b2, prediction,
+             ))
+         } else {
++            #[cfg(feature = "alloc")]
++            if let (Some(b), Some(c)) = (shape1.as_cuboid(), shape2.as_capsule()) {
++                return Ok(query::details::contact_cuboid_capsule(
++                    pos12, b, c, prediction,
++                ));
++            }
++            #[cfg(feature = "alloc")]
++            if let (Some(c), Some(b)) = (shape1.as_capsule(), shape2.as_cuboid()) {
++                return Ok(query::details::contact_capsule_cuboid(
++                    pos12, c, b, prediction,
++                ));
++            }
+             #[cfg(feature = "alloc")]
+             if let (Some(s1), Some(s2)) = (shape1.as_support_map(), shape2.as_support_map()) {
+                 return Ok(query::details::contact_support_map_support_map(
+@@ -498,6 +510,22 @@ impl QueryDispatcher for DefaultQueryDispatcher {
+                     heightfield2,
+                     options,
+                 );
++            } else if let (Some(b), Some(c)) = (shape1.as_cuboid(), shape2.as_capsule()) {
++                return Ok(query::details::cast_shapes_cuboid_capsule(
++                    pos12,
++                    local_vel12,
++                    b,
++                    c,
++                    options,
++                ));
++            } else if let (Some(c), Some(b)) = (shape1.as_capsule(), shape2.as_cuboid()) {
++                return Ok(query::details::cast_shapes_capsule_cuboid(
++                    pos12,
++                    local_vel12,
++                    c,
++                    b,
++                    options,
++                ));
+             } else if let (Some(s1), Some(s2)) = (shape1.as_support_map(), shape2.as_support_map())
+             {
+                 return Ok(query::details::cast_shapes_support_map_support_map(
+diff --git a/src/query/point/point_triangle.rs b/src/query/point/point_triangle.rs
+index 810e3e3..0d54399 100644
+--- a/src/query/point/point_triangle.rs
++++ b/src/query/point/point_triangle.rs
+@@ -1,3 +1,5 @@
++#[cfg(all(not(feature = "std"), feature = "dim3", feature = "f32"))]
++use crate::math::ComplexField;
+ use crate::math::{Real, Vector, DIM};
+ use crate::query::{PointProjection, PointQuery, PointQueryWithLocation};
+ use crate::shape::{FeatureId, Segment, SegmentPointLocation, Triangle, TrianglePointLocation};
+@@ -20,6 +22,78 @@ fn compute_result(pt: Vector, proj: Vector) -> PointProjection {
+     }
+ }
+ 
++// Ill-conditioned f32 triangles need wider intermediates for both the Voronoi
++// region and its coordinates. The ordinary projection keeps its f32 path.
++#[cfg(all(feature = "dim3", feature = "f32"))]
++fn project_thin_triangle(
++    triangle: &Triangle,
++    pt: Vector,
++) -> (PointProjection, TrianglePointLocation) {
++    let widen = |v: Vector| [v.x as f64, v.y as f64, v.z as f64];
++    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
++    let cross = |a: [f64; 3], b: [f64; 3]| {
++        [
++            a[1] * b[2] - a[2] * b[1],
++            a[2] * b[0] - a[0] * b[2],
++            a[0] * b[1] - a[1] * b[0],
++        ]
++    };
++    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
++    let vertices = [widen(triangle.a), widen(triangle.b), widen(triangle.c)];
++    let point = widen(pt);
++    let ab = sub(vertices[1], vertices[0]);
++    let ac = sub(vertices[2], vertices[0]);
++    let ap = sub(point, vertices[0]);
++    let normal = cross(ab, ac);
++    let area_squared = dot(normal, normal);
++    if area_squared > 0.0 {
++        let v = dot(normal, cross(ap, ac)) / area_squared;
++        let w = dot(normal, cross(ab, ap)) / area_squared;
++        if v >= 0.0 && w >= 0.0 && v + w <= 1.0 {
++            let projection = Vector::from_array(core::array::from_fn(|i| {
++                (vertices[0][i] + ab[i] * v + ac[i] * w) as Real
++            }));
++            let side = if dot(normal, ap) >= 0.0 { 0 } else { 1 };
++            return (
++                compute_result(pt, projection),
++                TrianglePointLocation::OnFace(side, [(1.0 - v - w) as Real, v as Real, w as Real]),
++            );
++        }
++    }
++    let mut best_distance = f64::INFINITY;
++    let mut best = (
++        compute_result(pt, triangle.a),
++        TrianglePointLocation::OnVertex(0),
++    );
++    for (edge, (i, j)) in [(0, 1), (1, 2), (0, 2)].into_iter().enumerate() {
++        let direction = sub(vertices[j], vertices[i]);
++        let length_squared = dot(direction, direction);
++        let t = if length_squared > 0.0 {
++            (dot(sub(point, vertices[i]), direction) / length_squared).clamp(0.0, 1.0)
++        } else {
++            0.0
++        };
++        let projection: [f64; 3] = core::array::from_fn(|k| vertices[i][k] + direction[k] * t);
++        let delta = sub(projection, point);
++        let distance = dot(delta, delta);
++        if distance < best_distance {
++            best_distance = distance;
++            let location = if t == 0.0 {
++                TrianglePointLocation::OnVertex(i as u32)
++            } else if t == 1.0 {
++                TrianglePointLocation::OnVertex(j as u32)
++            } else {
++                TrianglePointLocation::OnEdge(edge as u32, [(1.0 - t) as Real, t as Real])
++            };
++            best = (
++                compute_result(pt, Vector::from_array(projection.map(|x| x as Real))),
++                location,
++            );
++        }
++    }
++    best
++}
++
+ impl PointQuery for Triangle {
+     #[inline]
+     fn project_local_point(&self, pt: Vector, solid: bool) -> PointProjection {
+@@ -71,6 +145,13 @@ impl PointQueryWithLocation for Triangle {
+         let ac = c - a;
+         let ap = pt - a;
+ 
++        #[cfg(all(feature = "dim3", feature = "f32"))]
++        if ab.cross(ac).length_squared()
++            <= Real::EPSILON * ab.length_squared().max(ac.length_squared()).powi(2)
++        {
++            return project_thin_triangle(self, pt);
++        }
++
+         let ab_ap = ab.dot(ap);
+         let ac_ap = ac.dot(ap);
+ 
+diff --git a/src/query/shape_cast/mod.rs b/src/query/shape_cast/mod.rs
+index 4dad80a..50ffd7f 100644
+--- a/src/query/shape_cast/mod.rs
++++ b/src/query/shape_cast/mod.rs
+@@ -26,3 +26,8 @@ mod shape_cast_heightfield_shape;
+ mod shape_cast_support_map_support_map;
+ #[cfg(feature = "alloc")]
+ mod shape_cast_voxels_shape;
++
++#[cfg(feature = "alloc")]
++pub use self::shape_cast_support_map_support_map::{
++    cast_shapes_capsule_cuboid, cast_shapes_cuboid_capsule,
++};
+diff --git a/src/query/shape_cast/shape_cast_support_map_support_map.rs b/src/query/shape_cast/shape_cast_support_map_support_map.rs
+index b965e7e..99e4714 100644
+--- a/src/query/shape_cast/shape_cast_support_map_support_map.rs
++++ b/src/query/shape_cast/shape_cast_support_map_support_map.rs
+@@ -17,6 +17,24 @@ pub fn cast_shapes_support_map_support_map<G1, G2>(
+ where
+     G1: ?Sized + SupportMap,
+     G2: ?Sized + SupportMap,
++{
++    cast_shapes_support_map_support_map_with_contact(pos12, vel12, g1, g2, options, || {
++        details::contact_support_map_support_map(pos12, g1, g2, Real::MAX)
++    })
++}
++
++fn cast_shapes_support_map_support_map_with_contact<G1, G2, F>(
++    pos12: &Pose,
++    vel12: Vector,
++    g1: &G1,
++    g2: &G2,
++    options: ShapeCastOptions,
++    contact: F,
++) -> Option<ShapeCastHit>
++where
++    G1: ?Sized + SupportMap,
++    G2: ?Sized + SupportMap,
++    F: Fn() -> Option<crate::query::Contact>,
+ {
+     let gjk_result = if options.target_distance > 0.0 {
+         let round_g1 = RoundShapeRef {
+@@ -39,7 +57,7 @@ where
+             // with a direction nearly tangent to the contact. Fall back on the contact
+             // query, which gives a robust closest-point normal and lets us detect the
+             // case where the cast direction is actually moving away from the contact.
+-            let contact = details::contact_support_map_support_map(pos12, g1, g2, Real::MAX)?;
++            let contact = contact()?;
+             let normal_vel = contact.normal1.dot(vel12);
+ 
+             if !options.stop_at_penetration && normal_vel >= 0.0 {
+@@ -71,7 +89,7 @@ where
+                     // A zero TOI means either a real penetration (or a start within the
+                     // target distance) or a mere touching contact; only the former is
+                     // `PenetratingOrWithinTargetDist`, as for ball-ball.
+-                    match details::contact_support_map_support_map(pos12, g1, g2, Real::MAX) {
++                    match contact() {
+                         Some(contact) if contact.dist >= options.target_distance => {
+                             ShapeCastStatus::Converged
+                         }
+@@ -84,3 +102,64 @@ where
+         }
+     })
+ }
++
++/// Capsule-cuboid cast with an analytic initial contact normal.
++pub fn cast_shapes_cuboid_capsule(
++    pos12: &Pose,
++    vel12: Vector,
++    cuboid: &crate::shape::Cuboid,
++    capsule: &crate::shape::Capsule,
++    options: ShapeCastOptions,
++) -> Option<ShapeCastHit> {
++    let Some(contact) = details::contact_cuboid_capsule(pos12, cuboid, capsule, Real::MAX) else {
++        return cast_shapes_support_map_support_map(pos12, vel12, cuboid, capsule, options);
++    };
++    cast_shapes_with_known_contact(pos12, vel12, cuboid, capsule, options, contact)
++}
++
++/// Symmetric capsule-cuboid cast in the original shape frames.
++pub fn cast_shapes_capsule_cuboid(
++    pos12: &Pose,
++    vel12: Vector,
++    capsule: &crate::shape::Capsule,
++    cuboid: &crate::shape::Cuboid,
++    options: ShapeCastOptions,
++) -> Option<ShapeCastHit> {
++    let Some(contact) = details::contact_capsule_cuboid(pos12, capsule, cuboid, Real::MAX) else {
++        return cast_shapes_support_map_support_map(pos12, vel12, capsule, cuboid, options);
++    };
++    cast_shapes_with_known_contact(pos12, vel12, capsule, cuboid, options, contact)
++}
++
++fn cast_shapes_with_known_contact<G1: ?Sized + SupportMap, G2: ?Sized + SupportMap>(
++    pos12: &Pose,
++    vel12: Vector,
++    g1: &G1,
++    g2: &G2,
++    options: ShapeCastOptions,
++    contact: crate::query::Contact,
++) -> Option<ShapeCastHit> {
++    if options.max_time_of_impact < 0.0 {
++        return None;
++    }
++    if contact.dist <= options.target_distance {
++        if !options.stop_at_penetration && contact.normal1.dot(vel12) >= 0.0 {
++            return None;
++        }
++        return Some(ShapeCastHit {
++            time_of_impact: 0.0,
++            normal1: contact.normal1,
++            normal2: contact.normal2,
++            witness1: contact.point1,
++            witness2: contact.point2,
++            status: if contact.dist < options.target_distance {
++                ShapeCastStatus::PenetratingOrWithinTargetDist
++            } else {
++                ShapeCastStatus::Converged
++            },
++        });
++    }
++    cast_shapes_support_map_support_map_with_contact(pos12, vel12, g1, g2, options, || {
++        Some(contact)
++    })
++}
+diff --git a/src/query/epa/epa3.rs b/src/query/epa/epa3.rs
+index a32b339..3f099ea 100644
+--- a/src/query/epa/epa3.rs
++++ b/src/query/epa/epa3.rs
+@@ -553,12 +553,27 @@ impl EPA {
+             if self.vertices.len() == 2 {
+                 let dpt = self.vertices[1] - self.vertices[0];
+ 
++                let endpoints = [self.vertices[0].point, self.vertices[1].point];
+                 crate::math::orthonormal_subspace_basis(&[dpt], |dir| {
+-                    // dir is already normalized by orthonormal_subspace_basis
+-                    self.vertices
+-                        .push(CsoPoint::from_shapes(pos12, g1, g2, dir));
+-                    false
++                    // An exactly touching CSO edge can return another point on the
++                    // same line in this direction. Such a triangle has no normal.
++                    // Keep the original support when valid; otherwise try the
++                    // opposite direction before the next orthonormal axis.
++                    for candidate_dir in [dir, -dir] {
++                        let candidate = CsoPoint::from_shapes(pos12, g1, g2, candidate_dir);
++                        if utils::ccw_face_normal([endpoints[0], endpoints[1], candidate.point])
++                            .is_some()
++                        {
++                            self.vertices.push(candidate);
++                            return false;
++                        }
++                    }
++                    true
+                 });
++                if self.vertices.len() != 3 {
++                    // A genuinely linear CSO cannot provide a contact-plane normal.
++                    return None;
++                }
+             }
+ 
+             let pts1 = [0, 1, 2];
+@@ -779,3 +794,99 @@ impl EPA {
+         }
+     }
+ }
++
++#[cfg(all(test, feature = "f32"))]
++mod touching_edge_tests {
++    use crate::math::{Pose, Vector};
++    use crate::query::details::contact_support_map_support_map_with_params;
++    use crate::query::gjk::{GJKResult, VoronoiSimplex};
++    use crate::shape::{ConvexPolyhedron, Cuboid};
++
++    fn shapes() -> (ConvexPolyhedron, Cuboid, Pose) {
++        // Captured Hull/Cuboid child pair at first native admission. The CSO
++        // reaches the origin on a Z edge, not on a full triangular facet.
++        let vertices = [
++            Vector::new(2.9, 0.9, 1.4),
++            Vector::new(3.0, 0.9, 1.4),
++            Vector::new(2.9, 1.0, 1.4),
++            Vector::new(3.0, 1.0, 1.4),
++            Vector::new(2.9, 0.9, 1.5),
++            Vector::new(3.0, 0.9, 1.5),
++            Vector::new(2.9, 1.0, 1.5),
++            Vector::new(3.0, 1.0, 1.5),
++        ];
++        let hull = ConvexPolyhedron::from_convex_hull(&vertices).unwrap();
++        let cuboid = Cuboid::new(Vector::new(0.20000004768371582, 3.5999999046325684, 5.25));
++        let relative =
++            Pose::from_translation(Vector::new(2.700000047683716, 4.599999904632568, -2.75));
++        (hull, cuboid, relative)
++    }
++
++    #[test]
++    fn touching_edge_has_real_plane_normal() {
++        let (hull, cuboid, relative) = shapes();
++        let mut simplex = VoronoiSimplex::new();
++        let result = contact_support_map_support_map_with_params(
++            &relative,
++            &hull,
++            &cuboid,
++            0.02,
++            &mut simplex,
++            None,
++        );
++        assert_eq!(
++            simplex.dimension(),
++            1,
++            "retain the captured line-simplex path"
++        );
++        let GJKResult::ClosestPoints(a, b, normal) = result else {
++            panic!("the touching pair must retain a contact: {result:?}");
++        };
++        assert!(normal.is_finite());
++        assert!((normal.length_squared() - 1.0).abs() < 1.0e-5, "{normal:?}");
++        assert!((b - a).dot(normal).abs() < 1.0e-5);
++        assert!(a.is_finite() && b.is_finite());
++    }
++
++    #[test]
++    fn touching_edge_directions_and_separation() {
++        let (hull, cuboid, relative) = shapes();
++        for direction in [
++            None,
++            Some(Vector::X),
++            Some(-Vector::X),
++            Some(Vector::Y),
++            Some(-Vector::Y),
++            Some(Vector::Z),
++            Some(-Vector::Z),
++        ] {
++            let result = contact_support_map_support_map_with_params(
++                &relative,
++                &hull,
++                &cuboid,
++                0.02,
++                &mut VoronoiSimplex::new(),
++                direction,
++            );
++            let GJKResult::ClosestPoints(_, _, normal) = result else {
++                panic!("{result:?}")
++            };
++            assert!(
++                normal.is_finite() && (normal.length_squared() - 1.0).abs() < 1.0e-5,
++                "{normal:?}"
++            );
++        }
++        let separated = Pose::from_translation(relative.translation - Vector::X * 0.1);
++        assert!(matches!(
++            contact_support_map_support_map_with_params(
++                &separated,
++                &hull,
++                &cuboid,
++                0.02,
++                &mut VoronoiSimplex::new(),
++                None,
++            ),
++            GJKResult::NoIntersection(_)
++        ));
++    }
++}

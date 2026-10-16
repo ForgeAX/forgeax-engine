@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/platform"
+    },
+    {
+      "path": "./packages/platform-browser"
+    },
+    {
+      "path": "./packages/platform-wechat"
+    },
+    {
+      "path": "./packages/types"
+    },
+    {
+      "path": "./packages/math"
+    },
+    {
+      "path": "./packages/debug-draw"
+    },
+    {
+      "path": "./packages/ecs"
+    },
+    {
+      "path": "./packages/geometry"
+    },
+    {
+      "path": "./packages/graphics-extras"
+    },
+    {
+      "path": "./packages/assets-runtime"
+    },
+    {
+      "path": "./packages/input"
+    },
+    {
+      "path": "./packages/image"
+    },
+    {
+      "path": "./packages/runtime"
+    },
+    {
+      "path": "./packages/render"
+    },
+    {
+      "path": "./packages/scene"
+    },
+    {
+      "path": "./packages/skinning"
+    },
+    {
+      "path": "./packages/animation"
+    },
+    {
+      "path": "./packages/picking"
+    },
+    {
+      "path": "./packages/remote"
+    },
+    {
+      "path": "./packages/pack"
+    },
+    {
+      "path": "./packages/ui"
+    },
+    {
+      "path": "./packages/vite-plugin-pack"
+    },
+    {
+      "path": "./packages/naga"
+    },
+    {
+      "path": "./packages/shader-compiler"
+    },
+    {
+      "path": "./packages/state"
+    },
+    {
+      "path": "./packages/vite-plugin-shader"
+    },
+    {
+      "path": "./packages/wgpu-wasm"
+    },
+    {
+      "path": "./packages/gltf"
+    },
+    {
+      "path": "./packages/fbx"
+    },
+    {
+      "path": "./packages/import"
+    },
+    {
+      "path": "./packages/app"
+    },
+    {
+      "path": "./packages/tool-runtime"
+    },
+    {
+      "path": "./packages/preview"
+    },
+    {
+      "path": "./packages/plugin"
+    },
+    {
+      "path": "./packages/host"
+    },
+    {
+      "path": "./packages/devkit"
+    },
+    {
+      "path": "./packages/codec"
+    },
+    {
+      "path": "./packages/ddc"
+    },
+    {
+      "path": "./packages/audio"
+    },
+    {
+      "path": "./packages/audio-webaudio"
+    },
+    {
+      "path": "./packages/physics"
+    },
+    {
+      "path": "./packages/physics-rapier3d"
+    },
+    {
+      "path": "./packages/physics-rapier2d"
+    },
+    {
+      "path": "./packages/font"
+    },
+    {
+      "path": "./packages/rhi-debug"
+    },
+    {
+      "path": "./packages/rhi-wgpu-native"
+    },
+    {
+      "path": "./packages/vite-plugin-rhi-debug"
+    },
+    {
+      "path": "./packages/net"
+    },
+    {
+      "path": "./packages/net-websocket"
+    },
+    {
+      "path": "./packages/vfx"
+    },
+    {
+      "path": "./packages/vfx-compiler"
+    },
+    {
+      "path": "./packages/vfx-render"
+    },
+    {
+      "path": "./packages/npc"
+    },
+    {
+      "path": "./packages/profiler"
+    },
+    {
+      "path": "./packages/intelligence"
+    },
+    {
+      "path": "./packages/intelligence-fake"
+    },
+    {
+      "path": "./packages/intelligence-dsh"
+    },
+    {
+      "path": "./packages/dsh"
+    },
+    {
+      "path": "./packages/interaction"
+    },
+    {
+      "path": "./packages/mesh-io"
+    },
+    {
+      "path": "./packages/terrain"
+    },
+    {
+      "path": "./packages/navigation"
+    },
+    {
+      "path": "./packages/path"
+    },
+    {
+      "path": "./packages/ui-blitz"
+    }
+  ]
+}

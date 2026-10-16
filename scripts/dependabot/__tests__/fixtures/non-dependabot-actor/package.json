@@ -1,0 +1,9 @@
+{
+  "name": "non-dependabot-actor-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bug-20260514 M3 T-011 minimal workspace mirroring drift-detected; used to assert sync-and-push early-exits 0 when GITHUB_ACTOR != 'dependabot[bot]' (G1 defense-in-depth) and that no auto commit / push is attempted.",
+  "dependencies": {
+    "example-pkg": "1.2.3"
+  }
+}

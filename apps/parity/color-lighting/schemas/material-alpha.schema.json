@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schema/color-lighting/material-alpha.schema.json",
+  "title": "Color lighting material alpha case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["baseColor", "alphaMode"],
+  "properties": {
+    "baseColor": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number", "minimum": 0, "maximum": 1 }
+    },
+    "alphaMode": { "enum": ["OPAQUE", "MASK", "BLEND"] },
+    "alphaCutoff": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "allowImportingTsExtensions": true,
+    "types": ["@webgpu/types"]
+  },
+  "include": [
+    "src/**/*",
+    "../test-utils/**/*"
+  ]
+}

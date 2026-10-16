@@ -1,0 +1,59 @@
+{
+  "name": "@forgeax/hello-character",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Kinematic character controller demo: WASD + jump capsule driven by PhysicsWorld.moveAndSlide, with grounded-state debug-draw.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke.mjs",
+    "capture-motion-evidence": "node scripts/capture-motion-evidence.mjs",
+    "falsify-motion-freeze": "node scripts/falsify-motion-freeze.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-character smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-app + @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "character smoke covers structural boot + moveAndSlide drive, not GPU render path"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "character demo exemplar; bench focus stays on @forgeax/engine-math and physics backends"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-character smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the createApp moveAndSlide character integration exemplar"
+      }
+    }
+  }
+}

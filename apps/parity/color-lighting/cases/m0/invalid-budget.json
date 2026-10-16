@@ -1,0 +1,7 @@
+{
+  "caseId": "invalid-budget",
+  "required": false,
+  "colorDomain": "displayEncoded",
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 1.5, "roiMax": 0, "byteMax": 0 }
+}

@@ -1,0 +1,160 @@
+{
+  "view": {
+    "appTitle": "ForgeaX View",
+    "language": "Language",
+    "theme": "Theme",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "traceExport": "Export viewport trace",
+    "traceExportHint": "Download viewport interaction diagnostics (click canvas, drag, press Esc, then export)",
+    "close": "Close",
+    "localeShort": {
+      "zh": "中",
+      "en": "EN"
+    },
+    "activityRail": {
+      "label": "Tool panels"
+    },
+    "dock": {
+      "close": "Close",
+      "closeOthers": "Close others",
+      "showTitleBar": "Show panel title bar",
+      "hideTitleBar": "Hide panel title bar",
+      "restoreTitleBar": "Show panel title bar",
+      "pinTab": "Pin tab",
+      "unpinTab": "Unpin tab"
+    },
+    "connection": {
+      "ariaLabel": "ForgeaX Host connection status",
+      "connectingTitle": "Connecting to ForgeaX Host",
+      "connectingDescription": "Connecting to the existing Engine backend…",
+      "failedTitle": "ForgeaX Host not connected",
+      "failedLeadPre": "ForgeaX Host is the local daemon started by ",
+      "failedLeadPost": ". It connects Engine, loads plugins, and serves workspace APIs to View.",
+      "failedHint": "Run forgeax backend start, then forgeax view start in your workspace directory, and open the returned URL.",
+      "retry": "Reconnect",
+      "retryBusy": "Reconnecting…",
+      "unconfigured": "ForgeaX Host has not configured the Viewer frontend connection.",
+      "errors": {
+        "invalidBootstrap": "The connection endpoint did not return Host configuration. The local Host is probably not running.",
+        "network": "Unable to reach the local Host service."
+      }
+    },
+    "projectRecovery": {
+      "restoringTitle": "Restoring project workspace",
+      "restoringDescription": "Creating a fresh Editor target. The project will open automatically when it is ready.",
+      "title": "Engine workspace needs reconnect",
+      "short": "Workspace needs reconnect",
+      "description": "This page has no usable Editor target. Reconnect to create a new workspace target.",
+      "action": "Reconnect",
+      "busy": "Reconnecting…"
+    },
+    "projectOpen": {
+      "title": "Open project",
+      "description": "View needs a project directory before the editor can load. Enter an absolute path to continue.",
+      "pathLabel": "Project path",
+      "pathPlaceholder": "Absolute project directory",
+      "action": "Open project",
+      "busy": "Opening…"
+    },
+    "hostConnection": {
+      "connecting": "Connecting to ForgeaX Host",
+      "connectingHint": "Connecting to the existing Engine backend. Please wait.",
+      "connected": "ForgeaX Host connected",
+      "connectedHint": "Workspace, plugins, and Engine services are available through the local Host.",
+      "failed": "ForgeaX Host not connected",
+      "notConnected": "Not connected to ForgeaX Host",
+      "unconfiguredTitle": "ForgeaX Host not configured",
+      "disconnectedShort": "Host offline",
+      "failedHint": "Run forgeax backend start, then forgeax view start in your workspace directory, and open the returned URL.",
+      "wsClosed": "The WebSocket connection to ForgeaX Host was closed."
+    },
+    "pageTabs": {
+      "openPages": "Open pages",
+      "newPage": "New page",
+      "allPages": "All pages",
+      "noOpenableTypes": "No page types available",
+      "closeTab": "Close tab",
+      "empty": "No page",
+      "placeholder": "Content for page type “{{typeId}}” (Page platform not wired yet)",
+      "context": {
+        "close": "Close",
+        "closeOthers": "Close others",
+        "closeToRight": "Close to the right"
+      }
+    },
+    "pages": {
+      "editor": "Scene",
+      "display": "Runtime capture",
+      "plugins": "Plugins",
+      "material": "Material",
+      "mesh": "Mesh",
+      "texture": "Texture",
+      "asset": "Asset",
+      "html": "HTML UI"
+    },
+    "slots": {
+      "plugins": "Plugins",
+      "display": "Display",
+      "viewport": "Viewport",
+      "contentBrowser": "Content Browser",
+      "sceneTree": "Hierarchy",
+      "inspector": "Inspector",
+      "material": "Material",
+      "materialPreview": "Material preview",
+      "materialProperties": "Material properties",
+      "meshPreview": "Mesh preview",
+      "meshProperties": "Mesh properties",
+      "texturePreview": "Texture preview",
+      "textureProperties": "Texture properties",
+      "assetProperties": "Asset properties",
+      "htmlPreview": "HTML preview",
+      "htmlInspector": "HTML source"
+    },
+    "plugins": {
+      "title": "Host plugins",
+      "filter": "Filter plugins, modules, entries, or services",
+      "stateAll": "All states",
+      "empty": "No plugin sources",
+      "unavailable": "Plugin inspection unavailable"
+    },
+    "inspector": {
+      "title": "Inspector",
+      "empty": "Select an asset or scene node",
+      "unavailable": "Inspection unavailable"
+    },
+    "contentBrowser": {
+      "title": "Assets",
+      "search": "Search assets",
+      "empty": "No assets",
+      "unavailable": "Workspace unavailable"
+    },
+    "sceneTree": {
+      "title": "Hierarchy",
+      "empty": "No hierarchy data",
+      "unavailable": "Scene tree unavailable"
+    },
+    "material": {
+      "title": "Material",
+      "empty": "Select a material asset",
+      "unavailable": "Material inspection unavailable"
+    },
+    "display": {
+      "idle": "View ready (idle)",
+      "running": "Running {{service}}:{{run}}",
+      "error": "View connection error: {{message}}"
+    },
+    "html": {
+      "file": "File", "path": "Path", "size": "Size", "modified": "Modified", "viewport": "Viewport", "device": "Device preset", "phone": "Phone", "tablet": "Tablet", "desktop": "Desktop", "width": "Width", "height": "Height", "rotate": "Swap orientation", "zoom": "Zoom", "fit": "Fit", "refresh": "Refresh preview", "status": "Status", "idle": "No file open", "loading": "Loading HTML…", "ready": "Ready", "error": "Resource issues", "failed": "Preview unavailable", "empty": "Open an HTML file", "issueCount": "{{count}} resource issue(s)"
+    },
+    "commandError": {
+      "title": "Workspace command failed",
+      "titleWithOperation": "Workspace command failed ({{operation}})",
+      "close": "Dismiss error",
+      "details": "Details",
+      "copy": "Copy details",
+      "copied": "Copied"
+    },
+    "themeSystem": "System (default)"
+  }
+}

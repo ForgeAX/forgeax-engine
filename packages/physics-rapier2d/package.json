@@ -1,0 +1,74 @@
+{
+  "name": "@forgeax/engine-physics-rapier2d",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Rapier 2D WASM backend for forgeax-engine \u2014 compat WASM loader, three-phase tick pipeline (syncBackend / stepSimulation / writeback), transform sync, collision event translation, raycast, teleport, despawn cleanup.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./wasm-runtime": {
+      "types": "./dist/wasm-browser.d.ts",
+      "forgeax-native": "./dist/native.mjs",
+      "default": "./dist/wasm-browser.mjs"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "pkg"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "prebuild": "node ../../scripts/forgeax/build-rapier-native.mjs 2d"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-runtime": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "WASM binary loaded via dynamic import() \u2014 not counted in first-frame bundle; bundle-size reflects thin TS shell only"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "physics step time is negligible relative to render; fps tracked by consumer app / demo"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no microbenchmark suite yet \u2014 Rapier WASM step time is dominated by WASM call overhead and entity count; baseline-tracking deferred to a future feat once a representative scene benchmark exists"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; test surface coverage runs as part of pnpm test:unit"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; production MVP backend per plan-strategy D-4"
+      }
+    }
+  }
+}

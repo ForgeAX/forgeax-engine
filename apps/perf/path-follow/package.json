@@ -1,0 +1,58 @@
+{
+  "name": "@forgeax/path-follow-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-path": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/apps-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-devkit": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Path contract, CPU benchmarks and browser evidence owned by packages/path."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Path contract, CPU benchmarks and browser evidence owned by packages/path."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Path contract, CPU benchmarks and browser evidence owned by packages/path."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Path contract, CPU benchmarks and browser evidence owned by packages/path."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Path contract, CPU benchmarks and browser evidence owned by packages/path."
+      }
+    }
+  }
+}

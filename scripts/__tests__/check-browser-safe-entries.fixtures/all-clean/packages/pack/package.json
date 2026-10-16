@@ -1,0 +1,11 @@
+{
+  "exports": {
+    "./native-cooker": {
+      "types": "./dist/native-cooker.d.ts",
+      "node": {
+        "import": "./dist/native-cooker.mjs"
+      },
+      "default": null
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "@forgeax/engine-geometry",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Procedural mesh geometry factories + vertex attribute layout SSOT for forgeax-engine.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "earcut": "3.2.4"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "pure-function geometry library, no runtime canvas; fps reported by hello-triangle / hello-cube apps"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "procedural geometry factories run once at asset-build time, not per-frame; no CI micro-benchmark warranted"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; smoke gate covered by hello-* / learn-render apps that consume the factories"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; geometry extracted from runtime in feat-20260704-runtime-tier1-decomposition"
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/earcut": "3.0.0"
+  }
+}

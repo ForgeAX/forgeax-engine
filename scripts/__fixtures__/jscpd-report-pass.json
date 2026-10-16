@@ -1,0 +1,15 @@
+{
+  "statistics": {
+    "total": {
+      "lines": 0,
+      "tokens": 0,
+      "sources": 0,
+      "clones": 0,
+      "duplicatedLines": 0,
+      "duplicatedTokens": 0,
+      "percentage": 0,
+      "percentageTokens": 0
+    }
+  },
+  "duplicates": []
+}

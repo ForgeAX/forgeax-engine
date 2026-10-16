@@ -1,0 +1,5175 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "f4f18fa8-1c21-5f5d-9443-89b542b5f6b5",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "8cf2368a-0ae3-579a-a479-b0df2b5f392a",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "3191e951-15b8-53f1-bf01-a748b8fec95a",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "f12ff2f4-86b1-5a68-8ace-08c31bc426f5",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-boundary-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "7c1b0be7-01c0-55ae-919e-4731bdff10b2",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "box",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-boundary-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "457b9bd2-f83f-5903-9f43-d468a075c798",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "bcd50b88-045a-5588-8699-cb52d3ba366e",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "bcd50b88-045a-5588-8699-cb52d3ba366e",
+                "sampling": "nearest",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "f3fc05a2-d8bc-59c0-b997-db91519142ec",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "bcd50b88-045a-5588-8699-cb52d3ba366e",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "bcd50b88-045a-5588-8699-cb52d3ba366e",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "f63151d1-592e-587c-abbb-68fd476c082e",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "6ea7ea1f-5df6-5db0-840a-05262fdb5632",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "6ea7ea1f-5df6-5db0-840a-05262fdb5632",
+                "sampling": "nearest",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "91ea06fa-969a-59dc-8a10-40057af3098f",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "6ea7ea1f-5df6-5db0-840a-05262fdb5632",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "6ea7ea1f-5df6-5db0-840a-05262fdb5632",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "61c2ab37-159f-578d-80b8-5ff8d40ff63a",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "df0ded8e-a757-50cb-a031-9c330596a830"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "df0ded8e-a757-50cb-a031-9c330596a830",
+                "sampling": "nearest",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "e2a658fa-d0af-5c70-9628-c08cba8d63b5",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "df0ded8e-a757-50cb-a031-9c330596a830"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "df0ded8e-a757-50cb-a031-9c330596a830",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "a5ecc06c-9491-5f69-abd8-c0520db667a8",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "319dca57-fe0e-5e37-8658-a5473ffa80fd",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "319dca57-fe0e-5e37-8658-a5473ffa80fd",
+                "sampling": "nearest",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "88e991d8-1556-5d77-9b2f-673c8324e85d",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "319dca57-fe0e-5e37-8658-a5473ffa80fd",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "319dca57-fe0e-5e37-8658-a5473ffa80fd",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "ccf85b5b-e394-535f-b120-2f2a78df4058",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "d98e55ca-43fd-5324-b9ac-90f39c0305b3"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "nearest",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "419dfcb6-da0f-597e-b911-e63338431e6b",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "d98e55ca-43fd-5324-b9ac-90f39c0305b3"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "cc01c333-9359-5d6d-a59d-d92616beb30b",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "fdf995ab-5a47-5acd-a9b0-3c570049bfcd"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "fdf995ab-5a47-5acd-a9b0-3c570049bfcd",
+                "sampling": "nearest",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "d4e9725a-2727-5f97-b910-a6306b0afbaf",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "fdf995ab-5a47-5acd-a9b0-3c570049bfcd"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "fdf995ab-5a47-5acd-a9b0-3c570049bfcd",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "27aa8e35-07a4-564d-8c72-0ef8f10936c4",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+                "sampling": "trilinear",
+                "transform": [
+                  0,
+                  2,
+                  0,
+                  0,
+                  -1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0.5,
+                  0,
+                  0.125,
+                  -0.25,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "f26724b3-18a4-5670-bb8d-a4b49a49fb94",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "6ea7ea1f-5df6-5db0-840a-05262fdb5632",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "6ea7ea1f-5df6-5db0-840a-05262fdb5632",
+                "sampling": "trilinear",
+                "transform": [
+                  0,
+                  2,
+                  0,
+                  0,
+                  -1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0.5,
+                  0,
+                  0.125,
+                  -0.25,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-affine-spatial-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "bd50a487-d242-54ff-9e5c-dc4ffbab2f86",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+                "sampling": "trilinear",
+                "transform": [
+                  0,
+                  2,
+                  0,
+                  0,
+                  -1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0.5,
+                  0,
+                  0.125,
+                  -0.25,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "f50d1737-6cc5-5d23-9e12-bd122893584c",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "d98e55ca-43fd-5324-b9ac-90f39c0305b3"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": -1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "bf0f9e83-29b2-52ae-9349-4e0bf7e8e419",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "9207c1b4-c292-5c11-8cc0-abea04a8ed63",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "453e1dfc-aa2c-5fe9-a827-c31a3133597f",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "da24b99e-09ca-58ff-b266-413828bbaea2"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 256,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 256
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "da24b99e-09ca-58ff-b266-413828bbaea2",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 256,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "bde15142-e482-52b3-b56a-76ee06562f9b",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-2",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-3",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "ee762a83-b0de-5c6b-9836-2bd3bd4cf852",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "d98e55ca-43fd-5324-b9ac-90f39c0305b3"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-2",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-3",
+            "capacity": 2500,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 2500
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 2500,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "7c5da2ce-dbe5-5615-b967-e0a6c2acb464",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-2",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-3",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "a5966462-f342-557d-843c-25d992222036",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "d98e55ca-43fd-5324-b9ac-90f39c0305b3"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-2",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-3",
+            "capacity": 25000,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 25000
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 25000,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "25a56808-8fe1-5f50-9b0c-f68a5b7b772a",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-2",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-3",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-4",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-5",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-6",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-7",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-8",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-9",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-10",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-11",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-12",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-13",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-14",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-15",
+            "capacity": 16960,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 16960
+                }
+              ]
+            },
+            "program": {
+              "module": "fields-off.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 16960,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "guid": "50ac69a6-b88f-595a-bd03-5742eda49500",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "refs": [
+        "d7e37f40-18a2-5541-98d2-ed9efc339891",
+        "d98e55ca-43fd-5324-b9ac-90f39c0305b3"
+      ],
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "field-0",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-1",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-2",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-3",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-4",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-5",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-6",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-7",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-8",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-9",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-10",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-11",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-12",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-13",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-14",
+            "capacity": 65536,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 65536
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 65536,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          },
+          {
+            "id": "field-15",
+            "capacity": 16960,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "aabb",
+              "min": [
+                -4,
+                -4,
+                -4
+              ],
+              "max": [
+                4,
+                4,
+                4
+              ]
+            },
+            "simulationWhenCulled": "continue",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 16960
+                }
+              ]
+            },
+            "forceFields": [
+              {
+                "kind": "vector",
+                "texture": "d98e55ca-43fd-5324-b9ac-90f39c0305b3",
+                "sampling": "trilinear",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 1,
+                "attenuation": 0
+              },
+              {
+                "kind": "sphere",
+                "transform": [
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "strength": 0.5,
+                "attenuation": 1
+              }
+            ],
+            "program": {
+              "module": "fields-on.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "capacity": 16960,
+                "material": "d7e37f40-18a2-5541-98d2-ed9efc339891"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

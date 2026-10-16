@@ -1,0 +1,12 @@
+collectathon-audio/ — Apache-2.0 (engine-authored originals)
+
+All audio files in this directory are original works authored by the forgeax
+engine project via procedural synthesis. They contain no third-party material
+and are licensed under Apache-2.0, identical to the top-level forgeax-engine and
+forgeax-engine-assets repositories.
+
+No attribution is required. Commercial and noncommercial use, modification, and
+redistribution (including inside a distributable runtime asset pack) are all
+permitted under Apache-2.0.
+
+See the repository-root forgeax-engine LICENSE for the full Apache-2.0 text.

@@ -1,0 +1,10 @@
+{
+  "caseId": "material-alpha-mask-one",
+  "required": true,
+  "colorDomain": "linearLdr",
+  "scene": { "width": 4, "height": 4, "background": [0, 0, 0, 0] },
+  "comparison": { "primaryMetric": "occupancy" },
+  "budget": { "analyticMax": 0.01, "roiMax": 0.01, "byteMax": 0 },
+  "alpha": { "mode": "MASK", "baseAlpha": 0.99, "cutoff": 1 },
+  "baseColor": [1, 1, 1, 1]
+}

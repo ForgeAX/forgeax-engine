@@ -1,0 +1,38 @@
+{
+  "name": "@forgeax/hello-bad-evidence",
+  "private": true,
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "forgeax": {
+    "gauntletScenario": {
+      "id": "hello-bad-evidence",
+      "script": "smoke",
+      "domains": [
+        "World and host contract"
+      ],
+      "packages": [
+        "@forgeax/engine-ecs"
+      ],
+      "risks": [
+        "baseline"
+      ],
+      "phaseInputs": [
+        "baseline"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "dawn-node"
+        ],
+        "legs": [
+          "not-a-roadmap-leg"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "never reached"
+        ]
+      }
+    }
+  }
+}

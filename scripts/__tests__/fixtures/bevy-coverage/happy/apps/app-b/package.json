@@ -1,0 +1,12 @@
+{
+  "name": "@fixture/app-b",
+  "private": true,
+  "forgeax": {
+    "bevyExample": {
+      "name": "load_gltf",
+      "category": "glTF",
+      "status": "shelved",
+      "shelvedFeedback": "feedbacks/2026-07-13-x.md"
+    }
+  }
+}

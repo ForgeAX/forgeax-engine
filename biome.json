@@ -1,0 +1,143 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.14/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "packages/*/src/**",
+      "apps/*/src/**",
+      "scripts/**",
+      "config/**",
+      "schemas/**",
+      "*.json",
+      "*.ts",
+      "*.mjs",
+      "*.cjs",
+      "!shared-app-inputs/",
+      "!apps/**/artifacts",
+      "!scripts/__tests__/fixtures/metrics-decl-schema-malformed/schemas/forgeax-metrics.schema.json"
+    ],
+    "ignoreUnknown": true
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": {
+        "noNonNullAssertion": "error",
+        "useImportType": "error",
+        "useConst": "error",
+        "useTemplate": "error",
+        "useNamingConvention": {
+          "level": "error",
+          "options": {
+            "strictCase": false,
+            "conventions": [
+              {
+                "selector": {
+                  "kind": "classMember",
+                  "modifiers": ["private"]
+                },
+                "match": "[^_].*"
+              },
+              {
+                "selector": {
+                  "kind": "classMember",
+                  "modifiers": ["protected"]
+                },
+                "match": "[^_].*"
+              },
+              {
+                "selector": {
+                  "kind": "any"
+                },
+                "match": ".*"
+              }
+            ]
+          }
+        }
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": {
+          "level": "warn",
+          "options": {
+            "allow": ["warn", "error"]
+          }
+        },
+        "noConfusingVoidType": "off"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      },
+      "complexity": {
+        "useLiteralKeys": "error"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+  "json": {
+    "formatter": {
+      "trailingCommas": "none"
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "packages/pack/src/generated/schema-validators.cjs",
+        "packages/pack/src/generated/schema-validators.d.cts",
+        "packages/profiler/src/generated/schema-validator.cjs",
+        "packages/profiler/src/generated/schema-validator.d.cts"
+      ],
+      "formatter": {
+        "enabled": false
+      },
+      "linter": {
+        "enabled": false
+      }
+    },
+    {
+      "includes": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/rhi-debug-viewer/src/styles/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noUnknownAtRules": "off"
+          }
+        }
+      },
+      "css": {
+        "parser": {
+          "tailwindDirectives": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "name": "@forgeax/hello-terrain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "UE-style Landscape foundation with shared grid LOD, Standard layer cooking and real heightfield collision.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "perf": "node scripts/perf-dawn.mjs",
+    "smoke:worker": "node scripts/smoke-worker.mjs",
+    "smoke:engine-worker": "node scripts/smoke-engine-worker.mjs",
+    "smoke:effects": "node scripts/effects-dawn.mjs",
+    "smoke:hmr": "node scripts/smoke-hmr.mjs",
+    "smoke:hmr-worker": "node scripts/smoke-hmr.mjs --worker",
+    "verify:surface": "node scripts/surface-proof.mjs",
+    "verify:views": "node scripts/views-dawn.mjs",
+    "verify:shadow": "node scripts/shadow-dawn.mjs",
+    "verify:cost": "node scripts/cost.mjs",
+    "verify:receiver": "node scripts/receiver-quality-dawn.mjs",
+    "verify:normal-app": "node scripts/normal-app-response.mjs",
+    "verify:curved-shadow": "node scripts/curved-shadow-dawn.mjs",
+    "verify:fold-shadow": "node scripts/fold-shadow-dawn.mjs"
+  },
+  "forgeax": {
+    "rhiDebug": {
+      "riskFamilies": [
+        "geometry",
+        "materials-textures"
+      ]
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-terrain smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle is downstream of engine-runtime sizes"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Terrain paired scene performance is measured by the perf script."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Real GPU timings and CPU frame intervals are published by the terrain perf script."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-terrain smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Production Landscape foundation carrier, not a spike."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*"
+  }
+}

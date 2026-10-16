@@ -1,0 +1,38 @@
+{
+  "caseId": "spot-modifiers",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "light": {
+    "authorityId": "threeR184SquaredWindow",
+    "kind": "spot",
+    "color": [1, 1, 1],
+    "intensity": 1,
+    "range": 4,
+    "direction": [0, 0, -1],
+    "innerConeDeg": 20,
+    "outerConeDeg": 45
+  },
+  "extendedLighting": {
+    "topology": "extendedLighting",
+    "carrier": "spot-modifiers",
+    "iesSliceCount": 1,
+    "cookieSliceCount": 1,
+    "cookieMatrixCount": 1,
+    "expectedComposition": "brdf*range*cone*ies*cookie*shadow",
+    "cookieColorDomain": "linear",
+    "evidencePlan": {
+      "expectations": ["ies-directional-profile", "cookie-projection", "spot-modifier-composition", "lighting-owner-coexistence"],
+      "identity": { "fixtureId": "spot-modifiers", "sourceKey": "parity/extended-lighting/spot-modifiers" },
+      "numericRoi": { "analyticMax": 0.05, "roiMax": 0.05, "epsilon": 0.05, "colorDomain": "linearHdr" },
+      "recordReceipt": { "status": "not-run", "byteLength": 160, "maxBytes": 160 },
+      "resourceReceipt": { "status": "not-run", "topology": "extendedLighting" },
+      "falsifiers": [
+        { "id": "unit-ies", "expectedFailure": "removing the IES slice must change the asymmetric profile ROI" },
+        { "id": "unit-cookie", "expectedFailure": "removing the Cookie slice must change the projected ROI" }
+      ]
+    }
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 32768 }
+}

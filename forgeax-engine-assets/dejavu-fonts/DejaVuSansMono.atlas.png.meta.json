@@ -1,0 +1,19 @@
+{
+  "kind": "external-asset-package",
+  "importer": "image",
+  "schemaVersion": "1.0.0",
+  "source": "DejaVuSansMono.atlas.png",
+  "importSettings": {
+    "colorSpace": "linear",
+    "mipmap": "none",
+    "addressMode": "clamp-to-edge",
+    "filterMode": "linear"
+  },
+  "subAssets": [
+    {
+      "guid": "019eb276-4d96-760b-ae18-fe6775dc046a",
+      "sourceIndex": 0,
+      "kind": "texture"
+    }
+  ]
+}

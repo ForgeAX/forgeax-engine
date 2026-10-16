@@ -1,0 +1,10 @@
+{
+  "format": "reel-game-blob",
+  "version": 1,
+  "title": "Reel Game Level 1",
+  "reels": [
+    { "id": "reel-0", "x": -0.5, "symbols": ["cherry", "bell", "seven"] },
+    { "id": "reel-1", "x": 0.0, "symbols": ["bell", "seven", "cherry"] },
+    { "id": "reel-2", "x": 0.5, "symbols": ["seven", "cherry", "bell"] }
+  ]
+}

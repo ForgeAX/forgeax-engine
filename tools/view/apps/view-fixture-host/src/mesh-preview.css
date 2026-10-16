@@ -1,0 +1,10 @@
+.fx-fixture-mesh-preview {
+  display: grid;
+  place-items: center;
+}
+
+.fx-fixture-mesh-preview .fx-empty {
+  max-width: min(28rem, 100%);
+  padding: 24px;
+  text-align: center;
+}

@@ -1,0 +1,10 @@
+{
+  "package": "engine",
+  "member": "packages/engine",
+  "kind": "bundle-size",
+  "enabled": true,
+  "status": "over",
+  "value": 153600,
+  "threshold": 102400,
+  "details": { "compression": "gzip" }
+}

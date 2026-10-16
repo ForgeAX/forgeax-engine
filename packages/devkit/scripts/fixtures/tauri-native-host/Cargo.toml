@@ -1,0 +1,29 @@
+[package]
+name = "forgeax-devkit-tauri-native-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+forgeax-rhi-wgpu-native-node = { path = "../../../../rhi-wgpu-native/node" }
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gtk = "=0.18.2"
+gdkx11 = "=0.18.2"
+wry = "=0.55.1"
+tauri = { version = "=2.11.5", features = ["unstable"] }
+
+[build-dependencies]
+napi-build = "2"
+tauri-build = "=2.6.3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "none"

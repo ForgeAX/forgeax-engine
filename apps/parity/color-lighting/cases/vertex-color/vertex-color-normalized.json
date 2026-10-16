@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "caseId": "vertex-color-normalized",
+  "semantic": "normalized UNSIGNED_BYTE and UNSIGNED_SHORT VEC3/VEC4 accessors",
+  "colorDomain": "linearHdr",
+  "normalizedAccessors": { "ubyte": [0, 127, 255, 64], "ushort": [0, 32767, 65535, 16384] },
+  "samplePoints": [{ "id": "normalized-endpoint", "coordinate": [0.25, 0.25] }, { "id": "normalized-midpoint", "coordinate": [0.5, 0.5] }]
+}

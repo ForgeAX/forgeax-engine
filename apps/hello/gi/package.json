@@ -1,0 +1,73 @@
+{
+  "name": "@forgeax/hello-gi",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:materials": "node --test scripts/__tests__/gi-materials.test.mjs",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "reference": "node scripts/reference.mjs",
+    "coverage": "node scripts/coverage.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-gi smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "validation demo bundle follows the Engine runtime package budget"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "GI cost is measured per pass by scripts/reference.mjs GPU timings, not generic FPS"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "reference tool records qualified GPU pass timings; no Vitest bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-gi smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "GI acceptance is a product smoke with pixel falsifiers, not a spike"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-wgpu-native": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

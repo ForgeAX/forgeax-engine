@@ -1,0 +1,57 @@
+{
+  "name": "@forgeax/hello-tilemap-object-layer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Hello Tilemap Object Layer demo (feat-20260608 M3) -- directed 5-sub-scene fixture exercising multi-cell + flip x pivot + multi-atlas + per-entity Y-sort + sprite x tilemap object interleave (AC-10 / AC-11 / AC-12 / AC-13).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-tilemap-object-layer smoke",
+    "_comment": "smokeInvocation = self-contained SSOT for the hello-tilemap-object-layer dawn-node smoke gate (plan-tasks m3-t10 + plan-strategy §5.5 CI command list -- new step appended after Hello-tilemap headless smoke).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-tilemap-object-layer exists for the M3 directed 5-sub-scene fixture (AC-10 / AC-11 / AC-12 / AC-13); fps anchor stays on hello-triangle"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "M3 demo carries no benchmark; tilemap argsort bench lives in m3-t3 unit-bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-tilemap-object-layer smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

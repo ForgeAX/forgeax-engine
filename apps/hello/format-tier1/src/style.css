@@ -1,0 +1,59 @@
+:root {
+  color: #e8edf7;
+  background: #0b1020;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-width: 320px; }
+
+main { max-width: 1440px; margin: 0 auto; padding: 32px; }
+
+h1, h2, h3, p { margin-top: 0; }
+
+h1 { font-size: clamp(2rem, 4vw, 3.5rem); letter-spacing: -0.04em; }
+
+h2 { margin-bottom: 10px; font-size: 1.35rem; }
+
+.lede { max-width: 820px; color: #aab5cc; font-size: 1.05rem; line-height: 1.6; }
+
+.meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; }
+
+.chip, .status { border: 1px solid #33415f; border-radius: 999px; padding: 6px 10px; color: #bdc9df; font: 600 0.75rem/1.1 ui-monospace, monospace; }
+
+.status { display: inline-block; }
+.status-pass { border-color: #2c9a72; color: #73e2b4; }
+.status-blocked { border-color: #a56b35; color: #ffc37e; }
+.status-fail { border-color: #b34c5a; color: #ff9da9; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; }
+
+.card { border: 1px solid #263452; border-radius: 18px; background: #121a2d; padding: 20px; box-shadow: 0 14px 40px #05081166; }
+
+.card-wide { grid-column: 1 / -1; }
+
+.card p, .card li { color: #aab5cc; line-height: 1.55; }
+
+.card ul { margin: 10px 0 0; padding-left: 20px; }
+
+.matrix { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+
+.matrix-cell { border: 1px solid #2c3b5b; border-radius: 12px; padding: 12px; background: #0e1627; }
+
+.matrix-cell strong { display: block; margin-bottom: 8px; color: #f2f5fb; }
+
+.morph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
+
+.morph-state { border: 1px solid #2c3b5b; border-radius: 14px; background: #0e1627; padding: 10px; }
+
+.morph-state h3 { margin: 4px 6px 10px; font-size: 0.95rem; }
+
+.morph-state svg { display: block; width: 100%; height: auto; border-radius: 9px; background: radial-gradient(circle at 50% 40%, #253d69, #0b1222 72%); }
+
+.footnote { margin-top: 28px; color: #7e8ba5; font-size: 0.82rem; }
+
+code { color: #d7e1f7; font-family: ui-monospace, monospace; font-size: 0.85em; }
+
+@media (max-width: 640px) { main { padding: 20px; } .matrix { grid-template-columns: 1fr; } }

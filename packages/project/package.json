@@ -1,0 +1,65 @@
+{
+  "name": "@forgeax/engine-project",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Game-project SSOT — zod schema + injectable loader + resolve layer for forge.json, the authoritative game manifest contract.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@forgeax/engine-pack": "workspace:*",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.8.3",
+    "vitest": "4.1.11"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "pure data/contract package; no runtime canvas or frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no perf-critical hot path in contract layer; throughput not instrumented"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "package-level gate scripts declared in engine CI yaml directly; no standalone binary gate"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

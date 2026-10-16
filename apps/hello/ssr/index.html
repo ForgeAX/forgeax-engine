@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" />
+    <title>ForgeaX SSR fallback</title>
+    <style>
+      body { margin: 0; background: #0b101b; color: #d4deeb; font: 14px system-ui; display: grid; justify-items: center; gap: 12px; padding: 24px; }
+      canvas { width: var(--render-size, 256px); height: auto; max-width: calc(100vw - 48px); aspect-ratio: 1; border: 1px solid #2a3548; }
+      button { border: 1px solid #4e658a; background: #19263c; color: #e6f0ff; border-radius: 8px; padding: 12px 20px; cursor: pointer; }
+      #reflection-controls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; }
+      .surface-controls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 16px; }
+      .surface-controls label { display: flex; align-items: center; gap: 6px; }
+      select { font: inherit; border: 1px solid #4e658a; border-radius: 8px; padding: 11px 12px; background: #19263c; color: #e6f0ff; }
+      nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px; } a { color: #9ac9ff; } p { margin: 0; }
+    </style>
+  </head>
+  <body>
+    <nav aria-label="Reflection fixtures">
+      <a href="?fixture=cube&resolution=512">Plane + cube</a>
+      <a href="?fixture=tiles&resolution=512">Tile walls</a>
+      <a href="?fixture=objects&resolution=512">Objects</a>
+      <a href="?fixture=underside&resolution=512">Open underside</a>
+    </nav>
+    <div id="reflection-controls" role="group" aria-label="Reflection controls"></div>
+    <canvas id="app" width="256" height="256"></canvas>
+    <p id="fixture-description">Plane + cube · compare SSR and local probe independently</p>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

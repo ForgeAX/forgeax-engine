@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "4950c480-8910-553f-879a-0b19ecb1b72a",
+      "kind": "material",
+      "sourceKey": "multi-uv-demo-false.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "hello-multi-uv::multi-uv-demo-false",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            },
+            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+          }
+        ],
+        "parameters": [
+          { "name": "baseColor", "type": "color" },
+          { "name": "baseColorUvTransform", "type": "vec4" },
+          { "name": "baseColorTexture", "type": "texture" },
+          { "name": "detailTexture", "type": "texture" }
+        ],
+        "values": {
+          "baseColor": [0.7, 0.7, 0.7, 1],
+          "baseColorUvTransform": [0, 0, 1, 1]
+        }
+      },
+      "refs": []
+    }
+  ]
+}

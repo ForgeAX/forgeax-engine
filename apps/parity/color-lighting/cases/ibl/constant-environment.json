@@ -1,0 +1,7 @@
+{
+  "caseId": "ibl-constant-environment",
+  "environment": 0.72,
+  "payloadSemantic": "irradianceEOverPi",
+  "outputFormat": "rgba16float",
+  "analyticMax": 0.000001
+}

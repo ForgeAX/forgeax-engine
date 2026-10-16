@@ -1,0 +1,43 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+  - "apps/showcase/*"
+  - "apps/hello/*"
+  - "apps/perf/*"
+  - "apps/bevy/*"
+  - "apps/shadertoy/*"
+  - "apps/parity/*"
+  - "apps/learn-render/*/*"
+  - "apps/learn-render/*/*/*"
+  - "tools/view"
+  - "tools/forgeax-mcp"
+  - "tools/view/packages/*"
+  - "templates/empty"
+  - "templates/game-3d"
+
+allowBuilds:
+  core-js-pure: false
+  esbuild: true
+  simple-git-hooks: true
+  webgpu: true
+
+supportedArchitectures:
+  os:
+    - darwin
+    - linux
+    - win32
+  cpu:
+    - x64
+    - arm64
+  libc:
+    - glibc
+    - musl
+
+linkWorkspacePackages: true
+shellEmulator: true
+minimumReleaseAgeExclude:
+  - "@forgeax/*"
+overrides:
+  fast-uri: 3.1.7
+patchedDependencies:
+  '@deepseek-ai/cordis@4.0.4': patches/@deepseek-ai__cordis@4.0.4.patch

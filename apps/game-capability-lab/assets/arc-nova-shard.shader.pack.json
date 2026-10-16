@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-1000-7000-8000-000000000108",
+  "assets": {
+    "arc-nova-shard.wgsl": {
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "particle-mesh",
+            "program": {
+              "module": "boss_lightning_vfx::arc_nova_shard",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            },
+            "renderState": {
+              "cullMode": "none",
+              "depthCompare": "always",
+              "depthWriteEnabled": false,
+              "queue": 4000,
+              "blend": {
+                "color": {
+                  "srcFactor": "src-alpha",
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add"
+                },
+                "alpha": {
+                  "srcFactor": "one",
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add"
+                }
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.58,
+            0.68,
+            0.92,
+            1
+          ],
+          "metallic": 0.88,
+          "roughness": 0.1,
+          "emissive": [
+            0.06,
+            0.28,
+            0.72
+          ],
+          "emissiveIntensity": 1.15,
+          "clearcoat": 1,
+          "clearcoatRoughness": 0.035
+        }
+      },
+      "refs": []
+    }
+  }
+}

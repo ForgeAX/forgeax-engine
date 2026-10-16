@@ -1,0 +1,1584 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-1000-7000-8000-000000000100",
+  "assets": {
+    "scene/main": {
+      "kind": "scene",
+      "payload": {
+        "entities": {
+          "ground": {
+            "components": {
+              "Name": {
+                "value": "Ground"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  -0.1,
+                  0
+                ],
+                "scale": [
+                  24,
+                  0.2,
+                  24
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "sun": {
+            "components": {
+              "Name": {
+                "value": "Sun"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  6,
+                  0
+                ],
+                "scale": [
+                  1,
+                  1,
+                  1
+                ]
+              },
+              "DirectionalLight": {
+                "direction": [
+                  -0.4,
+                  -1,
+                  -0.3
+                ],
+                "color": [
+                  1,
+                  0.9607843137254902,
+                  0.8784313725490196
+                ],
+                "intensity": 3.2,
+                "castShadow": true,
+                "mapSize": 1024,
+                "shadowDistance": 60
+              }
+            }
+          },
+          "treetrunk": {
+            "components": {
+              "Name": {
+                "value": "TreeTrunk"
+              },
+              "Transform": {
+                "pos": [
+                  -4,
+                  0.9,
+                  -3
+                ],
+                "scale": [
+                  0.4,
+                  1.8,
+                  0.4
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 2
+              },
+              "MeshRenderer": {
+                "materials": [
+                  3
+                ]
+              }
+            }
+          },
+          "treecanopy": {
+            "components": {
+              "Name": {
+                "value": "TreeCanopy"
+              },
+              "Transform": {
+                "pos": [
+                  -4,
+                  2.4,
+                  -3
+                ],
+                "scale": [
+                  1.4,
+                  1.4,
+                  1.4
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  5
+                ]
+              }
+            }
+          },
+          "redbox": {
+            "components": {
+              "Name": {
+                "value": "RedBox"
+              },
+              "Transform": {
+                "pos": [
+                  3,
+                  0.5,
+                  -2
+                ],
+                "scale": [
+                  1,
+                  1,
+                  1
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 14
+              },
+              "MeshRenderer": {
+                "materials": [
+                  15,
+                  16
+                ]
+              }
+            }
+          },
+          "blueball": {
+            "components": {
+              "Name": {
+                "value": "BlueBall"
+              },
+              "Transform": {
+                "pos": [
+                  4.5,
+                  0.8,
+                  1.5
+                ],
+                "scale": [
+                  0.8,
+                  0.8,
+                  0.8
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  7
+                ]
+              }
+            }
+          },
+          "yellowpillar": {
+            "components": {
+              "Name": {
+                "value": "YellowPillar"
+              },
+              "Transform": {
+                "pos": [
+                  2,
+                  0.75,
+                  3.5
+                ],
+                "scale": [
+                  0.6,
+                  1.5,
+                  0.6
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 2
+              },
+              "MeshRenderer": {
+                "materials": [
+                  7
+                ]
+              }
+            }
+          },
+          "crate14": {
+            "components": {
+              "Name": {
+                "value": "Crate14"
+              },
+              "Transform": {
+                "pos": [
+                  5.38,
+                  0.31,
+                  -4
+                ],
+                "scale": [
+                  0.62,
+                  0.62,
+                  0.62
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "crate15": {
+            "components": {
+              "Name": {
+                "value": "Crate15"
+              },
+              "Transform": {
+                "pos": [
+                  6,
+                  0.31,
+                  -4
+                ],
+                "scale": [
+                  0.62,
+                  0.62,
+                  0.62
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "crate16": {
+            "components": {
+              "Name": {
+                "value": "Crate16"
+              },
+              "Transform": {
+                "pos": [
+                  6.62,
+                  0.31,
+                  -4
+                ],
+                "scale": [
+                  0.62,
+                  0.62,
+                  0.62
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "crate17": {
+            "components": {
+              "Name": {
+                "value": "Crate17"
+              },
+              "Transform": {
+                "pos": [
+                  5.69,
+                  0.9299999999999999,
+                  -4
+                ],
+                "scale": [
+                  0.62,
+                  0.62,
+                  0.62
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "crate18": {
+            "components": {
+              "Name": {
+                "value": "Crate18"
+              },
+              "Transform": {
+                "pos": [
+                  6.31,
+                  0.9299999999999999,
+                  -4
+                ],
+                "scale": [
+                  0.62,
+                  0.62,
+                  0.62
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "crate19": {
+            "components": {
+              "Name": {
+                "value": "Crate19"
+              },
+              "Transform": {
+                "pos": [
+                  6,
+                  1.55,
+                  -4
+                ],
+                "scale": [
+                  0.62,
+                  0.62,
+                  0.62
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "bouncyball": {
+            "components": {
+              "Name": {
+                "value": "BouncyBall"
+              },
+              "Transform": {
+                "pos": [
+                  -5,
+                  0.55,
+                  4
+                ],
+                "scale": [
+                  0.55,
+                  0.55,
+                  0.55
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  12
+                ]
+              }
+            }
+          },
+          "player": {
+            "components": {
+              "Name": {
+                "value": "Player"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  0.75,
+                  0
+                ],
+                "scale": [
+                  1,
+                  1,
+                  1
+                ]
+              }
+            }
+          },
+          "playertorso": {
+            "components": {
+              "Name": {
+                "value": "PlayerTorso"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  0,
+                  0
+                ],
+                "scale": [
+                  0.5,
+                  0.55,
+                  0.28
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  9
+                ]
+              },
+              "ChildOf": {
+                "parent": "player"
+              }
+            }
+          },
+          "playerhead": {
+            "components": {
+              "Name": {
+                "value": "PlayerHead"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  0.5,
+                  0.02
+                ],
+                "scale": [
+                  0.32,
+                  0.32,
+                  0.32
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  8
+                ]
+              },
+              "ChildOf": {
+                "parent": "player"
+              }
+            }
+          },
+          "playerarml": {
+            "components": {
+              "Name": {
+                "value": "PlayerArmL"
+              },
+              "Transform": {
+                "pos": [
+                  -0.34,
+                  0,
+                  0
+                ],
+                "scale": [
+                  0.14,
+                  0.45,
+                  0.14
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  8
+                ]
+              },
+              "ChildOf": {
+                "parent": "player"
+              }
+            }
+          },
+          "playerarmr": {
+            "components": {
+              "Name": {
+                "value": "PlayerArmR"
+              },
+              "Transform": {
+                "pos": [
+                  0.34,
+                  0,
+                  0
+                ],
+                "scale": [
+                  0.14,
+                  0.45,
+                  0.14
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  8
+                ]
+              },
+              "ChildOf": {
+                "parent": "player"
+              }
+            }
+          },
+          "playerlegl": {
+            "components": {
+              "Name": {
+                "value": "PlayerLegL"
+              },
+              "Transform": {
+                "pos": [
+                  -0.12,
+                  -0.5,
+                  0
+                ],
+                "scale": [
+                  0.18,
+                  0.5,
+                  0.18
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  10
+                ]
+              },
+              "ChildOf": {
+                "parent": "player"
+              }
+            }
+          },
+          "playerlegr": {
+            "components": {
+              "Name": {
+                "value": "PlayerLegR"
+              },
+              "Transform": {
+                "pos": [
+                  0.12,
+                  -0.5,
+                  0
+                ],
+                "scale": [
+                  0.18,
+                  0.5,
+                  0.18
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  10
+                ]
+              },
+              "ChildOf": {
+                "parent": "player"
+              }
+            }
+          },
+          "skylight": {
+            "components": {
+              "Name": {
+                "value": "Skylight"
+              },
+              "Skylight": {
+                "equirect": 13,
+                "color": [
+                  1,
+                  1,
+                  1
+                ],
+                "intensity": 0.2
+              }
+            }
+          },
+          "skybox": {
+            "components": {
+              "Name": {
+                "value": "Skybox"
+              },
+              "SkyboxBackground": {
+                "equirect": 13,
+                "mode": 0
+              }
+            }
+          },
+          "healthpickup": {
+            "components": {
+              "Name": {
+                "value": "HealthPickup"
+              },
+              "Transform": {
+                "pos": [
+                  2.5,
+                  0.55,
+                  0
+                ],
+                "scale": [
+                  0.45,
+                  0.45,
+                  0.45
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  18
+                ]
+              }
+            }
+          },
+          "energycorealpha": {
+            "components": {
+              "Name": {
+                "value": "EnergyCoreAlpha"
+              },
+              "Transform": {
+                "pos": [
+                  -2.5,
+                  0.55,
+                  -2.5
+                ],
+                "scale": [
+                  0.42,
+                  0.42,
+                  0.42
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  6
+                ]
+              }
+            }
+          },
+          "energycorebeta": {
+            "components": {
+              "Name": {
+                "value": "EnergyCoreBeta"
+              },
+              "Transform": {
+                "pos": [
+                  4,
+                  0.55,
+                  1.5
+                ],
+                "scale": [
+                  0.42,
+                  0.42,
+                  0.42
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  7
+                ]
+              }
+            }
+          },
+          "energycoregamma": {
+            "components": {
+              "Name": {
+                "value": "EnergyCoreGamma"
+              },
+              "Transform": {
+                "pos": [
+                  -5,
+                  0.55,
+                  4
+                ],
+                "scale": [
+                  0.42,
+                  0.42,
+                  0.42
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  18
+                ]
+              }
+            }
+          },
+          "extractionbeacon": {
+            "components": {
+              "Name": {
+                "value": "ExtractionBeacon"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  0.35,
+                  -4.5
+                ],
+                "scale": [
+                  0.7,
+                  0.25,
+                  0.7
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  16
+                ]
+              }
+            }
+          },
+          "shieldpedestal": {
+            "components": {
+              "Name": {
+                "value": "ShieldPedestal"
+              },
+              "Transform": {
+                "pos": [
+                  -1.5,
+                  0.3,
+                  -2.8
+                ],
+                "scale": [
+                  0.72,
+                  0.24,
+                  0.72
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  7
+                ]
+              }
+            }
+          },
+          "overchargepedestal": {
+            "components": {
+              "Name": {
+                "value": "OverchargePedestal"
+              },
+              "Transform": {
+                "pos": [
+                  1.5,
+                  0.3,
+                  -2.8
+                ],
+                "scale": [
+                  0.72,
+                  0.24,
+                  0.72
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 4
+              },
+              "MeshRenderer": {
+                "materials": [
+                  11
+                ]
+              }
+            }
+          },
+          "barrieremitter": {
+            "components": {
+              "Name": {
+                "value": "BarrierEmitter"
+              },
+              "Transform": {
+                "pos": [
+                  -4.2,
+                  0.7,
+                  -1.5
+                ],
+                "scale": [
+                  0.6,
+                  1.4,
+                  0.6
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  12
+                ]
+              }
+            }
+          },
+          "energybarrier": {
+            "components": {
+              "Name": {
+                "value": "EnergyBarrier"
+              },
+              "Transform": {
+                "pos": [
+                  -2.5,
+                  0.9,
+                  -1.5
+                ],
+                "scale": [
+                  3.4,
+                  1.8,
+                  0.16
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  5
+                ]
+              }
+            }
+          },
+          "sentinel": {
+            "components": {
+              "Name": {
+                "value": "Sentinel"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  0.9,
+                  8
+                ],
+                "scale": [
+                  1,
+                  1.8,
+                  1
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  19
+                ]
+              }
+            }
+          },
+          "projectilecoverleft": {
+            "components": {
+              "Name": {
+                "value": "ProjectileCoverLeft"
+              },
+              "Transform": {
+                "pos": [
+                  -2,
+                  0.9,
+                  4.6
+                ],
+                "scale": [
+                  1.6,
+                  1.8,
+                  0.6
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "projectilecoverright": {
+            "components": {
+              "Name": {
+                "value": "ProjectileCoverRight"
+              },
+              "Transform": {
+                "pos": [
+                  2,
+                  0.9,
+                  4.6
+                ],
+                "scale": [
+                  1.6,
+                  1.8,
+                  0.6
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "instance-23": {
+            "components": {},
+            "instance": {
+              "source": 17,
+              "overrides": [
+                {
+                  "target": [
+                    "nestedtarget"
+                  ],
+                  "components": {
+                    "Transform": {
+                      "scale": [
+                        0.7,
+                        0.7,
+                        0.7
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "refs": [
+        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "5b67aad2-06b5-59ad-a0a9-4296afae8b87",
+        "ab20af21-0764-55be-a7f2-b80ab3d46a0a",
+        "87bdfd47-85ba-55e7-bc5e-a3b10964602c",
+        "95730fd2-9846-5f84-8658-0b3c971eb263",
+        "811d6d8b-0181-5a92-9e30-9487994d4fc5",
+        "24804297-1cc2-5fce-ae1c-92bbf4418080",
+        "cfbf50fa-510f-582b-a4ea-786d236691ae",
+        "bf16f53a-fb5b-5134-8d85-ce6d89ee64e0",
+        "eeb51d1c-871e-591c-9b80-c28a1dc7978b",
+        "dec44aed-6b43-5f7f-9920-8d710bb212ce",
+        "be814ef7-b328-52df-b43d-4b7c0536f101",
+        "ba83ae8c-18fe-5060-9dda-34f22124d26f",
+        "81eec382-392f-5a93-8998-0ecf11ef7990",
+        "84870278-c7b6-5bf4-b3c5-1229b67ef1b5",
+        "6221a693-1b3c-599d-b15e-31a84ca38e75",
+        "515d8442-f63f-5209-9eb9-1bfd9a65b43e",
+        "69a0b0d8-74bc-53a0-958d-f8d02ae14b11",
+        "826eaa90-da96-58bf-92aa-dc713e1ff51e",
+        "cde56a1b-4717-5418-8d1c-fb2f4f350771"
+      ],
+      "artifacts": {}
+    },
+    "scene/nested-target": {
+      "kind": "scene",
+      "payload": {
+        "entities": {
+          "nestedtarget": {
+            "components": {
+              "Name": {
+                "value": "NestedTarget"
+              },
+              "Transform": {
+                "pos": [
+                  6.5,
+                  0.75,
+                  -2.5
+                ],
+                "scale": [
+                  0.8,
+                  0.8,
+                  0.8
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "nestedrepairpickup": {
+            "components": {
+              "Name": {
+                "value": "NestedRepairPickup"
+              },
+              "Transform": {
+                "pos": [
+                  0,
+                  0.8,
+                  -1.2
+                ],
+                "scale": [
+                  0.38,
+                  0.38,
+                  0.38
+                ]
+              },
+              "ChildOf": {
+                "parent": "nestedtarget"
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  2
+                ]
+              }
+            }
+          }
+        }
+      },
+      "refs": [
+        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "6221a693-1b3c-599d-b15e-31a84ca38e75",
+        "826eaa90-da96-58bf-92aa-dc713e1ff51e"
+      ],
+      "artifacts": {}
+    },
+    "material/ground": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.47843137254901963,
+            0.6196078431372549,
+            0.35294117647058826,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.95
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/tree-trunk": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.5411764705882353,
+            0.35294117647058826,
+            0.16862745098039217,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.9
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/tree-canopy": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.37254901960784315,
+            0.6823529411764706,
+            0.30980392156862746,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.85
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/red-box": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.2901960784313726,
+            0.6392156862745098,
+            0.8745098039215686,
+            1
+          ],
+          "metallic": 0.1,
+          "roughness": 0.4
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/blue-ball": {
+      "kind": "material",
+      "payload": {
+        "staticSwitches": { "clearcoat": true },
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.9568627450980393,
+            0.7725490196078432,
+            0.25882352941176473,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.6,
+          "clearcoat": 0,
+          "clearcoatRoughness": 0.12
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/player-skin": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.93,
+            0.74,
+            0.55,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.8
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/player-torso": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.27,
+            0.5,
+            0.86,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.8
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/player-legs": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.22,
+            0.24,
+            0.3,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.8
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/crate": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.85,
+            0.55,
+            0.2,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.8
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/barrier-emitter": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.9,
+            0.2,
+            0.3,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.35
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/health-pickup": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.18,
+            1,
+            0.48,
+            1
+          ],
+          "emissive": [
+            0.08,
+            1,
+            0.35
+          ],
+          "emissiveIntensity": 2.2,
+          "metallic": 0.05,
+          "roughness": 0.32
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "material/sentinel": {
+      "kind": "material",
+      "payload": {
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          },
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "forgeax::default-shadow-caster"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "ShadowCaster"
+              }
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.62,
+            0.12,
+            0.04,
+            1
+          ],
+          "emissive": [
+            1,
+            0.18,
+            0.02
+          ],
+          "emissiveIntensity": 0.35,
+          "metallic": 0.7,
+          "roughness": 0.28
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  }
+}

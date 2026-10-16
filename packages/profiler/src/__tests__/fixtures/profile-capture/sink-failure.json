@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.0",
+  "captureId": "capture-0004",
+  "timeUnit": "microseconds",
+  "frameLimit": 2,
+  "eventLimit": 4,
+  "phaseCatalog": {
+    "app": ["input", "update"],
+    "render": ["prepare", "submit"]
+  },
+  "records": [
+    {
+      "kind": "phase",
+      "source": "app",
+      "frameId": 1,
+      "phase": "input",
+      "startMicros": 1000,
+      "endMicros": 1100,
+      "durationMicros": 100
+    }
+  ],
+  "completeness": {
+    "status": "partial",
+    "retainedEventCount": 1,
+    "droppedEventCount": 0,
+    "incompleteReason": "profile-sink-failed",
+    "firstAffectedFrameId": 1,
+    "lastAffectedFrameId": 1
+  }
+}

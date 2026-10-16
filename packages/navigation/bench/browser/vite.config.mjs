@@ -1,0 +1,16 @@
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
+import {createWorldContext,World} from '../../../ecs/dist/index.mjs';
+import {SceneInstance} from '../../../render/dist/index.mjs';
+import {navigationCharacterPlugin,createNavigationMesh} from '../../dist/index.mjs';
+import {bakeNavigationMesh} from '../../../import/dist/navigation-bake.mjs';
+import {settings,doorway,actor} from '../fixtures.mjs';
+import {produceNavigationFixture,componentVocabulary} from '../delivery.mjs';
+import {vitePluginRhiDebug} from '../../../vite-plugin-rhi-debug/dist/index.mjs';
+import {forgeaxShader} from '../../../vite-plugin-shader/dist/index.mjs';
+const here=fileURLToPath(new URL('.',import.meta.url)),root=resolve(here,'../../../..');
+const mesh=createNavigationMesh((await bakeNavigationMesh({geometry:doorway(1.6),settings:{...settings,radius:.35}})).unwrap()).unwrap();
+const scratch=new World(),ctx=await createWorldContext(scratch,[navigationCharacterPlugin(mesh)]);scratch.components.register(SceneInstance).unwrap();
+const vocabulary=componentVocabulary(scratch);await ctx.fiber.dispose();
+const fixture=await produceNavigationFixture({actors:[actor(-4,-.25),actor(4,.25)],sceneComponents:vocabulary});
+export default {root:here,plugins:[forgeaxShader(),vitePluginRhiDebug({rootDir:root}),{name:'navigation-fixture',configureServer(server){server.middlewares.use((req,res,next)=>{const bytes=fixture.files.get(req.url?.slice(1));if(!bytes)return next();res.setHeader('content-type',req.url.endsWith('.json')?'application/json':'application/octet-stream');res.end(bytes);});}}],define:{'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG':'"1"'},server:{host:'127.0.0.1',port:5799,strictPort:true,fs:{allow:[root]},headers:{'Cross-Origin-Opener-Policy':'same-origin','Cross-Origin-Embedder-Policy':'require-corp'}},resolve:{alias:[{find:/^@forgeax\/engine\/(.+)$/,replacement:`${root}/packages/engine/dist/facades/$1.mjs`}]}};

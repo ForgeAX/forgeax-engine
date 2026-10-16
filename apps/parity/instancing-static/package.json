@@ -1,0 +1,56 @@
+{
+  "name": "@forgeax/parity-instancing-static",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M4 fixture for AC-09: 10000 static cubes (20*20*25 grid) drawn as a single instanced draw call. Locked parameters mirror requirements.md AC-09 (camera, light, canvas, clear color). The AC-09 P95>=60 fps gate is currently disabled (bug-20260612 \u2014 fps was fake-green on swiftshader-WebGL2 because the renderer was throwing); re-enable when a hardware-WebGPU CI runner is wired.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "bug-20260612: AC-09 P95>=60 fps gate had been silently fake-green \u2014 the renderer was throwing on createBindGroup in the wgpu-wasm Channel 3 fallback path (no GPU adapter on GH-hosted runners \u2192 headless chromium fell back to swiftshader WebGL2), and rAF kept ticking at vsync without rendering, so run-fps measured 60.06 fps every time. With the fallback chain repaired, 10000 cubes actually render on swiftshader, but the swiftshader software path slows progressively (sample1 ~28 fps, sample2 ~11 fps, sample3+ stalls past CI budget) \u2014 likely bind-group / buffer accumulation that's invisible on real hardware. AC-09 P95>=60 fps cannot be validated on the GH-hosted ubuntu metrics-validate runner; needs a hardware-WebGPU runner (chrome-beta + lavapipe + --enable-unsafe-swiftshader, or a self-hosted GPU runner). Tracked separately."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "fps kind covers steady-state perf for this fixture; pixel-parity bench focus stays on apps/parity/forgeax vs apps/parity/threejs"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; AC-09 P95>=60 fps real-perf gate needs a hardware-WebGPU runner (the fps kind above is currently disabled \u2014 see its `reason`)"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; instanced-mesh design discussion lives in plan-strategy.md, not in this workspace"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "1.56.1",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

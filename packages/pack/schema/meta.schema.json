@@ -1,0 +1,173 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/pack/schema/meta.schema.json",
+  "title": "ExternalAssetPackage",
+  "description": "Schema for .meta.json files describing an external asset package (source file + import settings + derived sub-assets).",
+  "$comment": "ScriptablePack durable consumer kinds are published by SCRIPTABLE_PACK_ASSET_KINDS in @forgeax/engine-pack/source; Meta sub-asset kind remains open for producer extensions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "importer", "importSettings", "subAssets"],
+  "properties": {
+    "schemaVersion": {
+      "oneOf": [{ "type": "string" }, { "type": "integer" }],
+      "description": "Schema version. Strings (e.g. '1.0.0') for hand-authored .meta.json; integers (1, 2, ...) for importer-emitted .meta.json (forgeax asset import writes schemaVersion: 1 as the wire format SSOT, GltfMetaJson literal type)."
+    },
+    "kind": {
+      "type": "string",
+      "const": "external-asset-package",
+      "description": "Discriminator for the external asset package type."
+    },
+    "packageId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable producer-owned package identity. It survives package moves; path is only a locator."
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "revision": {
+      "$ref": "#/$defs/revision"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "importer": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Open importer key (feat-20260603-asset-import-loader-injection M2): the @forgeax/engine-import runner dispatches the sidecar to the Importer registered under this key. Replaces the former closed `assetType` enum (one-cut migration, no shim). Known keys: 'image' (engine-image importer, single-image source), 'gltf' (engine-gltf importer, .gltf/.glb source), 'fbx' (engine-fbx importer, .fbx source), 'audio' (engine-audio-webaudio import path), 'font' (engine-font bake path), and the reserved 'shader' key consumed by engine-vite-plugin-shader's orthogonal transform pipeline (the import runner explicitly skips it). Adding a new importer needs only a registered Importer under a new key - no schema enum edit. Orthogonal to subAssets[].kind which identifies per-sub-asset payload kind."
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Omit to derive the companion file in the same directory (strip .meta.json suffix from the meta filename). An explicit source is resolved relative to this sidecar."
+    },
+    "importSettings": {
+      "type": "object",
+      "description": "Importer-specific settings. Free-form object. Common texture keys: compressionMode ('auto' | 'etc1s' | 'uastc' | 'none', default 'auto'; see @forgeax/engine-image README), mipmap (boolean, bake mip chain offline)."
+    },
+    "sourceOverrides": {
+      "type": "object",
+      "description": "Optional producer-owned Meta author facts keyed by declared subAssets[].sourceKey. An empty object is legacy-equivalent and omitted by canonical writers.",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Producer-owned payload; the pack schema validates object shape and the producer contract validates sourceKey identity.",
+        "additionalProperties": true
+      }
+    },
+    "sourceOverrideDescriptors": {
+      "type": "array",
+      "description": "Producer-declared authoring contracts for stable source override keys.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceKey", "payloadSchema"],
+        "properties": {
+          "sourceKey": { "type": "string", "minLength": 1 },
+          "semantic": { "type": "string", "enum": ["mesh-material-slot-defaults"] },
+          "payloadSchema": { "type": "object" }
+        }
+      }
+    },
+    "paramSchema": {
+      "type": "array",
+      "description": "Material-shader parameter schema (feat-20260528-material-shader-registration-unification). Only valid when importer is 'shader'. Each entry has name (string) and type (string) with an optional default.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "default": {}
+        }
+      }
+    },
+    "subAssets": {
+      "type": "array",
+      "description": "Derived sub-assets extracted from the source file.",
+      "items": {
+        "$ref": "#/$defs/subAsset"
+      }
+    }
+  },
+  "$defs": {
+    "subAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guid", "sourceIndex", "kind"],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "format": "uuid",
+          "description": "RFC 4122 36-char dash-form UUID identifying this sub-asset."
+        },
+        "sourceIndex": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Zero-based index into the source file's exported objects."
+        },
+        "sourceKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producer-owned stable key used to match this output across reimport topology changes."
+        },
+        "name": {
+          "type": "string",
+          "description": "Optional display-friendly name for this sub-asset. Copied from the source (e.g. glTF image.name / mesh.name) so the sidecar is human-inspectable. Has no runtime semantic weight."
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Open sub-asset kind string (feat-20260629-importer-self-declared-fold-contract M3 / D-1 scheme A): the prior closed enum is removed — any non-empty string is accepted at the schema layer. Known engine-owned kinds: mesh, material, scene, texture, equirect, material-shader, skeleton, skin, animation-clip, audio, font. Host-defined importers declare their own kind values (e.g. 'reel-game-blob') and the schema layer admits them without modification. Validation of unknown kinds is deferred to the fold/import layer where the ImporterRegistry is available. The field itself (subAssets[].kind) is retained (OOS-2: no field deletion, only enum removal)."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "version"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "observedAt", "rootId"],
+      "properties": {
+        "digest": { "type": "string", "minLength": 1 },
+        "observedAt": { "type": "number" },
+        "rootId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["info", "warning", "blocking"] },
+        "message": { "type": "string" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "expected": { "type": "string", "minLength": 1 },
+        "actual": { "type": "string" },
+        "hint": { "type": "string", "minLength": 1 },
+        "authority": { "type": "string", "enum": ["producer", "pack", "catalog"] },
+        "evidence": { "type": "array", "items": { "type": "object" } },
+        "recoveryIntents": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["asset", "package", "resource"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

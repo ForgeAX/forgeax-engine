@@ -1,0 +1,301 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019e9c00-0000-7000-8000-000000000000",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "mouth-charge",
+            "capacity": 96,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                -0.85,
+                1.05,
+                0.9
+              ],
+              "radius": 1
+            },
+            "schedule": {
+              "rate": 18,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 12
+                }
+              ]
+            },
+            "program": {
+              "module": "mouth-charge.vfx.wgsl"
+            },
+            "channels": [
+              {
+                "id": "impact",
+                "payload": "impact",
+                "capacity": 4,
+                "overflow": "drop-oldest"
+              }
+            ],
+            "events": [
+              {
+                "id": "impact-event",
+                "channel": "impact",
+                "subEmitter": "impact-mesh",
+                "fanOut": 2,
+                "recursionDepth": 1
+              }
+            ],
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "019e9c00-0000-7000-8000-000000000001",
+                "blend": "additive"
+              }
+            ]
+          },
+          {
+            "id": "lightning-ribbon",
+            "capacity": 32,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0.225,
+                0.12,
+                0.965
+              ],
+              "radius": 1.6
+            },
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 13
+                }
+              ],
+              "loopDuration": 0.6
+            },
+            "program": {
+              "module": "lightning-ribbon.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "ribbon",
+                "material": "019e9c00-0000-7000-8000-000000000001",
+                "stripKey": "alive-index",
+                "capacity": 32,
+                "overflow": "drop-oldest",
+                "width": 0.007
+              }
+            ]
+          },
+          {
+            "id": "lightning-trail",
+            "capacity": 16,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0.25,
+                0.4,
+                0.9
+              ],
+              "radius": 2.2
+            },
+            "schedule": {
+              "rate": 5,
+              "bursts": [
+                {
+                  "time": 0.08,
+                  "count": 3
+                }
+              ],
+              "loopDuration": 0.8
+            },
+            "program": {
+              "module": "lightning-trail.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "trail",
+                "material": "019e9c00-0000-7000-8000-000000000002",
+                "historyLength": 8,
+                "capacity": 16,
+                "overflow": "drop-oldest",
+                "width": 0.004
+              }
+            ]
+          },
+          {
+            "id": "lightning-beam",
+            "capacity": 48,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0.2,
+                0,
+                0.9
+              ],
+              "radius": 2.6
+            },
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 24
+                }
+              ],
+              "loopDuration": 0.6
+            },
+            "program": {
+              "module": "lightning-beam.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "beam",
+                "material": "019e9c00-0000-7000-8000-000000000006",
+                "endpointField": "velocity",
+                "capacity": 48,
+                "overflow": "drop-newest",
+                "width": 0.005
+              }
+            ]
+          },
+          {
+            "id": "impact-mesh",
+            "capacity": 48,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0.2,
+                0,
+                0.9
+              ],
+              "radius": 2.6
+            },
+            "schedule": {
+              "rate": 8,
+              "bursts": [
+                {
+                  "time": 0.2,
+                  "count": 8
+                }
+              ]
+            },
+            "program": {
+              "module": "impact-mesh.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "cd16a32c-0fd2-4c02-861d-a5537baaa793",
+                "mesh": "cbe42beb-8975-5096-b3a1-3dda4cb4c077"
+              }
+            ]
+          },
+          {
+            "id": "charge-arcane-dial",
+            "capacity": 2,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                -0.85,
+                1.05,
+                0.9
+              ],
+              "radius": 2.2
+            },
+            "program": {
+              "module": "arc-nova-flow-field.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "7e43f472-4c4d-4ee3-9aa1-bc89e7402811",
+                "blend": "additive"
+              }
+            ]
+          },
+          {
+            "id": "impact-violet-shock",
+            "capacity": 4,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "world",
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0.1,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 0.6
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                1.3,
+                -0.7,
+                0.95
+              ],
+              "radius": 1.5
+            },
+            "program": {
+              "module": "arc-nova-shockwave.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "7e43f472-4c4d-4ee3-9aa1-bc89e7402812",
+                "blend": "additive"
+              }
+            ]
+          }
+        ]
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

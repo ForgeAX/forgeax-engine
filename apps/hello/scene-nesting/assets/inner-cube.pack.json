@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "kind": "scene",
+      "guid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "refs": [
+        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "008e4f75-e7a3-4715-b05b-b93a9ec12074"
+      ],
+      "artifacts": {},
+      "payload": {
+        "entities": {
+          "cube": {
+            "components": {
+              "Transform": {
+                "pos": [
+                  0,
+                  0.5,
+                  0
+                ],
+                "quat": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "scale": [
+                  0.5,
+                  0.5,
+                  0.5
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

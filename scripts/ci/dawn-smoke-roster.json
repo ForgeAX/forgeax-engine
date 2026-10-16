@@ -1,0 +1,1573 @@
+{
+  "schemaVersion": 3,
+  "source": ["apps/hello/**/package.json", "apps/learn-render/**/package.json"],
+  "entries": [
+    {
+      "package": "@forgeax/hello-2d-flashlight",
+      "path": "apps/hello/2d-flashlight/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-2d-flashlight/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-animation-graph",
+      "path": "apps/hello/animation-graph/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-animation-graph/numerical",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "assertion",
+          "script": "smoke"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-app",
+      "path": "apps/hello/app/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-app/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-asi-world",
+      "path": "apps/hello/asi-world/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-asi-world/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-audio",
+      "path": "apps/hello/audio/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-audio/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-bloom",
+      "path": "apps/hello/bloom/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-bloom/smoke:all",
+          "commandId": "smoke:all",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-boss-lightning",
+      "path": "apps/hello/boss-lightning/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-boss-lightning/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": [
+              "019e9c00-0000-7000-8000-000000000000",
+              "019e9c00-0000-7000-8000-000000000002",
+              "8cf2368a-0ae3-579a-a479-b0df2b5f392a"
+            ]
+          },
+          "oracle": "frameReceipt"
+        },
+        {
+          "gateId": "hello-boss-lightning/sdf",
+          "commandId": "smoke:sdf",
+          "executionClass": "sharded",
+          "script": "smoke:sdf",
+          "artifactRequirements": {
+            "packGuids": [
+              "0d9c8387-2647-5124-aba5-ca234bbe228f",
+              "8ab23da3-6776-5126-ac38-07760b291f5f",
+              "376f65c2-5471-5873-aebb-543604f31a85",
+              "8e981af2-17c6-56a7-a576-3d8e3677973d",
+              "200eacce-a363-5e18-b55d-e6108efed60f",
+              "bbb7fc40-a40d-58e2-a6e6-209dc256e911"
+            ]
+          },
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-character",
+      "path": "apps/hello/character/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-character/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-cinder-fall",
+      "path": "apps/hello/cinder-fall/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-cinder-fall/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-compressed-texture",
+      "path": "apps/hello/compressed-texture/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-compressed-texture/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-cube",
+      "path": "apps/hello/cube/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "hello-cube/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-triangle and hello-room; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/hello-culling",
+      "path": "apps/hello/culling/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-culling/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-custom-importer",
+      "path": "apps/hello/custom-importer/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-custom-importer/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-custom-shader",
+      "path": "apps/hello/custom-shader/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-custom-shader/direct-dawn",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        },
+        {
+          "gateId": "hello-custom-shader/composite",
+          "commandId": "smoke:all",
+          "executionClass": "independent",
+          "oracle": "composite",
+          "script": "smoke:all"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-debug-draw",
+      "path": "apps/hello/debug-draw/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-debug-draw/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-deep-agent-feedback",
+      "path": "apps/hello/deep-agent-feedback/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-deep-agent-feedback/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-dsh-federation",
+      "path": "apps/hello/dsh-federation/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-dsh-federation/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-entity-visibility",
+      "path": "apps/hello/entity-visibility/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-entity-visibility/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-fbx-cube",
+      "path": "apps/hello/fbx-cube/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-fbx-cube/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-fbx-skin",
+      "path": "apps/hello/fbx-skin/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-fbx-skin/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-foliage-transmission",
+      "path": "apps/hello/foliage-transmission/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-foliage-transmission/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-format-tier1",
+      "path": "apps/hello/format-tier1/package.json",
+      "classification": "excluded",
+      "reason": "package has no scripts.smoke command; manifest invocation is not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-format-tier1/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-fxaa",
+      "path": "apps/hello/fxaa/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-fxaa/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-gi",
+      "path": "apps/hello/gi/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-gi/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-gltf-instancing",
+      "path": "apps/hello/gltf-instancing/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-gltf-instancing/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-gltf",
+      "path": "apps/hello/gltf/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-gltf/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-hdrp-lighting",
+      "path": "apps/hello/hdrp-lighting/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-hdrp-lighting/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-intelligence-worker",
+      "path": "apps/hello/intelligence-worker/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-intelligence-worker/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-level-switch",
+      "path": "apps/hello/level-switch/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-level-switch/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-lod-occlusion",
+      "path": "apps/hello/lod-occlusion/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-lod-occlusion/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": ["019e2b88-aece-7b6e-bbfe-45d6453d2101"]
+          },
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m1-composition",
+      "path": "apps/hello/m1-composition/package.json",
+      "classification": "excluded",
+      "reason": "smoke script source has no direct Dawn backend evidence",
+      "gates": [
+        {
+          "gateId": "hello-m1-composition/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m2-content-pipeline",
+      "path": "apps/hello/m2-content-pipeline/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m2-content-pipeline/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m3-programmable-rendering",
+      "path": "apps/hello/m3-programmable-rendering/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m3-programmable-rendering/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m4-interactive-simulation",
+      "path": "apps/hello/m4-interactive-simulation/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m4-interactive-simulation/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m5-interaction-media",
+      "path": "apps/hello/m5-interaction-media/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m5-interaction-media/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m6-inspection-forensics",
+      "path": "apps/hello/m6-inspection-forensics/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m6-inspection-forensics/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m7-backend-recovery",
+      "path": "apps/hello/m7-backend-recovery/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m7-backend-recovery/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-m8-integrated-capstone",
+      "path": "apps/hello/m8-integrated-capstone/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-m8-integrated-capstone/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-material-projection",
+      "path": "apps/hello/material-projection/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-material-projection/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-multi-material",
+      "path": "apps/hello/multi-material/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-multi-material/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-multi-world",
+      "path": "apps/hello/multi-world/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-multi-world/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-multithreaded-execution",
+      "path": "apps/hello/multithreaded-execution/package.json",
+      "classification": "excluded",
+      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
+      "gates": [
+        {
+          "gateId": "hello-multithreaded-execution/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "assertion"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-oit",
+      "path": "apps/hello/oit/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-oit/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-physics",
+      "path": "apps/hello/physics/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-physics/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-physical-material",
+      "path": "apps/hello/physical-material/package.json",
+      "classification": "excluded",
+      "reason": "physical-material requires the private binary asset closure and is not part of the immutable app-shard inputs",
+      "gates": [
+        {
+          "gateId": "hello-physical-material/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-picking",
+      "path": "apps/hello/picking/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-picking/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-rect-light-texture",
+      "path": "apps/hello/rect-light-texture/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-rect-light-texture/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-room",
+      "path": "apps/hello/room/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-room/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-scene-nesting",
+      "path": "apps/hello/scene-nesting/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-scene-nesting/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-shadow-opt-out",
+      "path": "apps/hello/shadow-opt-out/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-shadow-opt-out/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-skin",
+      "path": "apps/hello/skin/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-skin/direct-dawn",
+          "commandId": "direct-dawn",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        },
+        {
+          "gateId": "hello-skin/writeback",
+          "commandId": "writeback",
+          "executionClass": "independent",
+          "oracle": "assertion",
+          "script": "smoke:writeback"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-sprite-atlas",
+      "path": "apps/hello/sprite-atlas/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-sprite-atlas/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-sprite-lit",
+      "path": "apps/hello/sprite-lit/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-sprite-lit/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-sprite",
+      "path": "apps/hello/sprite/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-sprite/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-ssr",
+      "path": "apps/hello/ssr/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-ssr/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-taa",
+      "path": "apps/hello/taa/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-taa/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-terrain",
+      "path": "apps/hello/terrain/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-terrain/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-text",
+      "path": "apps/hello/text/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-text/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-tilemap-object-layer",
+      "path": "apps/hello/tilemap-object-layer/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-tilemap-object-layer/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-tilemap",
+      "path": "apps/hello/tilemap/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-tilemap/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-tonemap",
+      "path": "apps/hello/tonemap/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-tonemap/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-topology",
+      "path": "apps/hello/topology/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-topology/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-transform-hierarchy",
+      "path": "apps/hello/transform-hierarchy/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-transform-hierarchy/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-triangle",
+      "path": "apps/hello/triangle/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-triangle/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-video-cutscene",
+      "path": "apps/hello/video-cutscene/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-video-cutscene/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/video-texture",
+      "path": "apps/hello/video-texture/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "video-texture/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-1-hello-window",
+      "path": "apps/learn-render/1.getting-started/1.hello-window/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-1-hello-window/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-triangle; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-2-hello-triangle",
+      "path": "apps/learn-render/1.getting-started/2.hello-triangle/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-2-hello-triangle/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-triangle; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-3-shaders",
+      "path": "apps/learn-render/1.getting-started/3.shaders/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-3-shaders/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-custom-shader; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/hello-volumetric-fog",
+      "path": "apps/hello/volumetric-fog/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-volumetric-fog/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-4-textures",
+      "path": "apps/learn-render/1.getting-started/4.textures/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-4-textures/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-5-transformations",
+      "path": "apps/learn-render/1.getting-started/5.transformations/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-5-transformations/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-transform-hierarchy; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-6-coordinate-systems",
+      "path": "apps/learn-render/1.getting-started/6.coordinate-systems/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-6-coordinate-systems/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-multi-world; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-1-getting-started-7-camera",
+      "path": "apps/learn-render/1.getting-started/7.camera/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-1-getting-started-7-camera/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains hello-topology and multi-camera Browser; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-2-lighting-1-colors",
+      "path": "apps/learn-render/2.lighting/1.colors/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-2-lighting-1-colors/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains color-lighting parity; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-2-lighting-2-basic-lighting",
+      "path": "apps/learn-render/2.lighting/2.basic-lighting/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-2-lighting-2-basic-lighting/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains color-lighting direct-light; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-2-lighting-3-materials",
+      "path": "apps/learn-render/2.lighting/3.materials/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-2-lighting-3-materials/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains Standard surface and material publication; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-2-lighting-4-lighting-maps",
+      "path": "apps/learn-render/2.lighting/4.lighting-maps/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-2-lighting-4-lighting-maps/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains normal-bump and direct-light Dawn; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-2-lighting-5-light-casters",
+      "path": "apps/learn-render/2.lighting/5.light-casters/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-2-lighting-5-light-casters/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-2-lighting-6-multiple-lights",
+      "path": "apps/learn-render/2.lighting/6.multiple-lights/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-2-lighting-6-multiple-lights/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains light-casters and clustered-light tests; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-3-model-loading-1-model-loading",
+      "path": "apps/learn-render/3.model-loading/1.model-loading/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-3-model-loading-1-model-loading/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": [
+              "019e4a26-3c29-7420-af5d-20f2724a16b0",
+              "019e4fe2-523b-7506-99e5-ccd39795ecda"
+            ]
+          },
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-1-depth-testing",
+      "path": "apps/learn-render/4.advanced-opengl/1.depth-testing/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-1-depth-testing/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains GBuffer replay and depth RHI tests; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-10-anti-aliasing-msaa",
+      "path": "apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-10-anti-aliasing-msaa/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains Browser MSAA gate; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-2-stencil-testing",
+      "path": "apps/learn-render/4.advanced-opengl/2.stencil-testing/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-2-stencil-testing/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains RHI stencil contract; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-3-blending",
+      "path": "apps/learn-render/4.advanced-opengl/3.blending/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-3-blending/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains OIT and transmission; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-4-face-culling",
+      "path": "apps/learn-render/4.advanced-opengl/4.face-culling/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-4-face-culling/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains culling and material raster state; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-5-framebuffers",
+      "path": "apps/learn-render/4.advanced-opengl/5.framebuffers/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "learn-render-framebuffers/direct-dawn",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        },
+        {
+          "gateId": "learn-render-framebuffers/gauntlet",
+          "commandId": "smoke:gauntlet",
+          "executionClass": "independent",
+          "oracle": "composite",
+          "script": "smoke:gauntlet"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-6-cubemaps",
+      "path": "apps/learn-render/4.advanced-opengl/6.cubemaps/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-6-cubemaps/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains image environment and reflection; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-7-advanced-glsl-ubo",
+      "path": "apps/learn-render/4.advanced-opengl/7.advanced-glsl-ubo/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-7-advanced-glsl-ubo/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains RHI uniform layout and custom shaders; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-4-advanced-opengl-9-instancing",
+      "path": "apps/learn-render/4.advanced-opengl/9.instancing/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-4-advanced-opengl-9-instancing/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-1-advanced-lighting",
+      "path": "apps/learn-render/5.advanced-lighting/1.advanced-lighting/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-1-advanced-lighting/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-2-gamma-correction",
+      "path": "apps/learn-render/5.advanced-lighting/2.gamma-correction/package.json",
+      "classification": "excluded",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-2-gamma-correction/smoke",
+          "commandId": "smoke",
+          "executionClass": "excluded",
+          "oracle": "frameReceipt"
+        }
+      ],
+      "reason": "Core CI retains color-lighting parity; the tutorial Browser bootstrap remains covered."
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-3-1-shadow-mapping-3-full",
+      "path": "apps/learn-render/5.advanced-lighting/3.1.shadow-mapping/3.full/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-3-1-shadow-mapping-3-full/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-3-2-point-shadows",
+      "path": "apps/learn-render/5.advanced-lighting/3.2.point-shadows/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-3-2-point-shadows/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-3-3-csm",
+      "path": "apps/learn-render/5.advanced-lighting/3.3.csm/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-3-3-csm/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-4-normal-mapping",
+      "path": "apps/learn-render/5.advanced-lighting/4.normal-mapping/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-4-normal-mapping/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-5-parallax-mapping",
+      "path": "apps/learn-render/5.advanced-lighting/5.parallax-mapping/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-5-parallax-mapping/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-6-hdr",
+      "path": "apps/learn-render/5.advanced-lighting/6.hdr/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-6-hdr/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-7-bloom",
+      "path": "apps/learn-render/5.advanced-lighting/7.bloom/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-7-bloom/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-8-deferred-shading",
+      "path": "apps/learn-render/5.advanced-lighting/8.deferred-shading/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-8-deferred-shading/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-5-advanced-lighting-9-ssao",
+      "path": "apps/learn-render/5.advanced-lighting/9.ssao/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-5-advanced-lighting-9-ssao/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-6-pbr-2-ibl-irradiance",
+      "path": "apps/learn-render/6.pbr/2.ibl-irradiance/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-6-pbr-2-ibl-irradiance/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "artifactRequirements": {
+            "packGuids": ["019e4a26-3c29-7420-af5d-20f2724a16b0"]
+          },
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-6-pbr-3-ibl-specular",
+      "path": "apps/learn-render/6.pbr/3.ibl-specular/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-6-pbr-3-ibl-specular/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "artifactRequirements": {
+            "packGuids": ["019e4a26-3c29-7420-af5d-20f2724a16b0"]
+          },
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-6-pbr-4-render-target-reflection",
+      "path": "apps/learn-render/6.pbr/4.render-target-reflection/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-6-pbr-4-render-target-reflection/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/app-learn-render-6-pbr-4-transmission-refraction",
+      "path": "apps/learn-render/6.pbr/4.transmission-refraction/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "app-learn-render-6-pbr-4-transmission-refraction/features-a",
+          "commandId": "smoke:features-a",
+          "executionClass": "sharded",
+          "oracle": "assertion",
+          "script": "smoke:features-a"
+        },
+        {
+          "gateId": "app-learn-render-6-pbr-4-transmission-refraction/features-b",
+          "commandId": "smoke:features-b",
+          "executionClass": "sharded",
+          "oracle": "assertion",
+          "script": "smoke:features-b"
+        },
+        {
+          "gateId": "app-learn-render-6-pbr-4-transmission-refraction/frames",
+          "commandId": "smoke:frames",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt",
+          "script": "smoke:frames"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/collectathon",
+      "path": "apps/collectathon/package.json",
+      "classification": "supplemental",
+      "gates": [
+        {
+          "gateId": "collectathon/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/engine-shadertoy-happy-blob",
+      "path": "apps/shadertoy/happy-blob/package.json",
+      "classification": "supplemental",
+      "gates": [
+        {
+          "gateId": "shadertoy/happy-blob/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-multi-uv",
+      "path": "apps/hello-multi-uv/package.json",
+      "classification": "supplemental",
+      "gates": [
+        {
+          "gateId": "hello-multi-uv/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/perf-10k-cubes-lights",
+      "path": "apps/perf/10k-cubes-lights/package.json",
+      "classification": "supplemental",
+      "gates": [
+        {
+          "gateId": "perf-10k-cubes-lights/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/perf-shadow-stress",
+      "path": "apps/perf/shadow-stress/package.json",
+      "classification": "supplemental",
+      "gates": [
+        {
+          "gateId": "perf-shadow-stress/smoke",
+          "commandId": "smoke",
+          "executionClass": "independent",
+          "oracle": "frameReceipt",
+          "script": "smoke"
+        }
+      ]
+    },
+    {
+      "package": "@forgeax/hello-transform-gizmo",
+      "path": "apps/hello/transform-gizmo/package.json",
+      "classification": "run",
+      "gates": [
+        {
+          "gateId": "hello-transform-gizmo/smoke",
+          "commandId": "smoke",
+          "executionClass": "sharded",
+          "oracle": "frameReceipt"
+        },
+        {
+          "gateId": "hello-transform-gizmo/browser",
+          "commandId": "smoke:browser",
+          "executionClass": "sharded",
+          "script": "smoke:browser",
+          "oracle": "frameReceipt"
+        }
+      ]
+    }
+  ],
+  "roots": ["apps/hello", "apps/learn-render"]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "depth-of-field",
+  "name": "Depth of Field Lab",
+  "schemaVersion": "3.0.0",
+  "roots": {
+    "engine": "39a633d6-5ac8-5d77-880f-c2d1d1e0713c"
+  }
+}

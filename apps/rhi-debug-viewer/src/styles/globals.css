@@ -1,0 +1,416 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: var(--fx-ref-space-0);
+}
+
+.rhi-viewer {
+  --rhi-checker-size: 12px;
+  --rhi-texture-stage-min-height: 12rem;
+  --rhi-texture-stage-max-height: 34rem;
+  container: rhi-viewer / size;
+  min-width: 0;
+  color-scheme: inherit;
+  font:
+    var(--fx-type-ui-font-weight) var(--fx-type-ui-font-size) / var(--fx-type-ui-line-height)
+    var(--fx-type-ui-font-family);
+}
+
+.rhi-viewer :where(button:not(.fx-button), input:not(.fx-input), select:not(.fx-input)) {
+  font: inherit;
+}
+.rhi-viewer :where(button:not(.fx-button)) {
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.rhi-viewer button:not(:disabled) {
+  cursor: pointer;
+}
+.rhi-viewer :where(button, input, select, [tabindex]):focus-visible {
+  outline: var(--fx-border-focus-width) solid var(--fx-color-border-focus);
+  outline-offset: var(--fx-border-focus-offset);
+}
+.rhi-viewer
+  :where(input:not([type="file"]):not([type="checkbox"]):not(.fx-input), select:not(.fx-input)) {
+  min-width: 0;
+  height: var(--fx-component-field-height-default);
+  padding: 0 var(--fx-ref-space-12);
+  border: var(--fx-border-width) solid var(--fx-color-border-control);
+  border-radius: var(--fx-radius-control);
+  background: var(--fx-color-surface-raised);
+  color: var(--fx-color-text-primary);
+  font:
+    var(--fx-type-compact-font-weight) var(--fx-type-compact-font-size) /
+    var(--fx-type-compact-line-height) var(--fx-type-compact-font-family);
+}
+.rhi-viewer
+  :where(
+    input:not([type="file"]):not([type="checkbox"]):not(.fx-input),
+    select:not(.fx-input)
+  ):hover {
+  background: var(--fx-color-surface-hover);
+}
+.rhi-viewer input::placeholder {
+  color: var(--fx-color-text-muted);
+}
+.rhi-viewer option {
+  background: var(--fx-color-surface-raised);
+  color: var(--fx-color-text-primary);
+}
+.rhi-viewer :where(code, .font-mono) {
+  font-family: var(--fx-type-code-font-family);
+}
+.rhi-viewer .text-caption {
+  font:
+    var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) /
+    var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+}
+.rhi-viewer .text-compact {
+  font:
+    var(--fx-type-compact-font-weight) var(--fx-type-compact-font-size) /
+    var(--fx-type-compact-line-height) var(--fx-type-compact-font-family);
+}
+.rhi-viewer .text-ui {
+  font:
+    var(--fx-type-ui-font-weight) var(--fx-type-ui-font-size) / var(--fx-type-ui-line-height)
+    var(--fx-type-ui-font-family);
+}
+.rhi-viewer .text-code {
+  font:
+    var(--fx-type-code-font-weight) var(--fx-type-code-font-size) / var(--fx-type-code-line-height)
+    var(--fx-type-code-font-family);
+}
+.rhi-viewer .text-caption.font-medium,
+.rhi-viewer .text-compact.font-medium {
+  font-weight: var(--fx-ref-font-weight-500);
+}
+.rhi-viewer .text-ui.font-semibold {
+  font-weight: var(--fx-ref-font-weight-600);
+}
+.rhi-viewer * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--fx-color-border-strong) transparent;
+}
+
+.forgeax-dockview {
+  min-height: 0;
+  overflow: hidden;
+}
+.dockview-theme-forgeax {
+  --dv-background-color: var(--fx-color-surface-canvas);
+  --dv-group-view-background-color: var(--fx-color-surface-canvas);
+  --dv-tabs-and-actions-container-background-color: var(--fx-color-surface-inset);
+  --dv-tabs-and-actions-container-font-size: var(--fx-type-compact-font-size);
+  --dv-tabs-and-actions-container-height: var(--fx-component-control-height-compact);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--fx-color-surface-canvas);
+  --dv-activegroup-visiblepanel-tab-color: var(--fx-color-text-primary);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-inset);
+  --dv-activegroup-hiddenpanel-tab-color: var(--fx-color-text-secondary);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--fx-color-surface-sidebar);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--fx-color-text-secondary);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--fx-color-surface-inset);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--fx-color-text-muted);
+  --dv-tab-divider-color: var(--fx-color-border-subtle);
+  --dv-separator-border: var(--fx-color-border-subtle);
+  --dv-paneview-header-border-color: var(--fx-color-border-subtle);
+  --dv-paneview-active-outline-color: var(--fx-color-border-focus);
+  --dv-sash-color: var(--fx-color-border-subtle);
+  --dv-active-sash-color: var(--fx-color-border-strong);
+  --dv-tabs-container-scrollbar-color: var(--fx-color-text-muted);
+  --dv-scrollbar-background-color: var(--fx-color-border-strong);
+  --dv-icon-hover-background-color: var(--fx-color-surface-hover);
+  --dv-context-menu-background-color: var(--fx-color-surface-raised);
+  --dv-context-menu-color: var(--fx-color-text-primary);
+  --dv-drag-over-background-color: var(--fx-color-surface-selected);
+  --dv-drag-over-border-color: var(--fx-color-border-focus);
+  --dv-drag-over-border: var(--fx-border-width) solid var(--fx-color-border-focus);
+  --dv-floating-border: var(--fx-border-width) solid var(--fx-color-border-default);
+  --dv-floating-group-border: var(--fx-border-width) solid var(--fx-color-border-default);
+  --dv-floating-box-shadow: var(--fx-shadow-floating);
+  --dv-floating-titlebar-background-color: var(--fx-color-surface-sidebar);
+  --dv-floating-titlebar-border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  --dv-floating-titlebar-height: var(--fx-component-control-height-compact);
+  --dv-floating-group-dragging-opacity: 0.5;
+  --dv-overlay-z-index: 999;
+  --dv-tab-font-size: inherit;
+  --dv-tab-margin: 0;
+  --dv-border-radius: 0;
+  --dv-tab-border-radius: 0;
+  --dv-sash-border-radius: 0;
+  --dv-dropdown-border-radius: var(--fx-radius-control);
+  --dv-tab-close-icon-size: var(--fx-component-control-icon-size);
+  --dv-spacing-padding: 0;
+  --dv-active-sash-transition-duration: 0.1s;
+  --dv-active-sash-transition-delay: 0.5s;
+  --dv-transition-duration: 0.2s;
+}
+.forgeax-dockview .dv-content-container {
+  background: var(--fx-color-surface-canvas);
+}
+.forgeax-dockview .dv-tab.dv-active-tab {
+  box-shadow: inset 0 calc(-1 * var(--fx-border-focus-width)) var(--fx-color-selection-indicator);
+}
+.forgeax-dockview .dv-default-tab .dv-default-tab-action {
+  min-width: var(--fx-component-control-icon-hit-area-min);
+  min-height: var(--fx-component-control-icon-hit-area-min);
+}
+
+.forgeax-appbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--fx-ref-space-8);
+  min-height: var(--fx-component-panel-header-height);
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-12);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  background: var(--fx-color-surface-sidebar);
+}
+.forgeax-notice {
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-12);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  background: var(--fx-color-surface-inset);
+  color: var(--fx-color-text-secondary);
+  font:
+    var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) /
+    var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+}
+.forgeax-notice-error {
+  background: var(--fx-color-status-error-bg);
+  color: var(--fx-color-status-error-fg);
+}
+.forgeax-notice-warning {
+  background: var(--fx-color-status-warning-bg);
+  color: var(--fx-color-status-warning-fg);
+}
+.forgeax-drop-overlay {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: var(--fx-border-focus-width) solid var(--fx-color-border-focus);
+  background: var(--fx-color-scrim);
+  font:
+    var(--fx-type-ui-font-weight) var(--fx-type-ui-font-size) / var(--fx-type-ui-line-height)
+    var(--fx-type-ui-font-family);
+  pointer-events: none;
+}
+.forgeax-panel {
+  height: 100%;
+  min-height: 0;
+  background: var(--fx-color-surface-canvas);
+  color: var(--fx-color-text-primary);
+}
+.forgeax-panel-toolbar {
+  display: flex;
+  min-height: var(--fx-component-panel-header-height);
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-12);
+  border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  background: var(--fx-color-surface-sidebar);
+}
+.forgeax-layout-menu {
+  position: absolute;
+  z-index: 50;
+  top: 100%;
+  right: 0;
+  width: var(--fx-component-menu-min-width);
+  margin-top: var(--fx-ref-space-4);
+  padding: var(--fx-ref-space-6);
+  border: var(--fx-border-width) solid var(--fx-color-border-default);
+  border-radius: var(--fx-radius-popover);
+  background: var(--fx-color-surface-raised);
+  box-shadow: var(--fx-shadow-floating);
+}
+.forgeax-layout-menu > button {
+  display: flex;
+  width: 100%;
+  min-height: var(--fx-component-menu-row-height);
+  align-items: flex-start;
+  gap: var(--fx-ref-space-8);
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-12);
+  border: 0;
+  border-radius: var(--fx-radius-control);
+  background: transparent;
+  color: var(--fx-color-text-primary);
+  font:
+    var(--fx-type-compact-font-weight) var(--fx-type-compact-font-size) /
+    var(--fx-type-compact-line-height) var(--fx-type-compact-font-family);
+  text-align: left;
+}
+.forgeax-layout-menu > button:hover {
+  background: var(--fx-color-surface-hover);
+}
+.forgeax-layout-menu > button > svg {
+  flex-shrink: 0;
+  margin-top: var(--fx-ref-space-2);
+  color: var(--fx-color-text-muted);
+}
+.forgeax-layout-menu > button span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--fx-ref-space-2);
+}
+.forgeax-layout-menu > button strong {
+  font-weight: var(--fx-ref-font-weight-500);
+}
+.forgeax-layout-menu > button small {
+  color: var(--fx-color-text-muted);
+  font:
+    var(--fx-type-caption-font-weight) var(--fx-type-caption-font-size) /
+    var(--fx-type-caption-line-height) var(--fx-type-caption-font-family);
+}
+.forgeax-layout-menu-separator {
+  height: var(--fx-border-width);
+  margin: var(--fx-ref-space-6) var(--fx-ref-space-4);
+  border: 0;
+  background: var(--fx-color-border-subtle);
+}
+.forgeax-texture-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--fx-ref-space-12);
+}
+.forgeax-texture-controls .fx-field {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 100%;
+}
+.forgeax-texture-controls .fx-input {
+  width: auto;
+}
+.forgeax-texture-presets {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--fx-ref-space-4);
+}
+.forgeax-code-block {
+  max-width: 100%;
+  overflow: auto;
+  padding: var(--fx-ref-space-8);
+  border: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  border-radius: var(--fx-radius-control);
+  background: var(--fx-color-surface-inset);
+  color: var(--fx-color-text-secondary);
+  font:
+    var(--fx-type-code-font-weight) var(--fx-type-code-font-size) / var(--fx-type-code-line-height)
+    var(--fx-type-code-font-family);
+  white-space: pre;
+}
+.forgeax-resource-link {
+  overflow-wrap: anywhere;
+  padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
+  border: 0;
+  border-radius: var(--fx-radius-control);
+  background: transparent;
+  color: var(--fx-color-text-link);
+  font:
+    var(--fx-type-compact-font-weight) var(--fx-type-compact-font-size) /
+    var(--fx-type-compact-line-height) var(--fx-type-compact-font-family);
+  text-align: left;
+}
+.forgeax-resource-link:hover:not(:disabled) {
+  background: var(--fx-color-surface-hover);
+  text-decoration: underline;
+}
+.forgeax-resource-link:disabled {
+  color: var(--fx-color-text-disabled);
+  cursor: not-allowed;
+}
+.forgeax-status-card {
+  padding: var(--fx-ref-space-8);
+  border: var(--fx-border-width) solid var(--fx-color-border-subtle);
+}
+.forgeax-error-banner {
+  padding: var(--fx-ref-space-12);
+  border: var(--fx-border-width) solid var(--fx-color-status-error-fg);
+  background: var(--fx-color-status-error-bg);
+  color: var(--fx-color-status-error-fg);
+}
+
+.forgeax-texture-stage {
+  position: relative;
+  display: grid;
+  height: clamp(var(--rhi-texture-stage-min-height), 42cqh, var(--rhi-texture-stage-max-height));
+  min-height: var(--rhi-texture-stage-min-height);
+  place-items: center;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  overscroll-behavior: contain;
+  background-color: var(--fx-color-surface-inset);
+  background-image:
+    linear-gradient(45deg, var(--fx-color-border-subtle) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--fx-color-border-subtle) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--fx-color-border-subtle) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--fx-color-border-subtle) 75%);
+  background-position:
+    0 0,
+    0 calc(var(--rhi-checker-size) / 2),
+    calc(var(--rhi-checker-size) / 2) calc(var(--rhi-checker-size) / -2),
+    calc(var(--rhi-checker-size) / -2) 0;
+  background-size: var(--rhi-checker-size) var(--rhi-checker-size);
+}
+.forgeax-texture-stage.is-dragging {
+  cursor: grabbing;
+}
+.forgeax-texture-stage canvas {
+  display: block;
+  transform-origin: center;
+  will-change: transform, width, height;
+  box-shadow: var(--fx-shadow-floating);
+}
+.forgeax-texture-overlay {
+  position: absolute;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: var(--fx-ref-space-16);
+  background: var(--fx-color-surface-canvas);
+  text-align: center;
+}
+.cm-editor {
+  background: var(--fx-color-surface-canvas);
+}
+.cm-editor.cm-focused {
+  outline: var(--fx-border-focus-width) solid var(--fx-color-border-focus);
+}
+.forgeax-viewer-panels {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+@container rhi-viewer (max-width: 62rem) {
+  .forgeax-viewer-panels {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+    grid-template-rows: repeat(2, minmax(12rem, 1fr));
+    overflow: auto;
+  }
+  .forgeax-viewer-panels > :nth-child(1),
+  .forgeax-viewer-panels > :nth-child(2) {
+    grid-row: auto;
+  }
+}
+@container rhi-viewer (max-width: 38rem) {
+  .forgeax-viewer-panels {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(4, minmax(14rem, auto));
+  }
+  .forgeax-viewer-panels > :nth-child(1),
+  .forgeax-viewer-panels > :nth-child(2) {
+    grid-row: auto;
+  }
+  .forgeax-appbar {
+    flex-wrap: wrap;
+  }
+}

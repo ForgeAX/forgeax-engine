@@ -1,0 +1,116 @@
+{
+  "name": "@forgeax/remote-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Remote eval demo \u2014 createApp auto-wires app.remote, zero manual assembly. ECS-driven 3-entity spawn mirror of hello-cube with eval channel for handle discovery / read / write.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "e2e:cli": "node scripts/e2e-cli.mjs",
+    "e2e:motion": "node scripts/e2e-motion.mjs",
+    "e2e:profiler-gauntlet": "node scripts/e2e-profiler-gauntlet.mjs"
+  },
+  "forgeax": {
+    "gauntletScenario": {
+      "id": "m13-remote-profiler-bounded-recapture",
+      "script": "e2e:profiler-gauntlet",
+      "domains": [
+        "Inspection, debugging, and development bridges",
+        "World and host contract"
+      ],
+      "packages": [
+        "@forgeax/engine-app",
+        "@forgeax/engine-profiler",
+        "@forgeax/engine-remote",
+        "@forgeax/remote-demo"
+      ],
+      "risks": [
+        "baseline",
+        "live",
+        "capability-refusal",
+        "bounded-overflow",
+        "stale-state",
+        "recovery",
+        "cleanup"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "remote introspect/eval",
+        "profiler-not-enabled",
+        "undersized overflow",
+        "offline summary",
+        "same-process correctly-sized recapture",
+        "cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "remote-live-browser",
+          "remote-introspect",
+          "profiler-cli",
+          "remote-contracts"
+        ],
+        "legs": ["semantic", "live", "behavioral", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m13-profiler] profiler-not-enabled: PASS",
+          "[m13-profiler] RPC method roster: PASS",
+          "[m13-profiler] optional root discovery: PASS",
+          "[m13-profiler] undersized overflow artifact: PASS",
+          "[m13-profiler] overflow offline summary: PASS",
+          "[m13-profiler] same-process correctly-sized recapture: PASS",
+          "[m13-profiler] complete offline summary: PASS",
+          "[m13-profiler] stale overflow falsifier: PASS",
+          "[m13-profiler] real Browser evidence: PASS",
+          "[m13-profiler] cleanup: PASS",
+          "[m13-profiler] PASS - M13 remote profiler bounded recapture GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level; remote-demo bundle is not a baseline anchor"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle / hello-cube are the established fps anchors; remote-demo is an ECS-driven remote-eval host harness, not a render perf target"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "remote-demo is an ECS-driven host harness; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/remote-demo build"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "spike artefacts live under .forgeax-harness/forgeax-loop/feat-20260629-inspector-two-layer-model/; this app is the host harness consumed by the demo"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-remote": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.56.1",
+    "ws": "^8.20.0"
+  }
+}

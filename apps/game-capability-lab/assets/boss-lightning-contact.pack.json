@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019e9c00-0000-7000-8000-000000000102",
+      "kind": "particle-effect",
+      "execution": "cooked",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "impact-mesh",
+            "capacity": 48,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.5
+            },
+            "schedule": {
+              "rate": 8,
+              "bursts": [
+                {
+                  "time": 0.2,
+                  "count": 8
+                }
+              ]
+            },
+            "program": {
+              "module": "impact-mesh.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "25d167cc-3937-5bfc-a5e9-c5773e65d645",
+                "mesh": "a3088c54-423d-5e1b-b135-21055d568ef5"
+              }
+            ]
+          },
+          {
+            "id": "impact-violet-shock",
+            "capacity": 4,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 0.65,
+              "bursts": [
+                {
+                  "time": 0.58,
+                  "count": 1
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.2
+            },
+            "program": {
+              "module": "arc-nova-shockwave.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "730c150a-0b23-5fbd-a168-6e08f4baefd9",
+                "blend": "additive"
+              }
+            ]
+          },
+          {
+            "id": "impact-cross-crown",
+            "capacity": 8,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 1.2,
+              "bursts": [
+                {
+                  "time": 0.62,
+                  "count": 2
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 2.4
+            },
+            "program": {
+              "module": "arc-nova-burst.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "b2fa0333-a811-5d67-bc68-519c2d9f0380",
+                "mesh": "b889a6f8-2384-5684-8968-54bf19be24fb",
+                "submesh": 0
+              }
+            ]
+          },
+          {
+            "id": "decay-ember-facets",
+            "capacity": 16,
+            "backend": {
+              "required": "gpu"
+            },
+            "space": "local",
+            "schedule": {
+              "rate": 4,
+              "bursts": [
+                {
+                  "time": 0.7,
+                  "count": 6
+                }
+              ],
+              "loopDuration": 2.4
+            },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 3.2
+            },
+            "program": {
+              "module": "arc-nova-shard.vfx.wgsl"
+            },
+            "renderers": [
+              {
+                "kind": "mesh",
+                "material": "b2fa0333-a811-5d67-bc68-519c2d9f0380",
+                "mesh": "a3088c54-423d-5e1b-b135-21055d568ef5",
+                "submesh": 0
+              }
+            ]
+          }
+        ]
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "fade9a5e-f64d-5d38-9db8-afdb37de0c45",
+      "kind": "material",
+      "sourceKey": "cutout-shadow.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "ShadowCaster",
+            "program": {
+              "module": "shadow_opt_out::cutout_shadow",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

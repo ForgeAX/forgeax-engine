@@ -1,0 +1,32 @@
+{
+  "meshes": [
+    {
+      "name": "Box01",
+      "vertexFloats": 108,
+      "indexCount": 36,
+      "bbox": {
+        "min": [
+          -5,
+          -5,
+          0
+        ],
+        "max": [
+          5,
+          5,
+          10
+        ]
+      },
+      "attributes": [
+        "NORMAL",
+        "TEXCOORD_0"
+      ]
+    }
+  ],
+  "nodes": [
+    "Box01"
+  ],
+  "materials": [],
+  "clips": [],
+  "skeletons": [],
+  "skins": []
+}

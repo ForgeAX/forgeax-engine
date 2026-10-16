@@ -1,0 +1,39 @@
+{
+  "extends": "../view/tsconfig.base.json",
+  "compilerOptions": {
+    "types": [
+      "@webgpu/types",
+      "node"
+    ],
+    "typeRoots": [
+      "../../apps/rhi-debug-viewer/node_modules",
+      "../../node_modules/@types",
+      "../view/node_modules/@types"
+    ],
+    "paths": {
+      "react": [
+        "../view/packages/viewer/node_modules/@types/react/index.d.ts"
+      ],
+      "react/*": [
+        "../view/packages/viewer/node_modules/@types/react/*"
+      ],
+      "react-dom/*": [
+        "../view/packages/viewer/node_modules/@types/react-dom/*"
+      ],
+      "@forgeax/view-viewer/panels": [
+        "../view/packages/viewer/src/panels-entry.tsx"
+      ],
+      "@forgeax/engine-plugin": [
+        "../../packages/plugin/dist/index.d.ts"
+      ],
+      "@forgeax/view-workspace-core/frontend-contract": [
+        "../view/packages/view-workspace-core/src/frontend-contract.ts"
+      ]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "../view/styles.d.ts"
+  ]
+}

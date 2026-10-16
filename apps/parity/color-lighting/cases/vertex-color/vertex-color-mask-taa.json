@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "caseId": "vertex-color-mask-taa",
+  "semantic": "vertex alpha drives MASK and temporal history coverage",
+  "colorDomain": "displayEncoded",
+  "alphaMode": "MASK",
+  "alphaCutoff": 0.5,
+  "temporalFrames": [0, 1, 299],
+  "samplePoints": [{ "id": "cutout-edge", "coordinate": [0.48, 0.2] }, { "id": "history-interior", "coordinate": [0.625, 0.2] }]
+}

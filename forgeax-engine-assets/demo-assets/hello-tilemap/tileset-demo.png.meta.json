@@ -1,0 +1,26 @@
+{
+  "kind": "external-asset-package",
+  "importer": "tileset",
+  "schemaVersion": "1.0.0",
+  "source": "tileset-demo.png",
+  "importSettings": {
+    "colorSpace": "srgb",
+    "mipmap": false,
+    "addressMode": "clamp-to-edge",
+    "filterMode": "nearest"
+  },
+  "subAssets": [
+    {
+      "guid": "447d0968-472b-45c2-a41e-b71506195791",
+      "sourceIndex": 0,
+      "kind": "texture",
+      "sourceKey": "image:texture"
+    },
+    {
+      "guid": "30dc1a4a-a0cd-4547-b391-bc049265e45f",
+      "sourceIndex": 0,
+      "kind": "tileset",
+      "sourceKey": "tileset:tileset"
+    }
+  ]
+}

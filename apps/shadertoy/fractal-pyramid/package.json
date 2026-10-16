@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/engine-shadertoy-fractal-pyramid",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Shadertoy port: 'fractal pyramid' (https://www.shadertoy.com/view/tsXBzS) reproduced as a fullscreen-quad custom material shader. A WGSL raymarcher driven by iResolution + iTime material params, registered through ShaderRegistry.installMaterialArtifact('shadertoy::fractal-pyramid', ...).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:rhi-debug": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/engine-shadertoy-fractal-pyramid smoke",
+    "rhiDebug": {
+      "riskFamilies": ["programmable-pipelines"]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape is downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "shadertoy demo; bench focus stays on engine-math / pixel-parity"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "shadertoy demo; bench focus stays on engine-math / pixel-parity"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/engine-shadertoy-fractal-pyramid smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; source-level shadertoy reproduction"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

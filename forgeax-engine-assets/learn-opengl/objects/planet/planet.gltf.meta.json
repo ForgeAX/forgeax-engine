@@ -1,0 +1,37 @@
+{
+  "importSettings": {
+    "defaultSceneIndex": 0,
+    "downscaleMaxDimension": 2048,
+    "diagnostics": {
+      "matrixTrsCoexistNodes": [],
+      "nodeNames": [
+        "Mars_Cube.002"
+      ],
+      "unsupportedExtensions": []
+    }
+  },
+  "importer": "gltf",
+  "kind": "external-asset-package",
+  "schemaVersion": 1,
+  "source": "planet.gltf",
+  "subAssets": [
+    {
+      "guid": "019ea6af-7084-75fd-bf77-de799946f4c9",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "mesh:Mars_Cube.002-Mesh"
+    },
+    {
+      "guid": "019ea6af-7085-7549-9177-4042bf8f28ac",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "material:Mars"
+    },
+    {
+      "guid": "019ea6af-7085-7549-9177-4043bbc9d3e6",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "scene:0"
+    }
+  ]
+}

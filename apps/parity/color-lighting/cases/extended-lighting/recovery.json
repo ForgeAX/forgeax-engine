@@ -1,0 +1,28 @@
+{
+  "caseId": "recovery",
+  "required": true,
+  "colorDomain": "linearHdr",
+  "pipeline": { "identity": "standard", "engineId": "forgeax::standard", "renderPath": "forward" },
+  "extendedLighting": {
+    "topology": "extendedLighting",
+    "carrier": "recovery",
+    "iesSliceCount": 1,
+    "cookieSliceCount": 1,
+    "cookieMatrixCount": 1,
+    "expectedComposition": "brdf*range*cone*ies*cookie*shadow",
+    "cookieColorDomain": "linear",
+    "evidencePlan": {
+      "expectations": ["generation-lkg-recovery", "lighting-owner-coexistence", "zero-feature-exact-zero"],
+      "identity": { "fixtureId": "recovery", "sourceKey": "parity/extended-lighting/recovery" },
+      "numericRoi": { "analyticMax": 0.05, "roiMax": 0.05, "epsilon": 0.05, "colorDomain": "linearHdr" },
+      "recordReceipt": { "status": "not-run", "byteLength": 160, "maxBytes": 160 },
+      "resourceReceipt": { "status": "not-run", "topology": "extendedLighting" },
+      "falsifiers": [
+        { "id": "stale-generation", "expectedFailure": "a retired generation must not be visible after recovery" },
+        { "id": "no-lkg-sky", "expectedFailure": "no-LKG must consume current Sky residual or zero when Sky is unavailable" }
+      ]
+    }
+  },
+  "scene": { "width": 64, "height": 64, "background": [0, 0, 0, 1] },
+  "budget": { "analyticMax": 0.05, "roiMax": 0.05, "byteMax": 65536 }
+}

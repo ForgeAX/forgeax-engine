@@ -1,0 +1,259 @@
+{
+  "meshes": [
+    {
+      "name": "Humanoid",
+      "vertexFloats": 28854,
+      "indexCount": 9618,
+      "bbox": {
+        "min": [
+          -91.2487,
+          -0.6677,
+          -14.9644
+        ],
+        "max": [
+          91.2487,
+          176.5246,
+          14.3213
+        ]
+      },
+      "attributes": [
+        "NORMAL"
+      ]
+    }
+  ],
+  "nodes": [
+    "Humanoid:MaxToFilmbox_Root",
+    "Humanoid:Reference",
+    "Humanoid:Hips",
+    "Humanoid:Spine_Dummy",
+    "Humanoid:Spine",
+    "Humanoid:Spine1",
+    "Humanoid:Spine2",
+    "Humanoid:Neck",
+    "Humanoid:Head",
+    "Humanoid:Head_End",
+    "Humanoid:LeftShoulder_Dummy",
+    "Humanoid:LeftShoulder",
+    "Humanoid:LeftArm_Dummy",
+    "Humanoid:LeftArm",
+    "Humanoid:LeftArmRoll",
+    "Humanoid:LeftForeArm",
+    "Humanoid:LeftForeArmRoll",
+    "Humanoid:LeftHand",
+    "Humanoid:LeftThumb1",
+    "Humanoid:LeftThumb2",
+    "Humanoid:LeftThumb3",
+    "Humanoid:LeftThumb_End",
+    "Humanoid:LeftIndex1",
+    "Humanoid:LeftIndex2",
+    "Humanoid:LeftIndex3",
+    "Humanoid:LeftIndex_End",
+    "Humanoid:LeftMiddle1",
+    "Humanoid:LeftMiddle2",
+    "Humanoid:LeftMiddle3",
+    "Humanoid:LeftMiddle_End",
+    "Humanoid:LeftRing1",
+    "Humanoid:LeftRing2",
+    "Humanoid:LeftRing3",
+    "Humanoid:LeftRing_End",
+    "Humanoid:LeftPinky1",
+    "Humanoid:LeftPinky2",
+    "Humanoid:LeftPinky3",
+    "Humanoid:LeftPinky_End",
+    "Humanoid:RightShoulder_Dummy",
+    "Humanoid:RightShoulder",
+    "Humanoid:RightArm_Dummy",
+    "Humanoid:RightArm",
+    "Humanoid:RightArmRoll",
+    "Humanoid:RightForeArm",
+    "Humanoid:RightForeArmRoll",
+    "Humanoid:RightHand",
+    "Humanoid:RightThumb1",
+    "Humanoid:RightThumb2",
+    "Humanoid:RightThumb3",
+    "Humanoid:RightThumb_End",
+    "Humanoid:RightIndex1",
+    "Humanoid:RightIndex2",
+    "Humanoid:RightIndex3",
+    "Humanoid:RightIndex_End",
+    "Humanoid:RightMiddle1",
+    "Humanoid:RightMiddle2",
+    "Humanoid:RightMiddle3",
+    "Humanoid:RightMiddle_End",
+    "Humanoid:RightRing1",
+    "Humanoid:RightRing2",
+    "Humanoid:RightRing3",
+    "Humanoid:RightRing_End",
+    "Humanoid:RightPinky1",
+    "Humanoid:RightPinky2",
+    "Humanoid:RightPinky3",
+    "Humanoid:RightPinky_End",
+    "Humanoid:LeftHips_Dummy",
+    "Humanoid:LeftUpLeg",
+    "Humanoid:LeftUpLegRoll",
+    "Humanoid:LeftLeg",
+    "Humanoid:LeftLegRoll",
+    "Humanoid:LeftFoot",
+    "Humanoid:LeftToes",
+    "Humanoid:LeftToes_End",
+    "Humanoid:RightHips_Dummy",
+    "Humanoid:RightUpLeg",
+    "Humanoid:RightUpLegRoll",
+    "Humanoid:RightLeg",
+    "Humanoid:RightLegRoll",
+    "Humanoid:RightFoot",
+    "Humanoid:RightToes",
+    "Humanoid:RightToes_End",
+    "Humanoid",
+    "Camera",
+    "Light 1"
+  ],
+  "materials": [
+    {
+      "name": "7 - Default  ( Standard )  ( Standard )",
+      "kind": "phong",
+      "diffuse": [
+        0.588235,
+        0.588235,
+        0.588235
+      ],
+      "shininess": 10
+    }
+  ],
+  "clips": [
+    {
+      "name": "run",
+      "duration": 1,
+      "channelCount": 93,
+      "channelsByProperty": {
+        "translation": 62,
+        "rotation": 31,
+        "scale": 0
+      },
+      "firstChannel": {
+        "targetNode": "Camera",
+        "property": "translation",
+        "keyCount": 1,
+        "firstKeyValues": [
+          -216.3975,
+          105.1819,
+          83.8653
+        ]
+      }
+    },
+    {
+      "name": "punch",
+      "duration": 9.033333,
+      "channelCount": 123,
+      "channelsByProperty": {
+        "translation": 62,
+        "rotation": 61,
+        "scale": 0
+      },
+      "firstChannel": {
+        "targetNode": "Camera",
+        "property": "translation",
+        "keyCount": 1,
+        "firstKeyValues": [
+          -150.016,
+          105.1819,
+          357.0978
+        ]
+      }
+    },
+    {
+      "name": "shot",
+      "duration": 9.266667,
+      "channelCount": 124,
+      "channelsByProperty": {
+        "translation": 62,
+        "rotation": 62,
+        "scale": 0
+      },
+      "firstChannel": {
+        "targetNode": "Camera",
+        "property": "translation",
+        "keyCount": 1,
+        "firstKeyValues": [
+          -158.4445,
+          105.1819,
+          357.0978
+        ]
+      }
+    }
+  ],
+  "skeletons": [
+    {
+      "jointCount": 60,
+      "jointPaths": [
+        "Humanoid:LeftFoot",
+        "Humanoid:LeftLeg",
+        "Humanoid:LeftLegRoll",
+        "Humanoid:LeftToes",
+        "Humanoid:LeftMiddle3",
+        "Humanoid:LeftRing2",
+        "Humanoid:LeftRing3",
+        "Humanoid:Head",
+        "Humanoid:LeftShoulder",
+        "Humanoid:Neck",
+        "Humanoid:RightShoulder",
+        "Humanoid:Spine2",
+        "Humanoid:LeftArm",
+        "Humanoid:Spine1",
+        "Humanoid:Hips",
+        "Humanoid:LeftHand",
+        "Humanoid:LeftThumb1",
+        "Humanoid:LeftThumb2",
+        "Humanoid:LeftUpLeg",
+        "Humanoid:Spine",
+        "Humanoid:LeftForeArm",
+        "Humanoid:LeftForeArmRoll",
+        "Humanoid:LeftIndex3",
+        "Humanoid:LeftArmRoll",
+        "Humanoid:LeftMiddle1",
+        "Humanoid:LeftRing1",
+        "Humanoid:LeftUpLegRoll",
+        "Humanoid:LeftPinky2",
+        "Humanoid:LeftPinky3",
+        "Humanoid:RightUpLeg",
+        "Humanoid:LeftThumb3",
+        "Humanoid:LeftPinky1",
+        "Humanoid:RightLeg",
+        "Humanoid:LeftIndex1",
+        "Humanoid:LeftIndex2",
+        "Humanoid:LeftMiddle2",
+        "Humanoid:RightFoot",
+        "Humanoid:RightLegRoll",
+        "Humanoid:RightToes",
+        "Humanoid:RightMiddle3",
+        "Humanoid:RightRing2",
+        "Humanoid:RightRing3",
+        "Humanoid:RightArm",
+        "Humanoid:RightHand",
+        "Humanoid:RightThumb1",
+        "Humanoid:RightThumb2",
+        "Humanoid:RightForeArm",
+        "Humanoid:RightForeArmRoll",
+        "Humanoid:RightIndex3",
+        "Humanoid:RightArmRoll",
+        "Humanoid:RightMiddle1",
+        "Humanoid:RightRing1",
+        "Humanoid:RightUpLegRoll",
+        "Humanoid:RightPinky2",
+        "Humanoid:RightPinky3",
+        "Humanoid:RightThumb3",
+        "Humanoid:RightPinky1",
+        "Humanoid:RightIndex1",
+        "Humanoid:RightIndex2",
+        "Humanoid:RightMiddle2"
+      ]
+    }
+  ],
+  "skins": [
+    {
+      "meshSourceIndex": 0,
+      "vertexCount": 9618,
+      "jointPathCount": 60
+    }
+  ]
+}

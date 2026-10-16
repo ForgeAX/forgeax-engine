@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "audio",
+  "source": "powerup.wav",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019ee3df-a914-7437-9eca-b7d0a4dfdf3d",
+      "sourceIndex": 0,
+      "kind": "audio"
+    }
+  ]
+}

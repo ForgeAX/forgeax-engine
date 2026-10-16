@@ -1,0 +1,11 @@
+{
+  "name": "@fixture/bad",
+  "private": true,
+  "forgeax": {
+    "bevyExample": {
+      "name": "not_a_real_demo",
+      "category": "X",
+      "status": "implemented"
+    }
+  }
+}

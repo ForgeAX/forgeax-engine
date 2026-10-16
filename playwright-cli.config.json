@@ -1,0 +1,10 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "chromiumSandbox": true,
+      "headless": false,
+      "args": ["--enable-unsafe-webgpu"]
+    }
+  }
+}

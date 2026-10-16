@@ -1,0 +1,18 @@
+{
+  "asset": {
+    "id": "fixture-asset-taa-bars-v1",
+    "sha256": "40c9c602de0d7dd24b6b144d7d8134e901de82a9342a0f4c51b4ece9f538a7e0"
+  },
+  "camera": {
+    "id": "fixture-camera-taa-perspective-v1",
+    "sha256": "0246f83dcc97d7c7c36cdbbf271d356cf204ceeb7b07dfc343548a4c7d34d441"
+  },
+  "light": {
+    "id": "fixture-light-taa-directional-d65-v1",
+    "sha256": "4c69839d5d828029a5d1278ff87be4b339c408e6c1d79a1f291169746e8ec014"
+  },
+  "input": {
+    "id": "fixture-input-static-v1",
+    "sha256": "cec1258ea4db1aac3944c5881a2c382e36bce28ccbf97436cac8a63004b98c33"
+  }
+}

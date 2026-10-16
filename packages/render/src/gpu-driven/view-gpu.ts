@@ -1,0 +1,2745 @@
+import { mat4 } from '@forgeax/engine-math';
+import type {
+  GraphBuffer,
+  GraphTextureView,
+  RenderGraphBuilder,
+  RenderGraphFrame,
+} from '@forgeax/engine-render-graph';
+import { RenderGraphError } from '@forgeax/engine-render-graph';
+import type {
+  BindGroup,
+  BindGroupLayout,
+  Buffer,
+  ComputePipeline,
+  PipelineLayout,
+  RenderBundle,
+  RenderBundleEncoderDescriptor,
+  Result,
+  RhiDevice,
+  RhiRenderPassEncoder,
+  TextureView,
+} from '@forgeax/engine-rhi';
+import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import type { GpuScene } from '../gpu-scene';
+import { GPU_SCENE_LAYOUTS, gpuSceneWgsl } from '../gpu-scene-schema';
+import {
+  GPU_BUFFER_USAGE_COPY_DST,
+  GPU_BUFFER_USAGE_COPY_SRC,
+  GPU_BUFFER_USAGE_INDIRECT,
+  GPU_BUFFER_USAGE_MAP_READ,
+  GPU_BUFFER_USAGE_STORAGE,
+  GPU_BUFFER_USAGE_UNIFORM,
+} from '../gpu-usage';
+import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
+import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import { writeGpuLodRow } from '../scene/visibility/gpu-lod';
+import type {
+  SurfaceGpuIndirectParameters,
+  SurfaceGpuIndirectReadbackError,
+  SurfaceGpuReadbackSnapshot,
+  SurfaceSubmissionCandidate,
+} from '../surface/submission-observation';
+import { decodeSurfaceIndirectParameters } from '../surface/submission-observation';
+import {
+  batchLevelStride,
+  batchLodLevelCount,
+  batchVisibleSpan,
+  GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
+  GPU_DRIVEN_LOD_LEVEL_CAPACITY,
+  GPU_DRIVEN_SKIN_FLAG,
+  type GpuDrivenCandidate,
+  type SubmissionPlan,
+} from './batch-topology';
+import {
+  LOD_PROJECTION_WGSL,
+  LOD_VIEW_CONSTANTS_BYTES,
+  type LodViewCamera,
+  writeLodViewConstants,
+} from './lod-projection.wgsl';
+import type {
+  PreparedRasterBindings,
+  PreparedRasterBundleCache,
+  PreparedRasterCounters,
+} from './prepared-raster-bundle';
+import { admittedRasterBatchCount, SHADOW_LOD_MAX_COARSER } from './production-raster-lod';
+import {
+  GpuResourceAllocationLedger,
+  type GpuResourceAllocationToken,
+} from './resource-allocation';
+
+const COMPUTE_STAGE = 0x4;
+const WORKGROUP_SIZE = 64;
+const LOD_ROW_STRIDE = GPU_SCENE_LAYOUTS.lod.stride;
+const LOD_ROW_CAPACITY = GPU_DRIVEN_LOD_LEVEL_CAPACITY;
+const CANDIDATE_STRIDE = 48 + LOD_ROW_CAPACITY * LOD_ROW_STRIDE;
+const BATCH_STRIDE = 32;
+const LOD_CONSTANTS_OFFSET = 128;
+const LOD_CLAMP_CONSTANTS_OFFSET = LOD_CONSTANTS_OFFSET + LOD_VIEW_CONSTANTS_BYTES;
+const OCCLUSION_CONSTANTS_OFFSET = LOD_CLAMP_CONSTANTS_OFFSET + LOD_VIEW_CONSTANTS_BYTES;
+// viewProjection mat4 + camera range + the per-frame history words below.
+const OCCLUSION_STATE_OFFSET = OCCLUSION_CONSTANTS_OFFSET + 64 + 16;
+const OCCLUSION_STATE_BYTES = 32;
+const SHADOW_CAMERA_CULL_OFFSET = OCCLUSION_STATE_OFFSET + OCCLUSION_STATE_BYTES;
+
+/**
+ * Light NDC to world, or undefined when the light matrix has no usable inverse.
+ * `mat4.invert` treats |det| < 1e-8 as singular and returns identity, which a
+ * kilometre-wide orthographic cascade reaches; scaling the world axes first
+ * keeps the determinant near one, and the round trip rejects a truly singular
+ * matrix so the kernel never builds a receiver prism in the wrong space.
+ *
+ * @internal
+ */
+export function invertLightViewProjection(
+  lightViewProjection: Float32Array,
+): Float32Array | undefined {
+  let scale = 0;
+  for (let index = 0; index < 12; index += 1) {
+    if (index % 4 !== 3) scale = Math.max(scale, Math.abs(lightViewProjection[index] as number));
+  }
+  if (!(scale > 0 && Number.isFinite(scale))) return undefined;
+  const scaled = mat4.create();
+  scaled.set(lightViewProjection.subarray(0, 16));
+  for (let index = 0; index < 12; index += 1) scaled[index] = (scaled[index] as number) / scale;
+  const inverse = mat4.invert(mat4.create(), scaled);
+  const product = mat4.multiply(mat4.create(), scaled, inverse);
+  for (let index = 0; index < 16; index += 1) {
+    const expected = index % 5 === 0 ? 1 : 0;
+    if (!(Math.abs((product[index] as number) - expected) <= 1e-4)) return undefined;
+  }
+  for (let row = 0; row < 3; row += 1) {
+    for (let column = 0; column < 4; column += 1) {
+      inverse[column * 4 + row] = (inverse[column * 4 + row] as number) / scale;
+    }
+  }
+  return inverse;
+}
+// Pyramid camera, light view-projection and inverse, dilation and enable.
+const SHADOW_CAMERA_CULL_BYTES = 80 + 64 + 64 + 16;
+const VIEW_BYTES = SHADOW_CAMERA_CULL_OFFSET + SHADOW_CAMERA_CULL_BYTES;
+// visible + overflow + one selector bucket per LOD level + selected/root index
+// work + texel-culled + one compaction counter per LOD level. The work
+// counters let inspection report geometry reduction from the actual indirect
+// draw ranges instead of treating submitted-instance count as a proxy for
+// vertex/index work.
+const LOD_COUNTER_OFFSET = 2;
+const GEOMETRY_WORK_COUNTER_OFFSET = LOD_COUNTER_OFFSET + LOD_ROW_CAPACITY;
+const ROOT_GEOMETRY_WORK_COUNTER_OFFSET = GEOMETRY_WORK_COUNTER_OFFSET + 1;
+const TEXEL_CULLED_COUNTER_OFFSET = ROOT_GEOMETRY_WORK_COUNTER_OFFSET + 1;
+const LEVEL_VISIBLE_COUNTER_OFFSET = TEXEL_CULLED_COUNTER_OFFSET + 1;
+// Two-phase occlusion: the early per-level counts drawn before the pyramid
+// exists, and the candidates the late HZB test rejected.
+const EARLY_VISIBLE_COUNTER_OFFSET = LEVEL_VISIBLE_COUNTER_OFFSET + LOD_ROW_CAPACITY;
+const OCCLUSION_CULLED_COUNTER_OFFSET = EARLY_VISIBLE_COUNTER_OFFSET + LOD_ROW_CAPACITY;
+/** Light-depth slabs a receiver prism is split into for the camera pyramid test. */
+const SHADOW_CAMERA_CULL_SLABS = 8;
+// Shadow casters whose shadowed receivers the main camera cannot see.
+const CAMERA_CULLED_COUNTER_OFFSET = OCCLUSION_CULLED_COUNTER_OFFSET + 1;
+const COUNTER_WORDS = CAMERA_CULLED_COUNTER_OFFSET + 1;
+const COUNTER_STRIDE = COUNTER_WORDS * 4;
+const INDIRECT_COMMAND_BYTES = GPU_DRIVEN_INDIRECT_COMMAND_BYTES;
+
+export type GpuLodLane = 'gpu' | 'cpu';
+
+export function selectGpuLodLane(caps: {
+  readonly compute: boolean;
+  readonly storageBuffer: boolean;
+  readonly indirectDrawing: boolean;
+}): GpuLodLane {
+  return caps.compute && caps.storageBuffer && caps.indirectDrawing ? 'gpu' : 'cpu';
+}
+
+export const GPU_DRIVEN_VIEW_WGSL = /* wgsl */ `
+struct PrimitiveRecord {
+  generation: u32,
+  flags: u32,
+  transformIndex: u32,
+  materialIndex: u32,
+  drawTemplateIndex: u32,
+  instanceStart: u32,
+  instanceCount: u32,
+  assetHandle: u32,
+  localBoundsMin: vec3<f32>,
+  lightingChannels: u32,
+  localBoundsMax: vec4<f32>,
+};
+
+struct TransformRecord {
+  currentWorld: mat4x4<f32>,
+  previousWorld: mat4x4<f32>,
+};
+
+${gpuSceneWgsl(GPU_SCENE_LAYOUTS.lod)}
+
+${LOD_PROJECTION_WGSL}
+
+struct CandidateRecord {
+  primitiveIndex: u32,
+  generation: u32,
+  instanceOrdinal: u32,
+  materialAddress: u32,
+  batchIndex: u32,
+  visibleBase: u32,
+  visibleCapacity: u32,
+  // Visible entries between consecutive per-level segments of the batch.
+  levelStride: u32,
+  // Non-zero when the shading reads the fade: draw both levels across a band.
+  crossfade: u32,
+  reserved0: u32,
+  reserved1: u32,
+  lodCount: u32,
+  lodRows: array<GpuSceneLod, ${LOD_ROW_CAPACITY}>,
+};
+
+struct InstanceRecord {
+  primitiveIndex: u32,
+  transformIndex: u32,
+  customDataStart: u32,
+  flags: u32,
+};
+
+struct PyramidCamera {
+  // Unjittered projection of the view that rasterized the pyramid source.
+  viewProjection: mat4x4<f32>,
+  near: f32,
+  far: f32,
+  orthographic: u32,
+  // Uniform footprint scale; 1 in production. The falsifier shrinks it to
+  // prove the conservative footprint is what keeps partial occluders visible.
+  footprintScale: f32,
+};
+
+struct OcclusionConstants {
+  camera: PyramidCamera,
+  // Non-zero only when this frame's graph also records the late phase.
+  enabled: u32,
+  // Zero after a camera cut, resize, recovery or skipped late phase: every
+  // candidate then counts as previously visible and draws early.
+  historyValid: u32,
+  // Word offsets of the two instance-visibility bit regions in counters.
+  previousBase: u32,
+  nextBase: u32,
+  bitWords: u32,
+  // First u32 of the late-phase indirect region.
+  lateArgsBase: u32,
+  // First item of the late-phase visible mirror: every segment's late
+  // suffix is copied to the same segment offset here. Capable commands use
+  // this absolute base; portable commands bind a window and start at zero.
+  lateVisibleBase: u32,
+};
+
+// A shadow view skips a caster whose every shadowed receiver the main
+// camera cannot see: the light-space prism from the caster's nearest depth
+// to the far plane, widened by the receiver's sampling footprint, lies
+// outside the viewport or behind the main camera's furthest depth.
+struct ShadowCameraCull {
+  camera: PyramidCamera,
+  lightViewProjection: mat4x4<f32>,
+  lightInverse: mat4x4<f32>,
+  // Receiver sampling footprint: light NDC widening for the filter kernel and
+  // world widening for the receiver's normal offset.
+  ndcDilation: f32,
+  worldDilation: f32,
+  enabled: u32,
+};
+
+struct ViewConstants {
+  planes: array<vec4<f32>, 6>,
+  candidateCount: u32,
+  batchCount: u32,
+  batchCapacity: u32,
+  minCasterDiameter: f32,
+  suppressionBase: u32,
+  lod: LodViewConstants,
+  // Reference camera a shadow view stays within SHADOW_LOD_MAX_COARSER levels of.
+  lodClamp: LodViewConstants,
+  occlusion: OcclusionConstants,
+  shadowCamera: ShadowCameraCull,
+};
+
+@group(0) @binding(0) var<storage, read> primitives: array<PrimitiveRecord>;
+@group(0) @binding(1) var<storage, read> instances: array<InstanceRecord>;
+@group(0) @binding(2) var<storage, read> transforms: array<TransformRecord>;
+@group(0) @binding(3) var<storage, read> candidates: array<CandidateRecord>;
+@group(0) @binding(4) var<storage, read> batchWords: array<u32>;
+@group(0) @binding(5) var<uniform> view: ViewConstants;
+@group(0) @binding(6) var<storage, read_write> counters: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read_write> visibleIndices: array<vec4<u32>>;
+@group(0) @binding(8) var<storage, read_write> indirectArgs: array<u32>;
+// Furthest-depth pyramid of the current frame's early phase (late cull only).
+@group(1) @binding(0) var occlusionPyramid: texture_2d<f32>;
+
+// Per-view admission bitmap indexed by GPU Scene primitive slot, stored after
+// the batch table in batchWords (a separate binding would exceed the portable
+// eight storage buffers per stage). A set bit suppresses the primitive
+// (occlusion facet, author-hidden, unavailable); frustum rejection stays in
+// isVisible.
+fn isSuppressed(primitiveIndex: u32) -> bool {
+  let word = batchWords[view.suppressionBase + (primitiveIndex >> 5u)];
+  return (word & (1u << (primitiveIndex & 31u))) != 0u;
+}
+
+fn batchWord(batchIndex: u32, word: u32) -> u32 {
+  return batchWords[batchIndex * ${BATCH_STRIDE / 4}u + word];
+}
+
+fn counterIndex(batchIndex: u32) -> u32 { return batchIndex * ${COUNTER_WORDS}u; }
+fn overflowIndex(batchIndex: u32) -> u32 { return counterIndex(batchIndex) + 1u; }
+fn lodCounterIndex(batchIndex: u32, level: u32) -> u32 {
+  return counterIndex(batchIndex) + ${LOD_COUNTER_OFFSET}u + level;
+}
+fn levelVisibleIndex(batchIndex: u32, level: u32) -> u32 {
+  return counterIndex(batchIndex) + ${LEVEL_VISIBLE_COUNTER_OFFSET}u + level;
+}
+fn earlyVisibleIndex(batchIndex: u32, level: u32) -> u32 {
+  return counterIndex(batchIndex) + ${EARLY_VISIBLE_COUNTER_OFFSET}u + level;
+}
+
+// Instance visibility history lives after the batch counters, keyed by GPU
+// Scene instance row. A row outside the bitmap, or an invalid history, is
+// treated as previously visible so it draws in the early phase.
+fn previouslyVisible(instanceIndex: u32) -> bool {
+  if (view.occlusion.historyValid == 0u) { return true; }
+  if ((instanceIndex >> 5u) >= view.occlusion.bitWords) { return true; }
+  let word = atomicLoad(&counters[view.occlusion.previousBase + (instanceIndex >> 5u)]);
+  return (word & (1u << (instanceIndex & 31u))) != 0u;
+}
+
+fn recordVisibility(instanceIndex: u32, visible: bool) {
+  if ((instanceIndex >> 5u) >= view.occlusion.bitWords) { return; }
+  let index = view.occlusion.nextBase + (instanceIndex >> 5u);
+  let bit = 1u << (instanceIndex & 31u);
+  if (visible) {
+    atomicOr(&counters[index], bit);
+  } else {
+    atomicAnd(&counters[index], ~bit);
+  }
+}
+
+fn isVisible(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
+  // GPU Scene bounds are optional. A producer that has not published local
+  // bounds still belongs in the GPU lane; keep it conservatively visible
+  // instead of silently dropping a valid draw.
+  if ((primitive.flags & 5u) != 5u) { return false; }
+  if ((primitive.flags & 2u) == 0u) { return true; }
+  let localCenter = (primitive.localBoundsMin.xyz + primitive.localBoundsMax.xyz) * 0.5;
+  let localExtent = (primitive.localBoundsMax.xyz - primitive.localBoundsMin.xyz) * 0.5;
+  let worldCenter = (world * vec4<f32>(localCenter, 1.0)).xyz;
+  let worldExtent =
+    abs(world[0].xyz) * localExtent.x +
+    abs(world[1].xyz) * localExtent.y +
+    abs(world[2].xyz) * localExtent.z;
+  for (var planeIndex = 0u; planeIndex < 6u; planeIndex += 1u) {
+    let plane = view.planes[planeIndex];
+    let radius = dot(abs(plane.xyz), worldExtent);
+    if (dot(plane.xyz, worldCenter) + plane.w < -radius) { return false; }
+  }
+  return true;
+}
+
+// Extent across the first two side planes (left, bottom). Orthographic
+// shadow views are the only producers of a non-zero minimum diameter.
+fn belowMinDiameter(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
+  if (view.minCasterDiameter <= 0.0 || (primitive.flags & 2u) == 0u) { return false; }
+  let localExtent = (primitive.localBoundsMax.xyz - primitive.localBoundsMin.xyz) * 0.5;
+  let worldExtent =
+    abs(world[0].xyz) * localExtent.x +
+    abs(world[1].xyz) * localExtent.y +
+    abs(world[2].xyz) * localExtent.z;
+  let across = max(dot(abs(view.planes[0].xyz), worldExtent), dot(abs(view.planes[2].xyz), worldExtent));
+  return across * 2.0 < view.minCasterDiameter;
+}
+
+// One height per primitive from its root transform: every instance of a
+// primitive shares the root's LOD level, as on the CPU reference.
+fn primitiveHeight(primitive: PrimitiveRecord, rootWorld: mat4x4<f32>) -> f32 {
+  if ((primitive.flags & 2u) == 0u) { return LOD_INVALID_HEIGHT; }
+  return projectedHeight(
+    primitive.localBoundsMin.xyz,
+    primitive.localBoundsMax.xyz,
+    rootWorld,
+    view.lod,
+  );
+}
+
+// Append one visible item to the batch's per-level segment; each segment is an
+// independent indirect command sized by the batch's visible capacity.
+fn appendVisible(
+  batchIndex: u32,
+  segmentBase: u32,
+  visibleCapacity: u32,
+  level: u32,
+  item: vec4<u32>,
+  late: bool,
+) {
+  let localVisible = atomicAdd(&counters[levelVisibleIndex(batchIndex, level)], 1u);
+  if (localVisible >= visibleCapacity) {
+    atomicStore(&counters[overflowIndex(batchIndex)], 1u);
+    return;
+  }
+  visibleIndices[segmentBase + localVisible] = item;
+  if (late) {
+    // Late appends continue after the early prefix finalizeView stored, so
+    // the mirror index is the item's rank within the late suffix.
+    let early = atomicLoad(&counters[earlyVisibleIndex(batchIndex, level)]);
+    visibleIndices[view.occlusion.lateVisibleBase + segmentBase + localVisible - early] = item;
+  }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn resetView(@builtin(global_invocation_id) id: vec3<u32>) {
+  let batchIndex = id.x;
+  if (batchIndex >= view.batchCount) { return; }
+  for (var word = 0u; word < ${COUNTER_WORDS}u; word += 1u) {
+    atomicStore(&counters[counterIndex(batchIndex) + word], 0u);
+  }
+}
+
+fn candidateLod(
+  candidate: CandidateRecord,
+  primitive: PrimitiveRecord,
+  rootWorld: mat4x4<f32>,
+) -> LodCrossfade {
+  if (candidate.lodCount <= 1u) { return LodCrossfade(0u, 0.0, false); }
+  var height = primitiveHeight(primitive, rootWorld);
+  if (view.lodClamp.clamp != 0u && (primitive.flags & 2u) != 0u) {
+    let reference = lodFinestLevel(
+      projectedHeight(
+        primitive.localBoundsMin.xyz,
+        primitive.localBoundsMax.xyz,
+        rootWorld,
+        view.lodClamp,
+      ),
+      candidate.crossfade != 0u,
+      candidate.lodRows,
+      candidate.lodCount,
+    );
+    let floor = lodClampHeight(
+      reference,
+      ${SHADOW_LOD_MAX_COARSER}u,
+      candidate.lodRows,
+      candidate.lodCount,
+    );
+    if (height >= 0.0) { height = max(height, floor); }
+  }
+  if (candidate.crossfade != 0u) {
+    return lodCrossfade(height, candidate.lodRows, candidate.lodCount);
+  }
+  return LodCrossfade(
+    selectLodLevel(height, 0u, false, candidate.lodRows, candidate.lodCount),
+    0.0,
+    false,
+  );
+}
+
+fn appendCandidate(
+  candidateIndex: u32,
+  candidate: CandidateRecord,
+  primitive: PrimitiveRecord,
+  instanceIndex: u32,
+  customDataStart: u32,
+  lod: LodCrossfade,
+  late: bool,
+) {
+  let level = lod.level;
+  var work = candidate.lodRows[level].indexCount;
+  if (lod.paired) { work += candidate.lodRows[level + 1u].indexCount; }
+  atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${GEOMETRY_WORK_COUNTER_OFFSET}u], work);
+  // The no-LOD baseline counts each source once, even during dual coverage.
+  atomicAdd(
+    &counters[counterIndex(candidate.batchIndex) + ${ROOT_GEOMETRY_WORK_COUNTER_OFFSET}u],
+    candidate.lodRows[0u].indexCount,
+  );
+  atomicAdd(&counters[counterIndex(candidate.batchIndex)], 1u);
+  // Visible item ABI: x = GPU Scene instance row, y = scene material row,
+  // z = skin palette base for skinned draws, else the view candidate row,
+  // w = bitcast LOD crossfade. Submeshes share an instance row, so per-draw
+  // tables (Surface frame rows) key by the candidate row.
+  let skinned = (candidate.materialAddress & 0x80000000u) != 0u;
+  let item = vec4<u32>(
+    instanceIndex,
+    candidate.materialAddress & 0x7fffffffu,
+    select(candidateIndex, customDataStart, skinned),
+    bitcast<u32>(lod.fade),
+  );
+  appendVisible(
+    candidate.batchIndex,
+    candidate.visibleBase + level * candidate.levelStride,
+    candidate.visibleCapacity,
+    level,
+    item,
+    late,
+  );
+  if (lod.paired) {
+    appendVisible(
+      candidate.batchIndex,
+      candidate.visibleBase + (level + 1u) * candidate.levelStride,
+      candidate.visibleCapacity,
+      level + 1u,
+      vec4<u32>(item.xyz, bitcast<u32>(-lod.fade)),
+      late,
+    );
+  }
+}
+
+struct EarlyCandidate {
+  candidate: CandidateRecord,
+  primitive: PrimitiveRecord,
+  instanceIndex: u32,
+  customDataStart: u32,
+  world: mat4x4<f32>,
+  lod: LodCrossfade,
+};
+
+// Every early-phase test shared by the main and shadow cull entries.
+fn admitEarly(candidateIndex: u32, out: ptr<function, EarlyCandidate>) -> bool {
+  if (candidateIndex >= view.candidateCount) { return false; }
+  let candidate = candidates[candidateIndex];
+  let primitive = primitives[candidate.primitiveIndex];
+  if (primitive.generation != candidate.generation) { return false; }
+  if (candidate.instanceOrdinal >= primitive.instanceCount) { return false; }
+  let instanceIndex = primitive.instanceStart + candidate.instanceOrdinal;
+  let instance = instances[instanceIndex];
+  let rootWorld = transforms[primitive.transformIndex].currentWorld;
+  let world = rootWorld * transforms[instance.transformIndex].currentWorld;
+  let lod = candidateLod(candidate, primitive, rootWorld);
+  // Selector counters describe the complete LOD population, including
+  // candidates outside the frustum and candidates suppressed by the
+  // per-view bitmap. Submission counters below remain compacted draw facts.
+  atomicAdd(&counters[lodCounterIndex(candidate.batchIndex, lod.level)], 1u);
+  if (lod.paired) { atomicAdd(&counters[lodCounterIndex(candidate.batchIndex, lod.level + 1u)], 1u); }
+  if (isSuppressed(candidate.primitiveIndex)) { return false; }
+  if (!isVisible(primitive, world)) { return false; }
+  if (belowMinDiameter(primitive, world)) {
+    atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${TEXEL_CULLED_COUNTER_OFFSET}u], 1u);
+    return false;
+  }
+  // Two-phase occlusion: the early phase draws only last frame's visible
+  // set; cullViewLate tests the rest against this frame's early depth.
+  if (view.occlusion.enabled != 0u && !previouslyVisible(instanceIndex)) { return false; }
+  *out = EarlyCandidate(candidate, primitive, instanceIndex, instance.customDataStart, world, lod);
+  return true;
+}
+
+fn appendEarly(candidateIndex: u32, early: EarlyCandidate) {
+  appendCandidate(
+    candidateIndex,
+    early.candidate,
+    early.primitive,
+    early.instanceIndex,
+    early.customDataStart,
+    early.lod,
+    false,
+  );
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn cullView(@builtin(global_invocation_id) id: vec3<u32>) {
+  var early: EarlyCandidate;
+  if (admitEarly(id.x, &early)) { appendEarly(id.x, early); }
+}
+
+fn linearOcclusionDepth(camera: PyramidCamera, value: f32) -> f32 {
+  if (camera.orthographic != 0u) { return camera.far - value * (camera.far - camera.near); }
+  return camera.near / (value + (1.0 - value) * (camera.near / camera.far));
+}
+
+// Conservative HZB test against the furthest-depth pyramid. Pyramid texel j
+// of level L covers uv [j / w_L, (j + 1) / w_L] (the reductions ceil their
+// footprint end), so the texels floor(uv * w_L) spanning the inflated screen
+// rectangle cover every pixel the bounds can touch. Occluded only when the
+// bounds' nearest point lies behind the furthest depth of all those texels.
+fn occludedByPyramid(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
+  if ((primitive.flags & 2u) == 0u) { return false; }
+  let camera = view.occlusion.camera;
+  let clipFromLocal = camera.viewProjection * world;
+  var uvMin = vec2<f32>(1.0, 1.0);
+  var uvMax = vec2<f32>(0.0, 0.0);
+  var nearestDepth = 0.0;
+  for (var corner = 0u; corner < 8u; corner += 1u) {
+    let clip = clipFromLocal * vec4<f32>(boundsCorner(primitive, corner), 1.0);
+    // A corner at or behind the eye plane has no bounded projection.
+    if (clip.w <= 1e-6) { return false; }
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    uvMin = min(uvMin, uv);
+    uvMax = max(uvMax, uv);
+    nearestDepth = max(nearestDepth, ndc.z);
+  }
+  return screenRectOccluded(camera, uvMin, uvMax, nearestDepth, 1u);
+}
+
+fn boundsCorner(primitive: PrimitiveRecord, corner: u32) -> vec3<f32> {
+  return vec3<f32>(
+    select(primitive.localBoundsMin.x, primitive.localBoundsMax.x, (corner & 1u) != 0u),
+    select(primitive.localBoundsMin.y, primitive.localBoundsMax.y, (corner & 2u) != 0u),
+    select(primitive.localBoundsMin.z, primitive.localBoundsMax.z, (corner & 4u) != 0u),
+  );
+}
+
+// One level-0 pyramid texel (two full-resolution pixels) absorbs TAA jitter
+// and rasterization rounding at a screen rectangle's edge.
+fn pyramidTexelUv() -> vec2<f32> {
+  return 1.0 / vec2<f32>(textureDimensions(occlusionPyramid, 0));
+}
+
+// The pyramid half of the HZB test: a screen rectangle whose nearest reversed-Z
+// depth is nearestDepth. Every caller shares this footprint, level choice and
+// margin, so the main and shadow tests cannot drift apart; maxTexelSpan only
+// trades fetches for a finer level (1: 2x2, 3: 4x4).
+fn screenRectOccluded(
+  camera: PyramidCamera,
+  uvMin: vec2<f32>,
+  uvMax: vec2<f32>,
+  nearestDepth: f32,
+  maxTexelSpan: u32,
+) -> bool {
+  // Reversed Z: a corner in front of the near plane is never occluded.
+  if (nearestDepth >= 1.0) { return false; }
+  let middle = (uvMin + uvMax) * 0.5;
+  let halfSize = (uvMax - uvMin) * 0.5 * camera.footprintScale;
+  let extent0 = textureDimensions(occlusionPyramid, 0);
+  let size0 = vec2<f32>(extent0);
+  let pad = pyramidTexelUv();
+  let lo = clamp(middle - halfSize - pad, vec2<f32>(0.0), vec2<f32>(1.0));
+  let hi = clamp(middle + halfSize + pad, vec2<f32>(0.0), vec2<f32>(1.0));
+  // Written so a non-finite footprint (NaN compares false) stays visible.
+  if (!all(lo < hi)) { return false; }
+  let levels = textureNumLevels(occlusionPyramid);
+  let span = max((hi - lo).x * size0.x, (hi - lo).y * size0.y);
+  let texelsPerSide = f32((maxTexelSpan + 1u) / 2u);
+  var level = u32(max(0.0, floor(log2(max(span / texelsPerSide, 1.0)))));
+  level = min(level, levels - 1u);
+  var texelMin = vec2<u32>(0u);
+  var texelMax = vec2<u32>(0u);
+  loop {
+    // Inline copy of forgeax_depth_pyramid::sample::depthPyramidLevelSize;
+    // this raw WGSL string has no import resolution.
+    let size = max(extent0 >> vec2<u32>(level), vec2<u32>(1u));
+    texelMin = min(vec2<u32>(lo * vec2<f32>(size)), size - vec2<u32>(1u));
+    texelMax = min(vec2<u32>(hi * vec2<f32>(size)), size - vec2<u32>(1u));
+    if (all(texelMax - texelMin <= vec2<u32>(maxTexelSpan)) || level + 1u >= levels) { break; }
+    level += 1u;
+  }
+  var furthest = 0.0;
+  for (var y = texelMin.y; y <= texelMax.y; y += 1u) {
+    for (var x = texelMin.x; x <= texelMax.x; x += 1u) {
+      furthest = max(
+        furthest,
+        textureLoad(occlusionPyramid, vec2<i32>(vec2<u32>(x, y)), i32(level)).r,
+      );
+    }
+  }
+  let nearest = linearOcclusionDepth(camera, max(nearestDepth, 0.0));
+  // A relative margin keeps coplanar geometry (decals, the occluder's own
+  // bounds) visible under float linearization error.
+  return nearest > furthest * 1.0001;
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn cullViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
+  let candidateIndex = id.x;
+  if (candidateIndex >= view.candidateCount) { return; }
+  let candidate = candidates[candidateIndex];
+  let primitive = primitives[candidate.primitiveIndex];
+  if (primitive.generation != candidate.generation) { return; }
+  if (candidate.instanceOrdinal >= primitive.instanceCount) { return; }
+  let instanceIndex = primitive.instanceStart + candidate.instanceOrdinal;
+  let instance = instances[instanceIndex];
+  let rootWorld = transforms[primitive.transformIndex].currentWorld;
+  let world = rootWorld * transforms[instance.transformIndex].currentWorld;
+  var visible =
+    !isSuppressed(candidate.primitiveIndex) &&
+    isVisible(primitive, world) &&
+    !belowMinDiameter(primitive, world);
+  if (visible && occludedByPyramid(primitive, world)) {
+    visible = false;
+    atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${OCCLUSION_CULLED_COUNTER_OFFSET}u], 1u);
+  }
+  // Every submesh candidate of one instance row evaluates the same bounds,
+  // so their writes agree; the previous region is read-only this frame.
+  recordVisibility(instanceIndex, visible);
+  if (!visible || previouslyVisible(instanceIndex)) { return; }
+  appendCandidate(
+    candidateIndex,
+    candidate,
+    primitive,
+    instanceIndex,
+    instance.customDataStart,
+    candidateLod(candidate, primitive, rootWorld),
+    true,
+  );
+}
+
+override INDIRECT_FIRST_INSTANCE: bool = false;
+
+fn finalizeBatch(batchIndex: u32, late: bool) {
+  if (batchIndex >= view.batchCount) { return; }
+  // Overflow is a failed generation, never a partially valid draw. Keep the
+  // telemetry flag for the producer retry path but emit zero instances so no
+  // subset of a visible batch reaches the rasterizer.
+  let overflowed = atomicLoad(&counters[overflowIndex(batchIndex)]) != 0u;
+  let capacity = batchWord(batchIndex, 1u);
+  let flags = batchWord(batchIndex, 6u);
+  let indexed = (flags & 1u) != 0u;
+  let levelCount = max(1u, flags >> 1u);
+  let candidate = candidates[batchWord(batchIndex, 7u)];
+  for (var level = 0u; level < levelCount; level += 1u) {
+    var visibleCount = min(atomicLoad(&counters[levelVisibleIndex(batchIndex, level)]), capacity);
+    if (overflowed) { visibleCount = 0u; }
+    let args = (batchWord(batchIndex, 5u) + level) * 5u;
+    var drawCount = batchWord(batchIndex, 2u);
+    var drawFirst = batchWord(batchIndex, 3u);
+    var drawBaseVertex: i32 = 0;
+    if (capacity > 0u) {
+      let lod = candidate.lodRows[level];
+      drawCount = lod.indexCount;
+      if (indexed) {
+        drawFirst = lod.firstIndex;
+        drawBaseVertex = lod.baseVertex;
+      }
+    } else if (indexed) {
+      drawBaseVertex = bitcast<i32>(batchWord(batchIndex, 4u));
+    }
+    indirectArgs[args] = drawCount;
+    indirectArgs[args + 1u] = visibleCount;
+    indirectArgs[args + 2u] = drawFirst;
+    let segmentBase = batchWord(batchIndex, 0u) + level * candidate.levelStride;
+    let firstInstance = select(0u, segmentBase, INDIRECT_FIRST_INSTANCE);
+    indirectArgs[args + 3u] = select(firstInstance, bitcast<u32>(drawBaseVertex), indexed);
+    indirectArgs[args + 4u] = select(0u, firstInstance, indexed);
+    if (late) {
+      // Late items were appended after the early prefix of the same segment
+      // and mirrored from the segment start of the late region: the late
+      // command draws that mirror, the main command the union.
+      let early = min(atomicLoad(&counters[earlyVisibleIndex(batchIndex, level)]), visibleCount);
+      let lateArgs = view.occlusion.lateArgsBase + args;
+      indirectArgs[lateArgs] = drawCount;
+      indirectArgs[lateArgs + 1u] = visibleCount - early;
+      indirectArgs[lateArgs + 2u] = drawFirst;
+      let lateFirstInstance = select(0u, view.occlusion.lateVisibleBase + segmentBase, INDIRECT_FIRST_INSTANCE);
+      indirectArgs[lateArgs + 3u] = select(lateFirstInstance, bitcast<u32>(drawBaseVertex), indexed);
+      indirectArgs[lateArgs + 4u] = select(0u, lateFirstInstance, indexed);
+    } else {
+      atomicStore(&counters[earlyVisibleIndex(batchIndex, level)], visibleCount);
+    }
+  }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn finalizeView(@builtin(global_invocation_id) id: vec3<u32>) {
+  finalizeBatch(id.x, false);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn finalizeViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
+  finalizeBatch(id.x, true);
+}
+`;
+
+/**
+ * The main-camera shadow caster cull. Only views that receive a camera cull
+ * input compile it, so every other view keeps the smaller module.
+ */
+export const GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL = /* wgsl */ `${GPU_DRIVEN_VIEW_WGSL}
+// Shadow maps use reversed Z with a zero clear, and a receiver is shadowed
+// only by a stored depth greater than its own. Every receiver this caster can
+// darken therefore lies in its dilated light-space rectangle between depth 0
+// (the far plane) and the caster's nearest light depth.
+fn shadowReceiversHidden(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
+  let cull = view.shadowCamera;
+  if (cull.enabled == 0u) { return false; }
+  var worldMin = vec3<f32>(3.0e38);
+  var worldMax = vec3<f32>(-3.0e38);
+  for (var corner = 0u; corner < 8u; corner += 1u) {
+    let point = (world * vec4<f32>(boundsCorner(primitive, corner), 1.0)).xyz;
+    worldMin = min(worldMin, point);
+    worldMax = max(worldMax, point);
+  }
+  // The caster's own box lies inside its receiver prism, so a box the
+  // pyramid cannot hide keeps the caster without the slab walk. Most
+  // casters of an unoccluded view exit here after one 4x4 test.
+  if (casterBoxVisible(cull.camera, worldMin, worldMax)) { return false; }
+  // A receiver samples the map at its position offset along its normal.
+  worldMin -= vec3<f32>(cull.worldDilation);
+  worldMax += vec3<f32>(cull.worldDilation);
+  var lightMin = vec2<f32>(3.0e38);
+  var lightMax = vec2<f32>(-3.0e38);
+  var lightNearest = 0.0;
+  for (var corner = 0u; corner < 8u; corner += 1u) {
+    let point = vec3<f32>(
+      select(worldMin.x, worldMax.x, (corner & 1u) != 0u),
+      select(worldMin.y, worldMax.y, (corner & 2u) != 0u),
+      select(worldMin.z, worldMax.z, (corner & 4u) != 0u),
+    );
+    let clip = cull.lightViewProjection * vec4<f32>(point, 1.0);
+    if (clip.w <= 1e-6) { return false; }
+    let ndc = clip.xyz / clip.w;
+    lightMin = min(lightMin, ndc.xy);
+    lightMax = max(lightMax, ndc.xy);
+    lightNearest = max(lightNearest, ndc.z);
+  }
+  // Receivers outside this map never sample it.
+  lightMin = max(lightMin - vec2<f32>(cull.ndcDilation), vec2<f32>(-1.0));
+  lightMax = min(lightMax + vec2<f32>(cull.ndcDilation), vec2<f32>(1.0));
+  if (!all(lightMin < lightMax)) { return false; }
+  let lightTop = clamp(lightNearest, 0.0, 1.0);
+  // The prism reaches the light's far plane, usually far below the visible
+  // receivers. One screen rectangle for all of it spans a coarse pyramid
+  // level whose texels include the sky, so each depth slab is tested on its
+  // own and the caster is skipped only when every slab is hidden. A visible
+  // caster usually shades itself, so walking down from its own slab exits at
+  // the first iteration.
+  for (var step = 0u; step < ${SHADOW_CAMERA_CULL_SLABS}u; step += 1u) {
+    let slab = ${SHADOW_CAMERA_CULL_SLABS}u - 1u - step;
+    let slabFar = lightTop * f32(slab) / ${SHADOW_CAMERA_CULL_SLABS}.0;
+    let slabNear = lightTop * f32(slab + 1u) / ${SHADOW_CAMERA_CULL_SLABS}.0;
+    if (!lightSlabHidden(cull, lightMin, lightMax, slabFar, slabNear)) { return false; }
+  }
+  return true;
+}
+
+// True only for a box wholly in front of the camera, overlapping the screen,
+// and not proven hidden; any other box falls through to the slab walk.
+fn casterBoxVisible(camera: PyramidCamera, worldMin: vec3<f32>, worldMax: vec3<f32>) -> bool {
+  var uvMin = vec2<f32>(3.0e38);
+  var uvMax = vec2<f32>(-3.0e38);
+  var nearestDepth = -3.0e38;
+  for (var corner = 0u; corner < 8u; corner += 1u) {
+    let point = vec3<f32>(
+      select(worldMin.x, worldMax.x, (corner & 1u) != 0u),
+      select(worldMin.y, worldMax.y, (corner & 2u) != 0u),
+      select(worldMin.z, worldMax.z, (corner & 4u) != 0u),
+    );
+    let clip = camera.viewProjection * vec4<f32>(point, 1.0);
+    if (clip.w <= 1e-6) { return false; }
+    let ndc = clip.xyz / clip.w;
+    uvMin = min(uvMin, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+    uvMax = max(uvMax, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+    nearestDepth = max(nearestDepth, ndc.z);
+  }
+  if (any(uvMax <= vec2<f32>(0.0)) || any(uvMin >= vec2<f32>(1.0)) || nearestDepth < 0.0) {
+    return false;
+  }
+  return !screenRectOccluded(camera, uvMin, uvMax, nearestDepth, 3u);
+}
+
+fn lightSlabHidden(
+  cull: ShadowCameraCull,
+  lightMin: vec2<f32>,
+  lightMax: vec2<f32>,
+  slabFar: f32,
+  slabNear: f32,
+) -> bool {
+  let camera = cull.camera;
+  // Nothing nearer than the near plane is rasterized, so the slab is clipped
+  // there instead of being rejected when the long prism passes the camera.
+  let nearW = select(camera.near, 1e-6, camera.orthographic != 0u);
+  var clips: array<vec4<f32>, 8>;
+  for (var corner = 0u; corner < 8u; corner += 1u) {
+    let lightPoint = vec4<f32>(
+      select(lightMin.x, lightMax.x, (corner & 1u) != 0u),
+      select(lightMin.y, lightMax.y, (corner & 2u) != 0u),
+      select(slabFar, slabNear, (corner & 4u) != 0u),
+      1.0,
+    );
+    let worldPoint = cull.lightInverse * lightPoint;
+    if (!(abs(worldPoint.w) > 1e-12)) { return false; }
+    clips[corner] = camera.viewProjection * vec4<f32>(worldPoint.xyz / worldPoint.w, 1.0);
+  }
+  var uvMin = vec2<f32>(3.0e38);
+  var uvMax = vec2<f32>(-3.0e38);
+  var nearestDepth = -3.0e38;
+  var inFront = 0u;
+  for (var corner = 0u; corner < 8u; corner += 1u) {
+    let clip = clips[corner];
+    if (clip.w < nearW) { continue; }
+    inFront += 1u;
+    let ndc = clip.xyz / clip.w;
+    uvMin = min(uvMin, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+    uvMax = max(uvMax, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+    nearestDepth = max(nearestDepth, ndc.z);
+  }
+  if (inFront == 0u) { return true; }
+  if (inFront < 8u) {
+    // The box is convex, so its visible part is bounded by the in-front
+    // corners plus each edge's crossing of the near plane.
+    for (var edge = 0u; edge < 12u; edge += 1u) {
+      // Edge e runs along axis bit 1 << (e / 4); its other two corner bits
+      // are e % 4 spread around that axis.
+      let axis = 1u << (edge / 4u);
+      let rest = edge % 4u;
+      let below = rest & (axis - 1u);
+      let start = below | ((rest - below) << 1u);
+      let end = start | axis;
+      let p = clips[start];
+      let q = clips[end];
+      if ((p.w < nearW) == (q.w < nearW)) { continue; }
+      let clip = mix(p, q, (nearW - p.w) / (q.w - p.w));
+      let ndc = clip.xyz / clip.w;
+      uvMin = min(uvMin, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+      uvMax = max(uvMax, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+      nearestDepth = max(nearestDepth, ndc.z);
+    }
+  }
+  // No receiver of the slab lies on screen or inside the far plane.
+  let pad = pyramidTexelUv();
+  if (any(uvMax < -pad) || any(uvMin > 1.0 + pad) || nearestDepth < 0.0) { return true; }
+  // A slab seen from a low camera hugs the horizon; the coarse 2x2 level would
+  // reach the sky above the occluders, so the rarer shadow test pays 4x4.
+  return screenRectOccluded(camera, uvMin, uvMax, nearestDepth, 3u);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn cullViewShadowCamera(@builtin(global_invocation_id) id: vec3<u32>) {
+  var early: EarlyCandidate;
+  if (!admitEarly(id.x, &early)) { return; }
+  if (shadowReceiversHidden(early.primitive, early.world)) {
+    atomicAdd(&counters[counterIndex(early.candidate.batchIndex) + ${CAMERA_CULLED_COUNTER_OFFSET}u], 1u);
+    return;
+  }
+  appendEarly(id.x, early);
+}
+`;
+
+interface ViewBuffers {
+  readonly candidates: Buffer;
+  readonly batches: Buffer;
+  readonly view: Buffer;
+  readonly counters: Buffer;
+  readonly visible: Buffer;
+  readonly indirect: Buffer;
+  readonly lodReadback: Buffer;
+  readonly visibleSurfaceRows?: Buffer;
+}
+
+type MutableViewBuffers = { -readonly [Name in keyof ViewBuffers]: ViewBuffers[Name] };
+
+type LodTelemetryCopy = {
+  readonly buffers: ViewBuffers;
+  readonly plan: SubmissionPlan;
+  readonly resourceGeneration: number;
+  readonly indirectBufferIdentity: number;
+  readonly indirectReadbackOffset: number;
+  readonly surfaceReadbackSnapshot?: () => SurfaceGpuReadbackSnapshot | undefined;
+  readonly submit?: GpuDrivenLodSubmitIdentity;
+  /** The copy follows the late phase, so its counters include occlusion facts. */
+  readonly occlusion: boolean;
+};
+
+/**
+ * Camera facts for the late HZB test. They must describe the same view that
+ * rasterized the pyramid source; `historyKey` changes (camera switch, resize,
+ * history reset) discard the per-instance visibility history.
+ */
+export interface GpuDrivenOcclusionCamera {
+  /** Unjittered projection * view, column-major. */
+  readonly viewProjection: Float32Array;
+  readonly near: number;
+  readonly far: number;
+  readonly orthographic: boolean;
+  readonly historyKey: string;
+}
+
+/**
+ * Main-camera visibility test for a shadow view's casters. The widening is the
+ * receiver's sampling footprint, so a skipped caster darkens no visible pixel.
+ */
+export interface GpuDrivenShadowCameraCull {
+  readonly camera: GpuDrivenOcclusionCamera;
+  /** The shadow view's light view-projection, column-major. */
+  readonly lightViewProjection: Float32Array;
+  /** Light NDC widening for the receiver filter kernel. */
+  readonly ndcDilation: number;
+  /** World widening for the receiver's normal offset. */
+  readonly worldDilation: number;
+}
+
+export interface GpuDrivenLodSubmitIdentity {
+  readonly frameId: number;
+  readonly deviceGeneration: number;
+}
+
+export interface GpuDrivenViewGraphResources {
+  readonly visibleSurfaceRows?: GraphBuffer;
+  readonly primitive: GraphBuffer;
+  readonly instance: GraphBuffer;
+  readonly transform: GraphBuffer;
+  readonly material: GraphBuffer;
+  readonly visible: GraphBuffer;
+  readonly indirect: GraphBuffer;
+  readonly overflow: GraphBuffer;
+  /**
+   * Present when `addPasses` reserved the two-phase occlusion path. The caller
+   * adds the late cull after its early depth pyramid exists; until then the
+   * early phase draws every frustum-visible candidate.
+   */
+  readonly addLateOcclusion?: (
+    pyramid: GraphTextureView,
+  ) => Result<GpuDrivenLateOcclusionGraph, RenderGraphError>;
+}
+
+export interface GpuDrivenLateOcclusionGraph {
+  readonly passNames: readonly string[];
+  /** Byte offset of the late-phase indirect region inside `indirect`. */
+  readonly lateIndirectByteOffset: number;
+  /**
+   * First item of the late-phase mirror inside `visible`: the late command of
+   * a segment at item `base` draws the window starting at
+   * `lateVisibleBase + base` from instance zero.
+   */
+  readonly lateVisibleBase: number;
+}
+
+export interface GpuDrivenViewInspection {
+  readonly shadowBundles?: PreparedRasterCounters;
+  readonly topologyRevision: number | undefined;
+  readonly candidateCount: number;
+  readonly batchCount: number;
+  readonly visibleCapacity: number;
+  readonly candidateCapacity: number;
+  /** Allocated visible-index capacity; distinct from logical candidates. */
+  readonly visibleBufferCapacity: number;
+  readonly batchCapacity: number;
+  readonly indirectCapacity: number;
+  readonly updateCount: number;
+  readonly uploadBytes: number;
+  readonly candidateUploadBytes: number;
+  /** Bytes of the per-primitive suppression bitmap uploaded this frame (dirty words only). */
+  readonly suppressionUploadBytes: number;
+  readonly batchUploadBytes: number;
+  readonly viewConstantsUploadBytes: number;
+  readonly bindGroupCreates: number;
+  readonly bufferRebuilds: number;
+  readonly resourceGeneration: number;
+  /** Logical Engine allocation facts; physical VRAM residency is unknown. */
+  readonly resourceAllocation: import('../inspection-types').GpuResourceAllocationInspection;
+}
+
+export interface GpuDrivenViewBufferCapacities {
+  readonly candidate: number;
+  readonly visible: number;
+  readonly batch: number;
+  readonly indirect: number;
+}
+
+export interface GpuDrivenLodSelectionInspection {
+  /** Exact resource generation whose selector rows were copied. */
+  readonly resourceGeneration?: number;
+  readonly candidateCount: number;
+  readonly batchCount: number;
+  readonly indirectDrawCount: number;
+  readonly visible: number;
+  readonly occluded: number;
+  /** True when the selector had to reject or clamp a visible candidate. */
+  readonly overflow: boolean;
+  readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
+  readonly batches: readonly {
+    readonly batchId: number;
+    readonly candidateCount: number;
+    readonly visible: number;
+    readonly occluded: number;
+    readonly overflow: boolean;
+    readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
+  }[];
+  readonly worldSelections?: readonly {
+    readonly worldKey: number;
+    readonly primitiveSlot: number;
+    readonly slotGeneration: number;
+    readonly candidateCount: number;
+    readonly visible: number;
+    readonly occluded: number;
+    readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
+  }[];
+  readonly geometryWork: number;
+  readonly rootGeometryWork: number;
+  /** In-frustum candidates dropped below the view's minimum caster diameter. */
+  readonly texelCulled: number;
+  /** Shadow casters whose shadowed receivers the main camera cannot see. */
+  readonly cameraCulled: number;
+  /**
+   * Two-phase HZB facts when the submitted graph ran the late phase:
+   * candidates the pyramid rejected and visible items drawn only late.
+   */
+  readonly occlusion?: { readonly culled: number; readonly late: number };
+  /** Actual visible rows copied from the submitted GPU selector. */
+  readonly actualMembers: readonly {
+    readonly batchId: number;
+    readonly primitiveIndex: number;
+    readonly generation: number;
+    readonly drawItemIndex: number;
+    readonly instanceOrdinal: number;
+  }[];
+  /** Surface subset projected by the material producer after readback. */
+  readonly surfaceActualMemberIds?: readonly string[];
+  /** Decoded indexed/non-indexed command words for the exact Surface copy. */
+  readonly surfaceIndirectParameters?: readonly SurfaceGpuIndirectParameters[];
+  /** Fail-closed readback reason when the copied command range is unusable. */
+  readonly surfaceIndirectReadbackError?: SurfaceGpuIndirectReadbackError;
+  /** Exact Surface recording whose selector bytes were copied. */
+  readonly surfaceReadback?: SurfaceGpuReadbackSnapshot;
+  /** Public receipt identity captured when the telemetry copy was encoded. */
+  readonly submit?: GpuDrivenLodSubmitIdentity;
+}
+
+function nextCapacity(required: number): number {
+  return 2 ** Math.ceil(Math.log2(Math.max(1, required)));
+}
+
+/**
+ * Derive each GPU-driven allocation from its own logical capacity domain.
+ * Candidate records are dense; visible indices use the sparse, 64-entry
+ * aligned ranges assigned by BatchTopology. Keeping these values separate is
+ * what makes a large LOD candidate set bounded instead of multiplying the
+ * candidate record and inline LOD-row buffers by the visible address space.
+ */
+export function deriveGpuDrivenViewBufferCapacities(
+  plan: Pick<SubmissionPlan, 'candidateCount' | 'batches'>,
+): GpuDrivenViewBufferCapacities {
+  return Object.freeze({
+    candidate: nextCapacity(plan.candidateCount),
+    // Derived from the batch segments the kernels address, so a plan whose
+    // LOD chain grew never lets a level segment write past the buffer.
+    visible: nextCapacity(
+      plan.batches.reduce(
+        (maximum, batch) => Math.max(maximum, batch.visibleBase + batchVisibleSpan(batch)),
+        0,
+      ),
+    ),
+    batch: nextCapacity(plan.batches.length),
+    indirect: nextCapacity(
+      plan.batches.reduce(
+        (maximum, batch) =>
+          Math.max(
+            maximum,
+            batch.indirectOffset / INDIRECT_COMMAND_BYTES + batchLodLevelCount(batch),
+          ),
+        0,
+      ),
+    ),
+  });
+}
+
+function bufferBinding(buffer: Buffer): {
+  readonly kind: 'buffer';
+  readonly value: { buffer: Buffer };
+} {
+  return { kind: 'buffer', value: { buffer } };
+}
+
+interface EncodedViewTopology {
+  readonly sceneRevision: number;
+  readonly candidateBytes: Uint8Array;
+  readonly batchBytes: Uint8Array;
+}
+
+const encodedTopologies = new WeakMap<GpuScene, WeakMap<SubmissionPlan, EncodedViewTopology>>();
+
+/**
+ * Candidate addresses derive from the plan and the scene's retained allocation.
+ * Every shadow view shares these bytes until either owner changes.
+ */
+function encodedViewTopology(plan: SubmissionPlan, scene: GpuScene): EncodedViewTopology {
+  let plans = encodedTopologies.get(scene);
+  const cached = plans?.get(plan);
+  if (cached?.sceneRevision === scene.allocationRevision) return cached;
+  if (plans === undefined) {
+    plans = new WeakMap();
+    encodedTopologies.set(scene, plans);
+  }
+  const candidateBytes = new ArrayBuffer(Math.max(1, plan.candidateCount) * CANDIDATE_STRIDE);
+  const candidates = new DataView(candidateBytes);
+  const batchBytes = new ArrayBuffer(Math.max(1, plan.batches.length) * BATCH_STRIDE);
+  const batches = new DataView(batchBytes);
+  // The writer consumes each row synchronously; no candidate needs a temporary POD.
+  const lodRow = {
+    generation: 0,
+    level: 0,
+    firstIndex: 0,
+    indexCount: 0,
+    baseVertex: 0,
+    screenCoverage: 0,
+    hysteresis: 0,
+    ready: false,
+  };
+  let candidateIndex = 0;
+  for (let batchIndex = 0; batchIndex < plan.batches.length; batchIndex += 1) {
+    const batch = plan.batches[batchIndex];
+    if (batch === undefined) continue;
+    const batchOffset = batchIndex * BATCH_STRIDE;
+    batches.setUint32(batchOffset, batch.visibleBase, true);
+    batches.setUint32(batchOffset + 4, batch.visibleCapacity, true);
+    batches.setUint32(batchOffset + 8, batch.key.count, true);
+    batches.setUint32(batchOffset + 12, batch.key.first, true);
+    batches.setInt32(batchOffset + 16, batch.key.baseVertex, true);
+    const lodCount = batchLodLevelCount(batch);
+    batches.setUint32(batchOffset + 20, batch.indirectOffset / INDIRECT_COMMAND_BYTES, true);
+    batches.setUint32(
+      batchOffset + 24,
+      (batch.key.drawKind === 'indexed' ? 1 : 0) | (lodCount << 1),
+      true,
+    );
+    batches.setUint32(batchOffset + 28, candidateIndex, true);
+    const isSkin = batch.prepared?.identity.deformation === 'skin';
+    const coverages = batch.lod?.coverages ?? [1];
+    const ranges = [
+      { first: batch.key.first, count: batch.key.count, baseVertex: batch.key.baseVertex },
+      ...(batch.lod?.ranges ?? []),
+    ];
+    const crossfade = batch.lod?.crossfade === true;
+    const levelStride = batchLevelStride(batch);
+    const hysteresis = batch.lod?.hysteresis ?? 0.08;
+    for (const candidate of batch.candidates) {
+      const candidateOffset = candidateIndex * CANDIDATE_STRIDE;
+      candidates.setUint32(candidateOffset, candidate.primitiveIndex, true);
+      candidates.setUint32(candidateOffset + 4, candidate.generation, true);
+      candidates.setUint32(candidateOffset + 8, candidate.instanceOrdinal, true);
+      candidates.setUint32(
+        candidateOffset + 12,
+        (scene.materialIndexForSlot(candidate.primitiveIndex, batch.key.materialSlot) ?? 0) |
+          (isSkin ? GPU_DRIVEN_SKIN_FLAG : 0),
+        true,
+      );
+      candidates.setUint32(candidateOffset + 16, batchIndex, true);
+      candidates.setUint32(candidateOffset + 20, batch.visibleBase, true);
+      candidates.setUint32(candidateOffset + 24, batch.visibleCapacity, true);
+      candidates.setUint32(candidateOffset + 28, levelStride, true);
+      candidates.setUint32(candidateOffset + 32, crossfade ? 1 : 0, true);
+      candidates.setUint32(candidateOffset + 36, 0, true);
+      candidates.setUint32(candidateOffset + 40, 0, true);
+      candidates.setUint32(candidateOffset + 44, lodCount, true);
+      for (let level = 0; level < lodCount; level += 1) {
+        // Crossfade blends only authored levels; hard selection draws a
+        // missing range from the root range, like the CPU reference.
+        lodRow.generation = candidate.generation;
+        lodRow.level = level;
+        lodRow.firstIndex = ranges[level]?.first ?? batch.key.first;
+        lodRow.indexCount = ranges[level]?.count ?? batch.key.count;
+        lodRow.baseVertex = ranges[level]?.baseVertex ?? batch.key.baseVertex;
+        lodRow.screenCoverage = coverages[level] ?? 0;
+        lodRow.hysteresis = hysteresis;
+        lodRow.ready = !crossfade || level === 0 || batch.lod?.ranges?.[level - 1] !== undefined;
+        writeGpuLodRow(candidates, candidateOffset + 48 + level * LOD_ROW_STRIDE, lodRow);
+      }
+      candidateIndex += 1;
+    }
+  }
+  const encoded = {
+    sceneRevision: scene.allocationRevision,
+    candidateBytes: new Uint8Array(candidateBytes),
+    batchBytes: new Uint8Array(batchBytes),
+  };
+  plans.set(plan, encoded);
+  return encoded;
+}
+
+const SHADOW_RASTER_DESCRIPTOR: RenderBundleEncoderDescriptor = Object.freeze({
+  colorFormats: [],
+  depthStencilFormat: 'depth32float',
+  sampleCount: 1,
+});
+
+export class GpuDrivenView {
+  private encodedTopology: EncodedViewTopology | undefined;
+  private shadowRaster: PreparedRasterCounters | undefined;
+  private buffers: ViewBuffers | undefined;
+  private surfaceRows: Uint32Array | undefined;
+  private supersededBuffers: ViewBuffers[] = [];
+  private bindGroup: BindGroup | undefined;
+  private candidateCapacity = 0;
+  private sceneRef: GpuScene | undefined;
+  private visibleBufferCapacity = 0;
+  private batchCapacity = 0;
+  private indirectCapacity = 0;
+  private plan: SubmissionPlan | undefined;
+  private scenePrimitive: Buffer | undefined;
+  private sceneInstance: Buffer | undefined;
+  private sceneTransform: Buffer | undefined;
+  private sceneMaterial: Buffer | undefined;
+  private sceneMaterialBytes = 0;
+  private sceneCapacity = 0;
+  private updateCount = 0;
+  private uploadBytes = 0;
+  private candidateUploadBytes = 0;
+  private batchUploadBytes = 0;
+  private viewConstantsUploadBytes = 0;
+  private suppressionUploadBytes = 0;
+  /** Bitmap words reserved after the batch table in the batches buffer. */
+  private suppressionWordCapacity = 0;
+  /** CPU mirror of the uploaded admission bitmap; diffed to upload dirty words only. */
+  private suppressionMirror = new Uint32Array(0);
+  /** A replacement batches buffer has no bitmap yet; the next update seeds it whole. */
+  private suppressionReseed = false;
+  private bindGroupCreates = 0;
+  private bufferRebuilds = 0;
+  private resourceGeneration = 0;
+  private materialResourceGeneration = 0;
+  private readonly allocationLedger = new GpuResourceAllocationLedger();
+  private readonly allocationTokens = new WeakMap<Buffer, GpuResourceAllocationToken>();
+  /** The last readback copy that was actually encoded and is not consumed. */
+  private telemetryPending: LodTelemetryCopy | undefined;
+  /** Receipt identity for the copy pass encoded by the current frame. */
+  private telemetrySubmit: GpuDrivenLodSubmitIdentity | undefined;
+  /** Coalesce observers while the readback buffer is map-pending. */
+  private lodSelectionReadback:
+    | {
+        readonly promise: Promise<GpuDrivenLodSelectionInspection | undefined>;
+      }
+    | undefined;
+  private lodSelection: GpuDrivenLodSelectionInspection | undefined;
+  /** Camera of the pyramid source; undefined keeps the single-phase path. */
+  private occlusionCamera: GpuDrivenOcclusionCamera | undefined;
+  /**
+   * The last projected graph tests shadow casters against a camera pyramid.
+   * A cull input enables the test only then, so a view never records a
+   * camera-dependent raster its graph did not perform.
+   */
+  cameraCullBound = false;
+  /** Which bit region the next late phase writes; flips when it is encoded. */
+  private visibilityParity = 0;
+  /** History key and readiness of the region the last late phase wrote. */
+  private visibilityHistoryKey: string | undefined;
+  private visibilityHistoryReady = false;
+  private readonly pyramidBindGroups = new WeakMap<TextureView, BindGroup>();
+  private shadowCameraCullPipeline: ComputePipeline | undefined;
+
+  private constructor(
+    private readonly device: RhiDevice,
+    private readonly bindGroupLayout: BindGroupLayout,
+    private readonly pipelineLayout: PipelineLayout,
+    private readonly resetPipeline: ComputePipeline,
+    private readonly cullPipeline: ComputePipeline,
+    private readonly finalizePipeline: ComputePipeline,
+    private readonly labelPrefix: string,
+    private readonly pyramidLayout: BindGroupLayout,
+    private readonly lateCullPipeline: ComputePipeline,
+    private readonly lateFinalizePipeline: ComputePipeline,
+    private readonly footprintScale: number,
+    private readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory,
+    private readonly latePipelineLayout: PipelineLayout,
+    private readonly shadowCameraCullEligible: boolean,
+  ) {}
+
+  /**
+   * Compiled on the first update with a camera cull input, so views that never
+   * receive one skip the larger module. Undefined while the module compiles.
+   */
+  private shadowCameraCull(): Result<ComputePipeline | undefined, RhiError> {
+    if (this.shadowCameraCullPipeline !== undefined) return ok(this.shadowCameraCullPipeline);
+    const module = this.shaderModuleFactory.createShaderModule({
+      label: 'gpu-driven-view-shadow-camera',
+      code: GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL,
+    });
+    if (!module.ok) return module.error.code === 'rhi-not-available' ? ok(undefined) : module;
+    const created = this.device.createComputePipeline({
+      label: `${this.labelPrefix}.cullViewShadowCamera`,
+      layout: this.latePipelineLayout,
+      compute: { module: module.value, entryPoint: 'cullViewShadowCamera' },
+    });
+    if (!created.ok) return created;
+    this.shadowCameraCullPipeline = created.value;
+    return created;
+  }
+
+  setTelemetrySubmit(identity: GpuDrivenLodSubmitIdentity | undefined): void {
+    this.telemetrySubmit = identity;
+  }
+
+  static create(input: {
+    readonly device: RhiDevice;
+    readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
+    readonly labelPrefix?: string;
+    /**
+     * @internal
+     * Falsifier hook: scales the HZB screen footprint. Production uses 1.
+     */
+    readonly occlusionFootprintScale?: number;
+    /** Compile the shadow caster cull against the main camera's pyramid. */
+    readonly shadowCameraCull?: boolean;
+  }): Result<GpuDrivenView, RhiError> {
+    const { device, shaderModuleFactory } = input;
+    const labelPrefix = input.labelPrefix ?? 'gpu-driven-view';
+    if (!device.caps.compute || !device.caps.storageBuffer || !device.caps.indirectDrawing) {
+      return err(
+        new RhiError({
+          code: 'feature-not-enabled',
+          expected: 'compute && storageBuffer && indirectDrawing',
+          hint: 'use the CPU projection and direct submission fallback on this device',
+        }),
+      );
+    }
+    const layout = device.createBindGroupLayout({
+      label: `${labelPrefix}-bgl`,
+      entries: [
+        { binding: 0, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: COMPUTE_STAGE, buffer: { type: 'uniform' } },
+        { binding: 6, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+        { binding: 7, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+        { binding: 8, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+      ],
+    });
+    if (!layout.ok) return layout;
+    const pipelineLayout = device.createPipelineLayout({
+      label: `${labelPrefix}-pl`,
+      bindGroupLayouts: [layout.value],
+    });
+    if (!pipelineLayout.ok) return pipelineLayout;
+    const module = shaderModuleFactory.createShaderModule({
+      label: 'gpu-driven-view',
+      code: GPU_DRIVEN_VIEW_WGSL,
+    });
+    if (!module.ok) return module;
+    const createPipeline = (entryPoint: string): Result<ComputePipeline, RhiError> =>
+      device.createComputePipeline({
+        label: `${labelPrefix}.${entryPoint}`,
+        layout: pipelineLayout.value,
+        compute: {
+          module: module.value,
+          entryPoint,
+          ...(device.caps.firstInstanceIndirect &&
+          (entryPoint === 'finalizeView' || entryPoint === 'finalizeViewLate')
+            ? { constants: { INDIRECT_FIRST_INSTANCE: 1 } }
+            : {}),
+        },
+      });
+    const reset = createPipeline('resetView');
+    if (!reset.ok) return reset;
+    const cull = createPipeline('cullView');
+    if (!cull.ok) return cull;
+    const finalize = createPipeline('finalizeView');
+    if (!finalize.ok) return finalize;
+    const lateFinalize = createPipeline('finalizeViewLate');
+    if (!lateFinalize.ok) return lateFinalize;
+    const pyramidLayout = device.createBindGroupLayout({
+      label: `${labelPrefix}-occlusion-bgl`,
+      entries: [
+        {
+          binding: 0,
+          visibility: COMPUTE_STAGE,
+          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+        },
+      ],
+    });
+    if (!pyramidLayout.ok) return pyramidLayout;
+    const latePipelineLayout = device.createPipelineLayout({
+      label: `${labelPrefix}-occlusion-pl`,
+      bindGroupLayouts: [layout.value, pyramidLayout.value],
+    });
+    if (!latePipelineLayout.ok) return latePipelineLayout;
+    const lateCull = device.createComputePipeline({
+      label: `${labelPrefix}.cullViewLate`,
+      layout: latePipelineLayout.value,
+      compute: { module: module.value, entryPoint: 'cullViewLate' },
+    });
+    if (!lateCull.ok) return lateCull;
+    return ok(
+      new GpuDrivenView(
+        device,
+        layout.value,
+        pipelineLayout.value,
+        reset.value,
+        cull.value,
+        finalize.value,
+        labelPrefix,
+        pyramidLayout.value,
+        lateCull.value,
+        lateFinalize.value,
+        input.occlusionFootprintScale ?? 1,
+        shaderModuleFactory,
+        latePipelineLayout.value,
+        input.shadowCameraCull === true,
+      ),
+    );
+  }
+
+  update(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    planes: Float32Array,
+    lodCamera?: LodViewCamera,
+    minCasterDiameter = 0,
+    suppressedPrimitives?: Uint32Array,
+    lodClampCamera?: LodViewCamera,
+    occlusionCamera?: GpuDrivenOcclusionCamera,
+    visibleSurfaceRows?: Uint32Array,
+    shadowCameraCull?: GpuDrivenShadowCameraCull,
+  ): Result<void, RhiError> {
+    if (visibleSurfaceRows !== undefined && visibleSurfaceRows.length !== plan.candidateCount) {
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'one submitted visible-surface address per view candidate',
+          hint: 'derive receiver addresses from the same ordered submission plan before updating the view',
+        }),
+      );
+    }
+    this.candidateUploadBytes = 0;
+    this.suppressionUploadBytes = 0;
+    this.batchUploadBytes = 0;
+    this.viewConstantsUploadBytes = 0;
+    this.bindGroupCreates = 0;
+    // The cached graph owns the readback copy.  Do not arm an observation latch
+    // here: a graph can be compiled but not submitted, and its copy can be
+    // skipped while the previous mapAsync is pending.  The encode callback
+    // records only a copy that really reached the command encoder.
+    this.lodSelection = undefined;
+    const topologyChanged = this.plan !== plan;
+    const suppressionWords = Math.max(
+      1,
+      Math.ceil(scene.inspect().capacity / 32),
+      suppressedPrimitives?.length ?? 0,
+    );
+    const surfaceModeChanged =
+      (visibleSurfaceRows !== undefined) !== (this.buffers?.visibleSurfaceRows !== undefined);
+    let buffersRebuilt = false;
+    if (
+      topologyChanged ||
+      surfaceModeChanged ||
+      this.buffers === undefined ||
+      suppressionWords > this.suppressionWordCapacity
+    ) {
+      // Candidate records and compacted visible indices are different
+      // capacity domains: every LOD level owns an aligned visible segment,
+      // so the visible address space exceeds the logical candidate count.
+      // Never let it inflate candidate/LOD-row storage allocations.
+      const capacities = deriveGpuDrivenViewBufferCapacities(plan);
+      if (
+        this.buffers === undefined ||
+        surfaceModeChanged ||
+        capacities.candidate > this.candidateCapacity ||
+        capacities.visible > this.visibleBufferCapacity ||
+        capacities.batch > this.batchCapacity ||
+        capacities.indirect > this.indirectCapacity ||
+        suppressionWords > this.suppressionWordCapacity
+      ) {
+        const rebuilt = this.rebuildBuffers(
+          capacities.candidate,
+          capacities.visible,
+          capacities.batch,
+          capacities.indirect,
+          suppressionWords,
+          visibleSurfaceRows !== undefined,
+        );
+        if (!rebuilt.ok) return rebuilt;
+        buffersRebuilt = true;
+      }
+    }
+    const buffers = this.buffers;
+    if (buffers === undefined) return ok(undefined);
+    const addressesChanged =
+      this.sceneRef !== scene || this.encodedTopology?.sceneRevision !== scene.allocationRevision;
+    if (topologyChanged || buffersRebuilt || addressesChanged) {
+      const previous = !buffersRebuilt ? this.encodedTopology : undefined;
+      // Any accepted write may partially replace the old topology. A later
+      // failure must force reseeding even when the caller retries the old plan.
+      this.plan = undefined;
+      this.encodedTopology = undefined;
+      const encoded = encodedViewTopology(plan, scene);
+      const { candidateBytes, batchBytes } = encoded;
+      // Physical buffers retain their accepted bytes. Trim equal words at both
+      // ends instead of re-uploading the static roster for a local edit. One
+      // aligned interval per table keeps queue work bounded even for scattered
+      // changes; a replacement or partial failure always seeds the full table.
+      const write = (buffer: Buffer, bytes: Uint8Array, before: Uint8Array | undefined) => {
+        let start = 0;
+        let end = bytes.byteLength / 4;
+        if (before !== undefined) {
+          const next = new Uint32Array(bytes.buffer, bytes.byteOffset, end);
+          const old = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
+          while (start < Math.min(end, old.length) && next[start] === old[start]) start++;
+          while (end > start && end <= old.length && next[end - 1] === old[end - 1]) end--;
+        }
+        const size = (end - start) * 4;
+        if (size === 0) return ok(0);
+        const written = this.device.queue.writeBuffer(buffer, start * 4, bytes, start * 4, size);
+        return written.ok ? ok(size) : written;
+      };
+      const candidateWrite = write(buffers.candidates, candidateBytes, previous?.candidateBytes);
+      if (!candidateWrite.ok) return candidateWrite;
+      const batchWrite = write(buffers.batches, batchBytes, previous?.batchBytes);
+      if (!batchWrite.ok) return batchWrite;
+      this.encodedTopology = encoded;
+      this.candidateUploadBytes = candidateWrite.value;
+      this.batchUploadBytes = batchWrite.value;
+      this.uploadBytes += candidateWrite.value + batchWrite.value;
+    }
+    if (visibleSurfaceRows !== undefined && buffers.visibleSurfaceRows !== undefined) {
+      if (
+        buffersRebuilt ||
+        this.surfaceRows?.length !== visibleSurfaceRows.length ||
+        visibleSurfaceRows.some((row, index) => this.surfaceRows?.[index] !== row)
+      ) {
+        const written = this.device.queue.writeBuffer(
+          buffers.visibleSurfaceRows,
+          0,
+          visibleSurfaceRows,
+        );
+        if (!written.ok) return written;
+        this.surfaceRows = visibleSurfaceRows.slice();
+        this.uploadBytes += visibleSurfaceRows.byteLength;
+      }
+    } else {
+      this.surfaceRows = undefined;
+    }
+    const viewBytes = new ArrayBuffer(VIEW_BYTES);
+    const viewFloats = new Float32Array(viewBytes);
+    viewFloats.set(planes.subarray(0, 24));
+    const viewU32 = new Uint32Array(viewBytes);
+    viewU32[24] = plan.candidateCount;
+    viewU32[25] = plan.batches.length;
+    viewU32[26] = this.batchCapacity;
+    viewFloats[27] = minCasterDiameter;
+    viewU32[28] = this.suppressionBase() / 4;
+    // Without a LOD camera the zero height scale reports an invalid height,
+    // so every chain resolves to its root.
+    if (lodCamera !== undefined) {
+      writeLodViewConstants(new DataView(viewBytes), LOD_CONSTANTS_OFFSET, lodCamera);
+    }
+    if (lodClampCamera !== undefined) {
+      writeLodViewConstants(
+        new DataView(viewBytes),
+        LOD_CLAMP_CONSTANTS_OFFSET,
+        lodClampCamera,
+        true,
+      );
+    }
+    // The per-frame history words (enabled, parity bases) stay zero here; the
+    // early cull encode fills them only when its graph also records the late
+    // phase, so a graph without it can never skip a previously hidden item.
+    this.occlusionCamera = occlusionCamera;
+    if (occlusionCamera !== undefined) {
+      viewFloats.set(
+        occlusionCamera.viewProjection.subarray(0, 16),
+        OCCLUSION_CONSTANTS_OFFSET / 4,
+      );
+      viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 16] = occlusionCamera.near;
+      viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 17] = occlusionCamera.far;
+      viewU32[OCCLUSION_CONSTANTS_OFFSET / 4 + 18] = occlusionCamera.orthographic ? 1 : 0;
+      viewFloats[OCCLUSION_CONSTANTS_OFFSET / 4 + 19] = this.footprintScale;
+    }
+    // Without a cull input the enable word stays zero, so a graph that binds
+    // the camera cull still draws every caster the frustum admits.
+    const lightInverse =
+      shadowCameraCull === undefined || !this.shadowCameraCullEligible
+        ? undefined
+        : invertLightViewProjection(shadowCameraCull.lightViewProjection);
+    const cameraPipeline = lightInverse === undefined ? ok(undefined) : this.shadowCameraCull();
+    if (!cameraPipeline.ok) return cameraPipeline;
+    if (
+      shadowCameraCull !== undefined &&
+      lightInverse !== undefined &&
+      cameraPipeline.value !== undefined
+    ) {
+      const base = SHADOW_CAMERA_CULL_OFFSET / 4;
+      const camera = shadowCameraCull.camera;
+      viewFloats.set(camera.viewProjection.subarray(0, 16), base);
+      viewFloats[base + 16] = camera.near;
+      viewFloats[base + 17] = camera.far;
+      viewU32[base + 18] = camera.orthographic ? 1 : 0;
+      viewFloats[base + 19] = this.footprintScale;
+      viewFloats.set(shadowCameraCull.lightViewProjection.subarray(0, 16), base + 20);
+      viewFloats.set(lightInverse, base + 36);
+      viewFloats[base + 52] = shadowCameraCull.ndcDilation;
+      viewFloats[base + 53] = shadowCameraCull.worldDilation;
+      viewU32[base + 54] = 1;
+    }
+    const viewWrite = this.device.queue.writeBuffer(buffers.view, 0, new Uint8Array(viewBytes));
+    if (!viewWrite.ok) return viewWrite;
+    this.viewConstantsUploadBytes = viewBytes.byteLength;
+    this.uploadBytes += viewBytes.byteLength;
+    const suppressionUpdated = this.updateSuppression(
+      buffers.batches,
+      this.suppressionReseed,
+      suppressedPrimitives,
+    );
+    if (!suppressionUpdated.ok) return suppressionUpdated;
+    const sceneChanged =
+      this.scenePrimitive !== scene.primitiveBuffer ||
+      this.sceneInstance !== scene.instanceBuffer ||
+      this.sceneTransform !== scene.transformBuffer;
+    if (this.bindGroup === undefined || sceneChanged || buffersRebuilt) {
+      const binding = this.device.createBindGroup({
+        label: `${this.labelPrefix}-bg`,
+        layout: this.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
+          { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
+          { binding: 2, resource: bufferBinding(scene.transformBuffer) },
+          { binding: 3, resource: bufferBinding(buffers.candidates) },
+          { binding: 4, resource: bufferBinding(buffers.batches) },
+          { binding: 5, resource: bufferBinding(buffers.view) },
+          { binding: 6, resource: bufferBinding(buffers.counters) },
+          { binding: 7, resource: bufferBinding(buffers.visible) },
+          { binding: 8, resource: bufferBinding(buffers.indirect) },
+        ],
+      });
+      if (!binding.ok) return binding;
+      this.bindGroup = binding.value;
+      this.bindGroupCreates = 1;
+      this.resourceGeneration += 1;
+    }
+    this.plan = plan;
+    this.scenePrimitive = scene.primitiveBuffer;
+    this.sceneInstance = scene.instanceBuffer;
+    this.sceneTransform = scene.transformBuffer;
+    if (this.sceneMaterial !== scene.materialBuffer) this.materialResourceGeneration += 1;
+    this.sceneMaterial = scene.materialBuffer;
+    this.sceneMaterialBytes = scene.materialByteLength;
+    this.sceneRef = scene;
+    this.sceneCapacity = scene.inspect().capacity;
+    this.updateCount += 1;
+    return ok(undefined);
+  }
+
+  get computeResourceGeneration(): number {
+    return this.resourceGeneration;
+  }
+
+  get currentResourceGeneration(): number {
+    return this.resourceGeneration + this.materialResourceGeneration;
+  }
+
+  resolveShadowBundle(
+    cache: PreparedRasterBundleCache,
+    observed: PreparedRasterBindings,
+  ): RenderBundle {
+    this.shadowRaster ??= { hits: 0, builds: 0, commands: 0, evictions: 0 };
+    return cache.resolveOne(
+      'shadow',
+      this.device,
+      SHADOW_RASTER_DESCRIPTOR,
+      observed,
+      this.shadowRaster,
+    );
+  }
+
+  recordShadow(pass: RhiRenderPassEncoder, bundles: readonly RenderBundle[]): void {
+    if (bundles.length === 0) return;
+    const executed = pass.executeBundles(bundles);
+    if (!executed.ok) throw executed.error;
+  }
+
+  inspect(): GpuDrivenViewInspection {
+    return {
+      ...(this.shadowRaster === undefined ? {} : { shadowBundles: { ...this.shadowRaster } }),
+      topologyRevision: this.plan?.revision,
+      candidateCount: this.plan?.candidateCount ?? 0,
+      batchCount: this.plan?.batches.length ?? 0,
+      visibleCapacity: this.plan?.visibleCapacity ?? 0,
+      candidateCapacity: this.candidateCapacity,
+      visibleBufferCapacity: this.visibleBufferCapacity,
+      batchCapacity: this.batchCapacity,
+      indirectCapacity: this.indirectCapacity,
+      updateCount: this.updateCount,
+      uploadBytes: this.uploadBytes,
+      candidateUploadBytes: this.candidateUploadBytes,
+      batchUploadBytes: this.batchUploadBytes,
+      viewConstantsUploadBytes: this.viewConstantsUploadBytes,
+      suppressionUploadBytes: this.suppressionUploadBytes,
+      bindGroupCreates: this.bindGroupCreates,
+      bufferRebuilds: this.bufferRebuilds,
+      resourceGeneration: this.currentResourceGeneration,
+      resourceAllocation: this.allocationLedger.inspect(),
+    };
+  }
+
+  get visibleSurfaceRowsBuffer(): Buffer | undefined {
+    return this.buffers?.visibleSurfaceRows;
+  }
+
+  get visibleBuffer(): Buffer | undefined {
+    return this.buffers?.visible;
+  }
+
+  get indirectBuffer(): Buffer | undefined {
+    return this.buffers?.indirect;
+  }
+
+  get overflowBuffer(): Buffer | undefined {
+    return this.buffers?.counters;
+  }
+
+  get overflowByteOffset(): number {
+    return 4;
+  }
+
+  /** Read selected levels written by the GPU cull pass for the last submit. */
+  readLodSelection(): Promise<GpuDrivenLodSelectionInspection | undefined> {
+    const inFlight = this.lodSelectionReadback;
+    if (inFlight !== undefined) return inFlight.promise;
+
+    const copy = this.readableTelemetryCopy();
+    if (copy === undefined) return Promise.resolve(this.lodSelection);
+    const promise = this.readLodSelectionCopy(copy).finally(() => {
+      if (this.lodSelectionReadback?.promise === promise) this.lodSelectionReadback = undefined;
+    });
+    this.lodSelectionReadback = { promise };
+    return promise;
+  }
+
+  /** Shadows consume batch cull counters, not visible-member or Surface observations. */
+  readCullingCounts(): Promise<
+    Pick<GpuDrivenLodSelectionInspection, 'texelCulled' | 'cameraCulled'> | undefined
+  > {
+    const copy = this.readableTelemetryCopy();
+    if (copy === undefined) return Promise.resolve(undefined);
+    return this.readTelemetryCopy(copy, (values) => {
+      let texelCulled = 0;
+      let cameraCulled = 0;
+      for (let batchIndex = 0; batchIndex < copy.plan.batches.length; batchIndex += 1) {
+        const offset = batchIndex * COUNTER_STRIDE;
+        texelCulled += values.getUint32(offset + TEXEL_CULLED_COUNTER_OFFSET * 4, true);
+        cameraCulled += values.getUint32(offset + CAMERA_CULLED_COUNTER_OFFSET * 4, true);
+      }
+      return { texelCulled, cameraCulled };
+    });
+  }
+
+  private readableTelemetryCopy(): LodTelemetryCopy | undefined {
+    const buffers = this.buffers;
+    const copy = this.telemetryPending;
+    return buffers !== undefined &&
+      copy !== undefined &&
+      copy.buffers === buffers &&
+      copy.plan === this.plan &&
+      copy.resourceGeneration === this.resourceGeneration &&
+      typeof buffers.lodReadback.mapAsync === 'function' &&
+      buffers.lodReadback.mapState === 'unmapped'
+      ? copy
+      : undefined;
+  }
+
+  private async readTelemetryCopy<T>(
+    copy: LodTelemetryCopy,
+    decode: (values: DataView<ArrayBuffer>) => T,
+  ): Promise<T | undefined> {
+    const buffers = copy.buffers;
+    const mapped = await buffers.lodReadback.mapAsync(GPU_BUFFER_USAGE_MAP_READ);
+    if (!mapped.ok) return undefined;
+    const range = mapped.value.getMappedRange();
+    if (!range.ok) {
+      mapped.value.unmap();
+      return undefined;
+    }
+    try {
+      // Decode only the submitted copy. A later plan may share these buffers;
+      // replacement resources cannot supply this range's counter capacities.
+      if (
+        this.buffers !== buffers ||
+        this.resourceGeneration !== copy.resourceGeneration ||
+        this.telemetryPending !== copy
+      ) {
+        return undefined;
+      }
+      const result = decode(new DataView(range.value));
+      this.telemetryPending = undefined;
+      return result;
+    } finally {
+      mapped.value.unmap();
+    }
+  }
+
+  private readLodSelectionCopy(
+    copy: LodTelemetryCopy,
+  ): Promise<GpuDrivenLodSelectionInspection | undefined> {
+    return this.readTelemetryCopy(copy, (values) => {
+      const plan = copy.plan;
+      let visible = 0;
+      let overflow = false;
+      let geometryWork = 0;
+      let rootGeometryWork = 0;
+      let texelCulled = 0;
+      let cameraCulled = 0;
+      let occlusionCulled = 0;
+      let lateVisible = 0;
+      const actualMembers: Array<{
+        readonly batchId: number;
+        readonly primitiveIndex: number;
+        readonly generation: number;
+        readonly drawItemIndex: number;
+        readonly instanceOrdinal: number;
+      }> = [];
+      const histogram = new Map<number, number>();
+      for (let batchIndex = 0; batchIndex < plan.batches.length; batchIndex += 1) {
+        const offset = batchIndex * COUNTER_STRIDE;
+        const batchOverflow = values.getUint32(offset + 4, true) !== 0;
+        const batch = plan.batches[batchIndex];
+        const batchVisible = batchOverflow
+          ? 0
+          : Math.min(values.getUint32(offset, true), batch?.visibleCapacity ?? 0);
+        // Visible items carry the GPU Scene instance row; map it back to the
+        // admitted candidate that owns that row in the current allocation.
+        const admittedByRow = new Map<number, GpuDrivenCandidate>();
+        for (const candidate of batch?.candidates ?? []) {
+          const row = this.sceneRef?.instanceIndexForSlot(
+            candidate.primitiveIndex,
+            candidate.instanceOrdinal,
+          );
+          if (row !== undefined) admittedByRow.set(row, candidate);
+        }
+        const levels = batch === undefined || batchOverflow ? 0 : batchLodLevelCount(batch);
+        for (let level = 0; level < levels; level += 1) {
+          if (batch === undefined) break;
+          const segmentBase = batch.visibleBase + level * batchLevelStride(batch);
+          const segmentVisible = Math.min(
+            values.getUint32(offset + (LEVEL_VISIBLE_COUNTER_OFFSET + level) * 4, true),
+            batch.visibleCapacity,
+          );
+          for (let visibleIndex = 0; visibleIndex < segmentVisible; visibleIndex += 1) {
+            const visibleOffset =
+              this.batchCapacity * COUNTER_STRIDE + (segmentBase + visibleIndex) * 16;
+            const candidate = admittedByRow.get(values.getUint32(visibleOffset, true));
+            if (candidate !== undefined) {
+              actualMembers.push({
+                batchId: batch.batchId,
+                primitiveIndex: candidate.primitiveIndex,
+                generation: candidate.generation,
+                drawItemIndex: candidate.drawItemIndex,
+                instanceOrdinal: candidate.instanceOrdinal,
+              });
+            }
+          }
+        }
+        visible += batchVisible;
+        overflow ||= batchOverflow;
+        geometryWork += values.getUint32(offset + GEOMETRY_WORK_COUNTER_OFFSET * 4, true);
+        rootGeometryWork += values.getUint32(offset + ROOT_GEOMETRY_WORK_COUNTER_OFFSET * 4, true);
+        texelCulled += values.getUint32(offset + TEXEL_CULLED_COUNTER_OFFSET * 4, true);
+        cameraCulled += values.getUint32(offset + CAMERA_CULLED_COUNTER_OFFSET * 4, true);
+        if (copy.occlusion && !batchOverflow && batch !== undefined) {
+          occlusionCulled += values.getUint32(offset + OCCLUSION_CULLED_COUNTER_OFFSET * 4, true);
+          for (let level = 0; level < batchLodLevelCount(batch); level += 1) {
+            const total = Math.min(
+              values.getUint32(offset + (LEVEL_VISIBLE_COUNTER_OFFSET + level) * 4, true),
+              batch.visibleCapacity,
+            );
+            const early = values.getUint32(
+              offset + (EARLY_VISIBLE_COUNTER_OFFSET + level) * 4,
+              true,
+            );
+            lateVisible += Math.max(0, total - early);
+          }
+        }
+        for (let level = 0; level < LOD_ROW_CAPACITY; level += 1) {
+          const count = values.getUint32(offset + (LOD_COUNTER_OFFSET + level) * 4, true);
+          if (count > 0) histogram.set(level, (histogram.get(level) ?? 0) + count);
+        }
+      }
+      const candidateCount = plan.candidateCount;
+      const surfaceReadback = copy.surfaceReadbackSnapshot?.();
+      const surfaceIndirectReadback =
+        surfaceReadback === undefined
+          ? undefined
+          : decodeSurfaceIndirectParameters({
+              bytes: values.buffer,
+              byteOffset: copy.indirectReadbackOffset,
+              byteLength: this.indirectCapacity * INDIRECT_COMMAND_BYTES,
+              indirectBufferIdentity: copy.indirectBufferIdentity,
+              recording: surfaceReadback,
+            });
+      this.lodSelection = Object.freeze({
+        resourceGeneration: copy.resourceGeneration,
+        candidateCount,
+        batchCount: plan.batches.length,
+        // Selector-only batches remain in the plan/readback but the production
+        // raster skips them. Report the actual nonzero-admission command count
+        // (one per LOD level) so a benchmark cannot mistake selector batches
+        // for raster draws.
+        indirectDrawCount: admittedRasterBatchCount(plan),
+        visible,
+        // A LOD histogram counts candidates that reached the selector, while
+        // `visible` is the actual compacted submission count. Occlusion is the
+        // difference between those candidate/visibility totals; using the
+        // histogram here would mislabel a visible candidate dropped only by an
+        // indirect-capacity overflow as occluded.
+        occluded: Math.max(0, candidateCount - visible),
+        overflow,
+        lodHistogram: Object.freeze(
+          [...histogram.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([level, count]) => Object.freeze({ level, count })),
+        ),
+        batches: Object.freeze(
+          plan.batches.map((batch, batchIndex) => {
+            const offset = batchIndex * COUNTER_STRIDE;
+            const batchHistogram = new Map<number, number>();
+            for (let level = 0; level < LOD_ROW_CAPACITY; level += 1) {
+              const count = values.getUint32(offset + (LOD_COUNTER_OFFSET + level) * 4, true);
+              if (count > 0) batchHistogram.set(level, count);
+            }
+            const batchOverflow = values.getUint32(offset + 4, true) !== 0;
+            const batchVisible = batchOverflow
+              ? 0
+              : Math.min(values.getUint32(offset, true), batch.visibleCapacity);
+            return Object.freeze({
+              batchId: batch.batchId,
+              candidateCount: batch.candidates.length,
+              visible: batchVisible,
+              occluded: Math.max(0, batch.candidates.length - batchVisible),
+              overflow: batchOverflow,
+              lodHistogram: Object.freeze(
+                [...batchHistogram.entries()]
+                  .sort(([left], [right]) => left - right)
+                  .map(([level, count]) => Object.freeze({ level, count })),
+              ),
+            });
+          }),
+        ),
+        geometryWork,
+        rootGeometryWork,
+        texelCulled,
+        cameraCulled,
+        ...(copy.occlusion
+          ? { occlusion: Object.freeze({ culled: occlusionCulled, late: lateVisible }) }
+          : {}),
+        actualMembers: Object.freeze(actualMembers),
+        ...(surfaceReadback === undefined ? {} : { surfaceReadback }),
+        ...(surfaceIndirectReadback === undefined
+          ? {}
+          : surfaceIndirectReadback.ok
+            ? { surfaceIndirectParameters: surfaceIndirectReadback.value }
+            : { surfaceIndirectReadbackError: surfaceIndirectReadback.error }),
+        ...(copy.submit === undefined ? {} : { submit: copy.submit }),
+      });
+      return this.lodSelection;
+    });
+  }
+
+  addPasses<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    labelPrefix = 'gpu-driven',
+    includeCompute = true,
+    surfaceSubmissionObservation?: () => SurfaceSubmissionCandidate | undefined,
+    executeIf?: (frame: FrameCtx) => boolean,
+    lateOcclusion = false,
+    shadowCameraPyramid?: GraphTextureView,
+    resolveDrawResources?: () => void,
+  ): Result<GpuDrivenViewGraphResources, RenderGraphError> {
+    const buffers = this.buffers;
+    const bindGroup = this.bindGroup;
+    const plan = this.plan;
+    if (buffers === undefined || bindGroup === undefined || plan === undefined) {
+      return err(
+        new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'GpuDrivenView.update(...) precedes addPasses(...)',
+          hint: 'publish the current SubmissionPlan and view planes first',
+          detail: {
+            resourceLabel: 'gpu-driven-view',
+            field: 'state',
+            expected: 'updated',
+            actual: 'not-updated',
+          },
+        }),
+      );
+    }
+    const importBuffer = (
+      name: string,
+      buffer: Buffer,
+      size: number,
+      usage: number,
+      resolveBefore?: () => void,
+    ) =>
+      builder.importBuffer(name, { size, usage }, () => {
+        resolveBefore?.();
+        return buffer;
+      });
+    const scenePrefix = labelPrefix === 'gpu-driven' ? 'gpu-scene' : `${labelPrefix}.scene`;
+    const primitive = importBuffer(
+      `${scenePrefix}.primitive`,
+      this.scenePrimitive as Buffer,
+      this.sceneCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
+      resolveDrawResources,
+    );
+    if (!primitive.ok) return primitive;
+    const transform = importBuffer(
+      `${scenePrefix}.transform`,
+      this.sceneTransform as Buffer,
+      this.sceneCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
+    );
+    if (!transform.ok) return transform;
+    const instance = importBuffer(
+      `${scenePrefix}.instance`,
+      this.sceneInstance as Buffer,
+      this.sceneCapacity * GPU_SCENE_LAYOUTS.instance.stride,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
+    );
+    if (!instance.ok) return instance;
+    const material = importBuffer(
+      `${scenePrefix}.material`,
+      this.sceneMaterial as Buffer,
+      this.sceneMaterialBytes,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
+    );
+    if (!material.ok) return material;
+    const candidates = importBuffer(
+      `${labelPrefix}.candidates`,
+      buffers.candidates,
+      this.candidateCapacity * CANDIDATE_STRIDE,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    );
+    if (!candidates.ok) return candidates;
+    let visibleSurfaceRows: GraphBuffer | undefined;
+    if (buffers.visibleSurfaceRows !== undefined) {
+      const imported = importBuffer(
+        `${labelPrefix}.visible-surface-rows`,
+        buffers.visibleSurfaceRows,
+        this.candidateCapacity * 4,
+        GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
+      );
+      if (!imported.ok) return imported;
+      visibleSurfaceRows = imported.value;
+    }
+    const batches = importBuffer(
+      `${labelPrefix}.batches`,
+      buffers.batches,
+      this.suppressionBase() + this.suppressionWordCapacity * 4,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    );
+    if (!batches.ok) return batches;
+    const view = importBuffer(
+      `${labelPrefix}.view`,
+      buffers.view,
+      VIEW_BYTES,
+      GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    );
+    if (!view.ok) return view;
+    const counters = importBuffer(
+      `${labelPrefix}.counters`,
+      buffers.counters,
+      this.countersBytes(),
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
+    );
+    if (!counters.ok) return counters;
+    const lodReadback = importBuffer(
+      `${labelPrefix}.lod-selection-readback`,
+      buffers.lodReadback,
+      this.batchCapacity * COUNTER_STRIDE +
+        this.visibleBufferCapacity * 16 +
+        this.indirectCapacity * INDIRECT_COMMAND_BYTES,
+      GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+    );
+    if (!lodReadback.ok) return lodReadback;
+    const visible = importBuffer(
+      `${labelPrefix}.visible`,
+      buffers.visible,
+      this.visibleBufferCapacity * 16 * 2,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
+    );
+    if (!visible.ok) return visible;
+    const indirect = importBuffer(
+      `${labelPrefix}.indirect`,
+      buffers.indirect,
+      this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2,
+      GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_INDIRECT | GPU_BUFFER_USAGE_COPY_SRC,
+    );
+    if (!indirect.ok) return indirect;
+    if (!includeCompute) {
+      return ok({
+        visible: visible.value,
+        primitive: primitive.value,
+        instance: instance.value,
+        transform: transform.value,
+        material: material.value,
+        indirect: indirect.value,
+        overflow: counters.value,
+      });
+    }
+    // A compiled graph outlives plan revisions that keep the same buffer
+    // capacities (spawn churn, LOD regrouping). Dispatch sizes therefore
+    // follow the plan uploaded for the submitted frame; the shaders bound
+    // every invocation by the counts in the view constants.
+    const submitted = (): Pick<SubmissionPlan, 'batches' | 'candidateCount'> => this.plan ?? plan;
+    const reset = builder.addComputePass(`${labelPrefix}.view-reset`, {
+      accesses: [
+        { resource: view.value, usage: 'uniform-read' },
+        { resource: counters.value, usage: 'storage-read-write' },
+      ],
+      ...(executeIf === undefined ? {} : { executeIf }),
+      encode: ({ pass }) => {
+        pass.setPipeline(this.resetPipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(
+          Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
+        );
+      },
+    });
+    if (!reset.ok) return reset;
+    // Set during graph construction when the caller adds the late phase; the
+    // early cull may skip a previously hidden item only in such a graph.
+    let lateRecorded = false;
+    const cameraCull = this.shadowCameraCullEligible ? shadowCameraPyramid : undefined;
+    this.cameraCullBound = cameraCull !== undefined;
+    const cull = builder.addComputePass(`${labelPrefix}.frustum-compact`, {
+      accesses: [
+        { resource: primitive.value, usage: 'storage-read' },
+        { resource: instance.value, usage: 'storage-read' },
+        { resource: transform.value, usage: 'storage-read' },
+        { resource: candidates.value, usage: 'storage-read' },
+        { resource: batches.value, usage: 'storage-read' },
+        { resource: view.value, usage: 'uniform-read' },
+        { resource: counters.value, usage: 'storage-read-write' },
+        { resource: visible.value, usage: 'storage-read-write' },
+        ...(cameraCull === undefined
+          ? []
+          : [{ resource: cameraCull, usage: 'sampled-read' as const }]),
+      ],
+      ...(executeIf === undefined ? {} : { executeIf }),
+      encode: ({ pass, resources: graphResources }) => {
+        if (lateRecorded) this.writeOcclusionState();
+        // update() compiles the camera cull with its first input; until then
+        // the frustum cull is what the disabled camera cull would draw.
+        const cameraPipeline = cameraCull === undefined ? undefined : this.shadowCameraCullPipeline;
+        pass.setPipeline(cameraPipeline ?? this.cullPipeline);
+        pass.setBindGroup(0, bindGroup);
+        if (cameraCull !== undefined && cameraPipeline !== undefined) {
+          pass.setBindGroup(
+            1,
+            this.pyramidBindGroup(graphResources.textureView(cameraCull).unwrap()),
+          );
+        }
+        pass.dispatchWorkgroups(
+          Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE),
+        );
+      },
+    });
+    if (!cull.ok) return cull;
+    const finalize = builder.addComputePass(`${labelPrefix}.finalize-indirect`, {
+      accesses: [
+        { resource: batches.value, usage: 'storage-read' },
+        { resource: view.value, usage: 'uniform-read' },
+        // Read-write: the finalize snapshots the early per-level counts.
+        { resource: counters.value, usage: 'storage-read-write' },
+        { resource: indirect.value, usage: 'storage-read-write' },
+      ],
+      ...(executeIf === undefined ? {} : { executeIf }),
+      encode: ({ pass }) => {
+        pass.setPipeline(this.finalizePipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(
+          Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
+        );
+      },
+    });
+    if (!finalize.ok) return finalize;
+    const graphResourceGeneration = this.resourceGeneration;
+    const indirectReadbackOffset =
+      this.batchCapacity * COUNTER_STRIDE + this.visibleBufferCapacity * 16;
+    const indirectBufferIdentity = getOpaqueResourceIdentity(buffers.indirect as object);
+    const addReadback = (occlusion: boolean) =>
+      builder.addCopyPass(`${labelPrefix}.lod-selection-readback`, {
+        accesses: [
+          { resource: counters.value, usage: 'copy-src' },
+          { resource: visible.value, usage: 'copy-src' },
+          { resource: indirect.value, usage: 'copy-src' },
+          { resource: lodReadback.value, usage: 'copy-dst' },
+        ],
+        ...(executeIf === undefined ? {} : { executeIf }),
+        encode: ({ encoder, resources }) => {
+          // A cached graph may run while an observer is awaiting mapAsync on the
+          // previous copy. WebGPU forbids submitting a copy into a
+          // pending/mapped buffer; skip only this telemetry copy and keep the
+          // raster/indirect work intact. RhiNull has no runtime mapState, so its
+          // undefined value remains structurally executable.
+          const mapState = buffers.lodReadback.mapState;
+          if (mapState !== undefined && mapState !== 'unmapped') return;
+          encoder.copyBufferToBuffer(
+            resources.buffer(counters.value).unwrap(),
+            resources.buffer(lodReadback.value).unwrap(),
+            this.batchCapacity * COUNTER_STRIDE,
+          );
+          encoder.copyBufferToBuffer(
+            resources.buffer(visible.value).unwrap(),
+            0,
+            resources.buffer(lodReadback.value).unwrap(),
+            this.batchCapacity * COUNTER_STRIDE,
+            this.visibleBufferCapacity * 16,
+          );
+          encoder.copyBufferToBuffer(
+            resources.buffer(indirect.value).unwrap(),
+            0,
+            resources.buffer(lodReadback.value).unwrap(),
+            indirectReadbackOffset,
+            this.indirectCapacity * INDIRECT_COMMAND_BYTES,
+          );
+          // The render graph is cached across camera-only LOD projection
+          // changes. The pass closure therefore retains the graph-generation
+          // plan while `this.plan` carries the plan uploaded for the frame that
+          // is actually being submitted. Counters belong to that current plan;
+          // retaining the stale closure plan would make every observation fail
+          // the identity fence and silently leave the CPU level-0 placeholder.
+          const submittedPlan = this.plan;
+          if (
+            this.buffers === buffers &&
+            submittedPlan !== undefined &&
+            this.resourceGeneration === graphResourceGeneration
+          ) {
+            const submittedObservation = surfaceSubmissionObservation?.();
+            this.telemetryPending = {
+              buffers,
+              plan: submittedPlan,
+              resourceGeneration: graphResourceGeneration,
+              indirectBufferIdentity,
+              indirectReadbackOffset,
+              ...(submittedObservation === undefined
+                ? {}
+                : {
+                    surfaceReadbackSnapshot: () => submittedObservation.gpuReadbackSnapshot(),
+                  }),
+              ...(this.telemetrySubmit === undefined ? {} : { submit: this.telemetrySubmit }),
+              occlusion,
+            };
+          }
+        },
+      });
+    const resources = {
+      ...(visibleSurfaceRows === undefined ? {} : { visibleSurfaceRows }),
+      visible: visible.value,
+      primitive: primitive.value,
+      instance: instance.value,
+      transform: transform.value,
+      material: material.value,
+      indirect: indirect.value,
+      overflow: counters.value,
+    };
+    if (!lateOcclusion) {
+      const readback = addReadback(false);
+      if (!readback.ok) return readback;
+      return ok(resources);
+    }
+    const lateIndirectByteOffset = this.indirectCapacity * INDIRECT_COMMAND_BYTES;
+    const addLateOcclusion = (
+      pyramid: GraphTextureView,
+    ): Result<GpuDrivenLateOcclusionGraph, RenderGraphError> => {
+      const lateCull = builder.addComputePass(`${labelPrefix}.occlusion-cull`, {
+        accesses: [
+          { resource: primitive.value, usage: 'storage-read' },
+          { resource: instance.value, usage: 'storage-read' },
+          { resource: transform.value, usage: 'storage-read' },
+          { resource: candidates.value, usage: 'storage-read' },
+          { resource: batches.value, usage: 'storage-read' },
+          { resource: view.value, usage: 'uniform-read' },
+          { resource: counters.value, usage: 'storage-read-write' },
+          { resource: visible.value, usage: 'storage-read-write' },
+          { resource: pyramid, usage: 'sampled-read' },
+        ],
+        ...(executeIf === undefined ? {} : { executeIf }),
+        encode: ({ pass, resources: graphResources }) => {
+          pass.setPipeline(this.lateCullPipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.setBindGroup(1, this.pyramidBindGroup(graphResources.textureView(pyramid).unwrap()));
+          pass.dispatchWorkgroups(
+            Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE),
+          );
+          // The region this phase writes becomes next frame's history.
+          this.visibilityParity ^= 1;
+          this.visibilityHistoryKey = this.occlusionCamera?.historyKey;
+          this.visibilityHistoryReady = true;
+        },
+      });
+      if (!lateCull.ok) return lateCull;
+      const lateFinalize = builder.addComputePass(`${labelPrefix}.occlusion-finalize-indirect`, {
+        accesses: [
+          { resource: batches.value, usage: 'storage-read' },
+          { resource: view.value, usage: 'uniform-read' },
+          { resource: counters.value, usage: 'storage-read-write' },
+          { resource: indirect.value, usage: 'storage-read-write' },
+        ],
+        ...(executeIf === undefined ? {} : { executeIf }),
+        encode: ({ pass }) => {
+          pass.setPipeline(this.lateFinalizePipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(
+            Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
+          );
+        },
+      });
+      if (!lateFinalize.ok) return lateFinalize;
+      const readback = addReadback(true);
+      if (!readback.ok) return readback;
+      lateRecorded = true;
+      return ok({
+        passNames: Object.freeze([
+          `${labelPrefix}.occlusion-cull`,
+          `${labelPrefix}.occlusion-finalize-indirect`,
+        ]),
+        lateIndirectByteOffset,
+        lateVisibleBase: this.visibleBufferCapacity,
+      });
+    };
+    return ok({ ...resources, addLateOcclusion });
+  }
+
+  /**
+   * Fill the per-frame occlusion words of the view constants. Queue writes
+   * land before the command buffer that the current graph encode produces.
+   */
+  private writeOcclusionState(): void {
+    const buffers = this.buffers;
+    const camera = this.occlusionCamera;
+    if (buffers === undefined) return;
+    const state = new Uint32Array(OCCLUSION_STATE_BYTES / 4);
+    if (camera !== undefined) {
+      const bitsBase = this.batchCapacity * COUNTER_WORDS;
+      const words = this.suppressionWordCapacity;
+      const next = this.visibilityParity;
+      state[0] = 1;
+      state[1] =
+        this.visibilityHistoryReady && this.visibilityHistoryKey === camera.historyKey ? 1 : 0;
+      state[2] = bitsBase + (1 - next) * words;
+      state[3] = bitsBase + next * words;
+      state[4] = words;
+      state[5] = (this.indirectCapacity * INDIRECT_COMMAND_BYTES) / 4;
+      state[6] = this.visibleBufferCapacity;
+    }
+    // A late phase that never encodes leaves no history for the next frame.
+    this.visibilityHistoryReady = false;
+    const written = this.device.queue.writeBuffer(
+      buffers.view,
+      OCCLUSION_STATE_OFFSET,
+      new Uint8Array(state.buffer),
+    );
+    if (!written.ok) throw written.error;
+  }
+
+  private pyramidBindGroup(pyramid: TextureView): BindGroup {
+    const cached = this.pyramidBindGroups.get(pyramid);
+    if (cached !== undefined) return cached;
+    const created = this.device
+      .createBindGroup({
+        label: `${this.labelPrefix}-occlusion-bg`,
+        layout: this.pyramidLayout,
+        entries: [{ binding: 0, resource: { kind: 'textureView', value: pyramid } }],
+      })
+      .unwrap();
+    this.pyramidBindGroups.set(pyramid, created);
+    return created;
+  }
+
+  /** Batch counters followed by the two instance-visibility bit regions. */
+  private countersBytes(): number {
+    return this.batchCapacity * COUNTER_STRIDE + this.suppressionWordCapacity * 2 * 4;
+  }
+
+  dispose(): void {
+    this.shadowRaster = undefined;
+    const buffers = [
+      ...this.supersededBuffers,
+      ...(this.buffers === undefined ? [] : [this.buffers]),
+    ];
+    this.supersededBuffers = [];
+    this.buffers = undefined;
+    this.surfaceRows = undefined;
+    this.bindGroup = undefined;
+    this.plan = undefined;
+    this.encodedTopology = undefined;
+    this.visibleBufferCapacity = 0;
+    this.scenePrimitive = undefined;
+    this.sceneInstance = undefined;
+    this.sceneTransform = undefined;
+    this.sceneMaterial = undefined;
+    this.sceneCapacity = 0;
+    this.suppressionWordCapacity = 0;
+    this.suppressionMirror = new Uint32Array(0);
+    this.telemetryPending = undefined;
+    this.telemetrySubmit = undefined;
+    this.occlusionCamera = undefined;
+    this.visibilityHistoryReady = false;
+    this.lodSelectionReadback = undefined;
+    this.lodSelection = undefined;
+    for (const generation of buffers) this.retireGeneration(generation);
+    this.destroyAfterSubmittedWork(buffers);
+    void this.pipelineLayout;
+  }
+
+  /**
+   * @internal
+   * Accept the current buffer generation after its typed graph compiles.
+   * Superseded imports stay alive while the last-known-good graph remains
+   * executable, then retire behind the queue fence only after promotion.
+   */
+  _commitResourceReplacement(): void {
+    const buffers = this.supersededBuffers;
+    if (buffers.length === 0) return;
+    this.supersededBuffers = [];
+    this.destroyAfterSubmittedWork(buffers);
+  }
+
+  /**
+   * @internal
+   * Grow every view buffer after a GPU overflow was observed. The next
+   * `update` rewrites the same plan into the replacement generation, so the
+   * failed generation cannot be reused even when topology identity is stable.
+   */
+  _recoverFromOverflow(): Result<void, RhiError> {
+    if (this.buffers === undefined) return ok(undefined);
+    return this.rebuildBuffers(
+      this.candidateCapacity * 2,
+      this.visibleBufferCapacity * 2,
+      this.batchCapacity * 2,
+      this.indirectCapacity * 2,
+      this.suppressionWordCapacity,
+    );
+  }
+
+  /** Byte offset of the admission bitmap inside the batches buffer. */
+  private suppressionBase(): number {
+    return this.batchCapacity * BATCH_STRIDE;
+  }
+
+  /**
+   * Upload only the bitmap words that differ from the last upload. The bitmap
+   * covers every GPU Scene slot, so admission changes never touch the plan,
+   * the candidate records or the render bundles that read them. A rebuilt
+   * batches buffer starts undefined, so it receives the whole bitmap once.
+   */
+  private updateSuppression(
+    buffer: Buffer,
+    reseed: boolean,
+    target: Uint32Array | undefined,
+  ): Result<void, RhiError> {
+    const base = this.suppressionBase();
+    if (reseed) {
+      this.suppressionReseed = false;
+      this.suppressionMirror = new Uint32Array(this.suppressionWordCapacity);
+      if (target !== undefined) this.suppressionMirror.set(target);
+      const initial = this.device.queue.writeBuffer(
+        buffer,
+        base,
+        new Uint8Array(this.suppressionMirror.buffer),
+      );
+      if (!initial.ok) return initial;
+      this.suppressionUploadBytes += this.suppressionMirror.byteLength;
+    } else {
+      const mirror = this.suppressionMirror;
+      let word = 0;
+      while (word < mirror.length) {
+        if (mirror[word] === (target?.[word] ?? 0)) {
+          word += 1;
+          continue;
+        }
+        const first = word;
+        while (word < mirror.length && mirror[word] !== (target?.[word] ?? 0)) {
+          mirror[word] = target?.[word] ?? 0;
+          word += 1;
+        }
+        const written = this.device.queue.writeBuffer(
+          buffer,
+          base + first * 4,
+          new Uint8Array(mirror.buffer, first * 4, (word - first) * 4),
+        );
+        if (!written.ok) return written;
+        this.suppressionUploadBytes += (word - first) * 4;
+      }
+    }
+    this.uploadBytes += this.suppressionUploadBytes;
+    return ok(undefined);
+  }
+
+  private rebuildBuffers(
+    candidateCapacity: number,
+    visibleCapacity: number,
+    batchCapacity: number,
+    indirectCapacity: number,
+    suppressionWords: number,
+    surfaceRows = this.buffers?.visibleSurfaceRows !== undefined,
+  ): Result<void, RhiError> {
+    const nextCandidate = nextCapacity(candidateCapacity);
+    const nextSuppression = Math.max(nextCapacity(suppressionWords), this.suppressionWordCapacity);
+    // The late mirror starts at the capacity and raster binds its windows at
+    // static storage offsets, so the capacity keeps the 64-entry alignment
+    // BatchTopology gives every early window.
+    const nextVisible = nextCapacity(Math.max(64, visibleCapacity));
+    const nextBatch = nextCapacity(batchCapacity);
+    const nextIndirect = nextCapacity(indirectCapacity);
+    const created: Partial<MutableViewBuffers> = {};
+    const createdTokens: GpuResourceAllocationToken[] = [];
+    const allocate = (
+      name: keyof ViewBuffers,
+      size: number,
+      usage: number,
+    ): Result<void, RhiError> => {
+      const buffer = this.device.createBuffer({
+        label: `gpu-driven-view-${name}`,
+        size,
+        usage,
+        mappedAtCreation: false,
+      });
+      if (!buffer.ok) return buffer;
+      created[name] = buffer.value;
+      const token = this.allocationLedger.allocate(size);
+      this.allocationTokens.set(buffer.value, token);
+      createdTokens.push(token);
+      return ok(undefined);
+    };
+    const storage = GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC;
+    const requests: readonly {
+      readonly name: keyof ViewBuffers;
+      readonly size: number;
+      readonly usage: number;
+      readonly storage: boolean;
+    }[] = [
+      {
+        name: 'candidates',
+        size: nextCandidate * CANDIDATE_STRIDE,
+        usage: storage | GPU_BUFFER_USAGE_COPY_DST,
+        storage: true,
+      },
+      {
+        name: 'batches',
+        size: nextBatch * BATCH_STRIDE + nextSuppression * 4,
+        usage: storage | GPU_BUFFER_USAGE_COPY_DST,
+        storage: true,
+      },
+      {
+        name: 'view',
+        size: VIEW_BYTES,
+        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+        storage: false,
+      },
+      {
+        name: 'counters',
+        size: nextBatch * COUNTER_STRIDE + nextSuppression * 2 * 4,
+        usage: storage | GPU_BUFFER_USAGE_COPY_DST,
+        storage: true,
+      },
+      // Union region plus the late-phase mirror of two-phase occlusion.
+      { name: 'visible', size: nextVisible * 16 * 2, usage: storage, storage: true },
+      {
+        name: 'indirect',
+        // Main region plus the late-phase region of two-phase occlusion.
+        size: nextIndirect * INDIRECT_COMMAND_BYTES * 2,
+        usage: storage | GPU_BUFFER_USAGE_INDIRECT,
+        storage: true,
+      },
+      ...(surfaceRows
+        ? [
+            {
+              name: 'visibleSurfaceRows' as const,
+              size: nextCandidate * 4,
+              usage: storage | GPU_BUFFER_USAGE_COPY_DST,
+              storage: true,
+            },
+          ]
+        : []),
+      {
+        name: 'lodReadback',
+        size: nextBatch * COUNTER_STRIDE + nextVisible * 16 + nextIndirect * INDIRECT_COMMAND_BYTES,
+        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+        storage: false,
+      },
+    ];
+    const maxBufferSize = Number(this.device.limits.maxBufferSize);
+    const maxStorageBufferBindingSize = Number(this.device.limits.maxStorageBufferBindingSize);
+    for (const request of requests) {
+      const limit = request.storage ? maxStorageBufferBindingSize : maxBufferSize;
+      if (!Number.isFinite(limit) || limit <= 0 || request.size <= limit) continue;
+      return err(
+        new RhiError({
+          code: 'limit-exceeded',
+          expected: `GPU-driven ${request.name} buffer (${request.size} B) fits within ${request.storage ? 'device.limits.maxStorageBufferBindingSize' : 'device.limits.maxBufferSize'} (${limit} B)`,
+          hint: 'reduce the visible/candidate workload or split the GPU-driven buffer plan before retrying',
+          detail: {
+            maxStorageBufferBindingSize: limit,
+            requestedBytes: request.size,
+          },
+        }),
+      );
+    }
+    for (const request of requests) {
+      const result = allocate(request.name, request.size, request.usage);
+      if (!result.ok) {
+        for (const buffer of Object.values(created)) this.device.destroyBuffer(buffer);
+        for (const token of createdTokens) this.allocationLedger.rollback(token);
+        return result;
+      }
+    }
+    const previous = this.buffers;
+    const next = created as ViewBuffers;
+    if (previous !== undefined && this.visibilityHistoryReady) {
+      const carried = this.carryVisibilityHistory(previous, next, nextBatch, nextSuppression);
+      if (!carried.ok) {
+        for (const buffer of Object.values(created)) this.device.destroyBuffer(buffer);
+        for (const token of createdTokens) this.allocationLedger.rollback(token);
+        return carried;
+      }
+    }
+    if (previous !== undefined) {
+      this.supersededBuffers.push(previous);
+      this.retireGeneration(previous);
+    }
+    this.buffers = next;
+    // Replacement storage has no submitted topology or receiver addresses.
+    this.plan = undefined;
+    this.encodedTopology = undefined;
+    this.surfaceRows = undefined;
+    this.candidateCapacity = nextCandidate;
+    this.visibleBufferCapacity = nextVisible;
+    this.batchCapacity = nextBatch;
+    this.indirectCapacity = nextIndirect;
+    this.suppressionWordCapacity = nextSuppression;
+    this.suppressionReseed = true;
+    this.bufferRebuilds += 1;
+    this.bindGroup = undefined;
+    this.telemetryPending = undefined;
+    return ok(undefined);
+  }
+
+  /**
+   * Capacity growth must not cost the HZB history: a World joining the view
+   * would otherwise draw every candidate in the early phase for one frame.
+   * Copy the region the next frame reads as `previousBase`; rows past the old
+   * bitmap stay zero and take the late test, which still draws them if visible.
+   */
+  private carryVisibilityHistory(
+    from: ViewBuffers,
+    to: ViewBuffers,
+    toBatchCapacity: number,
+    toWords: number,
+  ): Result<void, RhiError> {
+    const fromWords = this.suppressionWordCapacity;
+    if (fromWords === 0) return ok(undefined);
+    const region = 1 - this.visibilityParity;
+    const encoder = this.device.createCommandEncoder({
+      label: `${this.labelPrefix}-visibility-history-carry`,
+    });
+    if (!encoder.ok) return encoder;
+    encoder.value.copyBufferToBuffer(
+      from.counters,
+      (this.batchCapacity * COUNTER_WORDS + region * fromWords) * 4,
+      to.counters,
+      (toBatchCapacity * COUNTER_WORDS + region * toWords) * 4,
+      fromWords * 4,
+    );
+    const commands = encoder.value.finish();
+    if (!commands.ok) return commands;
+    return this.device.queue.submit([commands.value]);
+  }
+
+  private destroyAfterSubmittedWork(generations: readonly ViewBuffers[]): void {
+    if (generations.length === 0) return;
+    const release = (): void => {
+      for (const buffers of generations) {
+        for (const buffer of Object.values(buffers)) {
+          this.device.destroyBuffer(buffer);
+          const token = this.allocationTokens.get(buffer);
+          if (token !== undefined) this.allocationLedger.release(token);
+        }
+      }
+    };
+    void this.device.queue.onSubmittedWorkDone().then(release, release);
+  }
+
+  private retireGeneration(generation: ViewBuffers): void {
+    for (const buffer of Object.values(generation)) {
+      const token = this.allocationTokens.get(buffer);
+      if (token !== undefined) this.allocationLedger.retire(token);
+    }
+  }
+}

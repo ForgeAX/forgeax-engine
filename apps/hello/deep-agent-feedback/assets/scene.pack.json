@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "01900000-0000-7000-8000-000000000808",
+  "assets": {
+    "plugin/scene": {
+      "kind": "plugin",
+      "payload": {
+        "module": {
+          "specifier": "../src/bootstrap.ts"
+        }
+      }
+    }
+  }
+}

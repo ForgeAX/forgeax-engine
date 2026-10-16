@@ -1,0 +1,1 @@
+builtin cube mesh stub shared by learn-render section 1 demos 4-7 - geometry generated procedurally at runtime by @forgeax/engine-runtime; the .meta.json sidecar carries the GUID that the runtime AssetRegistry binds to HANDLE_CUBE-equivalent procedural mesh.

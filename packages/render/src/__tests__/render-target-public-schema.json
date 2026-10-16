@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schemas/render-target-public-v1.json",
+  "title": "ForgeaX public render-target and reflection-probe surface",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runtimeExports",
+    "typeExports",
+    "operations",
+    "errorCodes",
+    "stableTargetIds"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "render-target-public/1" },
+    "runtimeExports": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "CUBE_CAMERA_FACE_ORDER",
+          "CubeCamera",
+          "ReflectionProbe",
+          "REFLECTION_PROBE_IBL_STAGES",
+          "admitReflectionProbe",
+          "advanceProbeFilter",
+          "buildCubeCameraFaceViews",
+          "buildReflectionProbeTable",
+          "renderTargetLayerCount",
+          "selectReflectionProbe"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "typeExports": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "RenderTarget",
+          "RenderTargetDescriptor",
+          "RenderTargetShape",
+          "RenderTargetLayeredShape",
+          "RenderTargetTextureSource",
+          "RenderTargetReadbackTicket",
+          "RenderTargetReadbackData",
+          "FramebufferSnapshotRequest",
+          "FramebufferSnapshotTicket",
+          "FramebufferSnapshotData",
+          "FramebufferSnapshotFailedDetail",
+          "CubeCameraSnapshot",
+          "ReflectionProbeData",
+          "ReflectionProbeInspection",
+          "ReflectionProbeSelectionInspection",
+          "RenderIntentInvalidDetail",
+          "RenderInspection",
+          "FrameReceipt",
+          "FrameReceiptObservation",
+          "RenderError",
+          "RenderErrorCode"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "owner", "completion"],
+        "properties": {
+          "name": {
+            "enum": [
+              "Renderer.createRenderTarget",
+              "Renderer.resizeRenderTarget",
+              "Renderer.createRenderTargetTextureSource",
+              "Renderer.requestTargetReadback",
+              "Renderer.requestFramebufferSnapshot",
+              "Renderer.observe",
+              "Renderer.inspect",
+              "Renderer.recover",
+              "Renderer.destroyRenderTarget"
+            ]
+          },
+          "owner": { "type": "string" },
+          "completion": { "type": "string" }
+        }
+      },
+      "uniqueItems": true
+    },
+    "errorCodes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "render-target-descriptor-invalid",
+          "render-target-capability-missing",
+          "render-target-layer-invalid",
+          "render-target-state-invalid",
+          "render-target-operation-failed",
+          "framebuffer-snapshot-failed",
+          "reflection-probe-budget-exceeded",
+          "render-intent-invalid"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "stableTargetIds": {
+      "type": "array",
+      "const": [
+        "cube-camera-orientation",
+        "render-target-material-sampling",
+        "reflection-probe-roughness",
+        "reflection-probe-box-fallback",
+        "reflection-probe-recursion-recovery"
+      ]
+    }
+  }
+}

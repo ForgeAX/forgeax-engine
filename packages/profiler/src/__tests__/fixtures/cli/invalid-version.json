@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "2.0",
+  "captureId": "capture-0001",
+  "timeUnit": "microseconds",
+  "frameLimit": 2,
+  "eventLimit": 8,
+  "phaseCatalog": {
+    "app": ["input", "update"],
+    "render": ["prepare", "submit"]
+  },
+  "records": [],
+  "completeness": {
+    "status": "partial",
+    "retainedEventCount": 0,
+    "droppedEventCount": 0,
+    "incompleteReason": "unsupported-version"
+  }
+}

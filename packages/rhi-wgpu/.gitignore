@@ -1,0 +1,11 @@
+# packages/rhi-wgpu/.gitignore — TS-only thin shell after feat-20260511-naga-rhi-wgpu-merge
+# (M3 / w8): all Rust crate assets (crate/ + pkg/ + build.sh + rust-toolchain.toml +
+# Cargo.lock) have moved to @forgeax/wgpu-wasm; this package no longer ships a wasm
+# bundle of its own and depends on @forgeax/wgpu-wasm via workspace:* for the merged
+# wgpu + naga raw bindings.
+
+node_modules/
+dist/
+# Local build artifact cp'd from the main checkout per CLAUDE.md worktree discipline;
+# never tracked (this package no longer ships its own wasm bundle).
+wgpu_wasm_bg.wasm

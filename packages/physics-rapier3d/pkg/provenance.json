@@ -1,0 +1,41 @@
+{
+  "contentKey": "f61ce9cfa38f6e502e1612a66d018c56bef15c021b9e4dd1e3dc9566b52e6ea9",
+  "inputHashes": {
+    "package.json": "d3b03f83b5eea2983e163ef512f04618c7cd3220d26da0e5cfe0f367813d1643",
+    "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
+    "scripts/build-wasm.mjs": "6f9c51ed1deb2cd63f3017b69bbc9f19d4eebfa4c6bd1c18b3def59e0e7d135d",
+    "scripts/native-init.js": "4b48c2123433d6fe079607b7527a12b5b3791be653fd76779ab4c5c814d6c732",
+    "scripts/build-declarations.mjs": "12d720d5b612558e670259f51a9c62d0f722b9d28f5040da87779323050fd10c",
+    "scripts/bindings.Cargo.toml": "5c8aa40676e47a57d7498379df646c4539f5d493c4424cbea51f4a02aeabc534",
+    "scripts/Cargo.lock": "c9ad0e8a54d33b98b7f1594cac10c84f0a692776c7f46eb2b9b8a105433aac50",
+    "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
+    "patches/parry.patch": "4dd21843d0387badc2780c2567b1cd82d6afcd8211d267bc443b3ca9770b52c9",
+    "patches/rapier.patch": "37c08145469def3fc6964ec548051bb82505b05e9bb315d9882316dfd1a089c4"
+  },
+  "source": {
+    "rapier": {
+      "url": "https://github.com/dimforge/rapier.git",
+      "commit": "3e12c2679cb1940a876bde93af9cec0cf2f57944"
+    },
+    "parry": {
+      "url": "https://github.com/dimforge/parry.git",
+      "commit": "1be4b1a7cd0a090bd7efb1207b7bc0d453f4132e"
+    },
+    "rust": "1.93.1",
+    "wasmPack": "0.14.0"
+  },
+  "toolchain": {
+    "rustVersion": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "wasmPackVersion": "wasm-pack 0.14.0",
+    "wasmBindgen": "0.2.121",
+    "esbuildVersion": "0.28.2"
+  },
+  "artifacts": {
+    "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
+    "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
+    "rapier-native.mjs": "cf7135a5fb35cee73b63c982376b6eb144ae0eb9dbd6d93008e609d9c059bbe8",
+    "rapier.d.mts": "4e2a3c933d588621083081abcef496cc23b99f81d08d67bf7a2da64fca115c64",
+    "rapier.mjs": "907bb792d5e537c6b33d68c9c6a8d5e3d03cd8696b35098f2b8de691717bc293",
+    "rapier.wasm": "9f6bb488f87a6b9e1aedcced817820d35636cfeaf788fbde1698bfdef66a277b"
+  }
+}

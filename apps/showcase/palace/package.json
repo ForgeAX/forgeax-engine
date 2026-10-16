@@ -1,0 +1,48 @@
+{
+  "name": "@forgeax/app-showcase-palace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "forgeax dev start",
+    "build": "vite build",
+    "package": "forgeax project package",
+    "test": "forgeax project test",
+    "typecheck": "tsc --noEmit",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "roofs": "node tools/roof-authoring/generate.mjs"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Architectural content is iterated as a showcase, without a fixed bundle budget."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Browser smoke proves frame submission, not a repeatable performance benchmark."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "No independent numerical benchmark."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-showcase-palace smoke:browser"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Maintained showcase, not a spike."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@matthewjacobson/str8": "0.5.0",
+    "earcut": "3.0.2"
+  },
+  "description": "Code-authored Forbidden City architectural study and CLI asset-iteration showcase."
+}

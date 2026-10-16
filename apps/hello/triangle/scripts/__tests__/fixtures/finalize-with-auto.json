@@ -1,0 +1,10 @@
+{
+  "specVersion": 1,
+  "step": "finalize",
+  "featureId": "feat-test-with-auto",
+  "stage": "merging",
+  "prUrl": "https://github.com/example/repo/pull/99",
+  "mergeSha": null,
+  "mergeCommand": "gh pr merge https://github.com/example/repo/pull/99 --squash --delete-branch --auto",
+  "conflictHandling": null
+}

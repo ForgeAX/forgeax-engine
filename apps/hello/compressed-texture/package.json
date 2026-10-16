@@ -1,0 +1,118 @@
+{
+  "name": "@forgeax/hello-compressed-texture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "KTX2/Basis block-compression e2e demo \u2014 packed PBR checkerboard texture through the Basis transcode + block-aware upload pipeline, with uncompressed RGBA8 fallback query switch (feat-20260707-texture-block-compression-web-transcode-ktx2-basis M6 / w39).",
+  "scripts": {
+    "gen-assets": "node assets/gen-png.mjs",
+    "predev": "node assets/gen-png.mjs",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "prebuild": "node assets/gen-png.mjs",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:m27": "node scripts/smoke-dawn.mjs --m27-recovery",
+    "presmoke:browser": "node assets/gen-png.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:m27:browser": "node scripts/smoke-browser.mjs --m27-recovery"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-compressed-texture smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle baseline anchor only; compressed-texture smoke covers 60-frame transcode+block-upload draw path"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "convergence integration app; bench focus on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-compressed-texture smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; codec WASM bundle sizes tracked at package level"
+      }
+    },
+    "gauntletScenario": {
+      "id": "hello-compressed-texture-runtime-image-byte-recovery",
+      "script": "smoke:m27:browser",
+      "domains": [
+        "Asset schemas, import, and delivery",
+        "Rendering and shader construction"
+      ],
+      "packages": [
+        "@forgeax/engine-assets-runtime",
+        "@forgeax/engine-image",
+        "@forgeax/engine-render",
+        "@forgeax/engine-runtime"
+      ],
+      "risks": [
+        "baseline",
+        "structured-fault",
+        "retry",
+        "gpu-upload",
+        "recovery",
+        "cleanup"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "invalid",
+        "repair",
+        "cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "dawn-node",
+          "browser-app",
+          "browser-webgpu"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "recovery"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m27] PASS",
+          "[m27] Browser PASS"
+        ]
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.56.1",
+    "pngjs": "^7.0.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

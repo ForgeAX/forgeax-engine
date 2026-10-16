@@ -1,0 +1,28 @@
+{
+  "name": "beta",
+  "private": true,
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "no dist artifact"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "no runtime canvas"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "no perf-critical surface"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "covered by repo-root gates"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

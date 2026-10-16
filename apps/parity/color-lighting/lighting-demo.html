@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>ForgeaX extended lighting demo</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: #05070b; overflow: hidden; }
+      main { position: relative; width: 100vw; height: 100vh; display: grid; place-items: center; }
+      .panel { position: relative; display: grid; place-items: center; }
+      .panel-label { display: none; position: absolute; z-index: 2; top: 12px; left: 14px; padding: 5px 8px; border: 1px solid #48556a; border-radius: 5px; color: #dce6f5; background: #09101bcc; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
+      canvas { width: min(100vw, 1280px); height: auto; max-height: 100vh; background: #05070b; }
+      header { position: fixed; z-index: 2; top: 24px; left: 30px; pointer-events: none; text-shadow: 0 2px 10px #000; }
+      h1 { margin: 0; font-size: 22px; letter-spacing: .08em; font-weight: 650; }
+      p { margin: 7px 0 0; color: #aeb8c7; font-size: 13px; letter-spacing: .04em; }
+      nav { position: fixed; z-index: 2; right: 28px; top: 26px; display: flex; gap: 8px; }
+      a { color: #b8c2d2; text-decoration: none; padding: 7px 11px; border: 1px solid #303a49; border-radius: 999px; background: #0b1019cc; font-size: 12px; }
+      a[aria-current="page"] { color: white; border-color: #719cff; background: #234682cc; }
+      #status { position: fixed; z-index: 3; left: 30px; bottom: 22px; color: #91a0b5; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      #status[data-error="true"] { color: #ff7a7a; white-space: pre-wrap; }
+      #three-panel { display: none; }
+      body[data-compare="true"] main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; padding: 88px 18px 52px; }
+      body[data-compare="true"] .panel { display: grid; width: 100%; min-width: 0; border: 1px solid #202a38; background: #03050a; }
+      body[data-compare="true"] #three-panel { display: grid; }
+      body[data-compare="true"] .panel-label { display: block; }
+      body[data-compare="true"] canvas { width: 100%; max-width: none; max-height: calc(100vh - 140px); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel" id="forgeax-panel">
+        <span class="panel-label">FORGEAX · WEBGPU</span>
+        <canvas id="demo" width="1280" height="720"></canvas>
+      </section>
+      <section class="panel" id="three-panel">
+        <span class="panel-label" id="three-panel-label">THREE.JS r184 · REFERENCE</span>
+        <canvas id="three-reference" width="760" height="540"></canvas>
+      </section>
+    </main>
+    <header><h1 id="title">EXTENDED LIGHTING</h1><p id="subtitle"></p></header>
+    <nav id="nav"></nav>
+    <div id="status">initializing WebGPU…</div>
+    <script type="module" src="/src/extended-lighting-demo.ts"></script>
+  </body>
+</html>

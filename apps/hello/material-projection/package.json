@@ -1,0 +1,67 @@
+{
+  "name": "@forgeax/hello-material-projection",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Triplanar world/object projection, object-space normal maps, and the Lambert, matcap and normal-visualization material family with pixel falsifiers.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "perf": "node scripts/perf-dawn.mjs"
+  },
+  "forgeax": {
+    "rhiDebug": {
+      "riskFamilies": [
+        "materials-textures"
+      ]
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-material-projection smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "demo bundle is downstream of engine-runtime sizes"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "projection cost is measured by the paired lane perf script"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "the lane frame-time comparison is a local diagnostic, not a CI benchmark"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-material-projection smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; material projection carrier"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

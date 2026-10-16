@@ -1,0 +1,83 @@
+{
+  "name": "@forgeax/engine-import",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Asset import and Pack production: build-time filesystem/DDC adapters and a browser-safe, opt-in runtime producer share identity, output encoding and validation contracts.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/browser.mjs",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./mesh-bin": {
+      "types": "./dist/mesh-bin.d.ts",
+      "import": "./dist/mesh-bin.mjs"
+    },
+    "./mesh-lod-generator": {
+      "types": "./dist/mesh-lod-generator.d.ts",
+      "import": "./dist/mesh-lod-generator.mjs"
+    },
+    "./navigation-bake": {
+      "types": "./dist/navigation-bake.d.ts",
+      "import": "./dist/navigation-bake.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-ddc": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@noble/hashes": "^2.2.0",
+    "@recast-navigation/core": "0.43.1",
+    "@recast-navigation/generators": "0.43.1",
+    "meshoptimizer": "1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "runtime producer is opt-in; its shipped closure is measured by consuming App/SDK gates, with no independent package threshold yet"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "data production has no canvas or frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "import and runtime generation are explicit operations; no standalone performance threshold is registered yet"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no standalone binary gate; package-level gates declared in CI yaml directly"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

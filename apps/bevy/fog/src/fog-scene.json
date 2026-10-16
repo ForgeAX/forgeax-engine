@@ -1,0 +1,48 @@
+{
+  "fogColor": [0.52, 0.61, 0.72],
+  "fog": {
+    "uniform": { "color": [0.52, 0.61, 0.72], "density": 0.028, "heightFalloff": 0, "maxOpacity": 0.92 },
+    "change": { "color": [0.52, 0.61, 0.72], "density": 0.04, "heightFalloff": 0, "maxOpacity": 0.92 },
+    "height": { "color": [0.52, 0.61, 0.72], "density": 0.028, "heightFalloff": 0.22, "maxOpacity": 0.92 }
+  },
+  "camera": {
+    "position": [0, 7.5, 14],
+    "target": [0, 3.2, -32],
+    "fovDegrees": 50,
+    "near": 0.1,
+    "far": 120
+  },
+  "lighting": {
+    "position": [-8, 14, 10],
+    "color": [1, 0.95, 0.86],
+    "intensity": 1250,
+    "range": 180
+  },
+  "materials": {
+    "ground": [0.045, 0.055, 0.075, 1],
+    "tick": [0.34, 0.4, 0.46, 1],
+    "gate": [0.95, 0.18, 0.05, 1],
+    "marker": [0.05, 0.78, 0.92, 1],
+    "structure": [0.09, 0.11, 0.15, 1]
+  },
+  "geometry": {
+    "ground": { "position": [0, -0.35, -37.5], "scale": [18, 0.7, 76] },
+    "ticks": { "start": -10, "end": -70, "step": -10, "positionY": 0.03, "scale": [16, 0.08, 0.22] },
+    "sidePosts": { "x": [-7.8, 7.8], "positionY": 1.4, "scale": [0.28, 2.8, 0.28] },
+    "gates": {
+      "depths": [-10, -30, -60],
+      "sideX": [-4, 4],
+      "sidePositionY": 2.5,
+      "sideScale": [0.5, 5, 0.5],
+      "topPositionY": 5,
+      "topScale": [8.5, 0.5, 0.5]
+    },
+    "markers": {
+      "depth": -40,
+      "sphereScale": [1.25, 1.25, 1.25],
+      "low": { "x": -11, "sphereY": 1.5, "baseY": 0.55, "baseScale": [0.55, 1.1, 0.55] },
+      "high": { "x": 11, "sphereY": 10, "baseY": 5, "baseScale": [0.28, 10, 0.28] }
+    },
+    "endWall": { "position": [0, 4, -72], "scale": [18, 8, 0.6] }
+  }
+}

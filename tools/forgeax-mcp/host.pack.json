@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "978ed780-c823-4f83-8e24-b423eb8a44e1",
+  "assets": {
+    "plugin/main": {
+      "kind": "plugin",
+      "payload": {
+        "module": { "specifier": "./src/host-root.mjs" },
+        "toolContract": { "specifier": "@forgeax/view/commands", "export": "contract" }
+      }
+    }
+  }
+}

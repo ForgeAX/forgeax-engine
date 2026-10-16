@@ -1,0 +1,65 @@
+{
+  "statistics": { "total": { "clones": 3 } },
+  "duplicates": [
+    {
+      "format": "typescript",
+      "lines": 30,
+      "tokens": 100,
+      "fragment": "",
+      "firstFile": {
+        "name": "packages/A.ts",
+        "start": 1,
+        "end": 30,
+        "startLoc": { "line": 1, "column": 1, "position": 0 },
+        "endLoc": { "line": 30, "column": 1, "position": 0 }
+      },
+      "secondFile": {
+        "name": "packages/B.ts",
+        "start": 1,
+        "end": 30,
+        "startLoc": { "line": 1, "column": 1, "position": 0 },
+        "endLoc": { "line": 30, "column": 1, "position": 0 }
+      }
+    },
+    {
+      "format": "typescript",
+      "lines": 30,
+      "tokens": 100,
+      "fragment": "",
+      "firstFile": {
+        "name": "packages/A.ts",
+        "start": 1,
+        "end": 30,
+        "startLoc": { "line": 1, "column": 1, "position": 0 },
+        "endLoc": { "line": 30, "column": 1, "position": 0 }
+      },
+      "secondFile": {
+        "name": "packages/C.ts",
+        "start": 1,
+        "end": 30,
+        "startLoc": { "line": 1, "column": 1, "position": 0 },
+        "endLoc": { "line": 30, "column": 1, "position": 0 }
+      }
+    },
+    {
+      "format": "typescript",
+      "lines": 30,
+      "tokens": 100,
+      "fragment": "",
+      "firstFile": {
+        "name": "packages/B.ts",
+        "start": 1,
+        "end": 30,
+        "startLoc": { "line": 1, "column": 1, "position": 0 },
+        "endLoc": { "line": 30, "column": 1, "position": 0 }
+      },
+      "secondFile": {
+        "name": "packages/C.ts",
+        "start": 1,
+        "end": 30,
+        "startLoc": { "line": 1, "column": 1, "position": 0 },
+        "endLoc": { "line": 30, "column": 1, "position": 0 }
+      }
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+[package]
+name = "wgpu-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "wgpu 30 + naga 30 + wasm-bindgen merged crate exposing RHI raw bindings (rhi.rs) + naga three-phase pipeline (naga.rs) to JS for @forgeax/engine-rhi-wgpu + @forgeax/engine-naga thin shells (feat-20260511-naga-rhi-wgpu-merge)."
+license = "Apache-2.0"
+
+# One maintained wgpu/Naga 30 source serves native and WebGL hosts.
+# The crates.io Naga patch also makes naga_oil share this exact source instance.
+# Native backends remain disabled for this WASM carrier; native hosts select
+# their backends in rhi-wgpu-native against the same third-party source.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wgpu = { version = "=30.0.1", path = "../../third_party/wgpu/wgpu", default-features = false, features = ["webgl", "wgsl", "serde"] }
+naga = { version = "=30.0.1", path = "../../third_party/wgpu/naga", features = ["wgsl-in", "wgsl-out", "serialize"] }
+# Disable GLSL inputs and test-shader defaults in the merged WASM payload.
+naga_oil = { version = "0.23", default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "HtmlImageElement", "HtmlVideoElement", "ImageBitmap", "ImageData", "OffscreenCanvas", "console"] }
+
+[patch.crates-io]
+naga = { path = "../../third_party/wgpu/naga" }
+
+[dev-dependencies]
+# wasm-bindgen-test runs the T-03 fixtures under `wasm-pack test --node`
+# (plan-strategy §4.2 + research RISK-2 wasm32 smoke).
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Naga composition is on the full source-build critical path. Optimize its
+# actual execution; retain the existing 5 MiB gzip gate and canonical provenance.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+
+# wasm-opt override (plan-strategy D-P9 / RK-3 / bug-20260512-wasm-opt-multi-table):
+# wasm-pack's bundled binaryen is too old to parse wgpu multi-table WASM output
+# ("Only 1 table definition allowed in MVP"). Disable the bundled wasm-opt here and
+# run the system binaryen (>= 116) manually in build.sh after wasm-pack completes —
+# CI installs binaryen via apt before the Build wgpu-wasm step; local builds skip
+# wasm-opt gracefully when binaryen is absent (acceptable for dev iteration).
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

@@ -1,0 +1,8 @@
+{
+  "id": "deep-agent-feedback",
+  "name": "深度 Agent 反馈",
+  "schemaVersion": "3.0.0",
+  "roots": {
+    "engine": "8fd64d9b-aaca-5308-b665-1a71e962f4d2"
+  }
+}

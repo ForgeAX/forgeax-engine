@@ -1,0 +1,160 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "0f1a6e10-0000-4000-8000-000000000001",
+      "kind": "material",
+      "execution": "cooked",
+      "sourceKey": "../../../../packages/shader/src/default-standard-pbr.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "foliage-transmission::standard-leaf-diffuse-transmission",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "alphaChannel",
+            "type": "f32"
+          },
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "metallic",
+            "type": "f32"
+          },
+          {
+            "name": "roughness",
+            "type": "f32"
+          },
+          {
+            "name": "subsurfaceRadius",
+            "type": "vec3",
+            "default": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "subsurfaceWeight",
+            "type": "f32",
+            "default": 0
+          },
+          {
+            "name": "metallicChannel",
+            "type": "f32"
+          },
+          {
+            "name": "roughnessChannel",
+            "type": "f32"
+          },
+          {
+            "name": "aoChannel",
+            "type": "f32"
+          },
+          {
+            "name": "extraChannel",
+            "type": "f32"
+          },
+          {
+            "name": "emissive",
+            "type": "vec3",
+            "colorSpace": "linear"
+          },
+          {
+            "name": "emissiveIntensity",
+            "type": "f32"
+          },
+          {
+            "name": "occlusionStrength",
+            "type": "f32"
+          },
+          {
+            "name": "alphaCutoff",
+            "type": "f32"
+          },
+          {
+            "name": "specular",
+            "type": "f32"
+          },
+          {
+            "name": "alphaHash",
+            "type": "f32"
+          },
+          {
+            "name": "specularColor",
+            "type": "vec3",
+            "colorSpace": "linear"
+          },
+          {
+            "name": "normalScale",
+            "type": "vec2"
+          },
+          {
+            "name": "bumpScale",
+            "type": "f32"
+          },
+          {
+            "name": "ior",
+            "type": "f32"
+          },
+          {
+            "name": "displacementScale",
+            "type": "f32"
+          },
+          {
+            "name": "displacementBias",
+            "type": "f32"
+          },
+          {
+            "name": "diffuseTransmission",
+            "type": "f32"
+          },
+          {
+            "name": "diffuseTransmissionColor",
+            "type": "vec3",
+            "colorSpace": "linear"
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          },
+          {
+            "name": "metallicRoughnessTexture",
+            "type": "texture"
+          },
+          {
+            "name": "normalTexture",
+            "type": "texture"
+          },
+          {
+            "name": "emissiveTexture",
+            "type": "texture"
+          },
+          {
+            "name": "occlusionTexture",
+            "type": "texture"
+          },
+          {
+            "name": "diffuseTransmissionTexture",
+            "type": "texture"
+          }
+        ],
+        "staticSwitches": {
+          "diffuseTransmission": true
+        }
+      },
+      "refs": []
+    }
+  ]
+}

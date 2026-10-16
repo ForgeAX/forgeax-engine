@@ -1,0 +1,47 @@
+forgeax-engine
+Copyright 2026 ForgeaXGame Contributors
+
+This is part of the ForgeaX project, an open-source AI-native game
+development toolchain (https://github.com/ForgeaXGame).
+
+Licensed under the Apache License, Version 2.0 (the "License");
+see the LICENSE file in this repository or at
+http://www.apache.org/licenses/LICENSE-2.0 for details.
+
+The projected-space SSR tracing implementation in
+packages/shader/src/ssr-trace.wgsl is adapted from the algorithms in Three.js
+SSRShader and SSRNode at 4457aa3c5de4a05bbae4e0bee2d99d994c38a2bb.
+
+The hashed alpha coverage implementation in
+packages/shader/src/alpha-hash.wgsl is adapted from Three.js r184
+src/renderers/shaders/ShaderChunk/alphahash_pars_fragment.glsl.js.
+
+The lightweight lens post-processing implementation in
+packages/render/src/features/lens-effects.ts references Three.js VignetteShader,
+RGBShiftShader and FilmShader at b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2.
+
+The ghost placement of the lens flare implementation in
+packages/render/src/features/lens-flare.ts references Three.js Lensflare at
+d3b629c0c2097cec664ad16369bb6eae3b10e335.
+
+The MIT License
+
+Copyright © 2010-2026 three.js authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

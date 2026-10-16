@@ -1,0 +1,59 @@
+{
+  "name": "@forgeax/hello-deep-agent-feedback",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "深度 Agent 反馈的 focused 证据载体。",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:capture": "node scripts/smoke-capture.mjs",
+    "smoke:pack-transform": "node scripts/smoke-pack-transform.mjs",
+    "smoke:instances": "node scripts/smoke-instances.mjs",
+    "smoke:point-shadow": "node scripts/smoke-point-shadow.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-deep-agent-feedback smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "focused 证据载体的 bundle 随引擎包统计"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "M1 只冻结基线，不声明硬件性能"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "M1 不包含性能基准"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-deep-agent-feedback smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "能力 spike 由独立验证入口负责"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16"
+  }
+}

@@ -1,0 +1,3 @@
+:host { display: block; color: white; font: 16px sans-serif; }
+section { display: grid; gap: 8px; padding: 12px; }
+button { width: max-content; pointer-events: auto; }

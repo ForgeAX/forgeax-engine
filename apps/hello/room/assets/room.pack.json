@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019e2808-d3ba-735f-811f-ae7bbb465392",
+      "kind": "scene",
+      "payload": {
+        "entities": {
+          "root": {
+            "components": {
+              "Transform": {
+                "pos": [
+                  0,
+                  0,
+                  0
+                ],
+                "quat": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "scale": [
+                  1,
+                  1,
+                  1
+                ]
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "small-cube": {
+            "components": {
+              "Transform": {
+                "pos": [
+                  -0.4,
+                  0.3,
+                  0.2
+                ],
+                "quat": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "scale": [
+                  0.4,
+                  0.4,
+                  0.4
+                ]
+              },
+              "ChildOf": {
+                "parent": "root"
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  2
+                ]
+              }
+            }
+          },
+          "low-cube": {
+            "components": {
+              "Transform": {
+                "pos": [
+                  0.5,
+                  -0.4,
+                  0
+                ],
+                "quat": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "scale": [
+                  0.6,
+                  0.1,
+                  0.6
+                ]
+              },
+              "ChildOf": {
+                "parent": "root"
+              },
+              "MeshFilter": {
+                "assetHandle": 0
+              },
+              "MeshRenderer": {
+                "materials": [
+                  1
+                ]
+              }
+            }
+          },
+          "camera": {
+            "components": {
+              "Transform": {
+                "pos": [
+                  0,
+                  0,
+                  3
+                ],
+                "quat": [
+                  0,
+                  0,
+                  0,
+                  1
+                ],
+                "scale": [
+                  1,
+                  1,
+                  1
+                ]
+              },
+              "Camera": {
+                "fov": 0.7853981633974483,
+                "aspect": 1.7777777777777777,
+                "near": 0.1,
+                "far": 100
+              }
+            }
+          },
+          "sun": {
+            "components": {
+              "DirectionalLight": {
+                "direction": [
+                  -0.5,
+                  -1,
+                  -0.3
+                ],
+                "color": [
+                  1,
+                  1,
+                  1
+                ],
+                "intensity": 1
+              }
+            }
+          }
+        }
+      },
+      "refs": [
+        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "f6af7007-158f-4d92-9e47-93bf2f213e1f",
+        "008e4f75-e7a3-4715-b05b-b93a9ec12074"
+      ],
+      "artifacts": {}
+    }
+  ]
+}

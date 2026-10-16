@@ -1,0 +1,7 @@
+{
+  "name": "metrics-decl-missing-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

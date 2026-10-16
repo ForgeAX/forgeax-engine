@@ -1,0 +1,3262 @@
+import { Console } from 'node:console';
+import { createHash } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { createServer as createNetServer } from 'node:net';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
+import { audioImporter } from '@forgeax/engine-audio-webaudio/audio-importer';
+import { fbxImporter } from '@forgeax/engine-fbx';
+import { fontImporter } from '@forgeax/engine-font/font-importer';
+import { gltfImporter } from '@forgeax/engine-gltf/node-importer';
+import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
+import { createHostAssembly, type HostAssembly } from '@forgeax/engine-host/protocol';
+import { attachHostWebSocketServer, createHostTransport } from '@forgeax/engine-host/transport';
+import { imageImporter } from '@forgeax/engine-image/image-importer';
+import {
+  createScriptablePackProductCache,
+  createStandardAssetOutputProducerRegistry,
+  iesImporter,
+} from '@forgeax/engine-import';
+import { objImporter, stlImporter, svgImporter } from '@forgeax/engine-mesh-io';
+import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
+import type { PackError } from '@forgeax/engine-pack/errors';
+import {
+  declaredPackAssets,
+  declaredSourceGuids,
+  type ScanInventory,
+  scanInventory,
+} from '@forgeax/engine-pack/scanner';
+import { projectScriptablePackSceneComponents } from '@forgeax/engine-pack/source';
+import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import { validateCanonicalKitReceipt } from '@forgeax/engine-preview';
+import type { SsrAdmissionIdentity } from '@forgeax/engine-render';
+import { createMaterialPackCooker, listMaterialSourcePaths } from '@forgeax/engine-shader-compiler';
+import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
+import { createUiImporter } from '@forgeax/engine-ui/importer';
+import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
+import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
+import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
+import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
+import {
+  createLogger,
+  createServer as createViteServer,
+  type InlineConfig,
+  type Plugin,
+  type ResolvedConfig,
+  type ViteDevServer,
+  build as viteBuild,
+  preview as vitePreview,
+} from 'vite';
+import { type WebSocket, WebSocketServer } from 'ws';
+import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
+import { loadProjectCookers } from './build/cookers.js';
+import { executionWorkerEntries } from './build/execution-workers.js';
+import { materialBuildCapabilityGuard } from './build/material-profile.js';
+import {
+  assertPluginSourceInputs,
+  discoverPluginAssets,
+  isPluginAssetSourceIgnoredPath,
+  type PluginSourceInventory,
+  publishedPluginInventory,
+} from './build/plugin-assets.js';
+import {
+  pluginProgramsBuild,
+  pluginRootDescriptor,
+  pluginRuntimeProjection,
+} from './build/plugin-programs.js';
+import { runtimePacksSource } from './build/runtime-packs-source.js';
+import { staticPackProgramsSource } from './build/static-pack-programs.js';
+import { writeTauriProject } from './build/tauri.js';
+import {
+  prepareWechatBuild,
+  verifyWechatPackageBudget,
+  writeWechatProject,
+} from './build/wechat.js';
+import { verifyDist, writeDistManifest } from './dist.js';
+import {
+  enginePackageRuntimeIdentity,
+  inspectEngineWorkspace,
+  readEngineBinding,
+} from './engine-binding.js';
+import { environmentExecutionWorkers } from './execution-workers.js';
+import { gameVfxSource } from './game-vfx-source.js';
+import type { BootstrapRoot } from './host/base-host.js';
+import { gameProjectionSource } from './host/game-projection-source.js';
+import { hostStartupDocument, hostStartupScript } from './host/startup-source.js';
+import {
+  composeBoundHostAssembly,
+  type DevKitHostBinding,
+  hostBindingError,
+  validateHostBinding,
+} from './host-binding.js';
+import type { DevKitAppOptions } from './plugin-build.js';
+import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
+import { commandError, readProjectFacts } from './project.js';
+import { projectToolProjection } from './tools/project-tools.js';
+import type {
+  BuildOptions,
+  CommandResult,
+  ProjectCommandOptions,
+  ProjectFacts,
+  ProjectPortOptions,
+} from './types.js';
+import { resolveProjectPort } from './types.js';
+
+const activeDevKitHosts = new Set<BackendHost>();
+
+export async function disposeDevKitHosts(): Promise<void> {
+  const hosts = [...activeDevKitHosts];
+  activeDevKitHosts.clear();
+  for (const host of hosts) await host.dispose();
+}
+
+export const DEFAULT_IMPORTERS: readonly Importer[] = [
+  audioImporter,
+  imageImporter,
+  fbxImporter,
+  gltfImporter,
+  objImporter,
+  stlImporter,
+  svgImporter,
+  fontImporter,
+  iesImporter,
+  createUiImporter(),
+];
+
+export function ignoreDevKitCatalogPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.split('/').includes('shaders');
+}
+
+export function devKitDdcRoots(projectRoot: string): {
+  readonly buildCacheRoot: string;
+  readonly projectDdcRoot: string;
+} {
+  return {
+    buildCacheRoot: resolve(projectRoot, '.forgeax', 'ddc', 'build-cache'),
+    projectDdcRoot: resolve(projectRoot, '.forgeax', 'ddc', 'v2'),
+  };
+}
+
+function isResourcePreviewIgnoredPath(path: string): boolean {
+  return (
+    ignoreDevKitCatalogPath(path) ||
+    path.endsWith('.wgsl.meta.json') ||
+    path.endsWith('target-profile.json.meta.json')
+  );
+}
+
+function isProjectSourceIgnoredPath(path: string): boolean {
+  return (
+    ignoreDevKitCatalogPath(path) ||
+    path.endsWith('.wgsl.meta.json') ||
+    path.endsWith('target-profile.json.meta.json')
+  );
+}
+
+interface CanonicalKitLocation {
+  readonly root: string;
+  readonly guid: string;
+}
+
+/**
+ * Materialize the Engine-owned procedural mesh descriptors missing from a
+ * standalone project. The project remains the author of any descriptor it
+ * explicitly carries (for example, the game-default template); generated
+ * rows fill only the GUID closure required by legacy scenes that reference
+ * Engine builtins without embedding a duplicate declaration.
+ */
+async function prepareBuiltinPack(
+  inventory: Pick<ScanInventory, 'declarations'> | undefined,
+  generated: string,
+): Promise<string | undefined> {
+  if (inventory === undefined) return undefined;
+  const declared = new Set<string>();
+  for (const declaration of inventory.declarations.values())
+    for (const guid of declaredSourceGuids(declaration)) declared.add(guid.toLowerCase());
+  const missing = BUILTIN_MESH_ASSETS.filter((asset) => !declared.has(asset.guid.toLowerCase()));
+  if (missing.length === 0) return undefined;
+  const packPath = resolve(generated, 'engine-builtins.pack.json');
+  await writeFile(
+    packPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: '2.0.0',
+        kind: 'internal-text-package',
+        assets: missing.map((asset) => ({
+          guid: asset.guid,
+          kind: 'mesh',
+          payload: { geometry: asset.geometry },
+          refs: [],
+          artifacts: {},
+        })),
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  return packPath;
+}
+
+/** Return authored single-material packs to the shader compiler's static graph. */
+async function discoverMaterialPackages(
+  inventory: Pick<ScanInventory, 'declarations'> | undefined,
+): Promise<readonly string[]> {
+  if (inventory === undefined) return [];
+  const paths: string[] = [];
+  for (const declaration of inventory.declarations.values()) {
+    if (declaration.format !== 'pack.json') continue;
+    const assets = declaredPackAssets(declaration.value);
+    if (
+      assets.length === 1 &&
+      assets[0]?.kind === 'material' &&
+      assets[0].payload?.kind === 'material'
+    )
+      paths.push(declaration.sourcePath);
+  }
+  return paths.sort();
+}
+
+const hostRequire = createRequire(import.meta.url);
+
+interface EngineWorkspacePackage {
+  readonly root: string;
+  readonly manifest: Readonly<Record<string, unknown>>;
+}
+
+type PackageExportValue = string | null | { readonly [key: string]: PackageExportValue };
+
+function findEngineWorkspaceRoot(): string | undefined {
+  let cursor = dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    if (existsSync(resolve(cursor, 'pnpm-workspace.yaml'))) return cursor;
+    const parent = dirname(cursor);
+    if (parent === cursor) return undefined;
+    cursor = parent;
+  }
+}
+
+function findInstalledEnginePackageRoot(start: string): string | undefined {
+  let cursor = resolve(start);
+  for (;;) {
+    if (dirname(cursor) !== cursor && cursor.endsWith(`${sep}node_modules${sep}@forgeax`)) {
+      return cursor;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) return undefined;
+    cursor = parent;
+  }
+}
+
+async function engineWorkspacePackages(
+  workspaceRoot?: string,
+): Promise<ReadonlyMap<string, EngineWorkspacePackage>> {
+  const sourceWorkspaceRoot = workspaceRoot ?? findEngineWorkspaceRoot();
+  const packageRoot =
+    sourceWorkspaceRoot !== undefined
+      ? resolve(sourceWorkspaceRoot, 'packages')
+      : findInstalledEnginePackageRoot(dirname(fileURLToPath(import.meta.url)));
+  if (packageRoot === undefined) return new Map<string, EngineWorkspacePackage>();
+  // A generated game is a pnpm workspace too, but it does not own a local
+  // `packages/` tree. Its installed Engine packages are resolved by Node;
+  // the workspace resolver is only an SDK/source-checkout fallback. A packaged
+  // desktop DevKit has no pnpm workspace, so its staged node_modules/@forgeax
+  // dependency closure is the equivalent immutable package root.
+  if (!existsSync(packageRoot)) return new Map<string, EngineWorkspacePackage>();
+  const packages = new Map<string, EngineWorkspacePackage>();
+  for (const entry of await readdir(packageRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const root = resolve(packageRoot, entry.name);
+    try {
+      const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')) as unknown;
+      if (manifest === null || typeof manifest !== 'object') continue;
+      const name = (manifest as { readonly name?: unknown }).name;
+      if (typeof name === 'string' && name.startsWith('@forgeax/engine')) {
+        packages.set(name, { root, manifest: manifest as Readonly<Record<string, unknown>> });
+      }
+    } catch {
+      // A partial SDK/source checkout may omit an unrelated package manifest. The
+      // package remains resolvable from the consumer project when available.
+    }
+  }
+  return packages;
+}
+
+function conditionalExport(
+  value: PackageExportValue,
+  conditions: readonly string[] = ['browser', 'import', 'node', 'default'],
+): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value === null || Array.isArray(value)) return undefined;
+  for (const condition of conditions) {
+    const candidate = value[condition];
+    if (candidate === undefined) continue;
+    const selected = conditionalExport(candidate, conditions);
+    if (selected !== undefined) return selected;
+  }
+  return undefined;
+}
+
+function packageExportTarget(
+  manifest: Readonly<Record<string, unknown>>,
+  subpath: string,
+  conditions?: readonly string[],
+): string | undefined {
+  const exportsValue = manifest.exports as PackageExportValue | undefined;
+  if (exportsValue === undefined) {
+    if (subpath.length > 0) return undefined;
+    const main = manifest.module ?? manifest.main;
+    return typeof main === 'string' ? main : undefined;
+  }
+  if (typeof exportsValue === 'string' || exportsValue === null) {
+    return subpath.length === 0 ? conditionalExport(exportsValue, conditions) : undefined;
+  }
+  const keys = Object.keys(exportsValue);
+  const subpathMap = keys.some((key) => key === '.' || key.startsWith('./'));
+  if (!subpathMap)
+    return subpath.length === 0 ? conditionalExport(exportsValue, conditions) : undefined;
+  const requested = subpath.length === 0 ? '.' : `./${subpath}`;
+  const exact = exportsValue[requested];
+  if (exact !== undefined) return conditionalExport(exact, conditions);
+  for (const key of keys) {
+    const marker = key.indexOf('*');
+    if (marker < 0) continue;
+    const prefix = key.slice(0, marker);
+    const suffix = key.slice(marker + 1);
+    if (!requested.startsWith(prefix) || !requested.endsWith(suffix)) continue;
+    const replacement = requested.slice(prefix.length, requested.length - suffix.length);
+    const exportTarget = exportsValue[key];
+    if (exportTarget === undefined) continue;
+    const selected = conditionalExport(exportTarget, conditions);
+    return selected?.replaceAll('*', replacement);
+  }
+  return undefined;
+}
+
+function engineWorkspaceImport(
+  source: string,
+  packages: ReadonlyMap<string, EngineWorkspacePackage>,
+  conditions?: readonly string[],
+): string | undefined {
+  if (!source.startsWith('@forgeax/engine')) return undefined;
+  const separator = source.indexOf('/', '@forgeax/engine'.length);
+  const packageName = separator < 0 ? source : source.slice(0, separator);
+  const subpath = separator < 0 ? '' : source.slice(separator + 1);
+  const packageInfo = packages.get(packageName);
+  if (packageInfo === undefined) return undefined;
+  const target = packageExportTarget(packageInfo.manifest, subpath, conditions);
+  if (target === undefined) return undefined;
+  const absolute = resolve(packageInfo.root, target);
+  const inside = relative(packageInfo.root, absolute);
+  if (inside === '..' || inside.startsWith(`..${sep}`) || absolute === packageInfo.root) {
+    return undefined;
+  }
+  return absolute;
+}
+
+async function createEngineWorkspaceResolver(projectRoot: string): Promise<Plugin | undefined> {
+  const binding = await readEngineBinding(projectRoot);
+  if (!binding.ok) {
+    throw new Error(`${binding.error.code}: ${binding.error.hint}`);
+  }
+  const localRoot = binding.value?.path;
+  if (localRoot !== undefined) {
+    const inspected = await inspectEngineWorkspace(localRoot);
+    if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.hint}`);
+  }
+  const packages = await engineWorkspacePackages(localRoot);
+  if (packages.size === 0) return undefined;
+  let conditions: readonly string[] | undefined;
+  return {
+    name: 'forgeax:devkit-engine-workspace-resolver',
+    enforce: 'pre',
+    configResolved(config) {
+      conditions = [...config.resolve.conditions, 'import', 'default'];
+    },
+    async resolveId(source, importer) {
+      const bareSource = source.split('?', 1)[0] ?? source;
+      if (!bareSource.startsWith('@forgeax/engine')) return null;
+      if (localRoot !== undefined) return engineWorkspaceImport(bareSource, packages, conditions);
+      try {
+        const resolved = await this.resolve(source, importer, { skipSelf: true });
+        if (resolved !== null) return resolved;
+      } catch {
+        // Fall through to the Engine workspace only when the external project
+        // has no installed copy of this package.
+      }
+      return engineWorkspaceImport(bareSource, packages, conditions);
+    },
+  };
+}
+
+/**
+ * Reuse the production host's workspace fallback when a second bundle pass
+ * resolves Engine packages from a source checkout.
+ */
+export async function createEngineWorkspaceResolverForProject(
+  projectRoot: string,
+): Promise<Plugin | undefined> {
+  return createEngineWorkspaceResolver(projectRoot);
+}
+
+async function consumerEngineAliases(
+  projectRoot: string,
+): Promise<readonly { readonly find: string; readonly replacement: string }[]> {
+  const root = resolve(projectRoot, 'node_modules', '.pnpm', 'node_modules', '@forgeax');
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('engine-'))
+      .map((entry) => ({
+        find: `@forgeax/${entry.name}`,
+        replacement: resolve(root, entry.name),
+      }))
+      .sort((a, b) => a.find.localeCompare(b.find));
+  } catch {
+    return [];
+  }
+}
+
+async function hostEngineAliases(
+  projectRoot: string,
+  binding: DevKitHostBinding | undefined,
+): Promise<
+  readonly {
+    readonly find: string;
+    readonly replacement: string;
+    readonly customResolver: (id: string) => string | null;
+  }[]
+> {
+  const hostRoot = binding?.backend.context.get('devkitBackend')?.hostPackageRoot;
+  if (hostRoot === undefined) return [];
+  const hostManifest = JSON.parse(await readFile(resolve(hostRoot, 'package.json'), 'utf8'));
+  // A generic presentation package need not use Engine. Only an explicit
+  // Engine dependency selects a paired runtime and its singleton vocabulary.
+  if (hostManifest.dependencies?.['@forgeax/engine'] === undefined) return [];
+  const hostRequire = createRequire(resolve(hostRoot, 'package.json'));
+  const engineRoot = dirname(hostRequire.resolve('@forgeax/engine/package.json'));
+  const manifest = JSON.parse(await readFile(resolve(engineRoot, 'package.json'), 'utf8'));
+  const engineRequire = createRequire(resolve(engineRoot, 'package.json'));
+  const local = await readEngineBinding(projectRoot);
+  if (!local.ok) hostBindingError(`${local.error.code}: ${local.error.hint}`);
+  const localPackages = await engineWorkspacePackages(local.value?.path);
+  const projectRequire = createRequire(resolve(projectRoot, 'package.json'));
+  const projectEngineRequire = local.value?.path
+    ? undefined
+    : createRequire(projectRequire.resolve('@forgeax/engine/package.json'));
+  const aliases = [];
+  for (const name of [
+    '@forgeax/engine',
+    ...Object.keys(manifest.dependencies ?? {}).filter((name) =>
+      name.startsWith('@forgeax/engine-'),
+    ),
+  ]) {
+    const selected = await realpath(dirname(engineRequire.resolve(`${name}/package.json`)));
+    const target =
+      localPackages.get(name)?.root ??
+      dirname(
+        projectEngineRequire?.resolve(`${name}/package.json`) ??
+          projectRequire.resolve(`${name}/package.json`),
+      );
+    const actual = await realpath(target);
+    if (
+      actual !== selected &&
+      (await enginePackageRuntimeIdentity(actual)) !==
+        (await enginePackageRuntimeIdentity(selected))
+    ) {
+      hostBindingError(
+        `frontend Engine source conflict for ${name}: host=${selected}; project=${actual}. Select the same Engine build before opening this target.`,
+      );
+    }
+    const selectedManifest = JSON.parse(await readFile(resolve(selected, 'package.json'), 'utf8'));
+    const selectedPackages = new Map([[name, { root: selected, manifest: selectedManifest }]]);
+    aliases.push({
+      find: name,
+      replacement: name,
+      customResolver: (id: string) => engineWorkspaceImport(id, selectedPackages) ?? null,
+    });
+  }
+  return aliases.sort((a, b) => b.find.length - a.find.length);
+}
+
+async function hostFrontendModuleAlias(
+  binding: DevKitHostBinding | undefined,
+): Promise<{ readonly find: string; readonly replacement: string } | undefined> {
+  const specifier = binding?.frontendModule?.specifier;
+  const packageRoot = binding?.backend.context.get('devkitBackend')?.hostPackageRoot;
+  if (
+    specifier === undefined ||
+    packageRoot === undefined ||
+    specifier.startsWith('.') ||
+    isAbsolute(specifier) ||
+    specifier.includes(':')
+  )
+    return undefined;
+  try {
+    return {
+      find: specifier,
+      replacement: await realpath(
+        createRequire(resolve(packageRoot, 'package.json')).resolve(specifier),
+      ),
+    };
+  } catch (cause) {
+    hostBindingError(
+      `host package cannot resolve frontend module ${specifier} from ${packageRoot}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+}
+
+async function resolveCanonicalKit(): Promise<CanonicalKitLocation> {
+  const packageJson = hostRequire.resolve('@forgeax/engine-preview/package.json');
+  const root = resolve(packageJson, '..', 'assets/canonical-kit');
+  if (!existsSync(root)) throw new Error(`canonical preview kit root is missing: ${root}`);
+  const receiptPath = resolve(root, 'cook-receipt.json');
+  const receipt = validateCanonicalKitReceipt(JSON.parse(await readFile(receiptPath, 'utf8')));
+  if (!receipt.ok) {
+    throw new Error(`${receipt.error.code}: ${receipt.error.detail.field}`);
+  }
+  const sourcePath = resolve(root, receipt.value.transport.source);
+  const metaPath = resolve(root, receipt.value.transport.meta);
+  if (!existsSync(sourcePath) || !existsSync(metaPath)) {
+    throw new Error('canonical preview kit source and Meta must be package-owned files');
+  }
+  const [source, meta] = await Promise.all([readFile(sourcePath), readFile(metaPath)]);
+  for (const [file, bytes, expectedDigest] of [
+    [receipt.value.transport.source, source, receipt.value.source.digest],
+    [receipt.value.transport.meta, meta, receipt.value.source.metaDigest],
+  ] as const) {
+    const actualDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    if (actualDigest !== expectedDigest) {
+      throw Object.assign(new Error(`preview-kit-source-mismatch: ${file}`), {
+        code: 'preview-kit-source-mismatch',
+        expected: 'canonical preview kit source and Meta bytes to match their cook receipt',
+        hint: 'Run the canonical kit producer and publish its source, Meta, and receipt together.',
+        detail: { file, expectedDigest, actualDigest },
+      });
+    }
+  }
+  return { root, guid: receipt.value.source.guid };
+}
+
+export function devKitHostBridge(
+  _facts: ProjectFacts,
+  _bootstrapRoot: BootstrapRoot,
+  binding?: DevKitHostBinding,
+  assemblyInput?: HostAssembly | (() => Promise<HostAssembly>),
+): Plugin & { releaseForRestart(): Promise<void> } {
+  let dispose: ((restore?: boolean) => Promise<void>) | undefined;
+  return {
+    async releaseForRestart() {
+      await dispose?.(false);
+    },
+    name: 'forgeax:devkit-backend-host',
+    async configureServer(server) {
+      const assembly =
+        typeof assemblyInput === 'function'
+          ? await assemblyInput()
+          : (assemblyInput ??
+            (binding
+              ? composeBoundHostAssembly(binding, createHostAssembly())
+              : createHostAssembly()));
+      if (binding) validateHostBinding(binding);
+      const http = server.httpServer;
+      if (!http) return;
+      const httpEvents: EventEmitter = http;
+      const projected =
+        binding?.frontendAssembly !== undefined || binding?.workspace?.execution === 'game';
+      const previous = binding?.backend.assembly.current;
+      const transport = binding?.backend.transport ?? createHostTransport();
+      const backend = binding?.backend ?? (await createBackendHost({ assembly, transport }));
+      if (binding && previous && !projected)
+        await backend.update(assembly, { expectedRevision: previous.revision });
+      const published = backend.assembly.current.revision;
+      const sockets = new Set<() => void>();
+      const socketServer = new WebSocketServer({ noServer: true });
+      let workspaceSocket: WebSocket | undefined;
+      let admitting = false;
+      const projections = new Map<string, () => void>();
+      const removeConnect = transport.onClientConnect((caller) => {
+        if (admitting && projected)
+          projections.set(caller.connectionId, backend.bindProjection(caller, { assembly }));
+      });
+      const removeDisconnect = transport.onClientDisconnect((caller) => {
+        projections.get(caller.connectionId)?.();
+        projections.delete(caller.connectionId);
+      });
+      socketServer.on('connection', (socket: WebSocket) => {
+        if (binding?.workspace) {
+          workspaceSocket?.close();
+          workspaceSocket = socket;
+        }
+        const workspace = binding?.workspace;
+        admitting = true;
+        let release: () => void;
+        try {
+          release = attachHostWebSocketServer(
+            socket,
+            transport,
+            workspace
+              ? {
+                  kind: 'frontend',
+                  sourceId: `forgeax-workspace:${workspace.sessionId}:${workspace.targetId}`,
+                }
+              : {},
+          );
+        } finally {
+          admitting = false;
+        }
+        sockets.add(release);
+        socket.once('close', () => sockets.delete(release));
+      });
+      const upgrade = (
+        request: import('node:http').IncomingMessage,
+        socket: import('node:stream').Duplex,
+        head: Buffer,
+      ) => {
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        if (url.pathname !== '/__forgeax/host') return;
+        const workspace = binding?.workspace;
+        if (
+          workspace &&
+          (url.searchParams.get('forgeaxWorkspaceSession') !== workspace.sessionId ||
+            url.searchParams.get('forgeaxWorkspaceTarget') !== workspace.targetId ||
+            url.searchParams.get('forgeaxWorkspaceToken') !== workspace.admissionToken)
+        ) {
+          socket.destroy();
+          return;
+        }
+        socketServer.handleUpgrade(request, socket, head, (client) =>
+          socketServer.emit('connection', client, request),
+        );
+      };
+      httpEvents.on('upgrade', upgrade);
+      const marker =
+        binding && !projected
+          ? backend.context.plugin({
+              apply(ctx) {
+                ctx.provide('devkitHostBinding', binding);
+              },
+            }).ctx.fiber
+          : undefined;
+      let disposed = false;
+      const removeBackendDispose = binding?.backend.subscribeDispose(() => dispose?.(false));
+      dispose = async (restore = true) => {
+        if (disposed) return;
+        disposed = true;
+        httpEvents.off('upgrade', upgrade);
+        removeBackendDispose?.();
+        removeConnect();
+        removeDisconnect();
+        for (const release of projections.values()) release();
+        projections.clear();
+        for (const release of sockets) release();
+        sockets.clear();
+        socketServer.close();
+        await marker?.dispose();
+        if (!binding) await backend.dispose();
+        else if (
+          !projected &&
+          restore &&
+          previous &&
+          backend.assembly.current.revision === published
+        ) {
+          await backend.update(
+            { ...previous, sessionGeneration: backend.assembly.current.sessionGeneration + 1 },
+            { expectedRevision: published },
+          );
+        }
+      };
+      httpEvents.once('close', () => {
+        void dispose?.();
+      });
+    },
+    async closeBundle() {
+      await dispose?.();
+    },
+  };
+}
+
+/** The existing input fence identifies this generation, not a Git commit or final bundle. */
+function projectSsrIdentity(
+  facts: ProjectFacts,
+  inventory: PluginSourceInventory,
+  generation: {
+    readonly command: 'serve' | 'build';
+    readonly base: string;
+    readonly bootstrapRoot: BootstrapRoot;
+    readonly sessionGeneration: number;
+    readonly animation: AnimationPlaybackOptions;
+    readonly appOptions: DevKitAppOptions;
+  },
+): SsrAdmissionIdentity {
+  const digest = (value: unknown): string =>
+    `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+  const inputs = [...inventory.sourceInputs]
+    .map(([path, revision]) => [relative(facts.root, path).split(sep).join('/'), revision] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+  const sourceTree = digest(inputs);
+  const lockSha256 = digest(
+    inputs.filter(([path]) =>
+      ['package.json', 'pnpm-lock.yaml', 'bun.lock', 'package-lock.json'].includes(path),
+    ),
+  );
+  return {
+    sourceHead: `project:${facts.id}`,
+    sourceTree,
+    lockSha256,
+    buildSha256: digest({
+      sourceTree,
+      lockSha256,
+      roots: Object.entries(facts.roots).sort(([left], [right]) => left.localeCompare(right)),
+      ...generation,
+    }),
+  };
+}
+
+function executionBootstrapSource(
+  _facts: ProjectFacts,
+  _generated: string,
+  bootstrapRoot: BootstrapRoot,
+  sessionGeneration: number,
+  ssrIdentity: SsrAdmissionIdentity,
+  target?: BuildOptions['target'],
+  appOptions: DevKitAppOptions = {},
+): string {
+  return `import { audioPlugin } from '@forgeax/engine/audio';
+import type { GameHost } from '@forgeax/engine/app';
+import { skinningPlugin } from '@forgeax/engine/skinning';
+import { root, createPrograms } from 'virtual:forgeax/plugin-programs/engine';
+import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
+import { createRuntimePackOptions${target === 'tauri' ? '' : ', createRuntimePackDeliveryClient'} } from './runtime-packs';
+import { createGameVfx } from './game-vfx';
+export default async function executionBootstrap(data) {
+const vfx = createGameVfx();
+${target === 'tauri' ? '' : `let prepareDelivery: ReturnType<typeof createRuntimePackDeliveryClient> = async () => ({ error: 'Runtime Pack page bridge is not ready' });`}
+const bridge = {
+  name: 'forgeax:worker-game-host', inject: ['world', 'assets', 'executionBootstrapHost'],
+  apply(ctx) {
+    ${
+      target === 'tauri'
+        ? ''
+        : `const lifetime = new AbortController();
+    prepareDelivery = createRuntimePackDeliveryClient(data?.programDeliveryChannel, lifetime.signal);
+    ctx.effect(() => () => lifetime.abort(), 'devkit/runtime-pack-delivery');`
+    }
+    ${gameProjectionSource}
+    const inspection = {
+      list: () => ({ reads: Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id) }),
+      read: async (id: string) => {
+        const entry = gameProjectionDefinitions.get(id);
+        if (entry?.kind !== 'read') throw new Error('forgeax: game read projection not found ' + id);
+        return entry.definition.read();
+      },
+    };
+    if (import.meta.env.DEV) {
+      globalThis.__forgeaxGameInspection = inspection;
+      ctx.effect(() => () => {
+        if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
+        gameProjectionDefinitions.clear();
+      }, 'devkit/source-inspection');
+    }
+    ctx.provide('gameHost', {
+      ...(ctx.executionBootstrapHost.canvas === undefined ? {} : { canvas: ctx.executionBootstrapHost.canvas }),
+      drawingBufferSize: () => ctx.executionBootstrapHost.drawingBufferSize(),
+      assets: ctx.assets,
+      ...(ctx.executionBootstrapHost.port === undefined ? {} : { port: ctx.executionBootstrapHost.port }),
+      app: { world: ctx.world, assets: ctx.assets },
+      ...(import.meta.env.DEV ? { gameProjection } : {}),
+      setPointerLockAllowed: (allowed) => ctx.executionBootstrapHost.setPointerLockAllowed(allowed),
+    } satisfies GameHost);
+  },
+};
+  const runtimePacks = await createRuntimePackOptions(runtimeBinding.scopeId${target === 'tauri' ? '' : ', () => prepareDelivery()'});
+  const pluginPrograms = createPrograms(crypto.randomUUID(), 'engine-worker', ${sessionGeneration}, runtimePacks.programHost);
+  return {
+    ssrIdentity: ${JSON.stringify(ssrIdentity)},
+    ${
+      appOptions.standardProfile === undefined
+        ? ''
+        : `configureRenderer(renderer) {
+      const result = renderer.setProfile(${JSON.stringify(appOptions.standardProfile)});
+      if (!result.ok) throw result.error;
+    },`
+    }
+    runtimePacks: { ...runtimePacks, programHost: pluginPrograms.programHost ?? runtimePacks.programHost },
+    features: [vfx.feature],
+    plugins: [audioPlugin(), skinningPlugin(), vfx.plugin, bridge],
+    pluginPrograms,
+    ...(root === null || ${JSON.stringify(bootstrapRoot === 'resource-bootstrap')} ? {} : {
+      root: { guid: root },
+    }),
+  };
+}
+`;
+}
+
+function hostSource(
+  facts: ProjectFacts,
+  _generated: string,
+  bootstrapRoot: BootstrapRoot,
+  canonicalEnvironmentGuid?: string,
+  binding?: DevKitHostBinding,
+  rhiCaptureEnabled = false,
+  devMode = false,
+  initialAssembly: HostAssembly = createHostAssembly(),
+  ssrIdentity?: SsrAdmissionIdentity,
+  previewRhiWindow = false,
+  animation: AnimationPlaybackOptions = {},
+  target: BuildOptions['target'] = 'browser',
+  appOptions: DevKitAppOptions = {},
+  materialProfile?: BuildOptions['materialProfile'],
+): string {
+  const boundRoot =
+    binding?.workspace?.execution === 'game'
+      ? undefined
+      : (binding?.frontendAssembly ?? binding?.backend.assembly.current)?.root;
+  const plugins =
+    bootstrapRoot === 'resource-bootstrap'
+      ? []
+      : [`webAudioPlugin()`, `audioPlugin()`, `skinningPlugin()`];
+  const startupTimeout =
+    facts.startupTimeoutMs === undefined
+      ? '(import.meta.env.DEV ? 120_000 : 30_000)'
+      : JSON.stringify(facts.startupTimeoutMs);
+  return `import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createProfiler } from '@forgeax/engine/profiler';
+import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
+import { inspectUi } from '@forgeax/engine/ui';
+import { Context, startNativePlugin } from '@forgeax/engine/plugin';
+import { ShaderRegistry } from '@forgeax/engine/shader';
+import { createRuntimePackOptions${target === 'tauri' ? '' : ', serveRuntimePackDelivery'} } from './runtime-packs';
+import { createGameVfx } from './game-vfx';
+import { root as engineRoot, createPrograms as enginePrograms } from 'virtual:forgeax/plugin-programs/engine';
+import { root as hostRoot, rootDescriptor as hostDescriptor, createPrograms as hostPrograms } from 'virtual:forgeax/plugin-programs/frontend';
+import { AssetGuid } from '@forgeax/engine/pack/guid';
+import { AssetRegistry, createCatalogSource, createCatalogHotSubscription, createAssetRegistry } from '@forgeax/engine/assets-runtime';
+import {
+  createRuntimeAssetImportTransport,
+  runtimeBinding,
+} from 'virtual:forgeax/pack-runtime';
+import { createFrontendHost } from '@forgeax/engine/host/frontend';
+import { createBrowserFrontendPlatform, createFrontendPlatformPlugin } from '@forgeax/engine/host/platform';
+import { createHostAssembly, canonicalHostJson } from '@forgeax/engine/host/protocol';
+import { HOST_ASSEMBLY_SERVICE, HOST_ASSEMBLY_CHANGED_TOPIC } from '@forgeax/engine/host/transport';
+import { audioPlugin } from '@forgeax/engine/audio';
+import { createHostAudioConsumer, webAudioPlugin } from '@forgeax/engine/audio-webaudio';
+import { physicsComponentsPlugin } from '@forgeax/engine/physics';
+import { skinningPlugin } from '@forgeax/engine/skinning';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+import { mat4 } from '@forgeax/engine/math';
+import { CAMERA_PROJECTION_ORTHOGRAPHIC, Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, Skylight, SkyboxBackground, TONEMAP_NONE, TONEMAP_REINHARD_EXTENDED, materialSampledTextureBudget } from '@forgeax/engine/render';
+import { Transform } from '@forgeax/engine/scene';
+import { type SceneAsset } from '@forgeax/engine/types';
+import { ParticleEffectPlayer } from '@forgeax/engine/vfx';
+import { createVfxRuntimeHost } from '@forgeax/engine/vfx-render';
+${
+  previewRhiWindow && !rhiCaptureEnabled
+    ? `import { attachRecorder } from '@forgeax/engine/rhi-debug';
+import { uploadTape } from '@forgeax/engine/rhi-debug/browser';
+import { subscribeBrowserFrameSubmitted } from '@forgeax/engine/app';
+import { RhiError } from '@forgeax/engine/rhi';
+import { err } from '@forgeax/engine/types';`
+    : ''
+}
+
+const initialAssembly = createHostAssembly({ ...${JSON.stringify(initialAssembly)},
+  ...(hostDescriptor === null ? {} : { root: hostDescriptor }) });
+const hostContext = new Context();
+${
+  binding?.frontendModule?.prepare
+    ? `const preparedFrontendModule = await import(${JSON.stringify(binding.frontendModule.specifier)});
+const preparedFrontend = await startNativePlugin(hostContext, preparedFrontendModule[${JSON.stringify(binding.frontendModule.prepare)}], initialAssembly.root?.config, { timeoutMs: ${startupTimeout} });
+if (!preparedFrontend.ok) throw preparedFrontend.error;`
+    : ''
+}
+const preparedPlatform = hostContext.get('frontendPlatform', false);
+const frontendPlatform = preparedPlatform ?? createBrowserFrontendPlatform();
+const location = frontendPlatform.window.location;
+const bootstrapRoot = ${JSON.stringify(bootstrapRoot)};
+const canonicalEnvironmentGuid = ${JSON.stringify(canonicalEnvironmentGuid ?? null)};
+const resourceValue = new URLSearchParams(location.search).get('forgeax-resource-preview');
+const resource = resourceValue === null ? undefined : JSON.parse(resourceValue);
+const executionWorkers = ${JSON.stringify(bootstrapRoot === 'resource-bootstrap' || binding !== undefined ? null : environmentExecutionWorkers())};
+const animation = ${JSON.stringify(animation)};
+const workerExecution = executionWorkers !== null;
+const previewCameraEntities = new WeakMap();
+const previewCameraTargets = new WeakMap();
+let vfxRuntimeHost;
+function ensureVfxRuntimeHost() {
+  if (vfxRuntimeHost !== undefined) return vfxRuntimeHost;
+  vfxRuntimeHost = makeVfxRuntimeHost();
+  return vfxRuntimeHost;
+}
+function makeVfxRuntimeHost() {
+  return createVfxRuntimeHost({
+    camera: {
+      read(world) {
+        const cameraEntity = previewCameraEntities.get(world);
+        if (cameraEntity === undefined) return undefined;
+        const transform = world.get(cameraEntity, Transform);
+        const camera = world.get(cameraEntity, Camera);
+        if (!transform.ok || !camera.ok) return undefined;
+        const position = new Float32Array(transform.value.pos);
+        const target = previewCameraTargets.get(world) ?? [0, 0, 0];
+        return {
+          position,
+          right: new Float32Array([1, 0, 0]),
+          up: new Float32Array([0, 1, 0]),
+          viewProjection: mat4.multiply(mat4.create(), mat4.perspectiveReverseZ(mat4.create(), camera.value.fov, camera.value.aspect, camera.value.near, camera.value.far), mat4.lookAt(mat4.create(), position, target, [0, 1, 0])),
+        };
+      },
+    },
+  });
+}
+${
+  previewRhiWindow && !rhiCaptureEnabled
+    ? `async function previewRhiDiagnostic(context, canvas, targetId) {
+  const controller = new AbortController();
+  const backend = typeof navigator !== 'undefined' && navigator.gpu !== undefined
+    ? await import('@forgeax/engine/rhi-webgpu')
+    : await import('@forgeax/engine/rhi-wgpu');
+  if ('ensureReady' in backend) await backend.ensureReady();
+  const attached = attachRecorder(backend);
+  if (!attached.ok) throw attached.error;
+  const attachment = attached.value;
+  let disposed = false;
+  let worldIdentity;
+  const observation = { targetId, seed: 'omitted', evidence: 'commands-and-bindings', status: 'attached', mapping: 'partial', frames: [] };
+  const publish = () => { if (!disposed) { try { canvas.dataset.forgeaxPreviewRhiWindow = JSON.stringify(observation); } catch {} } };
+  const remove = subscribeBrowserFrameSubmitted(canvas, (submitted) => {
+    if (observation.frames.length >= 4) return;
+    const receipt = submitted.receipt;
+    const previous = observation.frames.at(-1);
+    const valid = receipt !== undefined && worldIdentity !== undefined && submitted.worldIdentity === worldIdentity &&
+      receipt.frameId === submitted.frameId && receipt.deviceGeneration === submitted.deviceGeneration &&
+      (previous === undefined ? submitted.frameId === 1 : (submitted.frameId === previous.frameId + 1 && submitted.deviceGeneration === previous.deviceGeneration));
+    const row = { tapeFrameIndex: observation.frames.length, frameId: submitted.frameId, deviceGeneration: submitted.deviceGeneration,
+      worldIdentity: submitted.worldIdentity, presentation: receipt?.presentation, identityValid: valid,
+      completion: receipt === undefined ? 'unavailable' : 'pending' };
+    observation.frames.push(row);
+    observation.mapping = observation.frames.length === 4 && observation.frames.every((frame) => frame.identityValid) ? 'complete' : 'partial';
+    publish();
+    if (receipt === undefined) return;
+    void receipt.completed.then((result) => {
+      row.completion = result.ok ? 'fulfilled' : 'error';
+      publish();
+    }, () => { row.completion = 'rejected'; publish(); });
+  });
+  context.effect(() => async () => {
+    disposed = true;
+    controller.abort();
+    remove();
+    const result = await attachment.dispose();
+    if (!result.ok) throw result.error;
+  }, 'devkit/preview-rhi-window');
+  publish();
+  return {
+    options: { rhi: attachment.backend.rhi, rhiInstrumentation: {
+      resolveSurfaceDevice(device) {
+        const resolved = attachment.backend.unwrapDeviceForSurface(device);
+        return resolved.ok ? resolved : err(new RhiError({ code: 'rhi-not-available',
+          expected: 'The preview recorder resolves its surface device', hint: resolved.error.hint }));
+      },
+      onFrameBoundary() { void attachment.frameBoundary(); },
+      onDeviceLost() { observation.mapping = 'partial'; attachment.deviceLost(); publish(); },
+    } },
+    async arm(world) {
+      worldIdentity = world;
+      observation.worldIdentity = world;
+      observation.status = 'seeding'; publish();
+      const capture = attachment.captureFrames(4, { seed: { maxResourceBytes: 0 }, signal: controller.signal });
+      void capture.then(async (result) => {
+        if (!result.ok) { observation.status = 'capture-error'; observation.error = result.error; publish(); return; }
+        observation.status = 'uploading'; publish();
+        const uploaded = await uploadTape(result.value, { signal: controller.signal });
+        observation.status = uploaded.ok ? 'uploaded' : 'upload-error';
+        if (uploaded.ok) observation.artifact = uploaded.value;
+        else observation.error = uploaded.error;
+        publish();
+      }).catch((cause) => { observation.status = 'capture-error'; observation.error = String(cause); publish(); });
+      const seeded = await attachment.frameBoundary();
+      if (!seeded.ok) throw seeded.error;
+      if (observation.status === 'seeding' && !controller.signal.aborted) observation.status = 'recording';
+      publish();
+    },
+  };
+}
+`
+    : ''
+}
+const previewVfxHosts = new WeakMap();
+if (resource?.kind === 'vfx') ensureVfxRuntimeHost();
+
+function previewVfxBounds(payload) {
+  if (payload?.kind !== 'particle-effect' || payload.program?.emitters?.length === 0) return undefined;
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (const emitter of payload.program.emitters) {
+    const bounds = emitter.bounds;
+    if (bounds?.kind === 'sphere' && Array.isArray(bounds.center) && typeof bounds.radius === 'number') {
+      const [x, y, z] = bounds.center;
+      if (![x, y, z, bounds.radius].every((value) => typeof value === 'number' && Number.isFinite(value)) || bounds.radius < 0) return undefined;
+      minX = Math.min(minX, x - bounds.radius);
+      minY = Math.min(minY, y - bounds.radius);
+      minZ = Math.min(minZ, z - bounds.radius);
+      maxX = Math.max(maxX, x + bounds.radius);
+      maxY = Math.max(maxY, y + bounds.radius);
+      maxZ = Math.max(maxZ, z + bounds.radius);
+      continue;
+    }
+    if (bounds?.kind === 'aabb' && Array.isArray(bounds.min) && Array.isArray(bounds.max)) {
+      const [loX, loY, loZ] = bounds.min;
+      const [hiX, hiY, hiZ] = bounds.max;
+      if (![loX, loY, loZ, hiX, hiY, hiZ].every((value) => typeof value === 'number' && Number.isFinite(value))) return undefined;
+      minX = Math.min(minX, loX);
+      minY = Math.min(minY, loY);
+      minZ = Math.min(minZ, loZ);
+      maxX = Math.max(maxX, hiX);
+      maxY = Math.max(maxY, hiY);
+      maxZ = Math.max(maxZ, hiZ);
+      continue;
+    }
+    return undefined;
+  }
+  if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) return undefined;
+  const center = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  const radius = Math.max(1, Math.hypot(maxX - minX, maxY - minY, maxZ - minZ));
+  return { aabb: [minX, minY, minZ, maxX, maxY, maxZ], center, radius };
+}
+
+const canvas = document.querySelector('#app');
+if (!(canvas instanceof HTMLCanvasElement)) throw new Error('forgeax: missing canvas');
+let latestFrameSubmission;
+let latestTextureObservation;
+canvas.addEventListener('forgeax:frame-submitted', (event) => {
+  const detail = event instanceof CustomEvent ? event.detail : undefined;
+  if (
+    detail !== null &&
+    typeof detail === 'object' &&
+    Number.isSafeInteger(detail.frameId) &&
+    Number.isSafeInteger(detail.deviceGeneration)
+  ) {
+    const frame = {
+      frameId: detail.frameId,
+      deviceGeneration: detail.deviceGeneration,
+    };
+    latestFrameSubmission = {
+      ...frame,
+      ...(detail.receipt?.completed === undefined ? {} : { completed: detail.receipt.completed }),
+    };
+    // Lock the renderer-owned binding projection at the submit boundary. A
+    // later inspect() may already describe another frame or a replaced World;
+    // resource observation must never pair those facts with this receipt.
+    const currentApp = preparedResourceOwner?.app ?? appState.current;
+    latestTextureObservation =
+      currentApp?.renderer === undefined ||
+      typeof currentApp.renderer.inspect !== 'function'
+        ? undefined
+        : textureRendererObservation(currentApp.renderer.inspect(), preparedResourceOwner?.binding, frame);
+  }
+});
+// Publish the exact canvas + game UI container to frontend plugins.
+// Presentation, reparenting, visibility and restoration belong to its consumer.
+const engineWorkspaceSurface = canvas.parentElement ?? canvas;
+const resizeCanvas = () => syncCanvasDrawingBuffer(canvas);
+const resizeObserver = new ResizeObserver(resizeCanvas);
+if (!workerExecution) {
+  resizeObserver.observe(canvas);
+  resizeCanvas();
+}
+const runtimeScopeBinding = runtimeBinding;
+if (runtimeScopeBinding === undefined) {
+  throw new Error('forgeax: Vite Pack runtime binding is required in the generated host');
+}
+const assetCatalog = createCatalogSource({
+  url: import.meta.env.DEV
+    ? runtimeScopeBinding.catalogUrl
+    : new URL('pack-index.json', document.baseURI).href,
+  ...(import.meta.env.DEV ? { expectedScope: runtimeScopeBinding, subscribe: createCatalogHotSubscription(import.meta.hot) } : {}),
+});
+const bundlerAdapter = forgeaxBundlerAdapter();
+const bundler = {
+  ...bundlerAdapter,
+  // Resolve page-relative deployment URLs before crossing into nested Workers.
+  shaderManifestUrl: new URL(bundlerAdapter.shaderManifestUrl, location.href).href,
+  ...(import.meta.env.DEV
+    ? { importTransport: createRuntimeAssetImportTransport(runtimeScopeBinding) }
+    : {}),
+};
+const assetPreparation = new WeakMap();
+
+function prepareAssetRegistry(assets) {
+  const existing = assetPreparation.get(assets);
+  if (existing !== undefined) return existing;
+  const pending = (async () => {
+    // The App/Host asset provider already owns source configuration, including
+    // admitted runtime publications. Preparation only joins its current Catalog.
+    const catalog = await assets.enumerateCatalog();
+    if (!catalog.ok) throw catalog.error;
+  })();
+  assetPreparation.set(assets, pending);
+  return pending;
+}
+
+function previewStable(value) {
+  if (value instanceof ArrayBuffer) return 'ArrayBuffer:' + JSON.stringify(Array.from(new Uint8Array(value)));
+  if (ArrayBuffer.isView(value)) return value.constructor.name + ':' + JSON.stringify(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  if (Array.isArray(value)) return '[' + value.map(previewStable).join(',') + ']';
+  if (value !== null && typeof value === 'object') {
+    const record = value;
+    return '{' + Object.keys(record).sort().map((key) => JSON.stringify(key) + ':' + previewStable(record[key])).join(',') + '}';
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+async function previewDigest(value) {
+  const bytes = new TextEncoder().encode(previewStable(value));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return 'sha256:' + Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function textureDimensions(payload) {
+  const extent = payload?.shape?.extent;
+  const width = extent?.width;
+  const height = extent?.height;
+  if (!Number.isSafeInteger(width) || width <= 0 || !Number.isSafeInteger(height) || height <= 0) {
+    throw new Error('TextureAsset shape.extent must provide positive width and height');
+  }
+  return [width, height];
+}
+
+function textureMipCount(payload) {
+  const mips = payload?.mips;
+  if (mips?.kind === 'packed') {
+    if (!Number.isSafeInteger(mips.levelCount) || mips.levelCount <= 0) {
+      throw new Error('TextureAsset packed mips must provide a positive levelCount');
+    }
+    return mips.levelCount;
+  }
+  if (mips?.kind !== 'generate') return 1;
+  const [width, height] = textureDimensions(payload);
+  const depth = payload?.shape?.viewDimension === '3d' ? payload.shape.extent.depth : 1;
+  let largest = Math.max(width, height, Number.isSafeInteger(depth) && depth > 0 ? depth : 1);
+  let levels = 1;
+  while (largest > 1) {
+    largest = Math.max(1, largest >> 1);
+    levels += 1;
+  }
+  return levels;
+}
+
+function texturePayloadClass(payload) {
+  const data = payload?.data;
+  const bytes =
+    data instanceof Uint8Array || data instanceof Uint8ClampedArray
+      ? Array.from(data)
+      : Array.isArray(data) && data.every((value) => typeof value === 'number')
+        ? data
+        : undefined;
+  if (bytes === undefined || bytes.length === 0) return undefined;
+  const format = String(payload?.format ?? '').toLowerCase();
+  const singleChannel = format.startsWith('r') && !format.startsWith('rg');
+  if (bytes.every((value) => value === 0)) return 'black';
+  if (singleChannel) return 'single-channel';
+  if (format.startsWith('rgba') || format.startsWith('bgra')) {
+    const alpha = bytes.filter((_, index) => (index + 1) % 4 === 0);
+    if (alpha.length > 0 && alpha.every((value) => value === 0)) return 'transparent';
+  }
+  return 'color';
+}
+
+function selectedMaterialPass(payload) {
+  const passes = Array.isArray(payload?.passes) ? payload.passes : [];
+  return passes.find((pass) => {
+    const tags = pass?.renderState?.tags;
+    const mode = tags?.LightMode ?? pass?.name;
+    return !/shadow|depth/i.test(String(mode));
+  }) ?? passes[0];
+}
+
+function textureRendererObservation(inspection, expected, frame) {
+  const inspectedFrame = inspection?.frame;
+  if (
+    frame === undefined ||
+    inspectedFrame?.frameId !== frame.frameId ||
+    inspectedFrame?.deviceGeneration !== frame.deviceGeneration
+  ) {
+    return { rendererTextureResident: false, textureHandleCount: 0 };
+  }
+  const bindings = Array.isArray(inspection?.meshMaterialBindings)
+    ? inspection.meshMaterialBindings
+    : [];
+  const selectedBinding =
+    expected === undefined
+      ? undefined
+      : bindings.find(
+          (binding) =>
+            binding.entityKey === expected.entityKey &&
+            (expected.worldIdentity === undefined ||
+              binding.worldIdentity === expected.worldIdentity),
+        );
+  const selectedMaterialIndex =
+    selectedBinding === undefined || expected?.materialHandle === undefined
+      ? -1
+      : selectedBinding.bindings.findIndex((binding) => binding.handle === expected.materialHandle);
+  const selectedResidency =
+    selectedMaterialIndex >= 0 ? selectedBinding?.residency[selectedMaterialIndex] : undefined;
+  const selectedTexture =
+    selectedResidency === undefined || expected?.textureHandle === undefined
+      ? undefined
+      : selectedResidency.textures.find((texture) => texture.handle === expected.textureHandle);
+  const resident =
+    selectedResidency !== undefined &&
+    (selectedResidency.readiness === 'ready' || selectedResidency.readiness === 'last-known-good') &&
+    selectedTexture !== undefined;
+  return {
+    rendererTextureResident: resident,
+    textureHandleCount: selectedResidency?.textures.length ?? 0,
+  };
+}
+
+async function previewOwnerFacts(assets, resource, payload, textureBudget) {
+  if (resource.kind === 'material') {
+    const primaryPass = selectedMaterialPass(payload);
+    const program = primaryPass?.program?.module;
+    const pass = primaryPass?.name;
+    return {
+      ...(textureBudget === undefined
+        ? {}
+        : {
+            sampledTextureLimit: textureBudget.limit,
+            sampledTextureRequired: textureBudget.required,
+            sampledTextureTransmission: textureBudget.transmission,
+            sampledTextureConflicts: textureBudget.conflicts.join(','),
+          }),
+      subjectDigest: await previewDigest(payload),
+      bindingsDigest: await previewDigest(payload.passes),
+      closureDigest: await previewDigest(payload.values ?? payload.passes),
+      ...(typeof program === 'string' ? { program } : {}),
+      ...(typeof pass === 'string' ? { pass } : {}),
+    };
+  }
+  if (resource.kind === 'mesh') {
+    return {
+      subjectDigest: await previewDigest(payload),
+      vertexDigest: await previewDigest(payload.vertices),
+      indexDigest: await previewDigest(payload.indices ?? []),
+      submeshDigest: await previewDigest(payload.submeshes),
+      aabbDigest: await previewDigest(payload.aabb),
+    };
+  }
+  if (resource.kind === 'texture') {
+    const [width, height] = textureDimensions(payload);
+    const mipCount = textureMipCount(payload);
+    const filter = 'linear';
+    const payloadClass = texturePayloadClass(payload);
+    return {
+      subjectDigest: await previewDigest(payload),
+      boundDigest: await previewDigest({ width, height, format: payload.format }),
+      uvDigest: await previewDigest({ offset: [0, 0], scale: [1, 1], rotation: 0 }),
+      bindingDigest: await previewDigest({ format: payload.format, colorSpace: payload.colorSpace, filter, mipCount }),
+      format: payload.format,
+      colorSpace: payload.colorSpace,
+      filter,
+      mipCount,
+      dimensions: [width, height],
+      ...(payloadClass === undefined ? {} : { payloadClass }),
+    };
+  }
+  return undefined;
+}
+
+${gameProjectionSource}
+function exposeGameInspection(app) {
+  const inspection = {
+    ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
+    list() {
+      return {
+        reads: Array.from(gameProjectionDefinitions.entries())
+          .filter(([, entry]) => entry.kind === 'read')
+          .map(([id]) => id),
+      };
+    },
+    async read(id) {
+      const entry = gameProjectionDefinitions.get(id);
+      if (entry?.kind !== 'read') throw new Error('forgeax: game read projection not found ' + id);
+      return entry.definition.read();
+    },
+    renderer() {
+      const inspection = app.renderer.inspect();
+      return {
+        state: inspection.state,
+        frameId: inspection.frame.frameId,
+        frame: inspection.frame,
+        capabilities: inspection.capabilities,
+        limits: inspection.limits,
+        execution: app.execution.report(),
+        lastError: app.lastError,
+      };
+    },
+  };
+  globalThis.__forgeaxGameInspection = inspection;
+}
+
+let preparedResourceOwner;
+async function prepareResourcePreview(app, resource, previewCanvas = canvas) {
+const resourceVfx = previewVfxHosts.get(app) ?? (resource?.kind === 'vfx' ? ensureVfxRuntimeHost() : undefined);
+let preparedResourceBinding;
+await prepareAssetRegistry(app.assets);
+const assets = app.assets;
+const ownedEntities = [];
+const ownedHandles = [];
+const allocOwned = (target, payload) => {
+  const handle = app.world.allocSharedRef(target, payload);
+  ownedHandles.push(handle);
+  return handle;
+};
+const internOwned = (target, payload) => {
+  const handle = app.world.internSharedRef(target, payload);
+  ownedHandles.push(handle);
+  return handle;
+};
+const spawnOwned = (...components) => {
+  const spawned = app.world.spawn(...components);
+  if (!spawned.ok) throw spawned.error;
+  ownedEntities.push(spawned.value);
+  return spawned.value;
+};
+let resourceVfxAttached = false;
+let canonicalEnvironment;
+let closed = false;
+let cleanupPromise;
+const cleanup = async () => {
+  if (cleanupPromise !== undefined) return cleanupPromise;
+  closed = true;
+  cleanupPromise = (async () => {
+    let failure;
+    previewCameraEntities.delete(app.world);
+    previewCameraTargets.delete(app.world);
+    for (let index = ownedEntities.length - 1; index >= 0; index -= 1) {
+      const dropped = app.world.despawn(ownedEntities[index]);
+      if (!dropped.ok && dropped.error?.code !== 'stale-entity' && failure === undefined) {
+        failure = dropped.error;
+      }
+    }
+    if (resourceVfxAttached) {
+      const detached = await resourceVfx.detachWorld({ world: app.world });
+      if (!detached.ok && failure === undefined) failure = detached.error;
+    }
+    for (const handle of ownedHandles.splice(0).reverse()) {
+      const released = app.world.sharedRefs.release(handle);
+      if (!released.ok && released.error?.code !== 'shared-ref-released' && failure === undefined) {
+        failure = released.error;
+      }
+    }
+    preparedResourceBinding = undefined;
+    if (failure !== undefined) throw failure;
+  })();
+  return cleanupPromise;
+};
+try {
+if (resource !== undefined) {
+  if (resource.kind !== 'texture') {
+    if (canonicalEnvironmentGuid === null) throw new Error('canonical preview environment is unavailable');
+    const environment = await assets.loadByGuid(assets.parseGuid(canonicalEnvironmentGuid));
+    if (!environment.ok) throw environment.error;
+    if (environment.value.kind !== 'equirect') {
+      throw new Error(\`canonical preview environment expected equirect, received \${environment.value.kind}\`);
+    }
+    if (environment.value.width <= 0 || environment.value.height <= 0 || environment.value.data.byteLength === 0) {
+      throw new Error('canonical preview environment must provide decoded equirect pixels');
+    }
+    canonicalEnvironment = allocOwned('EquirectAsset', environment.value);
+  }
+  if (resource.kind === 'vfx') {
+    const runtime = resourceVfx;
+    const attached = await runtime.attachWorld({ world: app.world, assets });
+    if (!attached.ok) throw attached.error;
+    resourceVfxAttached = attached.value.state === 'attached';
+  }
+  const loaded = await assets.loadByGuid(assets.parseGuid(resource.guid));
+  if (!loaded.ok) throw loaded.error;
+  const payload = loaded.value;
+  const assetBinding = captureEngineWorkspaceAssetBinding(assets, resource.guid, payload);
+  if (resource.kind === 'vfx' && payload.kind !== 'particle-effect') {
+    throw new Error(\`VFX preview expected ParticleEffectAsset, received \${payload.kind}\`);
+  }
+  const vfxBounds = resource.kind === 'vfx' ? previewVfxBounds(payload) : undefined;
+  if (resource.kind === 'vfx' && vfxBounds === undefined) {
+    throw new Error('VFX preview owner did not publish finite emitter bounds');
+  }
+  const meshMaterialHandles = resource.kind === 'mesh' && payload.kind === 'mesh'
+    ? await loadEngineWorkspaceMaterialSlots(
+        payload.materialSlots,
+        async (slot) => {
+          const material = await assets.loadByGuid(
+            assets.parseGuid(AssetGuid.format(slot.defaultMaterial)),
+          );
+          if (!material.ok) return material;
+          if (material.value.kind !== 'material') {
+            throw new Error('mesh material slot resolved to a non-material asset');
+          }
+          return material;
+        },
+        (material) => allocOwned('MaterialAsset', material),
+      )
+    : undefined;
+  const meshHandle = resource.kind === 'mesh' && payload.kind === 'mesh'
+    ? allocOwned('MeshAsset', payload)
+    : internOwned(
+        'MeshAsset',
+        createPrimitiveMesh(resource.kind === 'texture' ? 'quad' : 'sphere').unwrap(),
+      );
+  const textureHandle = resource.kind === 'texture' && payload.kind === 'texture'
+    ? allocOwned('TextureAsset', payload)
+    : undefined;
+  const checkerTextureHandle = resource.kind === 'texture'
+    ? allocOwned('TextureAsset', {
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 8, height: 8 } },
+        format: 'rgba8unorm',
+        data: new Uint8Array(8 * 8 * 4).map((_, index) => {
+          const pixel = Math.floor(index / 4);
+          const row = Math.floor(pixel / 8);
+          const column = pixel % 8;
+          const shade = (row + column) % 2 === 0 ? 52 : 104;
+          return index % 4 === 3 ? 255 : shade;
+        }),
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+      })
+    : undefined;
+  const checkerMaterialHandle = checkerTextureHandle === undefined
+    ? undefined
+    : allocOwned('MaterialAsset', Materials.unlit([1, 1, 1, 1], { baseColorTexture: checkerTextureHandle }));
+  // Texture residency is renderer-owned. The preview world publishes the
+  // TextureAsset through its normal MaterialAsset binding; the render system
+  // pulls the POD and calls its internal residency owner during extraction.
+  // Do not reach through Renderer with a second store API: that object is
+  // intentionally private to concrete assembly and is absent from the public
+  // Renderer contract.
+  const materialPayload = resource.kind === 'texture' && payload.kind === 'texture'
+    ? Materials.unlit([1, 1, 1, 1], {
+        baseColorTexture: textureHandle,
+        // Texture previews are composited over the checker plane below so
+        // alpha-bearing payloads remain visible. Opaque payloads keep the
+        // same color path; the blend state is harmless when alpha is one.
+        renderState: {
+          depthWriteEnabled: false,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
+        },
+      })
+    : resource.kind === 'material' && payload.kind === 'material'
+      ? payload
+      : undefined;
+  const materialHandle = materialPayload === undefined
+    ? undefined
+    : allocOwned('MaterialAsset', materialPayload);
+  const materialBindings = resource.kind === 'mesh'
+    ? meshMaterialHandles
+    : materialHandle === undefined
+      ? undefined
+      : [materialHandle];
+  const rawAabb = payload.kind === 'mesh' ? payload.aabb : undefined;
+  const aabb = rawAabb !== undefined && (Array.isArray(rawAabb) || ArrayBuffer.isView(rawAabb)) && rawAabb.length === 6
+    ? Array.from(rawAabb)
+    : resource.kind === 'mesh' && payload.kind === 'mesh'
+      ? (() => { throw new Error('mesh owner did not publish a finite AABB'); })()
+      : [-1, -1, -1, 1, 1, 1];
+  const meshFrame = resource.kind === 'mesh'
+    ? fitToolPreviewCameraToAabb(aabb, { aspect: 1, fov: Math.PI / 4 })
+    : undefined;
+  const textureExtent = resource.kind === 'texture' && payload.kind === 'texture'
+    ? textureDimensions(payload)
+    : [1, 1];
+  const textureWidth = textureExtent[0];
+  const textureHeight = textureExtent[1];
+  const textureAspect = textureWidth / textureHeight;
+  const textureScale = textureAspect >= 1
+    ? [textureAspect, 1, 1]
+    : [1, 1 / textureAspect, 1];
+  // Keep the orthographic view's world aspect equal to the drawing buffer.
+  // The quad is scaled to the authored texture aspect; independently scaling
+  // both camera axes would cancel that scale and stretch the image to the
+  // viewport. Expand the view height only when a wide texture needs room.
+  const viewportAspect = previewCanvas.width > 0 && previewCanvas.height > 0
+    ? previewCanvas.width / previewCanvas.height
+    : 1;
+  const textureCameraHeight =
+    1.2 * Math.max(textureScale[1], textureScale[0] / viewportAspect);
+  const textureCameraWidth = textureCameraHeight * viewportAspect;
+  const center = meshFrame?.center ?? vfxBounds?.center ?? [(aabb[0] + aabb[3]) / 2, (aabb[1] + aabb[4]) / 2, (aabb[2] + aabb[5]) / 2];
+  const radius = meshFrame?.radius ?? vfxBounds?.radius ?? Math.max(1, Math.hypot(aabb[3] - aabb[0], aabb[4] - aabb[1], aabb[5] - aabb[2]));
+  const texturePreview = resource.kind === 'texture';
+  if (resource.kind === 'vfx') {
+    const effect = allocOwned('ParticleEffectAsset', payload);
+    spawnOwned(
+      { component: Transform, data: { pos: center } },
+      { component: ParticleEffectPlayer, data: { effect, playing: true, seed: 0, timeScale: 1 } },
+    );
+  } else {
+    if (texturePreview && checkerTextureHandle !== undefined && checkerMaterialHandle !== undefined) {
+      // The WebGPU surface is opaque in the normal Engine path. A real
+      // checker mesh keeps the texture presentation honest without asking
+      // the browser compositor or a second rendering API to own pixels.
+      spawnOwned(
+        { component: Transform, data: { pos: [center[0], center[1], center[2] - 0.02], scale: textureScale } },
+        { component: MeshFilter, data: { assetHandle: meshHandle } },
+        { component: MeshRenderer, data: { materials: [checkerMaterialHandle] } },
+      );
+    }
+    const previewMeshEntity = spawnOwned(
+      { component: Transform, data: { pos: center, ...(texturePreview ? { scale: textureScale } : {}) } },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: materialBindings === undefined ? {} : { materials: materialBindings } },
+    );
+    preparedResourceBinding = {
+      entityKey: previewMeshEntity,
+      worldIdentity: app.world.identity,
+      materialHandle,
+      textureHandle,
+    };
+  }
+  const cameraData = texturePreview
+    ? {
+        fov: 0,
+        aspect: viewportAspect,
+        near: 0.01,
+        far: 100,
+        projection: CAMERA_PROJECTION_ORTHOGRAPHIC,
+        left: -textureCameraWidth / 2,
+        right: textureCameraWidth / 2,
+        bottom: -textureCameraHeight / 2,
+        top: textureCameraHeight / 2,
+        tonemap: TONEMAP_NONE,
+        antialias: 0,
+        bloom: 0,
+        clearColor: [0, 0, 0, 1],
+      }
+    : {
+        fov: Math.PI / 4,
+        aspect: 1,
+        near: meshFrame?.near ?? 0.01,
+        far: meshFrame?.far ?? radius * 8,
+        tonemap: TONEMAP_REINHARD_EXTENDED,
+      };
+  const cameraPosition = texturePreview
+    ? [0, 0, 5]
+    : [center[0], center[1], center[2] + (meshFrame?.distance ?? radius * 2.5)];
+  const cameraEntity = spawnOwned({ component: Camera, data: cameraData }, { component: Transform, data: { pos: cameraPosition } });
+  previewCameraEntities.set(app.world, cameraEntity);
+  previewCameraTargets.set(app.world, center);
+  if (!texturePreview) {
+    spawnOwned({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.3], intensity: 2 } });
+    if (canonicalEnvironment === undefined) throw new Error('canonical preview environment was not loaded');
+    spawnOwned({ component: Skylight, data: { equirect: canonicalEnvironment } });
+    spawnOwned({ component: SkyboxBackground, data: { equirect: canonicalEnvironment } });
+  }
+  const textureBudget = resource.kind === 'material' && materialHandle !== undefined
+    ? materialSampledTextureBudget(app.world, assets, materialHandle)
+    : undefined;
+  const ownerFacts = await previewOwnerFacts(assets, resource, payload, textureBudget);
+  const publishedAsset = resource.kind === 'mesh' && payload.kind === 'mesh' && payload.aabb !== undefined
+    ? { ...payload, aabb: Array.from(payload.aabb) }
+    : payload;
+  return {
+    facts: {
+      kind: resource.kind,
+      guid: resource.guid,
+      asset: publishedAsset,
+      ...(ownerFacts === undefined ? {} : { ownerFacts }),
+    },
+    app,
+    binding: preparedResourceBinding,
+    assetBinding,
+    close: cleanup,
+  };
+}
+} catch (cause) {
+  await cleanup();
+  throw cause;
+}
+}
+
+async function prepareProject(app) {
+await prepareAssetRegistry(app.assets);
+if (resource === undefined) return;
+preparedResourceOwner = await prepareResourcePreview(app, resource);
+return preparedResourceOwner.facts;
+}
+const query = new URLSearchParams(location.search);
+const gpuPassTiming = query.get('forgeax-gpu-pass-timing') === '1' ? {} : undefined;
+const geometryLane = query.get('forgeax-geometry-lane') === 'direct' ? 'direct' : undefined;
+const dynamicGeometryMeshBudgetBytes = query.has('forgeax-dynamic-mesh-budget-bytes')
+  ? Number(query.get('forgeax-dynamic-mesh-budget-bytes')) : ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)};
+const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
+const rhiCaptureRequested =
+  query.get('forgeax-rhi-capture') === '1' || ${JSON.stringify(rhiCaptureEnabled)};
+// A profiler is an inert, bounded capability until a caller starts a capture.
+// Create it in both live execution placements so the persistent CLI can inspect the
+// actual realm; the Worker receives only the structured diagnostics switches.
+const profiler = ${JSON.stringify(devMode)} || cpuProfileRequested ? createProfiler() : undefined;
+const workspaceTarget = query.has('forgeaxWorkspace') && !workerExecution && bootstrapRoot === 'project-bootstrap';
+const workspaceGame = workspaceTarget && query.get('forgeaxWorkspace') === 'game';
+const workspaceMode = workspaceTarget && !workspaceGame;
+const recipeValue = query.get('forgeax-tool-recipe');
+const snapshotValue = query.get('forgeax-tool-snapshot');
+const runIdValue = query.get('forgeax-tool-run-id');
+const appState: { current?: App | import('@forgeax/engine/app').ExecutionApp } = {};
+let disposeFrontendHost;
+let activateGameHost: (() => Promise<void>) | undefined;
+let removeStartupErrorListener;
+let removeStartupInputBinding;
+let activateWorkspace;
+const notifyWorkspacePageLost =
+  workspaceTarget
+    ? () => {
+        if (hostTransport === undefined) return;
+        void hostTransport
+          .request(engineWorkspaceResultService(query.get('forgeaxWorkspaceTarget')), {
+            kind: 'lost',
+            id: 'page-lost:' + (query.get('forgeaxWorkspaceSession') ?? 'forgeax-workspace-session'),
+            sessionId: query.get('forgeaxWorkspaceSession') ?? 'forgeax-workspace-session',
+            targetId: query.get('forgeaxWorkspaceTarget') ?? 'forgeax-workspace-target',
+          })
+          .catch(() => {});
+      }
+    : undefined;
+const appBootstrapPlugin = {
+  name: 'forgeax:generated-app-bootstrap',
+  inject: workspaceGame ? ['engineWorkspaceInput'] : [],
+  async apply(ctx) {
+    const ownsPageLifecycle =
+      bootstrapRoot !== 'resource-bootstrap' && resource === undefined && recipeValue === null;
+    let pageHidden = false;
+    ctx.effect(() => {
+      const onPageHide = () => {
+        pageHidden = true;
+        notifyWorkspacePageLost?.();
+        resizeObserver.disconnect();
+        if (disposeFrontendHost !== undefined) void disposeFrontendHost();
+        else void appState.current?.dispose();
+      };
+      if (ownsPageLifecycle) window.addEventListener('pagehide', onPageHide, { once: true });
+      return () => {
+        if (ownsPageLifecycle) window.removeEventListener('pagehide', onPageHide);
+      };
+    }, 'devkit/generated-page-lifecycle');
+    const pointerLockAllowed =
+      query.has('forgeaxCapture') || recipeValue !== null ? () => false : undefined;
+    let touchControls = window.matchMedia('(pointer: coarse)').matches;
+    const controlModeListeners = new Set<() => void>();
+    const controlMode: NonNullable<import('@forgeax/engine/app').GameHost['controlMode']> = {
+      read: () => document.pointerLockElement === canvas ? 'pointer-locked' : touchControls ? 'touch' : 'pointer',
+      subscribe: listener => {
+        controlModeListeners.add(listener);
+        return () => { controlModeListeners.delete(listener); };
+      },
+    };
+    ctx.effect(() => {
+      const notify = () => { for (const listener of controlModeListeners) listener(); };
+      const pointer = (event: PointerEvent) => {
+        if (event.pointerType !== 'touch' && event.pointerType !== 'mouse' && event.pointerType !== 'pen') return;
+        const next = event.pointerType === 'touch';
+        if (next === touchControls) return;
+        touchControls = next;
+        notify();
+      };
+      // Observe the real input modality across both the canvas and authored UI.
+      // Pointer acquisition and gameplay state remain in their existing owners.
+      document.addEventListener('pointerdown', pointer, { capture: true });
+      document.addEventListener('pointerlockchange', notify);
+      return () => {
+        document.removeEventListener('pointerdown', pointer, { capture: true });
+        document.removeEventListener('pointerlockchange', notify);
+        controlModeListeners.clear();
+      };
+    }, 'devkit/game-control-mode');
+    if (profiler !== undefined) ctx.provide('profiler', profiler);
+    ${
+      target === 'tauri'
+        ? ''
+        : `const programDeliveryChannel = workerExecution ? crypto.randomUUID() : undefined;
+    if (programDeliveryChannel !== undefined)
+      ctx.effect(() => serveRuntimePackDelivery(programDeliveryChannel), 'devkit/runtime-pack-delivery');`
+    }
+    const gameChannel = workerExecution || (bootstrapRoot === 'project-bootstrap' && !workspaceMode)
+      ? new MessageChannel() : undefined;
+    if (gameChannel !== undefined) {
+      ctx.effect(() => () => {
+        gameChannel.port1.close();
+        // Covers failure before handoff; App closes the Engine end after handoff.
+        gameChannel.port2.close();
+      }, 'devkit/game-channel');
+    }
+    const runtimePacks = workerExecution ? undefined : await createRuntimePackOptions(runtimeScopeBinding.scopeId${target === 'tauri' ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"});
+    const pluginPrograms = workerExecution ? undefined : enginePrograms(crypto.randomUUID(), 'engine-main', initialAssembly.sessionGeneration, runtimePacks.programHost);
+    const gameVfx = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null
+      ? createGameVfx() : undefined;
+    let hostAudio: ReturnType<typeof createHostAudioConsumer> | undefined;
+    const result = await createApp(
+      canvas,
+      workerExecution
+        ? {
+            uiRoot: document.querySelector('#game-ui') ?? document.body,
+            animation,
+            dynamicGeometryMeshBudgetBytes,
+            execution: {
+              createHostAudio: () => {
+                hostAudio = (ctx.get('executionHostAudioFactory') ?? createHostAudioConsumer)();
+                return hostAudio;
+              },
+              workers: executionWorkers,
+              bootstrapData: ${target === 'tauri' ? '{}' : '{ programDeliveryChannel }'},
+              ...(gameChannel === undefined ? {} : { bootstrapPort: gameChannel.port2 }),
+              // Development includes cold Vite compilation before the native Worker handshake.
+              startupTimeoutMs: ${startupTimeout},
+              bootstrap: new URL(
+                import.meta.env.DEV ? './execution-bootstrap.ts' : './execution-bootstrap.js',
+                import.meta.url,
+              ),
+              assetCatalog: {
+                url: import.meta.env.DEV
+                  ? runtimeScopeBinding.catalogUrl
+                  : new URL('pack-index.json', document.baseURI).href,
+                ...(import.meta.env.DEV
+                  ? { expectedScope: runtimeScopeBinding, runtimeBinding: runtimeScopeBinding }
+                  : {}),
+              },
+              diagnostics: {
+                profiler: import.meta.env.DEV || cpuProfileRequested,
+                rhiCapture: rhiCaptureRequested,
+                ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
+                ...(geometryLane === undefined ? {} : { geometryLane }),
+              },
+            },
+            ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
+          }
+        : {
+            uiRoot: document.querySelector('#game-ui') ?? document.body,
+            animation,
+            dynamicGeometryMeshBudgetBytes,
+            standardProfile: ${JSON.stringify(appOptions.standardProfile)},
+            context: ctx.root,
+            ${ssrIdentity === undefined ? '' : `ssrIdentity: ${JSON.stringify(ssrIdentity)},`}
+            assetCatalog,
+            pluginPrograms,
+            runtimePacks: { ...runtimePacks, programHost: pluginPrograms.programHost ?? runtimePacks.programHost },
+            gpuPassTiming,
+            profiler,
+            ...(workspaceGame ? { input: ctx.engineWorkspaceInput.game } : {}),
+            plugins: [${plugins.join(', ')}${plugins.length > 0 ? ', ' : ''}...(workspaceMode ? [physicsComponentsPlugin()] : []), ...(gameVfx === undefined ? [] : [gameVfx.plugin])],
+            ...(workspaceMode ? { features: [ensureVfxRuntimeHost().feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature] }),
+            ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
+            ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
+          },
+      workerExecution ? { ...bundler, importTransport: undefined } : bundler,
+    );
+    if (!result.ok) throw result.error;
+    const app = result.value;
+    appState.current = app;
+    ctx.effect(() => async () => {
+      (await app.dispose()).unwrap();
+      if (appState.current === app) appState.current = undefined;
+    }, 'devkit/generated-app-resource');
+    ${materialBuildCapabilityGuard(materialProfile)}
+    // Engine plugins can apply before createApp completes. A page that left
+    // during startup must release this late App before publishing more services.
+    if (pageHidden) throw new Error('forgeax: page left during App startup');
+    if (workerExecution) {
+      // DOM plugins load POD assets through the same catalog without a GPU or
+      // a second World. Host UI never downloads the renderer shader manifest.
+      const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }), bundler.importTransport);
+      if (!import.meta.env.DEV) assets.configurePackIndex(new URL('pack-index.json', document.baseURI).href);
+      const assembly = assembleAssetRuntime(assets, [], {
+        ownsRegistry: true,
+        catalogSource: assetCatalog,
+        ...(import.meta.env.DEV ? { runtimeBinding: runtimeScopeBinding } : {}),
+      });
+      if (!assembly.ok) { await app.dispose(); throw assembly.error; }
+      const uiRoot = document.querySelector('#game-ui');
+      ctx.provide('assets', assets);
+      const host = {
+        app, assets,
+        get audio() { return hostAudio?.engine; },
+        ...(gameChannel === undefined ? {} : { port: gameChannel.port1 }),
+        get canvas() { return ('canvas' in app ? app.canvas : undefined) ?? canvas; },
+        drawingBufferSize: () => {
+          const current = ('canvas' in app ? app.canvas : undefined) ?? canvas;
+          return { width: current.width, height: current.height };
+        },
+        uiRoot: uiRoot instanceof HTMLElement ? uiRoot : document.body,
+        controlMode,
+        setPointerLockAllowed: (allowed: boolean) => app.input?.setPointerLockAllowed?.(allowed),
+      } satisfies import('@forgeax/engine/app').GameHost;
+      ctx.provide('gameHost', host);
+      ctx.effect(() => () => assembly.value.dispose(), 'devkit/host-assets');
+      if (import.meta.env.DEV || cpuProfileRequested || ${JSON.stringify(target === 'tauri')}) {
+        const localInspection = globalThis.__forgeaxGameInspection;
+        const sourceRead = (method: 'list' | 'read', id?: string) => app.remoteEval === undefined
+          ? localInspection?.[method](id)
+          : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
+        const inspection = {
+          ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
+          list: () => import.meta.env.DEV ? sourceRead('list') : { reads: [] },
+          read: (id: string) => sourceRead('read', id),
+          renderer: () => {
+            const execution = app.execution.report();
+            const local = 'renderer' in app ? app.renderer.inspect() : undefined;
+            return { state: execution.render?.state ?? local?.state ?? (execution.engine.health === 'running' ? 'alive' : execution.engine.health), frameId: execution.render?.completedFrame ?? execution.frame.completed, ...(local === undefined ? {} : { frame: local.frame }), execution, lastError: app.lastError };
+          },
+        };
+        globalThis.__forgeaxGameInspection = inspection;
+        ctx.effect(() => () => {
+          if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
+        }, 'devkit/host-inspection');
+      }
+    }
+    if (workspaceTarget) {
+      activateWorkspace = async () => {
+        if (hostTransport === undefined || workerExecution) throw new Error('Workspace requires its main-realm Host transport');
+        const extent = (name, fallback) => { const value = Number(query.get(name)); return Number.isSafeInteger(value) && value > 0 ? value : fallback; };
+        const fiber = await ctx.plugin(engineWorkspaceBrowserPlugin, {
+          app, canvas, surface: engineWorkspaceSurface, transport: hostTransport,
+          ...(workspaceMode ? { createPreviewApp: async ({ context, canvas: previewCanvas, asset, targetId }) => {
+            const vfx = asset.kind === 'vfx' ? makeVfxRuntimeHost() : undefined;
+            ${previewRhiWindow && !rhiCaptureEnabled ? "const diagnostic = asset.kind === 'mesh' ? await previewRhiDiagnostic(context, previewCanvas, targetId) : undefined;" : ''}
+            const created = await createApp(previewCanvas, {
+              context, assetCatalog: app.pluginContext.get('runtimePacks')?.catalog ?? assetCatalog, plugins: [physicsComponentsPlugin()],
+              ${previewRhiWindow && !rhiCaptureEnabled ? '...diagnostic?.options,' : ''}
+              ...(vfx ? { features: [vfx.feature] } : {}),
+              ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
+              pointerLockAllowed: () => false,
+            }, bundler);
+            if (!created.ok) throw created.error;
+            ${previewRhiWindow && !rhiCaptureEnabled ? 'if (diagnostic !== undefined) await diagnostic.arm(created.value.world.identity);' : ''}
+            if (vfx) previewVfxHosts.set(created.value, vfx);
+            return created.value;
+          } } : {}),
+          ...(workspaceGame ? { input: ctx.engineWorkspaceInput } : {}),
+          project: { id: ${JSON.stringify(facts.id)}, root: ${JSON.stringify(facts.root)}, name: ${JSON.stringify(facts.name)} },
+          target: {
+            sessionId: query.get('forgeaxWorkspaceSession'), targetId: query.get('forgeaxWorkspaceTarget'),
+            worldId: app.world.identity, headed: query.get('forgeaxWorkspaceHeaded') !== '0',
+            width: extent('forgeaxWorkspaceWidth', 1280), height: extent('forgeaxWorkspaceHeight', 720), url: location.href,
+          },
+          openResourcePreview: async ({ app: previewApp, asset, canvas: previewCanvas }) => {
+            const owner = await prepareResourcePreview(previewApp, { kind: asset.kind, guid: asset.guid }, previewCanvas);
+            return { close: owner.close, assetBinding: owner.assetBinding };
+          },
+        });
+        await fiber.await();
+      };
+    }
+    if (bootstrapRoot === 'project-bootstrap' && recipeValue === null && (!workspaceTarget || workspaceGame)) {
+      const startup = globalThis.__forgeaxStartup;
+      startup?.bindSession?.(app.execution.report().world.identity);
+      removeStartupErrorListener = app.onError((error) => {
+        // A refused pointer lock leaves the game running unlocked and the next
+        // trusted click retries it; only unrecoverable errors stop the game.
+        if (error.code === 'app-pointer-lock-failed') {
+          console.warn(error);
+          return;
+        }
+        startup?.fail?.(error, app.execution.report());
+      });
+      removeStartupInputBinding = startup?.bindInput?.((enabled) => {
+        app.input?.setInputAllowed?.(enabled);
+        if (!enabled) app.input?.clear?.();
+      });
+    }
+    if (workspaceMode) await activateWorkspace?.();
+    if ((import.meta.env.DEV || cpuProfileRequested || ${JSON.stringify(target === 'tauri')}) && !workerExecution) exposeGameInspection(app as App);
+    let gameHostFiber;
+    let engineRootFiber;
+    ctx.effect(
+      () => {
+        return async () => {
+          resizeObserver.disconnect();
+          await engineRootFiber?.dispose();
+          await gameHostFiber?.dispose();
+          removeStartupErrorListener?.();
+          removeStartupErrorListener = undefined;
+          removeStartupInputBinding?.();
+          removeStartupInputBinding = undefined;
+        };
+      },
+      'devkit/generated-app',
+    );
+    if (
+      bootstrapRoot !== 'resource-bootstrap' &&
+      !workerExecution &&
+      !workspaceMode
+    ) {
+      activateGameHost = async () => {
+        const assets = app.assets;
+        await prepareAssetRegistry(assets);
+        if (assets === undefined) throw new Error('forgeax: generated App did not provide assets');
+        const uiRoot = document.querySelector('#game-ui');
+        gameHostFiber = await ctx.root.plugin(gameHostPlugin({
+          app,
+          assets,
+          canvas,
+          renderer: app.renderer,
+          drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
+          ...(gameChannel === undefined ? {} : { port: gameChannel.port2, presentationPort: gameChannel.port1 }),
+          uiRoot: uiRoot instanceof HTMLElement ? uiRoot : document.body,
+          controlMode,
+          setPointerLockAllowed: (allowed) => app.input?.setPointerLockAllowed?.(allowed),
+          startupTimeoutMs: ${startupTimeout},
+          ...(import.meta.env.DEV ? { gameProjection } : {}),
+        }));
+        if (engineRoot !== null) {
+          const mounted = await activateExecutionRoot(ctx, {
+            guid: engineRoot,
+          }, { timeoutMs: ${startupTimeout} });
+          engineRootFiber = mounted.fiber;
+        }
+      };
+    }
+  },
+};
+let removeWorkspaceAssemblySubscription;
+const hostLifecyclePlugin = {
+  name: 'forgeax:generated-host-lifecycle',
+  apply(ctx) {
+    ctx.effect(
+      () => async () => {
+        // Release the borrowed connection and the separately prepared platform Fiber.
+        removeWorkspaceAssemblySubscription?.();
+        await hostTransport?.close('generated frontend host disposed');
+        if (${JSON.stringify(target === 'tauri')} && globalThis.__forgeaxTauriDispose === disposeFrontendHost) delete globalThis.__forgeaxTauriDispose;
+        ${binding?.frontendModule?.prepare ? 'await preparedFrontend.value.dispose();' : ''}
+      },
+      'devkit/generated-host-lifecycle',
+    );
+  },
+};
+const hostTransport = import.meta.env.DEV
+  ? await (frontendPlatform.connectHost)(
+      (() => {
+        const hostUrl = new URL(
+          (location.protocol === 'https:' ? 'wss:' : 'ws:') +
+            '//' + location.host + '/__forgeax/host',
+        );
+        if (workspaceTarget) {
+          const session = query.get('forgeaxWorkspaceSession');
+          const target = query.get('forgeaxWorkspaceTarget');
+          const token = query.get('forgeaxWorkspaceToken');
+          if (session !== null) hostUrl.searchParams.set('forgeaxWorkspaceSession', session);
+          if (target !== null) hostUrl.searchParams.set('forgeaxWorkspaceTarget', target);
+          if (token !== null) hostUrl.searchParams.set('forgeaxWorkspaceToken', token);
+        }
+        return hostUrl.href;
+      })(),
+    )
+  : undefined;
+const frontendHost = await createFrontendHost({
+  context: hostContext,
+  startupTimeoutMs: ${startupTimeout},
+  startupPlugins: [...(preparedPlatform ? [] : [createFrontendPlatformPlugin(frontendPlatform)]), hostLifecyclePlugin, ...(workspaceGame ? [{ name: 'forgeax:workspace-input-bootstrap', async apply(ctx) { const fiber = ctx.plugin(engineWorkspaceInputPlugin, { canvas }); await fiber.await(); } }] : []), ...(workspaceMode ? [] : [appBootstrapPlugin])],
+  assembly: initialAssembly,
+  activateRoot: async (ctx, descriptor, signal, startupTimeoutMs) => {
+    ${
+      boundRoot
+        ? `if (canonicalHostJson(descriptor) === canonicalHostJson(${JSON.stringify(boundRoot)})) {
+      const module = await import(${JSON.stringify(binding?.frontendModule?.specifier)});
+      const plugin = module[${JSON.stringify(binding?.frontendModule?.export ?? 'default')}];
+      ${binding?.frontendModule?.prepare ? `if (plugin === preparedFrontendModule[${JSON.stringify(binding.frontendModule.prepare)}]) return { fiber: preparedFrontend.value, dispose: () => preparedFrontend.value.dispose() };` : ''}
+      if (!ctx.registry.resolve(plugin)) throw new Error('external frontend module is missing its selected native plugin export');
+      const started = await startNativePlugin(ctx, plugin, descriptor.config, {
+        signal,
+        timeoutMs: startupTimeoutMs,
+      });
+      if (!started.ok) throw started.error;
+      return { fiber: started.value, dispose: () => started.value.dispose() };
+    }`
+        : ''
+    }
+    if (hostRoot === null || canonicalHostJson(descriptor) !== canonicalHostJson(hostDescriptor)) throw new Error('host root/program snapshot mismatch');
+    const scope = ctx.isolate('assets').isolate('pluginPrograms').isolate('runtimePacks');
+    const provider = scope.plugin({ provide: ['assets', 'pluginPrograms', 'runtimePacks'], async apply(ctx) {
+      const assembly = assembleAssetRuntime(new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })), [], { catalogSource: assetCatalog, ownsRegistry: true }).unwrap();
+      ctx.effect(() => () => assembly.dispose());
+      const options = await createRuntimePackOptions(runtimeScopeBinding.scopeId${target === 'tauri' ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"});
+      const pluginPrograms = hostPrograms(crypto.randomUUID(), 'frontend', initialAssembly.sessionGeneration, options.programHost);
+      ctx.provide('pluginPrograms', pluginPrograms);
+      const runtimePacks = assembleRuntimePacks(ctx, assembly, { ...options, programHost: pluginPrograms.programHost ?? options.programHost });
+      ctx.provide('runtimePacks', runtimePacks);
+      const reader = createAssetRegistry({ catalog: runtimePacks.catalog, fetcher: runtimePacks.fetcher, scopeId: runtimeScopeBinding.scopeId });
+      ctx.provide('assets', reader);
+      ctx.effect(() => () => reader.dispose());
+    } });
+    await provider.await();
+    return activateExecutionRoot(scope, {
+      guid: hostRoot,
+    }, { signal, timeoutMs: startupTimeoutMs });
+  },
+  ...(hostTransport === undefined ? {} : { transport: hostTransport }),
+  autoActivate: false,
+});
+disposeFrontendHost = () => frontendHost.dispose();
+if (${JSON.stringify(target === 'tauri')}) globalThis.__forgeaxTauriDispose = disposeFrontendHost;
+if (workspaceMode) {
+  // UI and connection plugins activate independently of the optional renderer.
+  await frontendHost.activate();
+  const appFiber = hostContext.plugin(appBootstrapPlugin);
+  try {
+    await appFiber.await();
+  } catch (error) {
+    await appFiber.dispose();
+    globalThis.__forgeaxStartup?.fail?.(error);
+    await hostTransport?.request(engineWorkspaceResultService(query.get('forgeaxWorkspaceTarget')), {
+      kind: 'failed', id: 'workspace-bootstrap-failed',
+      sessionId: query.get('forgeaxWorkspaceSession'), targetId: query.get('forgeaxWorkspaceTarget'),
+      error: { code: error?.code ?? 'engine-workspace-bootstrap-failed', expected: error?.expected ?? 'the workspace renderer to initialize', hint: error?.hint ?? String(error), detail: error?.detail ?? {} },
+    });
+  }
+}
+const app = appState.current;
+let appStarted = false;
+if (app !== undefined) {
+try {
+  if (app === undefined) throw new Error('forgeax: generated App bootstrap did not complete');
+  await activateGameHost?.();
+  if (!workspaceMode && bootstrapRoot !== 'resource-bootstrap') {
+    // The Engine realm and its plugins are ready when createApp returns. Open
+    // frame credit before Host plugins load runtime assets so their async
+    // startup can never depend on a frame that this activation is withholding.
+    app.start().unwrap();
+    appStarted = true;
+    await frontendHost.activate();
+  }
+  const pluginProjectionBridge = globalThis.__forgeaxPluginProjection;
+  if (pluginProjectionBridge !== undefined) {
+    pluginProjectionBridge.current = { inspect() {
+      const live = frontendHost.assembly.inspection;
+      return { desired: initialAssembly.root ? [initialAssembly.root] : [], live, entries: live, liveState: 'attached' };
+    } };
+  }
+} catch (error) {
+  if (appStarted) app.stop();
+  await frontendHost.dispose().catch(() => {});
+  throw error;
+}
+
+// The backend remains the assembly authority after the initial workspace boot.
+// Its workspace bridge publishes only workspace-safe project entries.
+if (workspaceMode && hostTransport !== undefined) {
+  let queue = Promise.resolve();
+  const applyWorkspaceAssembly = (assembly) => {
+    queue = queue.then(async () => {
+      if (assembly.revision !== frontendHost.assembly.current.revision) {
+        await frontendHost.update(assembly);
+      }
+    }).catch((error) => hostTransport.close(error));
+    return queue;
+  };
+  removeWorkspaceAssemblySubscription = hostTransport.subscribe(HOST_ASSEMBLY_CHANGED_TOPIC, applyWorkspaceAssembly);
+  await applyWorkspaceAssembly(await hostTransport.request(HOST_ASSEMBLY_SERVICE, undefined));
+}
+
+// A workspace App stays stopped until its first preview is instantiated. This
+// avoids running a camera-less frame loop between page readiness and the
+// user's first asset selection; the selected SceneAsset (or resource owner)
+// supplies the observation camera before any frame is submitted.
+
+if (query.has('forgeax-tool-replay')) {
+  globalThis.__forgeaxToolReplayHost = {
+    ready: true,
+    async run(capture) {
+      const result = await replayToolPreviewCapture(capture);
+      return result.ok ? { ok: true, result: result.value } : { ok: false, error: result.error };
+    },
+  };
+} else if (recipeValue !== null) {
+  const previewRecipe = createToolPreviewRecipe(JSON.parse(recipeValue));
+  const host = await createToolPreviewHost({
+    ...(runIdValue === null ? {} : { runId: runIdValue }),
+    recipe: previewRecipe,
+    snapshot: JSON.parse(snapshotValue ?? 'null'),
+    ...(resource === undefined ? {} : { resource }),
+    canvas,
+    app: {
+      plugins: [${plugins.join(', ')}],
+      ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
+      ...(vfxRuntimeHost === undefined ? {} : { features: [vfxRuntimeHost.feature] }),
+    },
+    bundler,
+    prepare: prepareProject,
+    async collectResourceFacts(app, current) {
+      if (current === undefined) return current;
+      if (resource?.kind !== 'vfx') {
+        if (resource?.kind === 'material' || resource?.kind === 'mesh' || resource?.kind === 'texture') {
+          if (resource.kind === 'mesh') {
+            const asset = current.asset;
+            const aabb = asset?.aabb;
+            const submeshes = asset?.submeshes;
+            const materialSlots = asset?.materialSlots;
+            if (!Array.isArray(aabb) || aabb.length !== 6 || !Array.isArray(submeshes) || !Array.isArray(materialSlots)) {
+              return current;
+            }
+            return {
+              ...current,
+              observation: {
+                ...current.ownerFacts,
+                aabb,
+                submeshCount: submeshes.length,
+                materialSlotCount: materialSlots.length,
+              },
+            };
+          }
+          if (resource.kind === 'texture') {
+            let textureObservation = latestTextureObservation ?? {
+              rendererTextureResident: false,
+              textureHandleCount: 0,
+            };
+            const completion = latestFrameSubmission?.completed;
+            if (completion === undefined) {
+              textureObservation = { rendererTextureResident: false, textureHandleCount: 0 };
+            } else {
+              try {
+                const completed = await completion;
+                if (completed?.ok !== true) {
+                  textureObservation = { rendererTextureResident: false, textureHandleCount: 0 };
+                }
+              } catch {
+                textureObservation = { rendererTextureResident: false, textureHandleCount: 0 };
+              }
+            }
+            return {
+              ...current,
+              observation: {
+                ...current.ownerFacts,
+                ...textureObservation,
+              },
+            };
+          }
+          return {
+            ...current,
+            observation: current.ownerFacts,
+          };
+        }
+        return current;
+      }
+      if (vfxRuntimeHost === undefined) return current;
+      const hostInspection = vfxRuntimeHost.inspect(app.world);
+      const player = hostInspection?.players.find(
+        (candidate) => candidate.assetGuid.toLowerCase() === resource.guid.toLowerCase(),
+      );
+      const renderObservation = vfxRuntimeHost.feature.inspect();
+      if (player === undefined || renderObservation.frameNumber < 0) {
+        return current;
+      }
+      const bounds = previewVfxBounds(current.asset);
+      if (bounds === undefined) return current;
+      const emitterDigest = JSON.stringify(player.emitters.map(({ id, module, capacity }) => ({ id, module, capacity })));
+      const sampleDigest = JSON.stringify(player.emitters.map(({ id, schedule }) => ({ id, schedule })));
+      const boundsDigest = JSON.stringify(player.emitters.map(({ id, bounds: emitterBounds }) => ({ id, bounds: emitterBounds })));
+      const computeDigest = player.programFingerprint;
+      const indirectDigest = JSON.stringify(player.emitters.map(({ id, renderers }) => ({ id, renderers: renderers.map(({ kind, enabled }) => ({ kind, enabled })) })));
+      return {
+        ...current,
+        observation: {
+          subjectDigest: current.asset.programFingerprint,
+          programFingerprint: player.programFingerprint,
+          emitterDigest,
+          sampleDigest,
+          boundsDigest,
+          computeDigest,
+          indirectDigest,
+          authoredBounds: bounds.aabb,
+          seed: player.seed,
+          fixedDelta: player.fixedDelta,
+          timelineFrames: previewRecipe.frames,
+          dispatches: renderObservation.dispatches,
+          indirectDraws: renderObservation.indirectDraws,
+          subjectOutputs: renderObservation.subjectOutputs,
+        },
+      };
+    },
+    onDispose: async () => {
+      const owner = preparedResourceOwner;
+      preparedResourceOwner = undefined;
+      await owner?.close?.();
+    },
+    executeAction(action) {
+      return !globalThis.dispatchEvent(new CustomEvent('forgeax-tool-action', {
+        detail: action,
+        cancelable: true,
+      }));
+    },
+  });
+  if (!host.ok) {
+    globalThis.__forgeaxStartup?.fail?.(host.error);
+    globalThis.__forgeaxToolHost = {
+      ready: true,
+      capture: async () => ({ ok: false, error: host.error }),
+      run: async () => ({ ok: false, error: host.error }),
+      dispose: async () => undefined,
+    };
+  } else {
+    globalThis.__forgeaxToolHost = {
+      ready: true,
+      async capture() {
+        const result = await host.value.capture();
+        return result.ok ? { ok: true, result: result.value } : { ok: false, error: result.error };
+      },
+      async run() {
+        const result = await host.value.run();
+        return result.ok ? { ok: true, result: result.value } : { ok: false, error: result.error };
+      },
+      dispose: () => host.value.dispose(),
+    };
+    window.addEventListener('pagehide', () => void host.value.dispose(), { once: true });
+  }
+} else if (!workspaceMode) {
+  if (bootstrapRoot === 'project-bootstrap' && recipeValue === null) {
+    (
+      globalThis as typeof globalThis & {
+        __forgeaxStartup?: { readonly prepare?: () => void };
+      }
+    ).__forgeaxStartup?.prepare?.();
+  }
+  if (workspaceGame) await activateWorkspace?.();
+  if (!appStarted) app.start().unwrap();
+  if (query.has('forgeaxCapture')) {
+    document.documentElement.dataset.forgeaxCaptureReady = 'true';
+  }
+}
+}
+`;
+}
+
+function htmlSource(title: string, startupScreen = true): string {
+  return hostStartupDocument(title).replace(
+    '  </body>',
+    `    <script>${hostStartupScript(startupScreen)}</script>
+    <script>
+      (() => {
+        // This inert marker keeps generated pages inspectable by older hosts
+        // that only parse the fatal diagnostic hook.
+        const startupFailureText = 'ForgeaX game failed to start.\\n' + 'Unable to start the game.';
+        void startupFailureText;
+      })();
+    </script>
+    <script type="module">
+      try {
+        await import('./main.ts');
+      } catch (error) {
+        globalThis.__forgeaxStartup?.fail?.(error);
+      }
+    </script>
+  </body>`,
+  );
+}
+
+export async function materializeViteDevPort(port: number): Promise<number> {
+  if (port !== 0) return port;
+  const reservation = createNetServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    reservation.once('error', rejectListen);
+    reservation.listen(0, '127.0.0.1', resolveListen);
+  });
+  const address = reservation.address();
+  const assigned = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise<void>((resolveClose, rejectClose) => {
+    reservation.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
+  });
+  if (assigned === 0) throw new Error('OS did not assign an ephemeral preview port');
+  return assigned;
+}
+
+/** Await one build command; producer plugins retain their own lifecycle owners. */
+export async function buildProject(options: BuildOptions = {}): Promise<CommandResult<unknown>> {
+  const previous = process.cwd();
+  try {
+    const facts = await readProjectFacts(options.root);
+    if (!facts.ok) return facts;
+    const base = options.base ?? (options.target === 'tauri' ? './' : '/');
+    const outDir = resolve(facts.value.root, options.outDir ?? 'dist');
+    process.chdir(facts.value.root);
+    // Cooking is command work, not readiness of a persistent Host service.
+    // Await the actual operation and its producer cleanup before returning.
+    await viteBuild(
+      await createViteConfig(facts.value, 'build', base, {
+        outDir,
+        ...(options.target === undefined ? {} : { target: options.target }),
+        ...(options.animation === undefined ? {} : { animation: options.animation }),
+        ...(options.sourcemap === undefined ? {} : { sourcemap: options.sourcemap }),
+        ...(options.materialProfile === undefined
+          ? {}
+          : { materialProfile: options.materialProfile }),
+      }),
+    );
+    if (options.target === 'wechat') await writeWechatProject(facts.value, options, outDir);
+    if (options.target === 'tauri') await writeTauriProject(facts.value, options, outDir);
+    const manifest = await writeDistManifest(
+      facts.value,
+      base,
+      outDir,
+      options.target,
+      options.materialProfile,
+    );
+    if (options.target === 'wechat') await verifyWechatPackageBudget(outDir);
+    return { ok: true, value: manifest };
+  } catch (cause) {
+    return { ok: false, error: commandError(cause, 'game-build-failed') };
+  } finally {
+    process.chdir(previous);
+  }
+}
+
+/** Start the Vite development service under one backend Host business plugin. */
+export async function startDevProjectWithHost(
+  options: ProjectCommandOptions = {},
+  observeInputs?: (paths: readonly string[]) => void,
+): Promise<CommandResult<unknown>> {
+  let result: CommandResult<unknown> | undefined;
+  let started = false;
+  let host: BackendHost | undefined;
+  try {
+    host = await createBackendHost({
+      startupTimeoutMs: 30 * 60_000,
+      startupPlugins: [
+        {
+          name: 'forgeax:devkit-dev-server',
+          async apply(ctx) {
+            const facts = await readProjectFacts(options.root);
+            if (!facts.ok) {
+              result = facts;
+              return;
+            }
+            const previous = process.cwd();
+            let changedDirectory = false;
+            let server: Awaited<ReturnType<typeof createViteServer>> | undefined;
+            let closed = false;
+            const closeServer = async (): Promise<void> => {
+              if (closed) return;
+              closed = true;
+              await server?.close();
+              if (changedDirectory) process.chdir(previous);
+            };
+            try {
+              const port = resolveProjectPort(options.port);
+              const vitePort = {
+                ...port,
+                host: '127.0.0.1' as const,
+                port: await materializeViteDevPort(port.port),
+              };
+              process.chdir(facts.value.root);
+              changedDirectory = true;
+              server = await createViteServer(
+                await createViteConfig(facts.value, 'serve', '/', { server: vitePort }),
+              );
+              // Vite invokes configureServer before listen but does not wait
+              // for async producer work started by that hook. The Pack plugin
+              // owns the accepted Catalog/DDC generation; fence the dev host
+              // on that owner before exposing a URL to the live browser. This
+              // prevents a slow software adapter from observing the raw scan
+              // (Catalog row present, Pack body absent) during cold startup.
+              const packPlugin = server.config.plugins.find(
+                (plugin) => plugin.name === 'forgeax:pack',
+              ) as { readonly ready?: () => Promise<void> } | undefined;
+              await packPlugin?.ready?.();
+              ctx.effect(() => closeServer, 'devkit/dev-server');
+              await server.listen(vitePort.port);
+              const projectSession = server.config.plugins.find(
+                (plugin) => plugin.name === 'forgeax:project-session',
+              ) as (Plugin & { inputPaths(): readonly string[] }) | undefined;
+              if (projectSession) observeInputs?.(projectSession.inputPaths());
+              if (options.json !== true) server.printUrls();
+              result = {
+                ok: true,
+                value: {
+                  root: facts.value.root,
+                  urls: server.resolvedUrls,
+                  mode: 'dev',
+                  serves: 'source',
+                  capabilities: {
+                    'rhi.capture': {
+                      available: false,
+                      realm: 'host',
+                      reason: 'standalone-dev-server-has-no-live-app-cli-attachment',
+                    },
+                  },
+                },
+              };
+              started = true;
+            } catch (cause) {
+              await closeServer().catch(() => {});
+              result = { ok: false, error: commandError(cause, 'dev-server-failed') };
+            }
+          },
+        },
+      ],
+    });
+    const finalResult =
+      result ??
+      ({
+        ok: false,
+        error: {
+          code: 'dev-server-failed',
+          expected: 'the DevKit development plugin to publish a result',
+          hint: 'Inspect the DevKit host startup diagnostics.',
+          detail: {},
+        },
+      } satisfies CommandResult<unknown>);
+    if (started) activeDevKitHosts.add(host);
+    else await host.dispose();
+    return finalResult;
+  } catch (cause) {
+    await host?.dispose();
+    return { ok: false, error: commandError(cause, 'dev-server-failed') };
+  }
+}
+
+/** Start static dist preview under one DevKit plugin and verify its manifest first. */
+export async function startPreviewProjectWithHost(
+  options: ProjectCommandOptions = {},
+): Promise<CommandResult<unknown>> {
+  let result: CommandResult<unknown> | undefined;
+  let started = false;
+  let host: BackendHost | undefined;
+  try {
+    host = await createBackendHost({
+      startupTimeoutMs: 30 * 60_000,
+      startupPlugins: [
+        {
+          name: 'forgeax:devkit-preview-server',
+          async apply(ctx) {
+            const root = resolve(options.root ?? process.cwd());
+            const verified = await verifyDist(resolve(root, 'dist'));
+            if (!verified.ok) {
+              result = verified;
+              return;
+            }
+            if (verified.value.target !== undefined && verified.value.target !== 'browser') {
+              result = {
+                ok: false,
+                error: {
+                  code: 'preview-target-unavailable',
+                  expected: 'a browser distribution for the HTTP preview server',
+                  hint:
+                    verified.value.target === 'wechat'
+                      ? 'Open the built WeChat project in WeChat Developer Tools.'
+                      : 'Run the Tauri project in the output directory.',
+                  detail: { target: verified.value.target },
+                },
+              };
+              return;
+            }
+            try {
+              const port = resolveProjectPort(options.port);
+              const server = await vitePreview({
+                root,
+                configFile: false,
+                base: verified.value.base,
+                plugins: [await preparePreviewHttpArtifacts(resolve(root, 'dist'), verified.value)],
+                preview: {
+                  open: false,
+                  ...port,
+                  headers: {
+                    'Cross-Origin-Opener-Policy': 'same-origin',
+                    'Cross-Origin-Embedder-Policy': 'require-corp',
+                    'Cross-Origin-Resource-Policy': 'cross-origin',
+                  },
+                },
+                build: { outDir: resolve(root, 'dist') },
+              });
+              ctx.effect(() => () => server.close(), 'devkit/preview-server');
+              if (options.json !== true) server.printUrls();
+              result = {
+                ok: true,
+                value: {
+                  root,
+                  urls: server.resolvedUrls,
+                  mode: 'preview',
+                  serves: 'dist',
+                  capabilities: {
+                    'rhi.capture': {
+                      available: false,
+                      realm: 'host',
+                      reason: 'static-dist-host-does-not-install-dev-capture',
+                    },
+                  },
+                },
+              };
+              started = true;
+            } catch (cause) {
+              result = { ok: false, error: commandError(cause, 'preview-server-failed') };
+            }
+          },
+        },
+      ],
+    });
+    const finalResult =
+      result ??
+      ({
+        ok: false,
+        error: {
+          code: 'preview-server-failed',
+          expected: 'the DevKit preview plugin to publish a result',
+          hint: 'Inspect the DevKit host startup diagnostics.',
+          detail: {},
+        },
+      } satisfies CommandResult<unknown>);
+    if (started) activeDevKitHosts.add(host);
+    else await host.dispose();
+    return finalResult;
+  } catch (cause) {
+    await host?.dispose();
+    return { ok: false, error: commandError(cause, 'preview-server-failed') };
+  }
+}
+
+const projectRebuilds = new WeakMap<ViteDevServer, { tail: Promise<void>; generation: number }>();
+
+export async function createViteConfig(
+  facts: ProjectFacts,
+  command: 'serve' | 'build',
+  base = '/',
+  options: {
+    readonly materialProfile?: BuildOptions['materialProfile'];
+    readonly bootstrapRoot?: BootstrapRoot;
+    readonly outDir?: string;
+    readonly sourcemap?: BuildOptions['sourcemap'];
+    readonly server?: ProjectPortOptions;
+    readonly host?: DevKitHostBinding;
+    readonly sessionGeneration?: number;
+    readonly animation?: AnimationPlaybackOptions;
+    readonly target?: BuildOptions['target'];
+  } = {},
+): Promise<InlineConfig> {
+  if (options.materialProfile !== undefined && options.target === 'wechat')
+    throw new Error('webgpu-storage validation builds require a desktop WebGPU target');
+  const animation =
+    options.animation === undefined
+      ? environmentAnimationPlayback()
+      : animationPlayback(options.animation);
+  const startedAt = performance.now();
+  let previousAt = startedAt;
+  const timing = (stage: string): void => {
+    const game = options.host?.workspace?.execution === 'game';
+    const build = command === 'build' && process.env.FORGEAX_BUILD_PROGRESS === '1';
+    if (
+      !game &&
+      !build &&
+      (process.env.FORGEAX_WORKSPACE_TIMING !== '1' || !options.host?.workspace)
+    )
+      return;
+    const now = performance.now();
+    console.error(
+      build ? '[forgeax.build]' : game ? '[forgeax.play]' : '[forgeax.vite-config.timing]',
+      JSON.stringify({
+        root: facts.root,
+        targetId: options.host?.workspace?.targetId,
+        execution: game ? 'game' : 'preview',
+        stage,
+        totalMs: Math.round(now - startedAt),
+        stageMs: Math.round(now - previousAt),
+      }),
+    );
+    previousAt = now;
+  };
+  const bootstrapRoot = options.bootstrapRoot ?? 'project-bootstrap';
+  // The CI browser profile keeps the normal producer and catalog contracts,
+  // but may defer materialization until the first real GUID request. This
+  // shortens cold smoke startup without changing build mode or local defaults.
+  // Plugin roots must be materialized before their program modules activate.
+  // Deferring the owning pack can create a cycle between program import and
+  // the first plugin-definition read. Asset-only projects keep the cheaper
+  // on-demand path used by browser CI.
+  const hasPluginRoots = facts.roots.engine !== undefined || facts.roots.frontend !== undefined;
+  const producerReadiness =
+    process.env.FORGEAX_DEV_PACK_READINESS === 'on-demand' && !hasPluginRoots
+      ? 'on-demand'
+      : undefined;
+  if (
+    options.host !== undefined &&
+    (command !== 'serve' || bootstrapRoot !== 'project-bootstrap')
+  ) {
+    hostBindingError('host binding requires a main-thread project development server');
+  }
+  if (options.host) {
+    validateHostBinding(options.host);
+    const externalRoot = (options.host.frontendAssembly ?? options.host.backend.assembly.current)
+      .root;
+    const workspacePreview = options.host.workspace && options.host.workspace.execution !== 'game';
+    if (
+      !workspacePreview &&
+      options.host.workspace?.execution !== 'game' &&
+      externalRoot &&
+      facts.roots.frontend
+    )
+      hostBindingError('compose external and project frontend roots explicitly before binding');
+    await options.host.backend.context.get('devkitBackend')?.assertCurrent();
+  }
+  // The canonical kit ships the engine's default environment (sky.hdr equirect).
+  // Authored scenes (e.g. the default game template) reference it as a Skylight /
+  // SkyboxBackground dependency, so a self-contained standalone build must catalog
+  // it on the game path too — not only the tool-preview (resource-bootstrap) path.
+  const canonicalKit = await resolveCanonicalKit();
+  timing('canonical-kit');
+  const generatedBase = resolve(facts.root, '.forgeax', 'generated');
+  await mkdir(generatedBase, { recursive: true });
+  // Each serving host owns its executable entry; build never overwrites a live page.
+  const generated =
+    command === 'serve' ? await mkdtemp(resolve(generatedBase, 'serve-')) : generatedBase;
+  let disposePreparation: (() => Promise<void>) | undefined;
+  try {
+    const realProjectRoot = await realpath(facts.root);
+    const realGeneratedRoot = await realpath(generated);
+    const projectRoots = facts.assetRoots.map((root) => resolve(facts.root, root));
+    const workspacePreview =
+      options.host?.workspace !== undefined && options.host.workspace.execution !== 'game';
+    const failedSources = new Set<string>();
+    const ignoreSource =
+      bootstrapRoot === 'resource-bootstrap'
+        ? isResourcePreviewIgnoredPath
+        : isProjectSourceIgnoredPath;
+    const ignorePath = (path: string) => ignoreSource(path) || failedSources.has(path);
+    const sourceSnapshot = createScriptablePackSourceSnapshot();
+    // Both operations read current disk state and own no shared mutable
+    // preparation. Keep their lifetime within this invocation: a later Play
+    // must discover fresh project and Engine sources even without a watcher.
+    timing('project-inventory-start');
+    const [scanned, engineWorkspaceResolver] = await Promise.all([
+      scanInventory(projectRoots, {
+        ignorePath: (path) => isPluginAssetSourceIgnoredPath(facts.root, path),
+        scriptablePack: { metadataOnly: true, sourceSnapshot },
+        ...(command === 'serve' && workspacePreview
+          ? {
+              onSourceFailure: (path: string, error: PackError) => {
+                failedSources.add(path);
+                process.stderr.write(`[pack-source] ${JSON.stringify({ path, error })}\n`);
+              },
+            }
+          : {}),
+      }),
+      createEngineWorkspaceResolver(facts.root),
+    ]);
+    timing('project-inventory-and-engine-resolver');
+    if (!scanned.ok) throw scanned.error;
+    const inventory = {
+      declarations: new Map([...scanned.value.declarations].filter(([path]) => !ignorePath(path))),
+    };
+    const builtinPack = await prepareBuiltinPack(inventory, generated);
+    timing('builtin-pack');
+    const materialPackages = await discoverMaterialPackages(inventory);
+    timing('material-packages');
+    const roots = [
+      ...projectRoots,
+      ...(builtinPack === undefined ? [] : [builtinPack]),
+      ...(canonicalKit === undefined ? [] : [canonicalKit.root]),
+    ];
+    const builtinCookers = [
+      createMaterialPackCooker(
+        roots,
+        options.materialProfile === undefined ? {} : { profile: options.materialProfile },
+      ),
+      createParticleCodeNativeCookerFromRoots(roots),
+    ];
+    const outputVersions = createStandardAssetOutputProducerRegistry(
+      [...scanned.value.declarations.values()].flatMap((declaration) =>
+        declaration.format === 'pack.ts'
+          ? projectScriptablePackSceneComponents(declaration.definition.sceneComponents)
+          : [],
+      ),
+    ).versions();
+    const productCache = await createScriptablePackProductCache({
+      root: devKitDdcRoots(facts.root).buildCacheRoot,
+      outputVersions,
+      cookers: builtinCookers,
+    });
+    // The plugin scan is a superset of the builtins/material scan. Reuse its
+    // validated declarations instead of loading every authored Pack twice.
+    timing('plugin-assets-start');
+    const sourceInventory = await discoverPluginAssets(
+      facts,
+      scanned.value,
+      sourceSnapshot,
+      productCache,
+    );
+    const shaderPaths = await sourceSnapshot.observePaths(facts.root, () =>
+      listMaterialSourcePaths(projectRoots),
+    );
+    for (const path of shaderPaths) await sourceSnapshot.digest(path);
+    timing('plugin-assets');
+    const toolProjection = await projectToolProjection(facts.root, sourceInventory);
+    timing('tool-projection');
+    const projectTools = toolProjection.tools;
+    const projectAssembly = createHostAssembly({
+      sessionGeneration: options.sessionGeneration ?? 1,
+    });
+    const assembly =
+      options.host && options.host.workspace?.execution !== 'game'
+        ? composeBoundHostAssembly(options.host, projectAssembly)
+        : projectAssembly;
+    const selectedAliases = await hostEngineAliases(facts.root, options.host);
+    const consumerAliases = selectedAliases.length
+      ? selectedAliases
+      : await consumerEngineAliases(facts.root);
+    timing('consumer-aliases');
+    const frontendAlias = await hostFrontendModuleAlias(options.host);
+    timing('frontend-alias');
+    const cookerSession = await loadProjectCookers(
+      facts,
+      builtinCookers,
+      {
+        resolve: {
+          alias: consumerAliases,
+          dedupe: consumerAliases.length
+            ? consumerAliases.map((alias) => alias.find)
+            : ['@forgeax/engine'],
+        },
+        plugins: engineWorkspaceResolver === undefined ? [] : [engineWorkspaceResolver],
+      },
+      { inventory: sourceInventory },
+    );
+    timing('project-cookers');
+    disposePreparation = () => cookerSession.dispose();
+    const ssrIdentity = projectSsrIdentity(facts, sourceInventory, {
+      command,
+      base,
+      bootstrapRoot,
+      sessionGeneration: assembly.sessionGeneration,
+      animation,
+      appOptions: cookerSession.appOptions,
+    });
+    await Promise.all([
+      writeFile(
+        resolve(generated, 'index.html'),
+        htmlSource(facts.name, bootstrapRoot === 'project-bootstrap'),
+      ),
+      writeFile(
+        resolve(generated, 'main.ts'),
+        hostSource(
+          facts,
+          generated,
+          bootstrapRoot,
+          canonicalKit?.guid,
+          options.host,
+          process.env.FORGEAX_ENGINE_RHI_DEBUG === '1',
+          command === 'serve',
+          assembly,
+          ssrIdentity,
+          command === 'serve' && process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1',
+          animation,
+          options.target,
+          cookerSession.appOptions,
+          options.materialProfile,
+        ),
+      ),
+      writeFile(
+        resolve(generated, 'runtime-packs.ts'),
+        options.target === 'tauri'
+          ? `${await staticPackProgramsSource(facts, sourceInventory)}
+import type { RuntimePackOptions } from '@forgeax/engine/app';
+export async function createRuntimePackOptions(scopeId: string): Promise<RuntimePackOptions> {
+  return { scopeId, imports, programHost };
+}
+`
+          : runtimePacksSource,
+      ),
+      writeFile(resolve(generated, 'game-vfx.ts'), gameVfxSource),
+      writeFile(
+        resolve(generated, 'execution-bootstrap.ts'),
+        executionBootstrapSource(
+          facts,
+          generated,
+          bootstrapRoot,
+          assembly.sessionGeneration,
+          ssrIdentity,
+          options.target,
+          cookerSession.appOptions,
+        ),
+      ),
+    ]);
+    timing('generated-files');
+    const wechat =
+      options.target === 'wechat'
+        ? await prepareWechatBuild(facts, generated, sourceInventory, cookerSession.appOptions)
+        : undefined;
+    const projectInputPaths = new Set(
+      ['forge.json', 'package.json', 'pnpm-lock.yaml', 'bun.lock', 'package-lock.json'].map(
+        (file) => resolve(realProjectRoot, file),
+      ),
+    );
+    const isGeneratedPath = (path: string): boolean => {
+      const relativePath = relative(generated, resolve(path));
+      return (
+        relativePath === '' ||
+        (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+      );
+    };
+    // Generated files already sit under Vite's root; re-adding them after its initial scan
+    // makes Chokidar report setup as edits and can restart the live host during Catalog loads.
+    const projectWatchPaths = [
+      ...new Set([...roots, ...sourceInventory.sourceInputs.keys(), ...projectInputPaths]),
+    ].filter((path) => existsSync(path) && !isGeneratedPath(path));
+    const engineWorkspaceRoot = findEngineWorkspaceRoot();
+    const runtimeBinding = createStandaloneRuntimeAssetBinding(facts.id);
+    let sessionClosed = false;
+    const builtinImporterKeys = new Set(DEFAULT_IMPORTERS.map((importer) => importer.key));
+    for (const importer of cookerSession.importers)
+      if (builtinImporterKeys.has(importer.key))
+        throw new TypeError(`duplicate builtin/project importer ${importer.key}`);
+    let initialSourceSnapshot: typeof sourceSnapshot | undefined = sourceSnapshot;
+    const pack = pluginPack({
+      roots,
+      ...(command === 'serve'
+        ? {
+            takeInitialSourceSnapshot: () => {
+              const taken = initialSourceSnapshot;
+              initialSourceSnapshot = undefined;
+              return taken;
+            },
+          }
+        : {}),
+      runtimeBinding,
+      // The catalog is consumed by project tools and editors, regardless of
+      // where this DevKit package or Vite's generated entry lives. Keep
+      // project assets rooted in the authored project; external dependencies
+      // retain their physical identity and the Pack fallback policy.
+      sourceIdentityFor: (sourcePath) => {
+        const authored = relative(facts.root, sourcePath);
+        return authored &&
+          authored !== '..' &&
+          !authored.startsWith(`..${sep}`) &&
+          !isAbsolute(authored)
+          ? authored
+          : sourcePath;
+      },
+      ...(producerReadiness === undefined ? {} : { producerReadiness }),
+      ddc: devKitDdcRoots(facts.root),
+      watch: false,
+      importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers],
+      cookers: cookerSession.cookers,
+      ignorePath,
+    });
+    // Vite creates the replacement server before closing the old one during restart.
+    const generatedServers = new Set<ViteDevServer>();
+    let injectedWatchDependencies: string[] = [];
+    const plugins: Plugin[] = [
+      ...(wechat === undefined ? [] : [wechat.plugin]),
+      ...(command === 'serve'
+        ? [
+            {
+              name: 'forgeax:project-source-watch',
+              enforce: 'pre' as const,
+              configResolved(config: ResolvedConfig) {
+                const existing = new Set(config.configFileDependencies);
+                injectedWatchDependencies = projectWatchPaths.filter((path) => !existing.has(path));
+                config.configFileDependencies.push(...injectedWatchDependencies);
+              },
+              configureServer(server: ViteDevServer) {
+                // Vite constructs its watcher from configFileDependencies before configureServer.
+                // Keep project sources out of Vite's later config-restart classification so their
+                // edits reach the project-session HMR owner below.
+                const temporary = new Set(injectedWatchDependencies);
+                const dependencies = server.config.configFileDependencies;
+                for (let index = dependencies.length - 1; index >= 0; index--)
+                  if (temporary.has(dependencies[index] ?? '')) dependencies.splice(index, 1);
+                injectedWatchDependencies = [];
+              },
+            },
+          ]
+        : []),
+      executionWorkerEntries(undefined, wechat === undefined ? 'browser' : 'native'),
+      ...(command === 'serve'
+        ? [
+            {
+              name: 'forgeax:generated-host-owner',
+              configureServer(server: ViteDevServer) {
+                generatedServers.add(server);
+                const close = server.close.bind(server);
+                server.close = async () => {
+                  try {
+                    await close();
+                  } finally {
+                    for (const environment of Object.values(server.environments))
+                      environment.moduleGraph.invalidateAll();
+                    if (generatedServers.delete(server) && generatedServers.size === 0) {
+                      await rm(generated, { recursive: true, force: true });
+                    }
+                  }
+                };
+              },
+            },
+          ]
+        : []),
+      ...(engineWorkspaceResolver === undefined ? [] : [engineWorkspaceResolver]),
+
+      ...(command === 'serve' &&
+      (process.env.FORGEAX_ENGINE_RHI_DEBUG === '1' ||
+        process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1')
+        ? [
+            {
+              ...vitePluginRhiDebug({
+                rootDir:
+                  process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1' &&
+                  process.env.FORGEAX_ENGINE_RHI_DEBUG !== '1'
+                    ? (process.env.FORGEAX_EVIDENCE_DIR ?? facts.root)
+                    : facts.root,
+              }),
+              ...(process.env.FORGEAX_ENGINE_RHI_DEBUG === '1'
+                ? {}
+                : {
+                    config: () => ({
+                      define: { 'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': JSON.stringify('0') },
+                    }),
+                  }),
+            } as Plugin,
+          ]
+        : []),
+      forgeaxShader({ materialPackages }) as Plugin,
+      pack,
+      ...(command === 'serve'
+        ? [
+            devKitHostBridge(facts, bootstrapRoot, options.host, async () => {
+              await pack.ready();
+              timing('pack-ready');
+              const inventory = await publishedPluginInventory(facts.root, sourceInventory, pack);
+              timing('published-plugin-inventory');
+              const root =
+                bootstrapRoot === 'resource-bootstrap' || workspacePreview || !facts.roots.frontend
+                  ? undefined
+                  : inventory.assets.get(facts.roots.frontend);
+              if (
+                facts.roots.frontend &&
+                bootstrapRoot !== 'resource-bootstrap' &&
+                !workspacePreview &&
+                !root
+              )
+                throw new Error(`host root ${facts.roots.frontend} has no published definition`);
+              return createHostAssembly({
+                ...assembly,
+                ...(root ? { root: pluginRootDescriptor(root.definition) } : {}),
+              });
+            }),
+          ]
+        : []),
+      pluginRuntimeProjection(facts.root, sourceInventory.sourceInputs),
+      pluginProgramsBuild({
+        ...(wechat === undefined ? {} : { delivery: 'native' }),
+        projectRoot: facts.root,
+        tools: projectTools,
+        roots: bootstrapRoot === 'resource-bootstrap' || workspacePreview ? {} : facts.roots,
+        inventory: () => publishedPluginInventory(facts.root, sourceInventory, pack),
+        binding: runtimeBinding,
+        pack,
+      }),
+      {
+        name: 'forgeax:project-session',
+        ...{
+          inputPaths: () =>
+            [
+              ...new Set([
+                ...sourceInventory.sourceSnapshot.paths,
+                ...(sourceInventory.filesystemInputs === undefined ? [] : [realProjectRoot]),
+                ...cookerSession.watchFiles,
+                ...projectInputPaths,
+              ]),
+            ].sort(),
+        },
+        async closeBundle() {
+          sessionClosed = true;
+          await cookerSession.dispose();
+        },
+        async hotUpdate(context) {
+          const environment = this.environment;
+          if (environment.name !== 'client') return [];
+          // Vite presents slash-normalized paths; inventories use native paths.
+          const sourcePath = resolve(context.file);
+          if (sourcePath.startsWith(`${generated}${sep}`)) return [];
+          // Sibling Play files cannot invalidate this immutable frontend.
+          if (relative(facts.root, sourcePath).split(sep).includes('.forgeax')) return [];
+          const capturedRevision = sourceInventory.sourceInputs.get(sourcePath);
+          if (capturedRevision !== undefined) {
+            try {
+              const currentRevision = `sha256:${createHash('sha256')
+                .update(await readFile(context.file))
+                .digest('hex')}`;
+              // Dynamically adding an already-existing project root to Vite's watcher can emit
+              // initial change events. They are not edits and must not replace the live host.
+              if (currentRevision === capturedRevision) return [];
+            } catch (cause) {
+              if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
+            }
+          }
+          if (options.host?.frontendModule)
+            hostBindingError(
+              'external frontend modules are immutable; supply a new revision/binding and replace the page',
+            );
+          const definitions = new Set([
+            ...[...sourceInventory.assets.values()].flatMap((record) => [
+              record.sourcePath,
+              record.module,
+            ]),
+            ...cookerSession.watchFiles,
+            ...projectTools.flatMap((tool) => [
+              tool.moduleName,
+              ...(tool.executor ? [tool.executor] : []),
+            ]),
+          ]);
+          const visited = new Set<import('vite').ModuleNode>();
+          const belongsToPlugin = (module: import('vite').ModuleNode): boolean => {
+            if (visited.has(module)) return false;
+            visited.add(module);
+            if (module.file && definitions.has(module.file)) return true;
+            return [...module.importers].some(belongsToPlugin);
+          };
+          const projectInput = projectInputPaths.has(sourcePath);
+          const sessionSource =
+            projectInput ||
+            sourceInventory.sourceInputs.has(sourcePath) ||
+            definitions.has(sourcePath) ||
+            [...(context.server.moduleGraph.getModulesByFile(context.file) ?? [])].some(
+              belongsToPlugin,
+            );
+          const underRoot = roots.some((root) => sourcePath.startsWith(`${root}${sep}`));
+          if (!sessionSource && !underRoot) return;
+          if (!sessionSource && underRoot) {
+            void pack
+              .rebuildCatalogInPlace([sourcePath])
+              .then((published) => {
+                if (!published) return;
+                try {
+                  options.host?.backend.context.get('engineWorkspaceCatalog')?.notePublished();
+                } catch {
+                  // A game host has no workspace catalog publisher.
+                }
+              })
+              .catch((cause) => {
+                const error = cause instanceof Error ? cause : new Error(String(cause));
+                context.server.config.logger.error(error.message);
+              });
+            return [];
+          }
+          let queue = projectRebuilds.get(context.server);
+          if (!queue) {
+            queue = { tail: Promise.resolve(), generation: assembly.sessionGeneration };
+            projectRebuilds.set(context.server, queue);
+          }
+          const owner = queue;
+          let replacementStarted = false;
+          const next = owner.tail
+            .catch(() => {})
+            .then(async () => {
+              // Finish Vite's per-environment dispatch before replacing its environment objects.
+              await new Promise<void>((resolve) => setTimeout(resolve, 0));
+              if (sessionClosed) return;
+              const generation = owner.generation + 1;
+              const prepareReplacement = async (): Promise<InlineConfig | undefined> => {
+                const facts = await readProjectFacts(realProjectRoot);
+                if (!facts.ok) throw facts.error;
+                await options.host?.backend.context.get('devkitBackend')?.assertCurrent();
+                const validated = await discoverPluginAssets(facts.value);
+                const candidate = await createViteConfig(facts.value, 'build', base, {
+                  sessionGeneration: generation,
+                });
+                await viteBuild({ ...candidate, build: { ...candidate.build, write: false } });
+                if (sessionClosed) return undefined;
+                await assertPluginSourceInputs(validated, facts.value.root);
+                const config = await createViteConfig(facts.value, 'serve', base, {
+                  ...options,
+                  sessionGeneration: generation,
+                });
+                try {
+                  if (sessionClosed)
+                    throw new Error('project session closed during candidate preparation');
+                  await assertPluginSourceInputs(validated, facts.value.root);
+                } catch (cause) {
+                  // This prepared server never acquired a Vite close owner.
+                  const owner = config.plugins
+                    ?.flat()
+                    .find(
+                      (plugin) =>
+                        plugin &&
+                        typeof plugin === 'object' &&
+                        'name' in plugin &&
+                        plugin.name === 'forgeax:project-session',
+                    ) as Plugin | undefined;
+                  if (typeof owner?.closeBundle === 'function')
+                    await owner.closeBundle.call({} as never);
+                  if (typeof config.root === 'string')
+                    await rm(config.root, { recursive: true, force: true });
+                  throw cause;
+                }
+                return config;
+              };
+              let config: InlineConfig | undefined;
+              try {
+                config = await prepareReplacement();
+              } catch (cause) {
+                const error = commandError(cause, 'project-rebuild-failed');
+                const sourceCause = error.detail.cause;
+                if (
+                  error.code !== 'plugin-bootstrap-failed' ||
+                  sourceCause === null ||
+                  typeof sourceCause !== 'object' ||
+                  !('reason' in sourceCause) ||
+                  sourceCause.reason !== 'source changed during plugin compilation'
+                )
+                  throw cause;
+                // A watcher can coalesce the last save while this candidate is
+                // compiling. Reject its old snapshot, then prepare once from
+                // current source without requiring another filesystem event.
+                if (sessionClosed) return;
+                config = await prepareReplacement();
+              }
+              if (config === undefined || sessionClosed) return;
+              const bridge = context.server.config.plugins.find(
+                (plugin) => plugin.name === 'forgeax:devkit-backend-host',
+              ) as (Plugin & { releaseForRestart(): Promise<void> }) | undefined;
+              replacementStarted = true;
+              await bridge?.releaseForRestart();
+              config.server = { ...context.server.config.inlineConfig.server, ...config.server };
+              Object.assign(context.server.config.inlineConfig, config);
+              await context.server.restart();
+              if (resolve(context.server.config.root) !== resolve(config.root ?? realProjectRoot))
+                throw new Error('project session replacement failed; start a fresh server');
+              owner.generation = generation;
+              // Vite's websocket reconnection reloads the page after restart.
+            });
+          owner.tail = next;
+          void next.catch((cause) => {
+            if (sessionClosed && !replacementStarted) return;
+            const error = cause instanceof Error ? cause : new Error(JSON.stringify(cause));
+            context.server.config.logger.error(error.message);
+            environment.hot.send({
+              type: 'error',
+              err: { name: error.name, message: error.message, stack: error.stack ?? '' },
+            });
+          });
+          return [];
+        },
+      },
+    ];
+    if (
+      options.host?.workspace?.execution === 'game' ||
+      (process.env.FORGEAX_WORKSPACE_TIMING === '1' && options.host?.workspace)
+    ) {
+      plugins.unshift({
+        name: 'forgeax:workspace-vite-timing-start',
+        configResolved() {
+          timing('vite-config-resolved');
+        },
+        configureServer() {
+          timing('vite-configure-server-start');
+        },
+      });
+      plugins.push({
+        name: 'forgeax:workspace-vite-timing-end',
+        configureServer() {
+          timing('vite-configure-server-end');
+        },
+      });
+    }
+    return {
+      root: generated,
+      logLevel: 'warn',
+      customLogger: createLogger('warn', {
+        allowClearScreen: false,
+        console: new Console({ stdout: process.stderr, stderr: process.stderr }),
+      }),
+      base,
+      configFile: false,
+      publicDir: false,
+      define: { 'import.meta.env.DEV': JSON.stringify(command === 'serve') },
+      plugins,
+      resolve: {
+        ...(wechat
+          ? { conditions: ['forgeax-native', 'module', 'browser', 'development|production'] }
+          : {}),
+        alias: [...(frontendAlias === undefined ? [] : [frontendAlias]), ...consumerAliases],
+        dedupe: consumerAliases.length
+          ? consumerAliases.map((alias) => alias.find)
+          : ['@forgeax/engine'],
+      },
+      server: {
+        ...options.server,
+        // FSEventStreamStop can block the macOS event loop during backend disposal.
+        ...(process.platform === 'darwin' ? { watch: { useFsEvents: false } } : {}),
+        headers: {
+          'Cross-Origin-Opener-Policy': 'same-origin',
+          'Cross-Origin-Embedder-Policy': 'require-corp',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
+        },
+        fs: {
+          allow: [
+            facts.root,
+            realProjectRoot,
+            generated,
+            realGeneratedRoot,
+            ...roots,
+            ...(engineWorkspaceRoot === undefined ? [] : [engineWorkspaceRoot]),
+            ...(frontendAlias === undefined ? [] : [dirname(frontendAlias.replacement)]),
+          ],
+        },
+      },
+      build: {
+        // Syntax capabilities only: lower optional chains/class fields but keep native BigInt.
+        target: wechat ? 'chrome70' : 'esnext',
+        sourcemap: options.sourcemap ?? false,
+        outDir: options.outDir ?? resolve(facts.root, 'dist'),
+        emptyOutDir: true,
+        modulePreload: false,
+        rollupOptions: {
+          preserveEntrySignatures: 'strict',
+          input: wechat
+            ? { game: wechat.entry }
+            : {
+                index: resolve(realGeneratedRoot, 'index.html'),
+                'execution-bootstrap': resolve(realGeneratedRoot, 'execution-bootstrap.ts'),
+              },
+          output: {
+            ...(wechat
+              ? { format: 'cjs' as const, chunkFileNames: 'assets/[name]-[hash].js' }
+              : {}),
+            entryFileNames: (chunk) =>
+              wechat
+                ? 'game.js'
+                : chunk.name === 'execution-bootstrap'
+                  ? 'assets/execution-bootstrap.js'
+                  : 'assets/[name]-[hash].js',
+          },
+        },
+      },
+    };
+  } catch (cause) {
+    const failures: unknown[] = [cause];
+    try {
+      await disposePreparation?.();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (command === 'serve') {
+      try {
+        await rm(generated, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    throw failures.length === 1
+      ? cause
+      : new AggregateError(failures, 'Project preparation and cleanup failed');
+  }
+}

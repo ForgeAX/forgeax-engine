@@ -1,0 +1,115 @@
+import {
+  createWorldContext,
+  type EntityHandle,
+  FixedTime,
+  FixedUpdate,
+  World,
+} from '@forgeax/engine-ecs';
+import { expect, it } from 'vitest';
+import {
+  ChildOf,
+  readPresentationWorldMatrix,
+  resetTransformInterpolation,
+  scenePlugin,
+  Transform,
+  TransformInterpolation,
+} from '../index';
+
+it('captures first movement after idle, settles stops and preserves source lifecycle discontinuities', async () => {
+  const world = new World();
+  const ctx = await createWorldContext(world, [scenePlugin()]);
+  const actor = world
+    .spawn(
+      { component: Transform, data: { pos: [2, 0, 0] } },
+      { component: TransformInterpolation, data: {} },
+    )
+    .unwrap();
+  const other = world
+    .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
+    .unwrap();
+  const parent = world.spawn({ component: Transform, data: { pos: [100, 0, 0] } }).unwrap();
+  let write: (() => void) | undefined;
+  world
+    .addSystem(FixedUpdate, { name: 'source-owner-write', queries: [], fn: () => write?.() })
+    .unwrap();
+  const x = (entity: EntityHandle) => {
+    const value = readPresentationWorldMatrix(world, entity)?.[12];
+    if (value === undefined) throw new Error('Expected a current presentation matrix');
+    return value;
+  };
+  const halfTick = () => {
+    const fixed = world.getResource(FixedTime);
+    world.update(fixed.delta * 1.5 - fixed.overstep).unwrap();
+  };
+  const completeTick = () => {
+    const fixed = world.getResource(FixedTime);
+    world.update(fixed.delta - fixed.overstep).unwrap();
+  };
+  try {
+    for (let tick = 0; tick < 60; tick++) world.update(1 / 60).unwrap();
+    write = () => {
+      world.set(actor, Transform, { pos: [4, 0, 0] }).unwrap();
+    };
+    halfTick();
+    expect(x(actor)).toBeCloseTo(3, 5);
+    write = undefined;
+    completeTick();
+    expect(x(actor)).toBeCloseTo(4, 5);
+    for (let tick = 0; tick < 30; tick++) world.update(1 / 60).unwrap();
+
+    // A new parent and a fixed writer in the same tick snap the final local
+    // pose, rather than blending it through either the old or new parent.
+    world.addComponent(actor, { component: ChildOf, data: { parent } }).unwrap();
+    write = () => {
+      world.set(actor, Transform, { pos: [6, 0, 0] }).unwrap();
+    };
+    halfTick();
+    expect(x(actor)).toBeCloseTo(106, 5);
+    write = undefined;
+    completeTick();
+
+    // Invalidating one history inside a fixed tick must not erase another
+    // actor's ordinary interpolation from that same accepted tick.
+    write = () => {
+      world.set(actor, Transform, { pos: [20, 0, 0] }).unwrap();
+      resetTransformInterpolation(world, actor);
+      world.set(other, Transform, { pos: [9, 0, 0] }).unwrap();
+    };
+    halfTick();
+    expect(x(actor)).toBeCloseTo(120, 5);
+    expect(x(other)).toBeCloseTo(4.5, 5);
+    write = undefined;
+    world.removeComponent(actor, TransformInterpolation).unwrap();
+    completeTick();
+    expect(x(actor)).toBeCloseTo(120, 5);
+    world.addComponent(actor, { component: TransformInterpolation, data: {} }).unwrap();
+    write = () => {
+      world.set(actor, Transform, { pos: [22, 0, 0] }).unwrap();
+    };
+    halfTick();
+    expect(x(actor)).toBeCloseTo(121, 5);
+    write = undefined;
+    completeTick();
+
+    const retired = world
+      .spawn(
+        { component: Transform, data: { pos: [7, 0, 0] } },
+        { component: TransformInterpolation, data: {} },
+      )
+      .unwrap();
+    world.update(1 / 60).unwrap();
+    world.despawn(retired).unwrap();
+    const replacement = world
+      .spawn(
+        { component: Transform, data: { pos: [31, 0, 0] } },
+        { component: TransformInterpolation, data: {} },
+      )
+      .unwrap();
+    expect(replacement).not.toBe(retired);
+    halfTick();
+    expect(x(replacement)).toBeCloseTo(31, 5);
+    expect(x(actor)).toBeCloseTo(122, 5);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});

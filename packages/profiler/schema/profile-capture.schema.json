@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schemas/profile-capture-1.0.json",
+  "title": "ForgeaX ProfileCapture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "captureId", "timeUnit", "frameLimit", "eventLimit", "phaseCatalog", "records", "completeness"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "captureId": { "type": "string", "pattern": "^capture-[0-9]{4,}$" },
+    "timeUnit": { "const": "microseconds" },
+    "frameLimit": { "$ref": "#/$defs/positiveSafeInteger" },
+    "eventLimit": { "$ref": "#/$defs/positiveSafeInteger" },
+    "phaseCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app", "render"],
+      "properties": { "app": { "$ref": "#/$defs/phaseNames" }, "render": { "$ref": "#/$defs/phaseNames" } }
+    },
+    "records": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "completeness": { "$ref": "#/$defs/completeness" }
+  },
+  "$defs": {
+    "positiveSafeInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "nonNegativeSafeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "phaseNames": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "source": { "enum": ["app", "render"] },
+    "phaseRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "frameId", "phase", "startMicros", "endMicros", "durationMicros"],
+      "properties": {
+        "kind": { "const": "phase" },
+        "source": { "$ref": "#/$defs/source" },
+        "frameId": { "$ref": "#/$defs/positiveSafeInteger" },
+        "phase": { "type": "string", "minLength": 1 },
+        "parentSource": { "$ref": "#/$defs/source" },
+        "parentPhase": { "type": "string", "minLength": 1 },
+        "startMicros": { "$ref": "#/$defs/nonNegativeSafeInteger" },
+        "endMicros": { "$ref": "#/$defs/nonNegativeSafeInteger" },
+        "durationMicros": { "$ref": "#/$defs/nonNegativeSafeInteger" }
+      }
+    },
+    "skipRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "frameId", "phase", "reason"],
+      "properties": {
+        "kind": { "const": "skip" },
+        "source": { "$ref": "#/$defs/source" },
+        "frameId": { "$ref": "#/$defs/positiveSafeInteger" },
+        "phase": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "record": { "oneOf": [{ "$ref": "#/$defs/phaseRecord" }, { "$ref": "#/$defs/skipRecord" }] },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "retainedEventCount", "droppedEventCount"],
+      "properties": {
+        "status": { "enum": ["complete", "partial", "overflow"] },
+        "retainedEventCount": { "$ref": "#/$defs/nonNegativeSafeInteger" },
+        "droppedEventCount": { "$ref": "#/$defs/nonNegativeSafeInteger" },
+        "incompleteReason": { "type": "string", "minLength": 1 },
+        "firstAffectedFrameId": { "$ref": "#/$defs/positiveSafeInteger" },
+        "lastAffectedFrameId": { "$ref": "#/$defs/positiveSafeInteger" }
+      }
+    }
+  }
+}

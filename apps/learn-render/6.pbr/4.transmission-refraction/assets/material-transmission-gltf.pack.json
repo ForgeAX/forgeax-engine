@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "c37c91a7-0f7e-4f28-b0b7-1cf5b0f4c302",
+      "kind": "material",
+      "sourceKey": "gltf:material:TransmissionSphere",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": { "module": "forgeax::default-standard-pbr" },
+            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+          }
+        ],
+        "values": {
+          "baseColor": [0.72, 0.85, 0.98, 1],
+          "metallic": 0,
+          "roughness": 0.72,
+          "transmission": 1,
+          "ior": 1.5,
+          "thickness": 0.2,
+          "attenuationColor": [0.8, 0.9, 1],
+          "attenuationDistance": 2
+        }
+      },
+      "refs": []
+    }
+  ]
+}

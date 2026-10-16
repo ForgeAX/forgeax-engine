@@ -1,0 +1,66 @@
+{
+  "name": "@forgeax/app-learn-render-4-advanced-opengl-6-cubemaps",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "learn-render LearnOpenGL section 4.advanced-opengl 6.cubemaps — equirect HDR skybox + reflective vs non-reflective cube comparison via PBR IBL.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-4-advanced-opengl-6-cubemaps smoke",
+    "rhiDebug": {
+      "riskFamilies": ["materials-textures"]
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime size already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps anchor stays on hello-triangle; per-app fps drift is not gated for learn-render examples"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pixel-parity bench drives parity-forgeax vs parity-threejs; learn-render entries land as bench:pixel-parity placeholders only"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "dual-state smoke script replaces benchmark gate for this demo"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; LearnOpenGL section 4.6 cubemaps tutorial example"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16"
+  }
+}

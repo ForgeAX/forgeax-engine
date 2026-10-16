@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "caseId": "vertex-color-mixed-primitives",
+  "semantic": "colored and colorless primitives with separate material slots",
+  "colorDomain": "displayEncoded",
+  "primitives": [
+    { "id": "colored", "colorAccessor": "VEC3_FLOAT" },
+    { "id": "plain", "colorAccessor": null }
+  ],
+  "samplePoints": [{ "id": "colored-primitive", "coordinate": [0.25, 0.5] }, { "id": "plain-primitive", "coordinate": [0.75, 0.5] }]
+}

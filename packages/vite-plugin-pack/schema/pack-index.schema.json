@@ -1,0 +1,361 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/vite-plugin-pack/schema/pack-index.schema.json",
+  "title": "PackIndex",
+  "description": "Schema for pack-index.json — the producer-owned Catalog projection mapping GUIDs to Pack v2 package locators and recovery evidence.",
+  "$comment": "The 16 ordinary durable kinds and host capability boundary are published by SCRIPTABLE_PACK_CAPABILITY_MANIFEST from @forgeax/engine-vite-plugin-pack; catalog kind remains open for producer extensions. sourceKey is semantic identity, sourceIndex is positional evidence, and publication.generation fences one complete output set.",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/packIndexEntry"
+  },
+  "$defs": {
+    "packIndexEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guid", "packageUrl", "kind", "sourcePath"],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "format": "uuid",
+          "description": "RFC 4122 36-char dash-form UUID identifying this asset."
+        },
+        "packageUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "URL to the Pack v2 package; artifact locators are resolved from the package envelope."
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Asset kind identifier, e.g. 'mesh', 'texture', 'material'."
+        },
+        "sourcePath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative path to the source .pack.json or .meta.json file from the project root."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional producer-owned display name; it never replaces GUID identity."
+        },
+        "scopeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producer runtime scope for the current publication tuple."
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Monotonic publication generation within the runtime scope."
+        },
+        "digest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the published asset output."
+        },
+        "outputSetDigest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the complete producer output set."
+        },
+        "sourceIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Producer-declared output position; not an identity key when sourceKey is present."
+        },
+        "subject": {
+          "type": "string",
+          "enum": ["internal-asset", "imported-output"],
+          "description": "Producer-owned subject classification for the row."
+        },
+        "execution": {
+          "type": "string",
+          "enum": ["direct", "cooked"],
+          "description": "Whether the runtime payload is authored directly or produced by a cooker."
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": ["missing", "cooking", "current", "stale", "failed"],
+          "description": "Validated producer lifecycle state; failed and stale rows are not current products."
+        },
+        "projection": {
+          "$ref": "#/$defs/catalogProjection"
+        },
+        "authoring": {
+          "type": "object",
+          "description": "Optional producer-owned authoring capability projection."
+        },
+        "sourceOverrides": {
+          "type": "object",
+          "description": "Optional producer-owned source override facts."
+        },
+        "sourceOverrideDescriptors": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "Optional structured descriptions of source override capabilities."
+        },
+        "packageId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable producer-owned package identity."
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "sourceKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producer-owned stable imported-output topology key."
+        },
+        "relations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/relation" }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnostic" }
+        },
+        "refs": {
+          "type": "array",
+          "description": "Optional outgoing dependency edges (GUIDs this asset cross-references), surfaced from pack.json assets[].refs. Add-only field for backward compatibility; absent for legacy rows / kinds with no refs.",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "cookReceiptUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional URL to the producer-owned cook receipt for diagnostics."
+        },
+        "publication": {
+          "$ref": "#/$defs/publication",
+          "description": "Optional complete source-package publication tuple, including generation and LKG recovery."
+        }
+      }
+    },
+    "subjectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["asset", "package", "resource"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "version"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "observedAt", "rootId"],
+      "properties": {
+        "digest": { "type": "string", "minLength": 1 },
+        "observedAt": { "type": "number" },
+        "rootId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "catalogProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "execution", "lifecycle", "operations"],
+      "properties": {
+        "subject": { "type": "string", "enum": ["internal-asset", "imported-output"] },
+        "execution": { "type": "string", "enum": ["direct", "cooked"] },
+        "lifecycle": {
+          "type": "string",
+          "enum": ["missing", "cooking", "current", "stale", "failed"]
+        },
+        "operations": {
+          "type": "object",
+          "description": "Complete operation matrix derived from the projection axes."
+        },
+        "lastKnownGood": { "$ref": "#/$defs/lastKnownGood" }
+      }
+    },
+    "lastKnownGood": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packageUrl"],
+      "properties": {
+        "packageUrl": { "type": "string", "minLength": 1 },
+        "receiptUrl": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sourcePath",
+        "sourceRevision",
+        "generation",
+        "digest",
+        "outputSetDigest",
+        "outputs",
+        "receipt",
+        "externalEvidence"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "asset-publication/1" },
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "digest": { "type": "string", "minLength": 1 },
+        "outputSetDigest": { "type": "string", "minLength": 1 },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/publicationOutput" }
+        },
+        "receipt": { "$ref": "#/$defs/publicationReceipt" },
+        "externalEvidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/externalEvidence" }
+        },
+        "failureStage": {
+          "type": "string",
+          "enum": ["source", "output", "receipt", "route", "catalog", "cancelled"]
+        },
+        "failure": { "$ref": "#/$defs/publicationFailure" },
+        "current": { "$ref": "#/$defs/publicationLocator" },
+        "lastKnownGood": { "$ref": "#/$defs/publicationLocator" },
+        "recovery": { "$ref": "#/$defs/publicationRecovery" }
+      }
+    },
+    "publicationOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guid", "sourceKey", "kind", "digest", "refs"],
+      "properties": {
+        "guid": { "type": "string", "format": "uuid" },
+        "sourceKey": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "minLength": 1 },
+        "refs": {
+          "type": "array",
+          "items": { "type": "string", "format": "uuid" }
+        }
+      }
+    },
+    "publicationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sourcePath",
+        "sourceRevision",
+        "inputFingerprint",
+        "outputDigest",
+        "outputSetDigest",
+        "externalEvidence"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "asset-publication-receipt/1" },
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "inputFingerprint": { "type": "string", "minLength": 1 },
+        "outputDigest": { "type": "string", "minLength": 1 },
+        "outputSetDigest": { "type": "string", "minLength": 1 },
+        "externalEvidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/externalEvidence" }
+        }
+      }
+    },
+    "externalEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guid", "usage"],
+      "properties": {
+        "guid": { "type": "string", "format": "uuid" },
+        "usage": { "type": "string", "enum": ["reference", "content", "both"] },
+        "generation": { "type": "integer", "minimum": 1 },
+        "digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publicationLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "digest", "outputSetDigest", "packageUrl", "receiptKey"],
+      "properties": {
+        "generation": { "type": "integer", "minimum": 1 },
+        "digest": { "type": "string", "minLength": 1 },
+        "outputSetDigest": { "type": "string", "minLength": 1 },
+        "packageUrl": { "type": "string", "minLength": 1 },
+        "receiptKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publicationFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "stage", "sourcePath", "reason"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "stage": {
+          "type": "string",
+          "enum": ["source", "output", "receipt", "route", "catalog", "cancelled"]
+        },
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "outputGuid": { "type": "string", "format": "uuid" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publicationRecovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retryable", "preserveCurrent", "useLastKnownGood", "actions"],
+      "properties": {
+        "retryable": { "type": "boolean" },
+        "preserveCurrent": { "type": "boolean" },
+        "useLastKnownGood": { "type": "boolean" },
+        "actions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "type", "provenance"],
+      "properties": {
+        "from": { "$ref": "#/$defs/subjectRef" },
+        "to": { "$ref": "#/$defs/subjectRef" },
+        "type": { "type": "string", "minLength": 1 },
+        "policy": { "type": "object" },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["info", "warning", "blocking"] },
+        "message": { "type": "string" },
+        "subject": { "$ref": "#/$defs/subjectRef" },
+        "expected": { "type": "string", "minLength": 1 },
+        "actual": { "type": "string" },
+        "hint": { "type": "string", "minLength": 1 },
+        "authority": { "type": "string", "enum": ["producer", "pack", "catalog"] },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/subjectRef" } },
+        "recoveryIntents": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}

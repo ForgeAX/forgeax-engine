@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "render-target-public/1",
+  "featureId": "feat-20260828-public-render-target-cube-camera-reflection-probe",
+  "publicPackage": "@forgeax/engine-render",
+  "operations": [
+    "Renderer.createRenderTarget",
+    "Renderer.resizeRenderTarget",
+    "Renderer.createRenderTargetTextureSource",
+    "Renderer.requestTargetReadback",
+    "Renderer.observe",
+    "Renderer.inspect",
+    "Renderer.recover",
+    "Renderer.destroyRenderTarget"
+  ],
+  "stableTargetIds": [
+    "cube-camera-orientation",
+    "render-target-material-sampling",
+    "reflection-probe-roughness",
+    "reflection-probe-box-fallback",
+    "reflection-probe-recursion-recovery"
+  ],
+  "evidenceCommands": [
+    "node scripts/smoke-cube-camera-browser.mjs",
+    "node scripts/smoke-cube-camera-dawn.mjs",
+    "node scripts/smoke-reflection-probe-browser.mjs",
+    "node scripts/smoke-reflection-probe-dawn.mjs"
+  ]
+}

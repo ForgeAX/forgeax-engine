@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb264-3000-7000-8000-000000000080",
+  "assets": {
+    "material/vfx": {
+      "kind": "material",
+      "payload": {
+        "staticSwitches": { "clearcoat": true },
+        "passes": [{ "name": "forward", "program": { "module": "forgeax_material::standard" } }],
+        "values": { "baseColor": [0.1, 0.65, 1, 1], "emissive": [0.05, 0.55, 1], "emissiveIntensity": 8, "roughness": 0.25, "clearcoat": 0.15 }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    "vfx/impact": {
+      "kind": "particle-effect",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "impact-burst",
+            "capacity": 64,
+            "backend": { "required": "gpu" },
+            "space": "local",
+            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 20 }] },
+            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 2.4 },
+            "program": { "module": "brotato-impact.vfx.wgsl" },
+            "renderers": [{ "kind": "billboard", "material": "93a93157-97b0-574e-a52a-99e1890eb849", "blend": "additive" }]
+          }
+        ]
+      },
+      "refs": ["93a93157-97b0-574e-a52a-99e1890eb849"],
+      "artifacts": {}
+    }
+  }
+}

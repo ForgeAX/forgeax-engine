@@ -1,0 +1,36 @@
+{
+  "name": "@forgeax/engine-npc",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "NPC ECS binding and host-injected adapter plugin for forgeax-engine.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "src", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": { "enabled": true, "path": "dist/index.mjs", "compression": "gzip" },
+      "fps": { "enabled": false, "reason": "host-injected NPC adapter has no runtime canvas" },
+      "bench": { "enabled": false, "reason": "adapter correctness is covered by unit tests" },
+      "gate": { "enabled": false, "reason": "no package-level binary gate" },
+      "spike-report": { "enabled": false, "reason": "not a spike package" }
+    }
+  }
+}

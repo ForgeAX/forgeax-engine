@@ -1,0 +1,72 @@
+{
+  "name": "@forgeax/hello-bloom",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Bloom post-processing opt-in exemplar (feat-20260531-bloom-first-declarative-render-graph-pass / M4 / w18).",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:odd-dawn": "node scripts/smoke-odd-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:browser-device-loss": "node scripts/smoke-browser-device-loss.mjs",
+    "smoke:falsify": "node scripts/smoke-falsify.mjs",
+    "smoke:quality-dawn": "node scripts/bloom-quality-dawn.mjs",
+    "smoke:performance": "FORGEAX_BLOOM_CAPTURE_TIMINGS=1 node scripts/smoke-dawn.mjs",
+    "smoke:all": "pnpm run smoke && pnpm run smoke:odd-dawn && pnpm run smoke:quality-dawn && pnpm run smoke:performance && pnpm run smoke:falsify && pnpm run smoke:browser && pnpm run smoke:browser-device-loss"
+  },
+  "forgeax": {
+    "bevyExample": {
+      "name": "bloom_3d",
+      "category": "3D Rendering",
+      "status": "implemented"
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/hello-bloom smoke:all",
+    "_comment": "smokeInvocation = self-contained SSOT. smoke:all covers real Dawn lifecycle, format-aware 100-case HDR extraction, real shader quality/motion/performance evidence including labeled native resource stability, independent falsification, Browser WebGPU lifecycle, and Browser.crashGpuProcess recovery.",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "fps no-regression covered by hello-cube / hello-room / hello-app gates that run the default zero-overhead path; Bloom opt-in GPU cost is reported by smoke:performance through the existing receipt-bound timing contract"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Bloom opt-in exemplar; vitest bench focus stays on @forgeax/engine-math + @forgeax/engine-runtime#transparent-sort"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-bloom smoke:all"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M4 hello-bloom opt-in exemplar"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "pngjs": "^7.0.0",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

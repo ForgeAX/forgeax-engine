@@ -1,0 +1,4 @@
+interface:
+  display_name: "ForgeaX Engine SDK"
+  short_description: "Build and verify the portable SDK ZIP"
+  default_prompt: "Use $forgeax-engine-sdk to build and verify a portable ForgeaX browser-game SDK ZIP from this Engine checkout."

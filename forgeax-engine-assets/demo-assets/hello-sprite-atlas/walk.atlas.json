@@ -1,0 +1,35 @@
+{
+  "name": "walk",
+  "atlasWidth": 64,
+  "atlasHeight": 64,
+  "regions": [
+    {
+      "name": "walk-0",
+      "uMin": 0,
+      "vMin": 0,
+      "uW": 0.5,
+      "vH": 0.5
+    },
+    {
+      "name": "walk-1",
+      "uMin": 0.5,
+      "vMin": 0,
+      "uW": 0.5,
+      "vH": 0.5
+    },
+    {
+      "name": "walk-2",
+      "uMin": 0,
+      "vMin": 0.5,
+      "uW": 0.5,
+      "vH": 0.5
+    },
+    {
+      "name": "walk-3",
+      "uMin": 0.5,
+      "vMin": 0.5,
+      "uW": 0.5,
+      "vH": 0.5
+    }
+  ]
+}

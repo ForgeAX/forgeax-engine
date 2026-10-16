@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>forgeax-engine - Collectathon Showcase</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 14px;
+        line-height: 1.5;
+        background: rgba(10, 10, 20, 0.55);
+        color: #e0e6f8;
+        padding: 12px 16px;
+        border-radius: 8px;
+        border: 1px solid #2a2f48;
+        pointer-events: none;
+        user-select: none;
+        min-width: 160px;
+        display: none;
+      }
+      #hud h1 { margin: 0 0 8px 0; font-size: 16px; }
+      #hud .row { display: flex; justify-content: space-between; gap: 16px; }
+      #hud .label { color: #6c7396; }
+      #hud .value { color: #fff; font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <h1>COLLECTATHON</h1>
+      <div class="row"><span class="label">SCORE</span><span class="value" id="score">0/0</span></div>
+      <div class="row"><span class="label">HEALTH</span><span class="value" id="health">3</span></div>
+      <div class="row"><span class="label">TIME</span><span class="value" id="timer">00:00</span></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

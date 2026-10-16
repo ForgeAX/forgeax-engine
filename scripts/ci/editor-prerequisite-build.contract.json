@@ -1,0 +1,81 @@
+{
+  "$schema": "forgeax-engine-editor-prerequisite-build-contract/v1",
+  "schemaVersion": "forgeax-engine-editor-prerequisite-build-contract/v1",
+  "sourceOnly": true,
+  "githubAction": ".github/actions/editor-prerequisite-build/action.yml",
+  "install": {
+    "command": ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts", "--force"]
+  },
+  "packageBuild": {
+    "command": ["pnpm", "build:packages"],
+    "entrypoint": "scripts/build.mjs",
+    "mode": "--packages-only"
+  },
+  "payloadClasses": {
+    "engine-dist": {
+      "required": true,
+      "source": "packages/*/dist",
+      "build": "packageBuild"
+    },
+    "wgpu-wasm": {
+      "required": true,
+      "source": "packages/wgpu-wasm/pkg",
+      "build": ["pnpm", "--filter", "@forgeax/engine-wgpu-wasm", "run", "build:wasm"]
+    },
+    "fbx-wasm": {
+      "required": false,
+      "source": "packages/fbx/pkg",
+      "build": ["pnpm", "--filter", "@forgeax/engine-fbx", "run", "build:wasm"]
+    },
+    "wasm-codec": {
+      "required": false,
+      "source": "packages/codec/pkg",
+      "build": ["pnpm", "--filter", "@forgeax/engine-codec", "run", "build:wasm"]
+    }
+  },
+  "toolchainInputs": {
+    "node": ".nvmrc",
+    "pnpm": ".pnpm-version",
+    "rust": "packages/wgpu-wasm/rust-toolchain.toml",
+    "wasmPackVersion": "0.14.0",
+    "emscripten": "scripts/ci/emscripten-no-xz.lock.json",
+    "ufbx": "packages/fbx/scripts/ufbx-source.lock.json",
+    "basis": "packages/codec/scripts/fetch-basis.mjs"
+  },
+  "recipeInputs": [
+    "scripts/ci/editor-prerequisite-build.contract.json",
+    "scripts/ci/build-editor-prerequisite.mjs",
+    ".github/actions/editor-prerequisite-build/action.yml",
+    "scripts/build.mjs",
+    "scripts/build-packages.mjs",
+    "packages/wgpu-wasm/build.sh",
+    "packages/physics-rapier3d/scripts/source.json",
+    "packages/physics-rapier3d/scripts/build-wasm.mjs",
+    "packages/physics-rapier3d/scripts/bindings.Cargo.toml",
+    "packages/physics-rapier3d/scripts/Cargo.lock",
+    "packages/physics-rapier3d/patches/rapier.patch",
+    "packages/physics-rapier3d/patches/parry.patch",
+    "packages/fbx/scripts/fetch-ufbx.mjs",
+    "packages/fbx/scripts/build-wasm.mjs",
+    "packages/codec/scripts/build-wasm.mjs",
+    "scripts/ci/setup-emscripten-no-xz.py",
+    "scripts/ci/prepare-emscripten-no-xz-archive.py",
+    "scripts/forgeax/prepare-shader-release-inputs.mjs",
+    "scripts/build-shared-inputs.mjs",
+    "scripts/lib/shared-build-cache.mjs",
+    "scripts/build-task-cache.mjs"
+  ],
+  "failureCodes": [
+    "engine-source-only-required",
+    "engine-source-checkout-unavailable",
+    "engine-source-sha-mismatch",
+    "engine-source-dirty",
+    "engine-recursive-pin-unavailable",
+    "engine-payload-class-unsupported",
+    "engine-output-path-not-empty",
+    "engine-toolchain-contract-mismatch",
+    "engine-frozen-install-failed",
+    "engine-source-build-failed",
+    "engine-output-incomplete"
+  ]
+}

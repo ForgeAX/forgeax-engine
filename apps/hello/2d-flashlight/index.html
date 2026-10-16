@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>forgeax-engine - 2D Flashlight (flat sprite-lit)</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #080810; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      .hint {
+        position: fixed; left: 12px; top: 12px;
+        background: rgba(0, 0, 0, 0.55); padding: 8px 14px;
+        border-radius: 6px; line-height: 1.5;
+        pointer-events: none;
+        font-family: ui-monospace, monospace; font-size: 13px; color: #ccc;
+      }
+      .hint b { color: #ffd97c; }
+      .hint em { color: #82cfff; font-style: normal; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div class="hint">
+      <b>2D Flashlight demo</b> -- forgeax::sprite-lit (flat)<br />
+      <em>&#9679;</em> PointLight posZ=0.01, range=1 -- soft circle patch<br />
+      <em>&#9654;</em> SpotLight posZ=0, dirX=1 -- sweep across sprite plane<br />
+      URL <b>?mode=</b> both (default) / sweep-spot / point-circle
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

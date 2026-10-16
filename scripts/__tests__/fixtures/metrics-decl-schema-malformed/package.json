@@ -1,0 +1,7 @@
+{
+  "name": "metrics-decl-schema-malformed-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

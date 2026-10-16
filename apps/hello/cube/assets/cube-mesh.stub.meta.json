@@ -1,0 +1,17 @@
+{
+  "kind": "external-asset-package",
+  "importer": "gltf",
+  "schemaVersion": "1.0.0",
+  "source": "cube-mesh.stub",
+  "importSettings": {
+    "geometry": "procedural",
+    "note": "cube geometry generated at runtime by @forgeax/engine-runtime"
+  },
+  "subAssets": [
+    {
+      "guid": "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+      "sourceIndex": 0,
+      "kind": "mesh"
+    }
+  ]
+}

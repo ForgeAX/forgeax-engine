@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schemas/native-ray-query-conformance-report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "startedAtUnixMs",
+    "durationMs",
+    "requestedProfiles",
+    "environment",
+    "routeVerdict",
+    "apiConformanceVerdict",
+    "performanceVerdict",
+    "completenessValid",
+    "countsByProfile",
+    "firstFailure",
+    "packagedExecutableIdentity",
+    "caseCount"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "startedAtUnixMs": { "type": "integer", "minimum": 0 },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "requestedProfiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/profile" }
+    },
+    "environment": {
+      "type": "object",
+      "required": [
+        "wgpuVersion",
+        "wgpuTag",
+        "wgpuTagCommit",
+        "engineCommit",
+        "rustc",
+        "os",
+        "architecture",
+        "capabilities",
+        "features",
+        "limits"
+      ],
+      "properties": {
+        "wgpuVersion": { "const": "30.0.1" },
+        "wgpuTag": { "const": "v30.0.1" },
+          "wgpuTagCommit": { "const": "40f4a34ebaf56f9a046231f54125ad046239d3f3" },
+          "wgpuSourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "engineCommit": { "type": "string", "minLength": 1 },
+        "rustc": { "type": "string", "minLength": 1 },
+        "os": { "enum": ["macos", "linux", "windows"] },
+        "architecture": { "type": "string", "minLength": 1 },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "features": { "$ref": "#/$defs/features" },
+        "limits": { "$ref": "#/$defs/limits" }
+      }
+    },
+    "routeVerdict": { "enum": ["ok", "failed", "incomplete"] },
+    "apiConformanceVerdict": { "enum": ["ok", "failed", "incomplete"] },
+    "performanceVerdict": { "enum": ["measured", "unsupported", "failed", "not-run"] },
+    "completenessValid": { "const": true },
+    "countsByProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract": { "$ref": "#/$defs/counts" },
+        "core": { "$ref": "#/$defs/counts" },
+        "extended": { "$ref": "#/$defs/counts" },
+        "stability": { "$ref": "#/$defs/counts" },
+        "performance": { "$ref": "#/$defs/counts" },
+        "upstream": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "firstFailure": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["caseId", "detail"],
+          "properties": {
+            "caseId": { "type": "string", "minLength": 1 },
+            "detail": { "type": "string", "minLength": 1 }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "packagedExecutableIdentity": {
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "caseCount": { "const": 54 }
+  },
+  "$defs": {
+    "profile": {
+      "enum": ["contract", "core", "extended", "stability", "performance", "upstream"]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "fail", "unsupported", "notRun"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "unsupported": { "type": "integer", "minimum": 0 },
+        "notRun": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["backend", "rayQuery", "adapter"],
+      "properties": {
+        "backend": { "enum": ["Metal", "Vulkan", "Dx12"] },
+        "rayQuery": { "const": true },
+        "adapter": {
+          "type": "object",
+          "required": ["name", "vendor", "device", "deviceType", "driver", "driverInfo"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "vendor": { "type": "integer", "minimum": 0 },
+            "device": { "type": "integer", "minimum": 0 },
+            "deviceType": { "type": "string", "minLength": 1 },
+            "driver": { "type": "string" },
+            "driverInfo": { "type": "string" }
+          }
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "required": [
+        "names",
+        "experimentalRayQuery",
+        "experimentalRayHitVertexReturn",
+        "extendedAccelerationStructureVertexFormats",
+        "accelerationStructureBindingArray",
+        "experimentalRayTracingPipelines",
+        "timestampQuery"
+      ],
+      "properties": {
+        "names": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "experimentalRayQuery": { "const": true },
+        "experimentalRayHitVertexReturn": { "type": "boolean" },
+        "extendedAccelerationStructureVertexFormats": { "type": "boolean" },
+        "accelerationStructureBindingArray": { "type": "boolean" },
+        "experimentalRayTracingPipelines": { "type": "boolean" },
+        "timestampQuery": { "type": "boolean" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "maxBlasPrimitiveCount",
+        "maxBlasGeometryCount",
+        "maxTlasInstanceCount",
+        "maxAccelerationStructuresPerShaderStage",
+        "maxBuffersAndAccelerationStructuresPerShaderStage",
+        "maxBindingArrayAccelerationStructureElementsPerShaderStage"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "maxBlasPrimitiveCount": { "type": "integer", "minimum": 0 },
+        "maxBlasGeometryCount": { "type": "integer", "minimum": 0 },
+        "maxTlasInstanceCount": { "type": "integer", "minimum": 0 },
+        "maxAccelerationStructuresPerShaderStage": { "type": "integer", "minimum": 0 },
+        "maxBuffersAndAccelerationStructuresPerShaderStage": { "type": "integer", "minimum": 0 },
+        "maxBindingArrayAccelerationStructureElementsPerShaderStage": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

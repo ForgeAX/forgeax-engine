@@ -1,0 +1,51 @@
+{
+  "name": "@forgeax/app-showcase-brotato-3d",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "A 3D top-down survival shooter template inspired by the Brotato loop.",
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "template bundle is downstream of the host app"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "template has no independent benchmark harness"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "template scaffold; benchmark ownership stays with engine apps"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "browser acceptance is owned by the Preview host"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74"
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "name": "@forgeax/engine",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "The complete ForgeaX Engine, CLI, and focused package facades.",
+  "bin": {
+    "forgeax": "./dist/bin/forgeax.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./*": {
+      "types": "./dist/facades/*.d.ts",
+      "import": "./dist/facades/*.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "RELEASING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs --check"
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-audio": "workspace:*",
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@forgeax/engine-ddc": "workspace:*",
+    "@forgeax/engine-debug-draw": "workspace:*",
+    "@forgeax/engine-devkit": "workspace:*",
+    "@forgeax/engine-dsh": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-font": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
+    "@forgeax/engine-host": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-intelligence": "workspace:*",
+    "@forgeax/engine-intelligence-dsh": "workspace:*",
+    "@forgeax/engine-intelligence-fake": "workspace:*",
+    "@forgeax/engine-interaction": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-mesh-io": "workspace:*",
+    "@forgeax/engine-naga": "workspace:*",
+    "@forgeax/engine-navigation": "workspace:*",
+    "@forgeax/engine-net": "workspace:*",
+    "@forgeax/engine-net-websocket": "workspace:*",
+    "@forgeax/engine-npc": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-path": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-physics-rapier2d": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*",
+    "@forgeax/engine-picking": "workspace:*",
+    "@forgeax/engine-platform": "workspace:*",
+    "@forgeax/engine-platform-browser": "workspace:*",
+    "@forgeax/engine-platform-wechat": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-preview": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-project": "workspace:*",
+    "@forgeax/engine-remote": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-render-graph": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-null": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-shader": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-state": "workspace:*",
+    "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-ui-blitz": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@forgeax/engine-wgpu-wasm": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Facade package; runtime FPS belongs to consumer games"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Generated re-export facades contain no runtime hot path"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/engine"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Production umbrella package"
+      }
+    }
+  }
+}

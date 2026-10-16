@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>forgeax-engine - Hello Custom Importer (host self-declared fold)</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #14141c; color: #e8e8ef; font-family: ui-monospace, monospace; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      .hint {
+        position: fixed; left: 12px; top: 12px;
+        background: rgba(0, 0, 0, 0.45); padding: 8px 12px;
+        border-radius: 6px; line-height: 1.4; pointer-events: none;
+      }
+      .hint b { color: #ffe57c; }
+      #asset-status { color: #9fffc0; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div class="hint">
+      host importer <b>reel-game-blob</b> -> pack-index -> loadByGuid<br />
+      one cube per reel; scene driven entirely by the host loader<br />
+      <span id="asset-status">asset: loading</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

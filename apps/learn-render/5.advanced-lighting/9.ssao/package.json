@@ -1,0 +1,72 @@
+{
+  "name": "@forgeax/app-learn-render-5-advanced-lighting-9-ssao",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "SSAO contact occlusion on one plane and one cube, with public quality controls and reversible pixel checks.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:gtao": "node scripts/smoke-dawn.mjs --gtao && node scripts/smoke-dawn.mjs --gtao --discrimination",
+    "smoke:discrimination": "node scripts/smoke-dawn.mjs --discrimination",
+    "smoke:browser": "node scripts/smoke-browser.mjs && node scripts/smoke-room-browser.mjs && node scripts/smoke-gtao-browser.mjs",
+    "smoke:browser:pair": "node scripts/smoke-browser.mjs",
+    "smoke:performance": "node scripts/smoke-performance.mjs"
+  },
+  "forgeax": {
+    "rhiDebug": {
+      "riskFamilies": ["screen-space-post"]
+    },
+    "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-9-ssao smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle (dist/assets) size is downstream of @forgeax/engine-runtime size already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "OOS-11 fps anchor stays on hello-triangle; per-app fps drift is not gated for learn-render examples"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pixel-parity bench drives parity-forgeax vs parity-threejs; learn-render entries land as bench:pixel-parity placeholders only"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-9-ssao smoke:discrimination"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; LearnOpenGL section-5.9 SSAO tutorial example"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-rhi-wgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.50.0",
+    "vite": "8.0.16"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "019fb7ce-1000-7000-8000-000000000001",
+      "kind": "scene",
+      "name": "Empty Scene",
+      "sourceKey": "world/empty",
+      "payload": {
+        "kind": "scene",
+        "entities": {}
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

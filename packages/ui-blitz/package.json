@@ -1,0 +1,73 @@
+{
+  "name": "@forgeax/engine-ui-blitz",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Persistent Blitz HTML/CSS binding and standard DOM facade for native hosts.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "pkg",
+    "rust",
+    "vendor",
+    "scripts",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json",
+    "prebuild": "node scripts/verify-current.mjs",
+    "postinstall": "node scripts/ensure-wasm.mjs",
+    "fetch-wasm": "node scripts/fetch-wasm.mjs",
+    "test:provenance": "node --test scripts/__tests__/*.test.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-ui": "workspace:*",
+    "@noble/hashes": "^2.2.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Target builds measure the reachable UI WASM, glue and published resources together."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Renderer completion receipts and target UI work measure throughput."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "UI layout, raster and upload costs are measured by representative consumers."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Core, browser differential and simulator gates qualify this binding."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Maintained UI implementation; integration limitations are stated in README.md."
+      }
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "name": "@forgeax/engine-math",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Pure-function SoA-friendly Vec/Mat/Quat math utilities for forgeax-engine.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "bench": "vitest bench --run",
+    "bench:json": "FORGEAX_BENCH=fast vitest bench --run --outputJson bench-result.json",
+    "lint:brand-cast": "node scripts/lint-brand-cast.mjs",
+    "lint:brand-runtime": "node scripts/lint-brand-runtime.mjs"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "library package, no runtime canvas; fps reported by hello-triangle / hello-cube apps"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "pure math micro-benchmarks rarely regress; removed from CI to save 15s runner-minutes"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; smoke gate covered by hello-triangle / hello-cube apps"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package; spike artefacts archived in feat-20260511-naga-rhi-wgpu-merge M5 (PR #34 + git history)"
+      }
+    }
+  }
+}

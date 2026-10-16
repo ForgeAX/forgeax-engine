@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "58918de1-d01a-526d-9e34-5dbf5fc7b410",
+      "kind": "material",
+      "sourceKey": "depth-viz.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "learn_render::depth_viz",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "metallic",
+            "type": "f32"
+          },
+          {
+            "name": "roughness",
+            "type": "f32"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

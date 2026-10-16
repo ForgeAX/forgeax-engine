@@ -1,0 +1,133 @@
+import assert from 'node:assert/strict';
+
+function typePreview(state, asset, editorTargetId) {
+  const extras = Array.isArray(state.previews) ? state.previews : [];
+  return extras.find((entry) =>
+    entry?.asset?.guid === asset.guid &&
+    entry?.target?.targetId &&
+    entry.target.targetId !== editorTargetId,
+  ) ?? (
+    state.preview?.asset?.guid === asset.guid &&
+    state.preview.target.targetId !== editorTargetId
+      ? state.preview
+      : state.openRequest?.preview
+  );
+}
+
+function previewPanelTestId(kind) {
+  if (kind === 'material') return 'panel-material-preview';
+  if (kind === 'mesh') return 'panel-mesh-preview';
+  return 'panel-texture-preview';
+}
+
+export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }) {
+  const capturePreview = async (args, worldId) => {
+    try {
+      return await workspace.capture(args);
+    } catch (error) {
+      try { await onCaptureFailure?.({ target: { ...args, worldId }, error }); }
+      catch (failure) { console.error('Failed to preserve inline preview evidence:', failure); }
+      throw error;
+    }
+  };
+  const initial = workspace.snapshot();
+  const editor = initial.editorPreview;
+  const assets = ['mesh', 'material'].map(kind => initial.assets.find(asset => asset.kind === kind));
+  assert.ok(assets.every(Boolean), 'the probe must exercise real mesh and material previews');
+  const opened = [];
+  for (const asset of assets) {
+    const state = await workspace.openAsset({ projectId: initial.project.id, guid: asset.guid, width: 320, height: 240 });
+    assert.equal(state.editorPreview.target.targetId, editor.target.targetId);
+    const preview = typePreview(state, asset, editor.target.targetId);
+    assert.ok(preview?.target, `Engine must expose a type-preview target for ${asset.kind}`);
+    assert.notEqual(preview.target.targetId, editor.target.targetId);
+    assert.notEqual(preview.target.worldId, editor.target.worldId);
+    const args = { targetId: preview.target.targetId, targetGeneration: preview.target.generation };
+    const assetPage = page.locator(`[data-page-id="page-${asset.kind}"][aria-selected="true"]`);
+    await assetPage.waitFor();
+    const panel = page.getByTestId(previewPanelTestId(asset.kind));
+    const canvas = panel.locator(`canvas[data-forgeax-asset-preview="${args.targetId}"]`);
+    await canvas.waitFor({ state: 'visible' });
+    assert.equal(await panel.locator('canvas').count(), 1, 'the tab hosts the exact Engine preview canvas');
+    assert.equal(await page.locator('[aria-label="Asset previews"]').count(), 0);
+    assert.equal(await page.locator('[data-forgeax-view-mount-host="viewport"] [data-forgeax-asset-preview]').count(), 0);
+    const tree = await workspace.getSceneTree(args);
+    assert.equal(tree.worldId, preview.target.worldId);
+    assert.ok(tree.nodes.length > 0);
+    const extent = await page.waitForFunction(({ testId, targetId }) => {
+      const host = document.querySelector(`[data-testid="${testId}"] [data-forgeax-preview-panel]`);
+      const surface = host?.querySelector('canvas');
+      const dpr = Math.max(1, devicePixelRatio);
+      const width = Math.round((host?.clientWidth ?? 0) * dpr);
+      const height = Math.round((host?.clientHeight ?? 0) * dpr);
+      return width > 0 && height > 0 && surface?.dataset.forgeaxAssetPreview === targetId &&
+        surface.width === width && surface.height === height ? [width, height] : false;
+    }, { testId: previewPanelTestId(asset.kind), targetId: args.targetId });
+    const dimensions = await extent.jsonValue();
+    await extent.dispose();
+    if (asset.kind === 'mesh') {
+      // Hosting/resizing the canvas precedes the panel's initial orbit-pivot
+      // transaction. The existing Reset View control becomes available only
+      // after that initialization ends; capture must not race its draft.
+      await page.waitForFunction(() => {
+        const panel = document.querySelector('[data-testid="panel-mesh-preview"]');
+        const failure = panel?.querySelector('[role="alert"]')?.textContent;
+        if (failure) throw new Error(failure);
+        const reset = panel?.querySelector('[data-testid="mesh-reset-view"]');
+        return reset instanceof HTMLButtonElement && !reset.disabled;
+      });
+      const camera = await workspace.getCamera(args);
+      assert.equal(camera.committed, true, 'mesh preview initialization must commit before capture');
+      assert.equal(camera.interaction, null);
+    }
+    const capture = await capturePreview(args, tree.worldId);
+    assert.deepEqual([capture.width, capture.height], dimensions, 'visible previews render at the panel device-pixel extent');
+    assert.match(capture.png, /^data:image\/png/);
+    const visibleBytes = Buffer.from(capture.png.split(',')[1], 'base64');
+    assert.deepEqual([visibleBytes.readUInt32BE(16), visibleBytes.readUInt32BE(20)], dimensions);
+    assert.deepEqual(await page.locator('.fx-error-notice').allTextContents(), [], 'asset preview must not leave workspace command errors');
+    await page.screenshot({ path: `/tmp/view-asset-${asset.kind}.png` });
+    opened.push({ args, kind: asset.kind, dimensions, worldId: tree.worldId, frameId: capture.frameId });
+  }
+  await page.locator('[data-page-id="page-editor"]').click();
+  await page.locator('[data-forgeax-view-mount-host="viewport"]').waitFor();
+  assert.equal(await page.locator('[aria-label="Asset previews"]').count(), 0);
+  assert.equal(await page.locator('iframe').count(), 0);
+  assert.equal(workspace.snapshot().previews.length, 3);
+  await workspace.selectTarget({ targetId: editor.target.targetId });
+  const editorCapture = await workspace.capture({ targetId: editor.target.targetId, targetGeneration: editor.target.generation });
+  assert.match(editorCapture.png, /^data:image\/png/);
+  await page.screenshot({ path: '/tmp/view-inline-previews.png' });
+  console.error('asset tabs host exact Engine preview canvases; independent Worlds, panel sizing and capture passed');
+  return async () => {
+    await page.locator('[data-page-id="page-editor"]').click();
+    for (const { args, kind, dimensions, worldId, frameId } of opened) {
+      assert.equal((await workspace.getSceneTree(args)).worldId, worldId);
+      const captured = await capturePreview(args, worldId);
+      assert.ok(captured.frameId > frameId, 'the original asset renderer must still submit frames after Play');
+      assert.deepEqual(captured.errors ?? [], []);
+      assert.deepEqual([captured.width, captured.height], dimensions);
+      // Hidden tabs retain layout and automatic sizing. Remove UI placement before
+      // testing arbitrary API extents; the Engine preview must survive UI removal.
+      await page.locator(`[data-page-id="page-${kind}"]`).hover();
+      await page.locator(`[data-page-close="page-${kind}"]`).click();
+      await page.getByTestId(previewPanelTestId(kind)).waitFor({ state: 'detached' });
+      const resized = await workspace.resizePreview({ ...args, width: 400, height: 300 });
+      assert.equal(resized.target.generation, args.targetGeneration);
+      assert.equal(resized.target.worldId, worldId);
+      const resizedCapture = await capturePreview(args, worldId);
+      assert.deepEqual([resizedCapture.width, resizedCapture.height], [400, 300]);
+      assert.deepEqual(resizedCapture.errors ?? [], []);
+      const bytes = Buffer.from(resizedCapture.png.split(',')[1], 'base64');
+      assert.deepEqual([bytes.readUInt32BE(16), bytes.readUInt32BE(20)], [400, 300]);
+      assert.equal((await workspace.getSceneTree(args)).worldId, worldId);
+      await workspace.closePreview(args);
+      await workspace.closePreview(args).catch(error => assert.match(error.code, /target-mismatch/));
+    }
+    assert.equal(workspace.snapshot().previews.length, 1);
+    assert.equal(workspace.snapshot().preview.target.targetId, editor.target.targetId);
+    assert.equal(workspace.snapshot().workspaceTargetLost, false, 'closed asset targets must not disconnect the editor');
+    await page.waitForFunction(() => document.querySelectorAll('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').length >= 1);
+    console.error('UI removal preserves asset resize and capture; targets released independently and the editing World remains intact');
+  };
+}

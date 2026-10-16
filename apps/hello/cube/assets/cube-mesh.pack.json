@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "2.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+      "kind": "mesh",
+      "payload": {
+        "geometry": "procedural-cube",
+        "note": "cube geometry pre-baked in @forgeax/engine-runtime; BUILTIN_HANDLE_CUBE"
+      },
+      "refs": [],
+      "artifacts": {}
+    }
+  ]
+}

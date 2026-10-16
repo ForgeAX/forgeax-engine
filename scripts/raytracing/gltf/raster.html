@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Sponza: direct and indirect lighting</title>
+<link rel="icon" href="data:,">
+<style>
+  body { background:#16181b; color:#ddd; font:16px system-ui; margin:24px; }
+  canvas { width:768px; max-width:100%; image-rendering:auto; }
+  label { margin-right:20px; } pre { white-space:pre-wrap; }
+</style>
+<h1>Sponza: direct and indirect lighting</h1>
+<p id="mode">Original Standard materials · directional light and shadow maps · GI disabled</p>
+<p><label><input id="light" type="checkbox" checked>Sun</label>
+<label><input id="shadows" type="checkbox" checked>Shadow maps</label>
+<label>View <select id="camera"><option value="0">Atrium</option><option value="4">Side aisle</option></select></label>
+<button type="button" id="capture" disabled>Save RHI capture</button></p>
+<canvas id="app" width="384" height="384"></canvas>
+<pre id="status">Loading the original Sponza asset graph…</pre>
+<script type="module" src="./raster.mjs"></script>
+</html>

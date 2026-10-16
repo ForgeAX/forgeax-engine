@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f5f4ee" />
+  <link rel="icon" href="data:," />
+  <title>Canvas in the world | ForgeaX</title>
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="#"><span class="brand-mark">F</span> FORGEAX <span class="brand-light">/ PLAYGROUND</span></a><span class="edition">01 &nbsp; CANVAS TEXTURES</span></header>
+    <section class="intro">
+      <p class="eyebrow">A FLAT CANVAS. A WORLD OF POSSIBILITIES.</p>
+      <h1>Draw here.<br /><span>See it in the world.</span></h1>
+      <p class="lede">Your drawing becomes the surface of a 3D sign.<br />Try a brush stroke, a live timetable, or a moving dashboard.</p>
+    </section>
+    <nav class="presets" aria-label="Canvas examples">
+      <button data-mode="paint" aria-pressed="true"><span>01</span> Drawing board</button>
+      <button data-mode="departures" aria-pressed="false"><span>02</span> Live sign</button>
+      <button data-mode="telemetry" aria-pressed="false"><span>03</span> Dashboard</button>
+    </nav>
+    <section class="workspace" aria-label="Canvas and 3D model comparison">
+      <article class="panel source-panel">
+        <div class="panel-heading"><div><span class="step">1</span><h2>The canvas</h2></div><span class="tag">2D SOURCE</span></div>
+        <div class="source-stage"><canvas id="source" width="800" height="500" aria-label="Drawing canvas. Drag to paint." tabindex="0"></canvas></div>
+        <div class="toolbar" id="paint-tools">
+          <div class="palette" aria-label="Brush color">
+            <button data-color="#ff6840" style="--swatch:#ff6840" aria-label="Orange brush" aria-pressed="true"></button>
+            <button data-color="#126858" style="--swatch:#126858" aria-label="Green brush" aria-pressed="false"></button>
+            <button data-color="#5255c9" style="--swatch:#5255c9" aria-label="Purple brush" aria-pressed="false"></button>
+            <button data-color="#172f2a" style="--swatch:#172f2a" aria-label="Ink brush" aria-pressed="false"></button>
+          </div>
+          <label class="brush-label">Brush <input id="brush" aria-label="Brush size" type="range" min="4" max="48" value="18" /></label>
+          <button class="text-button" id="clear">Clear</button>
+        </div>
+        <div class="toolbar preset-note" id="preset-note" hidden></div>
+        <p class="panel-caption" id="source-caption">Drag to draw. Every mark appears on the sign.</p>
+      </article>
+      <article class="panel model-panel">
+        <div class="panel-heading"><div><span class="step">2</span><h2>In the world</h2></div><span id="sync-status" class="status" role="status">Starting renderer</span></div>
+        <div class="model-stage"><canvas id="world" width="800" height="590" aria-label="3D sign displaying the drawing canvas"></canvas><div id="error" role="alert" hidden></div><span class="scene-label">CANVAS ON A 3D SURFACE</span></div>
+        <div class="toolbar model-tools"><label>View angle <input id="angle" aria-label="Model angle" type="range" min="-55" max="55" value="-18" /></label><button id="sync" class="sync-button" aria-pressed="false" disabled>Pause sync</button></div>
+        <p class="panel-caption" id="model-caption">Same drawing. Real depth. Move the angle to explore.</p>
+      </article>
+    </section>
+    <footer><div class="challenge"><span class="try-label">TRY THIS</span><p id="challenge">Pause sync, add a mark, then resume. The sign catches up.</p></div><span class="flow">DRAW <b>→</b> UPDATE <b>→</b> MODEL</span></footer>
+    <details class="code"><summary>Use this in your game <span>6 lines to connect a canvas</span></summary><pre><code>const texture = new CanvasTexture(canvas, { flipY: false });
+const source = world.allocSharedRef('CanvasTextureSource', texture.source);
+const material = world.allocSharedRef('MaterialAsset',
+  Materials.unlit('#ffffff', { baseColorTexture: source }));
+// Assign material to your model. After drawing:
+texture.update();</code></pre></details>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

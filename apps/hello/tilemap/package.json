@@ -1,0 +1,55 @@
+{
+  "name": "@forgeax/hello-tilemap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Hello Tilemap baseline demo (feat-20260608 M0 baseline rebuild) -- single-atlas TilesetAsset + Tilemap + TileLayer + dawn-node smoke pixel readback.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-tilemap smoke",
+    "_comment": "smokeInvocation = self-contained SSOT for the hello-tilemap dawn-node smoke gate (plan-tasks m0-t12 + plan-strategy §5.5 CI command list).",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-tilemap exists for the unit-cell baseline pixel readback contract (AC-14); fps anchor stays on hello-triangle"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "M0 baseline demo carries no benchmark; tilemap argsort bench lives in M3 unit-bench"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-tilemap smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  }
+}

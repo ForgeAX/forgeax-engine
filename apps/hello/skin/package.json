@@ -1,0 +1,90 @@
+{
+  "name": "@forgeax/hello-skin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Khronos Fox.glb 3-instance skeletal animation demo (tweak-20260611-skin-fox-3clip-and-kb-sample-assets). createApp + configurePackIndex + loadByGuid<SceneAsset>(Fox) + assets.instantiate * 3 with three independent AnimationPlayers driving Survey / Walk / Run clips. End-to-end pluginPack production path -- bridge emits Skin component, gltfImporter emits skeleton/skin/animation-clip POD, postSpawnResolveJoints fills Skin.joints from the spawn subtree.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:recovery": "node scripts/smoke-dawn.mjs --m22-recovery",
+    "smoke:writeback": "node scripts/smoke-writeback-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:recovery:browser": "node scripts/smoke-browser.mjs --m22-recovery"
+  },
+  "forgeax": {
+    "bevyExample": [
+      {
+        "name": "gltf_skinned_mesh",
+        "category": "glTF",
+        "status": "implemented"
+      },
+      {
+        "name": "animated_mesh",
+        "category": "Animation",
+        "status": "implemented"
+      }
+    ],
+    "smokeInvocation": "pnpm --filter @forgeax/hello-skin smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape downstream of @forgeax/engine-runtime + @forgeax/engine-gltf sizes already tracked at package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "hello-triangle baseline anchor only; hello-skin smoke covers 60-frame skinned draw path (AC-35)"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "convergence integration app; bench focus on @forgeax/engine-math + @forgeax/engine-ecs"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-skin smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; skin pipeline ships per-feature with bundle-size locked at package level"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-devkit": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

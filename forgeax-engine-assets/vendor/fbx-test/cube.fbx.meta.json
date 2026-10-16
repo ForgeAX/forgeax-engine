@@ -1,0 +1,27 @@
+{
+  "kind": "external-asset-package",
+  "importer": "fbx",
+  "importSettings": {},
+  "schemaVersion": 1,
+  "source": "cube.fbx",
+  "subAssets": [
+    {
+      "guid": "019ecd87-179a-7435-b383-6846514b9535",
+      "kind": "mesh",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:mesh"
+    },
+    {
+      "guid": "019ecd87-179b-7356-a2c2-8f68a936ab6a",
+      "kind": "material",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:material"
+    },
+    {
+      "guid": "019ecd87-179b-773b-8679-4ee436fdd878",
+      "kind": "scene",
+      "sourceIndex": 0,
+      "sourceKey": "fbx:scene"
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "name": "@forgeax/engine-navigation",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Bounded graph/grid and static NavMesh queries, local avoidance and ECS physical character following.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "VALIDATION.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "bench": "node bench/navigation.mjs",
+    "bench:physical": "node bench/performance.mjs",
+    "verify:geometry": "node bench/geometry.mjs",
+    "verify:effects": "node bench/crowd.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-math": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "CPU navigation owner; reproducible query and agent benchmark via pnpm bench."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Reproducible CPU/query/bake/KCC benchmarks use their own raw-data and fixed-budget protocol in VALIDATION.md; generic vitest bench metric protocol is not applicable."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/navigation"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "CPU navigation owner; reproducible query and agent benchmark via pnpm bench."
+      }
+    }
+  }
+}

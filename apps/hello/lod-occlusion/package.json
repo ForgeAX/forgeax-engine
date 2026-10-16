@@ -1,0 +1,64 @@
+{
+  "name": "@forgeax/hello-lod-occlusion",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:performance": "node scripts/smoke-performance.mjs",
+    "bench:json": "FORGEAX_LOD_GPU_PRODUCER=1 node scripts/smoke-performance.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-lod-occlusion smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "fixture app; renderer package owns bundle evidence"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "GPU frame timing is reported by the feature benchmark"
+      },
+      "bench": {
+        "enabled": true,
+        "reportPath": "artifacts/gpu-frame-samples.json",
+        "suite": "gpu-frame-samples",
+        "reportSchema": "gpu-frame-samples"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-lod-occlusion smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "production fixture, not a spike"
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^25.8.0",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

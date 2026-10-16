@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "1.0.0",
+  "scene": "threejs-webgpu-volume-lighting",
+  "oracle": {
+    "source": "three.js",
+    "commit": "ad005397bbd15b0a9fcd5159c782eba56e1cba2a",
+    "path": "examples/webgpu_volume_lighting.html",
+    "license": "MIT"
+  },
+  "camera": {
+    "type": "PerspectiveCamera",
+    "fovDegrees": 60,
+    "near": 0.1,
+    "far": 100,
+    "position": [-8, 1, -6],
+    "lookAt": [0, 0, 0]
+  },
+  "geometry": {
+    "subject": {
+      "factory": "createTeapotGeometry",
+      "parameters": [0.8, 18],
+      "position": [0, 0, 0],
+      "source": "three.js TeapotGeometry",
+      "commit": "ad005397bbd15b0a9fcd5159c782eba56e1cba2a",
+      "path": "examples/jsm/geometries/TeapotGeometry.js",
+      "license": "MIT"
+    },
+    "volumeBounds": { "size": [20, 10, 20], "center": [0, 2, 0] },
+    "floor": { "factory": "createPlaneGeometry", "size": [100, 100], "y": -3 }
+  },
+  "lights": {
+    "point": {
+      "color": "#f9bb50",
+      "intensity": 3,
+      "range": 100,
+      "position": [0, 1.4, 0],
+      "shadow": { "mapSize": 512, "near": 0.1, "far": 100 }
+    },
+    "spot": {
+      "color": "#ffffff",
+      "intensity": 100,
+      "range": 0,
+      "angleRadians": 0.5235987755982988,
+      "penumbra": 1,
+      "decay": 2,
+      "position": [2.5, 5, 2.5],
+      "target": [0, 0, 0],
+      "shadow": { "mapSize": 1024, "near": 1, "far": 15, "focus": 1 },
+      "projector": {
+        "path": "threejs/webgpu-volume-lighting/colors.png",
+        "sha256": "3992e4e4597da577cd8354a83cf62955f61c79567d8b323dc99e67473fe749e0",
+        "license": "MIT",
+        "guid": "019f0000-0000-7000-8000-0000000003f2",
+        "generation": 1,
+        "revision": 1,
+        "view": "2d",
+        "sampler": "linear-clamp-to-edge",
+        "projection": "spot-shadow-camera"
+      }
+    }
+  },
+  "volume": {
+    "density": {
+      "extent": [128, 128, 128],
+      "format": "r8unorm",
+      "colorSpace": "linear",
+      "addressMode": "repeat",
+      "repeatFactor": 5,
+      "scale": 10,
+      "guid": "019f0000-0000-7000-8000-0000000003f1",
+      "generation": 1,
+      "revision": "volumetric-density-v128",
+      "source": "assets/density.volume.json",
+      "sourceKey": "volumetric-fog/density.raw",
+      "layers": [
+        { "frequency": 0.1, "amplitude": 1 },
+        { "frequency": 0.05, "amplitude": 0.5 },
+        { "frequency": 0.02, "amplitude": 0.25 }
+      ]
+    },
+    "steps": 12,
+    "resolution": 0.25,
+    "denoise": 0.6,
+    "intensity": 1,
+    "smokeAmount": 2,
+    "bounds": { "min": [-10, -3, -10], "max": [10, 7, 10] }
+  },
+  "cameraOutput": { "toneMapping": "Neutral", "exposure": 2 },
+  "sceneTime": {
+    "mode": "frozen-official-animation",
+    "source": "oracle.animate",
+    "queryParameter": "captureTime",
+    "scale": 2.4,
+    "teapotRotationRadiansPerSecond": 0.2
+  },
+  "acceptedTuple": ["guid", "generation", "view", "sampler", "projection", "revision"],
+  "variants": [
+    "baseline",
+    "point-off",
+    "spot-off",
+    "projector-off",
+    "shadow-off",
+    "occluder-remove",
+    "density-zero",
+    "camera-drift",
+    "time-drift",
+    "projector-hash-drift"
+  ],
+  "evidence": {
+    "requiredBackend": "headed-webgpu",
+    "width": 1920,
+    "height": 1080,
+    "sameDpr": true,
+    "sameCssSize": true,
+    "sameColorSpace": true,
+    "settleFrames": 30,
+    "frozenTime": true,
+    "pairedRawPng": true,
+    "verdictFields": ["expectation", "observed", "verdict", "confidence"]
+  }
+}

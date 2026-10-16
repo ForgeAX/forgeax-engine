@@ -1,0 +1,44 @@
+# Minimal fixture mirroring the shape of Bevy's root Cargo.toml example metadata.
+# Two visible demos in two categories, plus one hidden example that must NOT
+# count toward totals.
+
+[[example]]
+name = "sprite"
+path = "examples/2d/sprite.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.sprite]
+name = "Sprite"
+description = "Renders a sprite"
+category = "2D Rendering"
+wasm = true
+
+[[example]]
+name = "bloom_3d"
+path = "examples/3d/bloom_3d.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.bloom_3d]
+name = "3D Bloom"
+description = "Bloom in 3d"
+category = "3D Rendering"
+wasm = true
+
+[[example]]
+name = "load_gltf"
+path = "examples/gltf/load_gltf.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.load_gltf]
+name = "Load glTF"
+description = "Loads a glTF"
+category = "glTF"
+wasm = true
+
+[[example]]
+name = "hello_world"
+path = "examples/hello_world.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.hello_world]
+hidden = true

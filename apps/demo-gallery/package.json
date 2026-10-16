@@ -1,0 +1,56 @@
+{
+  "name": "@forgeax/demo-gallery",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Single-port gallery for forgeax-engine Vite demos.",
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "development-only aggregate host; its production bundle duplicates every discovered demo and is not a shipped artifact"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "gallery embeds independently owned demos; runtime performance belongs to each demo's existing smoke and metric gates"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "demo discovery is covered by deterministic contract tests and has no stable micro-benchmark surface"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "development-only host is intentionally outside application build shards; discovery tests and representative browser probes validate it"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:debug": "FORGEAX_GALLERY_DEBUG=1 vite",
+    "scan": "node scripts/scan-demos.mjs",
+    "test": "node --test __tests__/scan-demos.test.mjs"
+  },
+  "devDependencies": {
+    "@forgeax/engine-audio-webaudio": "workspace:*",
+    "@forgeax/engine-devkit": "workspace:*",
+    "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-font": "workspace:*",
+    "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-dsh": "workspace:*",
+    "@forgeax/engine-vfx-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "jiti": "1.21.7",
+    "vite": "8.0.16"
+  }
+}

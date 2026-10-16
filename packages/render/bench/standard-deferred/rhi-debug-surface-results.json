@@ -1,0 +1,134 @@
+[
+  {
+    "case": "deferred-ssaofalse-probefalse-emptyfalse",
+    "digest": "c8aebde057217a1a9d8c55133b142f332f289d5ef7e75970486d7c20c609f9e3",
+    "liveReplayMaxError": 0,
+    "readbacks": 42,
+    "gbufferWorks": [
+      20,
+      21
+    ],
+    "lightingWorks": [
+      22
+    ],
+    "opaqueForwardReplays": 0
+  },
+  {
+    "case": "deferred-ssaofalse-probefalse-emptytrue",
+    "digest": "7752672ce79e76968cec4d0c345f2390965165541ce09a8329353d3e11c8591e",
+    "liveReplayMaxError": 0,
+    "readbacks": 42,
+    "gbufferWorks": [
+      20,
+      21
+    ],
+    "lightingWorks": [
+      22
+    ],
+    "opaqueForwardReplays": 0
+  },
+  {
+    "case": "deferred-ssaofalse-probetrue-emptyfalse",
+    "digest": "b68d491b820f75890d50a5fad55ff5bf0c14180123cdd533f1abe705c2b931ff",
+    "liveReplayMaxError": 0,
+    "readbacks": 42,
+    "gbufferWorks": [
+      20,
+      21
+    ],
+    "lightingWorks": [
+      22
+    ],
+    "opaqueForwardReplays": 0
+  },
+  {
+    "case": "deferred-ssaotrue-probefalse-emptyfalse",
+    "digest": "6bb5cc1a4b311219227a1d4ec4bb06d2f25706cdf6ee029236647dd6a80bab13",
+    "liveReplayMaxError": 0,
+    "readbacks": 42,
+    "gbufferWorks": [
+      20,
+      21
+    ],
+    "lightingWorks": [
+      24
+    ],
+    "opaqueForwardReplays": 0
+  },
+  {
+    "case": "forward-ssaofalse-probefalse-emptyfalse",
+    "digest": "221d1d75da1807b647bf065499b9232e298f3f5b6845c0c364c22bf7cba10907",
+    "liveReplayMaxError": 0,
+    "readbacks": 2,
+    "gbufferWorks": [],
+    "lightingWorks": []
+  },
+  {
+    "case": "forward-ssaofalse-probefalse-emptytrue",
+    "digest": "93ae04d48f48af7c494c37c3198d617d3d769eab7147a7b41faa79182d16c84e",
+    "liveReplayMaxError": 0,
+    "readbacks": 2,
+    "gbufferWorks": [],
+    "lightingWorks": []
+  },
+  {
+    "case": "forward-ssaofalse-probetrue-emptyfalse",
+    "digest": "96e3aacfa9454cf58882de771c84af78dc2eefeab81e9698e95b030a74f9180a",
+    "liveReplayMaxError": 0,
+    "readbacks": 2,
+    "gbufferWorks": [],
+    "lightingWorks": []
+  },
+  {
+    "pair": "ssaofalse-probefalse-emptyfalse",
+    "forwardDeferredMaxError": 0.00784313725490196
+  },
+  {
+    "pair": "ssaofalse-probetrue-emptyfalse",
+    "forwardDeferredMaxError": 0.01568627450980392
+  },
+  {
+    "pair": "ssaofalse-probefalse-emptytrue",
+    "forwardDeferredMaxError": 0.00784313725490196
+  },
+  {
+    "lane": "forward",
+    "cell": 0,
+    "shToggleMaxDelta": 0.41568627450980394
+  },
+  {
+    "lane": "forward",
+    "cell": 1,
+    "shToggleMaxDelta": 0.6509803921568628
+  },
+  {
+    "lane": "forward",
+    "cell": 2,
+    "shToggleMaxDelta": 0.5647058823529412
+  },
+  {
+    "lane": "forward",
+    "cell": 3,
+    "shToggleMaxDelta": 0.3176470588235294
+  },
+  {
+    "lane": "deferred",
+    "cell": 0,
+    "shToggleMaxDelta": 0.41568627450980394
+  },
+  {
+    "lane": "deferred",
+    "cell": 1,
+    "shToggleMaxDelta": 0.6509803921568628
+  },
+  {
+    "lane": "deferred",
+    "cell": 2,
+    "shToggleMaxDelta": 0.5647058823529412
+  },
+  {
+    "lane": "deferred",
+    "cell": 3,
+    "shToggleMaxDelta": 0.3176470588235294
+  }
+]

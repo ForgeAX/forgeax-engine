@@ -1,0 +1,25 @@
+{
+  "statistics": { "total": { "clones": 1 } },
+  "duplicates": [
+    {
+      "format": "typescript",
+      "lines": 34,
+      "tokens": 200,
+      "fragment": "(self)",
+      "firstFile": {
+        "name": "packages/math/src/quat.ts",
+        "start": 525,
+        "end": 558,
+        "startLoc": { "line": 525, "column": 1, "position": 0 },
+        "endLoc": { "line": 558, "column": 1, "position": 0 }
+      },
+      "secondFile": {
+        "name": "packages/math/src/quat.ts",
+        "start": 516,
+        "end": 154,
+        "startLoc": { "line": 516, "column": 1, "position": 0 },
+        "endLoc": { "line": 154, "column": 1, "position": 0 }
+      }
+    }
+  ]
+}

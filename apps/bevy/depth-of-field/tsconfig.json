@@ -1,0 +1,5 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "module": "ESNext", "moduleResolution": "Bundler", "types": ["@webgpu/types"] },
+  "include": ["src/**/*.ts", "vite.config.ts", "scripts/**/*.mjs"]
+}

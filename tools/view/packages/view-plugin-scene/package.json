@@ -1,0 +1,42 @@
+{
+  "name": "@forgeax/view-plugin-scene",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ForgeaX View Scene page and its reversible panel capability.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./frontend": "./src/frontend.ts",
+    "./identity": "./src/identity.ts"
+  },
+  "dependencies": {
+    "@forgeax/view-workspace-core": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  },
+  "devDependencies": {
+    "@forgeax/engine-plugin": "workspace:*"
+  }
+}

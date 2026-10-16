@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "internal-text-package",
+  "assets": [
+    {
+      "guid": "6bab6a0e-7684-5556-8eb6-b12b6da6b2a1",
+      "kind": "material",
+      "sourceKey": "cube-reflection.wgsl",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "learn_render::6_4_cube_reflection",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main"
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "cubeTexture",
+            "type": "texture_cube"
+          }
+        ]
+      },
+      "refs": []
+    }
+  ]
+}

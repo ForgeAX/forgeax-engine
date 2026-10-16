@@ -1,0 +1,27 @@
+{
+  "coreCases": [
+    "off",
+    "constant",
+    "zero",
+    "zero-vector",
+    "sphere",
+    "box",
+    "transformed",
+    "local",
+    "shared",
+    "vortex/16/reversed",
+    "radial/8/nearest",
+    "radial/8/trilinear",
+    "radial/16/nearest",
+    "radial/16/trilinear",
+    "radial/32/nearest",
+    "radial/32/trilinear",
+    "vortex/8/nearest",
+    "vortex/8/trilinear",
+    "vortex/16/nearest",
+    "vortex/16/trilinear",
+    "vortex/32/nearest",
+    "vortex/32/trilinear"
+  ],
+  "supplementalCases": ["affine-spatial"]
+}

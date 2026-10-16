@@ -1,0 +1,60 @@
+{
+  "name": "@forgeax/engine-dawn-node",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "description": "Engine-owned Node Dawn carrier; pinned source with Metal timestamp correction and Windows DXC.",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs",
+      "default": "./src/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./src/index.mjs",
+  "types": "./src/index.d.ts",
+  "files": [
+    "dist",
+    "scripts",
+    "patches",
+    "src",
+    "LICENSE",
+    "DAWN-LICENSE",
+    "README.md",
+    "licenses"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:native": "node scripts/prepare-native.mjs"
+  },
+  "dependencies": {
+    "upstream-webgpu": "npm:webgpu@0.4.0",
+    "@webgpu/types": "0.1.71"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Native carrier correctness is covered by original Dawn and completed-frame smoke gates; no independent rendering or performance claim."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Native carrier correctness is covered by original Dawn and completed-frame smoke gates; no independent rendering or performance claim."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Native carrier correctness is covered by original Dawn and completed-frame smoke gates; no independent rendering or performance claim."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Native carrier correctness is covered by original Dawn and completed-frame smoke gates; no independent rendering or performance claim."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Native carrier correctness is covered by original Dawn and completed-frame smoke gates; no independent rendering or performance claim."
+      }
+    }
+  }
+}

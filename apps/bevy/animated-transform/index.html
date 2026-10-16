@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeaX animated Transform</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #101522;
+      }
+      canvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+      #controls {
+        position: fixed;
+        z-index: 1;
+        top: 1rem;
+        left: 1rem;
+        padding: 0.75rem;
+        color: white;
+        background: #111b;
+        font: 14px sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <button id="pause" type="button">Pause A</button>
+      <button id="resume" type="button">Resume A</button>
+      <button id="replay" type="button">Replay</button>
+      <label>Speed <input id="speed" type="range" min="0.25" max="2" step="0.25" value="1" /></label>
+    </div>
+    <canvas id="app"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

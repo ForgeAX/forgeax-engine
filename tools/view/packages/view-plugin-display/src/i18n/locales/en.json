@@ -1,0 +1,8 @@
+{
+  "display": {
+    "title": "Runtime capture",
+    "idle": "View ready (idle)",
+    "running": "Running {{service}}:{{run}}",
+    "error": "View connection error: {{message}}"
+  }
+}

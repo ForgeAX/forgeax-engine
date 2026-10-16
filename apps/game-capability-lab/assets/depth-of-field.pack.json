@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb7ce-4600-7000-8000-000000000000",
+  "assets": {
+    "plugin/engine": {
+      "kind": "plugin",
+      "payload": {
+        "module": {
+          "specifier": "./depth-of-field.plugin.ts"
+        }
+      }
+    }
+  }
+}

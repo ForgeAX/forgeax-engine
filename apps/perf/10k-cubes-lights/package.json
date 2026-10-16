@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/perf-10k-cubes-lights",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Deterministic 10,000-cube HDRP pressure consumer for engine-performance admission.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5207",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5207",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "compare:browser": "node scripts/compare-browser.mjs",
+    "benchmark:physical": "node scripts/benchmark-physical.mjs",
+    "test": "vitest run src/__tests__/workload.test.ts"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/perf-10k-cubes-lights smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Admission workload; bundle shape is not the selected outcome."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Raw frame samples are captured by the workload smoke artifact before an FPS budget is selected."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Physical benchmark is an explicit native-runner gate; invoke pnpm --filter @forgeax/perf-10k-cubes-lights benchmark:physical and attach its report when a qualified adapter is available."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/perf-10k-cubes-lights smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "The admission report is owned by the forgeax-solo run packet."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "three": "0.184.0"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.56.1",
+    "vite": "8.0.16",
+    "vitest": "4.1.11",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

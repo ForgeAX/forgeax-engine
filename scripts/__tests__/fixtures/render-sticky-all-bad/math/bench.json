@@ -1,0 +1,10 @@
+{
+  "package": "math",
+  "member": "packages/math",
+  "kind": "bench",
+  "enabled": true,
+  "status": "unavailable",
+  "value": null,
+  "threshold": null,
+  "details": { "message": "no benchmark median found" }
+}

@@ -1,0 +1,113 @@
+{
+  "name": "@forgeax/hello-m7-backend-recovery",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "M7 backend and recovery gauntlet: browser, Dawn, wgpu, null, resize, faults, and tree-shaking.",
+  "scripts": {
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:browser-device-loss": "node scripts/smoke-browser-device-loss.mjs"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-m7-backend-recovery smoke",
+    "gauntletScenario": {
+      "id": "hello-m7-backend-recovery",
+      "script": "smoke",
+      "domains": [
+        "GPU abstraction and implementations",
+        "World and host contract",
+        "Inspection, debugging, and development bridges"
+      ],
+      "packages": [
+        "@forgeax/engine-rhi",
+        "@forgeax/engine-rhi-null",
+        "@forgeax/engine-rhi-wgpu",
+        "@forgeax/engine-runtime",
+        "@forgeax/engine-rhi-debug",
+        "@forgeax/hello-bloom",
+        "@forgeax/hello-cube"
+      ],
+      "risks": [
+        "baseline",
+        "dynamic",
+        "churn",
+        "fault",
+        "recovery",
+        "cleanup",
+        "behavioral"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "dynamic",
+        "churn",
+        "fault",
+        "recovery",
+        "cleanup"
+      ],
+      "evidence": {
+        "frontDoors": [
+          "null-lifecycle",
+          "wgpu-contract",
+          "browser-submit",
+          "dawn-resize",
+          "browser-capture",
+          "same-scene-dawn-pixel-replay",
+          "browser-driver-device-loss",
+          "tree-shake"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
+      },
+      "oracle": {
+        "stdoutIncludes": [
+          "[m7-backend] null/runtime lifecycle + injected renderer recovery: PASS",
+          "[m7-backend] wgpu structured contracts: PASS",
+          "[m7-backend] browser submit recovery: PASS",
+          "[m7-backend] Dawn unsupported fallback rejection: PASS",
+          "[m7-backend] Dawn resize/resource churn: PASS",
+          "[m7-backend] browser WebGPU capture: PASS",
+          "[m7-backend] browser/driver device-loss recovery: PASS",
+          "[m7-backend] same-scene cross-backend replay: PASS",
+          "[m7-backend] debug-only tree-shake: PASS",
+          "[m7-backend] PASS - M7 backend/recovery evidence GREEN"
+        ]
+      }
+    },
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "backend recovery composition has no dedicated bundle size budget"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "backend correctness uses frame/error oracles rather than an FPS benchmark"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "resource churn is covered by lifecycle and resize gates"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-m7-backend-recovery smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app"
+      }
+    }
+  },
+  "devDependencies": {
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-null": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "playwright": "^1.50.0",
+    "pngjs": "^7.0.0",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

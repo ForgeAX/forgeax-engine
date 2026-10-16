@@ -1,0 +1,78 @@
+{
+  "name": "@forgeax/hello-multi-material",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Multi-prim + mixed-topology demo (feat-20260608-mesh-multi-section-primitive-multi-material-slot): a single MeshAsset carries two submeshes (triangle-list quad + line-list wireframe box) bound to two distinct MaterialAssets through MeshRenderer.materials[]. End-to-end proof of submeshes[i] <-> materials[i] index alignment + per-submesh PSO selection.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:m26": "node scripts/smoke-dawn.mjs --m26-recovery",
+    "smoke:m32": "node scripts/smoke-dawn.mjs --m32-recovery",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:m26:browser": "node scripts/smoke-browser.mjs",
+    "smoke:m32:browser": "node scripts/smoke-browser.mjs --m32-recovery"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/hello-multi-material smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "vite app bundle shape downstream of @forgeax/engine-runtime sizes already tracked at the package level"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "multi-material correctness exemplar; fps anchored by hello-triangle / hello-cube"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "correctness exemplar; bench focus stays on @forgeax/engine-math"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-multi-material smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike app; this is the M5 hello-multi-material multi-prim + mixed-topology exemplar"
+      }
+    },
+    "gauntletScenario": {
+      "id": "hello-multi-material-slot-override-repair",
+      "script": "smoke:m26:browser",
+      "domains": ["Asset schemas, import, and delivery", "Rendering and shader construction"],
+      "packages": ["@forgeax/engine-assets-runtime", "@forgeax/engine-render", "@forgeax/engine-runtime"],
+      "risks": ["baseline", "default-inheritance", "structured-fault", "gpu-recovery", "cleanup"],
+      "phaseInputs": ["baseline", "overflow", "repair", "cleanup"],
+      "evidence": {
+        "frontDoors": ["dawn-node", "browser-app"],
+        "legs": ["semantic", "live", "gpu", "recovery"]
+      },
+      "oracle": {
+        "stdoutIncludes": ["[m26] PASS", "[m26] Browser PASS"]
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "vite": "8.0.16",
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.56.1",
+    "pngjs": "^7.0.0"
+  }
+}

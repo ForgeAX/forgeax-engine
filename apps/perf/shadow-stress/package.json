@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/perf-shadow-stress",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Deterministic shadow-cache pressure consumer: static instanced casters, moving instances, skinned casters, 4-cascade directional and 4 spot shadow views.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5208",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5208",
+    "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:deferred-low": "PERF_QUERY='renderPath=deferred&camera=low' node scripts/smoke-dawn.mjs",
+    "motion-matrix": "node scripts/motion-matrix.mjs",
+    "test": "vitest run src/__tests__/workload.test.ts"
+  },
+  "forgeax": {
+    "smokeInvocation": "pnpm --filter @forgeax/perf-shadow-stress smoke",
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Shadow pressure workload; bundle shape is not the selected outcome."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "CPU phase samples and shadow raster counts are captured by the smoke artifact before an FPS budget is selected."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Shadow cache CPU cost is recorded by the smoke artifact; a physical-adapter bench budget is not selected yet."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/perf-shadow-stress smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "The shadow redesign report is owned by the forgeax-loop run packet."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-profiler": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "vite": "8.0.16",
+    "vitest": "4.1.11",
+    "@forgeax/engine-dawn-node": "workspace:*"
+  }
+}

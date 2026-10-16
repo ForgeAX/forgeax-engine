@@ -1,0 +1,98 @@
+{
+  "name": "@forgeax/engine-dsh",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Lifecycle-safe federation bridge between ForgeaX Engine and DeepSeek Harness.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./engine-host": {
+      "types": "./dist/engine-host.d.ts",
+      "import": "./dist/engine-host.mjs"
+    },
+    "./engine-preview": {
+      "types": "./dist/engine-preview.d.ts",
+      "import": "./dist/engine-preview.mjs"
+    },
+    "./intelligence": {
+      "types": "./dist/intelligence.d.ts",
+      "import": "./dist/intelligence.mjs"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.mjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "lib", "cordis.patch.yml", "README.md"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "pretest:integration": "pnpm build",
+    "test:integration": "node scripts/verify-dsh-federation.mjs",
+    "pretest:visual": "pnpm build",
+    "test:visual": "node scripts/verify-dsh-web-ui.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-intelligence": "workspace:*",
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^19.2.17",
+    "playwright": "^1.56.1",
+    "react": "^19.2.8"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/engine-host.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "federation is an opt-in control-plane connector outside the frame loop"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "frame-path absence is checked by topology and opt-in integration probes"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/engine-dsh test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
+}

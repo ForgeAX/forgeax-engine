@@ -1,0 +1,26 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../assets-runtime" },
+    { "path": "../ecs" },
+    { "path": "../plugin" },
+    { "path": "../render" },
+    { "path": "../render-graph" },
+    { "path": "../rhi" },
+    { "path": "../rhi-null" },
+    { "path": "../rhi-webgpu" },
+    { "path": "../scene" },
+    { "path": "../types" },
+    { "path": "../vfx" }
+  ]
+}

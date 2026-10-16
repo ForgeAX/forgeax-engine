@@ -1,0 +1,176 @@
+import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
+import type { GameProjectRoots } from '@forgeax/engine-project';
+import type { BrowserCarrierAdapter, BrowserCarrierRunIdentity } from './tools/display-carrier.js';
+
+export interface CommandError {
+  readonly code: string;
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail: Readonly<Record<string, unknown>>;
+}
+
+export type CommandResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: CommandError };
+
+export interface ProjectFacts {
+  readonly root: string;
+  readonly id: string;
+  readonly name: string;
+  readonly roots: GameProjectRoots;
+  readonly startupTimeoutMs?: number | null;
+  readonly assetRoots: readonly string[];
+  readonly packageJson: Readonly<Record<string, unknown>>;
+}
+
+export interface ProjectCommandOptions {
+  readonly root?: string;
+  readonly json?: boolean;
+  readonly port?: number;
+}
+
+export interface ProjectPortOptions {
+  readonly port: number;
+  readonly strictPort: boolean;
+}
+
+export function parseProjectPortOption(
+  value: string | undefined,
+  provided: boolean,
+): CommandResult<number | undefined> {
+  if (!provided) return { ok: true, value: undefined };
+  if (value !== undefined && /^(0|[1-9]\d*)$/.test(value)) {
+    const port = Number(value);
+    if (Number.isSafeInteger(port) && port <= 65_535) return { ok: true, value: port };
+  }
+  return {
+    ok: false,
+    error: {
+      code: 'cli-parse-error',
+      expected: '--port to be 0 or an integer from 1 to 65535',
+      hint: 'Omit --port for strict 5173, pass a positive port for a strict binding, or pass 0 for an OS-assigned port.',
+      detail: { option: '--port', received: value ?? null },
+    },
+  };
+}
+
+export function resolveProjectPort(port: number | undefined): ProjectPortOptions {
+  return { port: port ?? 5173, strictPort: port !== 0 };
+}
+
+export interface InitOptions extends ProjectCommandOptions {
+  readonly dryRun?: boolean;
+  readonly install?: boolean;
+}
+
+export interface NewOptions extends ProjectCommandOptions {
+  readonly dryRun?: boolean;
+  readonly template?: string;
+  /** Override the generated project id; defaults to the target directory basename. */
+  readonly id?: string;
+  /** Override the generated display name; defaults to the generated id. */
+  readonly name?: string;
+  /** Override the generated npm package name; defaults to the template namespace plus id. */
+  readonly packageName?: string;
+}
+
+export interface BuildOptions extends ProjectCommandOptions {
+  /** Validation-only storage-capable WebGPU raster programs; omitted publishes portable variants. */
+  readonly materialProfile?: 'webgpu-storage';
+  readonly target?: 'browser' | 'wechat' | 'tauri';
+  /** WeChat application identity; omitted opens the developer-tool tourist project. */
+  readonly appid?: string;
+  readonly base?: string;
+  readonly outDir?: string;
+  /** Forward the existing App animation policy into the generated runtime. */
+  readonly animation?: AnimationPlaybackOptions;
+  /** Emit source maps as build artifacts without adding browser map requests. */
+  readonly sourcemap?: 'hidden';
+}
+
+export interface PackageOptions extends ProjectCommandOptions {
+  readonly output?: string;
+  readonly format?: PackageFormat;
+}
+
+export type PackageFormat = 'web-zip' | 'single-html';
+
+export type CaptureBackend = 'auto' | 'software' | 'hardware';
+
+export interface BrowserCaptureOptions extends ProjectCommandOptions {
+  /** Prefer a rendering lane, or let the browser choose and report it. */
+  readonly backend?: CaptureBackend;
+  /** Backwards-compatible alias for `backend: 'software'`. */
+  readonly software?: boolean;
+  readonly output?: string;
+  readonly browser?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly waitMs?: number;
+  readonly requireUi?: boolean;
+  readonly deterministic?: boolean;
+  readonly headless?: boolean;
+  /**
+   * Existing browser-page owner for an eligible headed run. The owner keeps
+   * the Page alive; DevKit only borrows and releases its exact lease.
+   */
+  readonly carrier?: BrowserCarrierAdapter;
+  readonly carrierRun?: BrowserCarrierRunIdentity;
+  readonly carrierGeneration?: number;
+}
+
+/** @deprecated Use BrowserCaptureOptions with `backend: 'software'`. */
+export interface SoftwareCaptureOptions extends BrowserCaptureOptions {
+  readonly software: true;
+  readonly backend?: 'software';
+}
+
+export interface AssetAddOptions extends ProjectCommandOptions {
+  readonly path: string;
+  readonly dryRun?: boolean;
+}
+
+export interface AssetListOptions extends ProjectCommandOptions {
+  /** Filter by the producer-declared asset kind (for example `mesh`). */
+  readonly type?: string;
+  /** Maximum number of rows in one response. */
+  readonly limit?: number;
+  /** Opaque numeric continuation cursor returned by the previous page. */
+  readonly cursor?: string;
+}
+
+export interface AssetInspectOptions extends ProjectCommandOptions {
+  readonly subject: string;
+  /** Select one output when subject is a Pack source path. */
+  readonly sourceKey?: string;
+}
+
+export interface AssetResolveOptions extends ProjectCommandOptions {
+  readonly subject?: string;
+  readonly packageId?: string;
+  readonly sourceKey?: string;
+  readonly require?: 'identity' | 'present' | 'ready';
+  readonly requestId?: string;
+}
+
+export interface ShaderCheckOptions extends ProjectCommandOptions {
+  readonly path?: string;
+}
+
+export interface PluginCreateOptions extends ProjectCommandOptions {
+  readonly path: string;
+  readonly module?: string;
+  readonly export?: string;
+  readonly packageId?: string;
+  readonly sourceKey?: string;
+  readonly config?: unknown;
+  readonly dryRun?: boolean;
+}
+export interface PluginInspectOptions extends ProjectCommandOptions {
+  readonly guid?: string;
+}
+export interface PluginRootOptions extends ProjectCommandOptions {
+  readonly realm: keyof GameProjectRoots;
+  readonly guid: string | null;
+  readonly dryRun?: boolean;
+}

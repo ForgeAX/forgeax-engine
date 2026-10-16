@@ -1,0 +1,8 @@
+{
+  "asset": {
+    "empty": "Open an asset",
+    "unavailable": "Asset inspection unavailable",
+    "inspectFailed": "Engine asset.inspect did not return facts for this GUID.",
+    "facts": "Asset facts"
+  }
+}

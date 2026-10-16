@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgeax.dev/schemas/vertex-color-gate-report-v1.json",
+  "title": "ForgeaX vertex-color candidate gate report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "candidateSourceSha", "gates", "step7Handoff"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "status": { "enum": ["green", "failed", "blocked", "pending"] },
+    "candidateSourceSha": { "$ref": "#/$defs/sourceSha" },
+    "gates": {
+      "type": "array",
+      "minItems": 11,
+      "items": { "$ref": "#/$defs/gate" },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "id": { "const": "hello-learn-render" } }
+          }
+        },
+        { "contains": { "type": "object", "properties": { "id": { "const": "browser" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "dawn" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "parity" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "metrics" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "asset-audit" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "smoke-fleet-0" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "smoke-fleet-1" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "smoke-fleet-2" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "smoke-fleet-3" } } } },
+        { "contains": { "type": "object", "properties": { "id": { "const": "full-local-gate" } } } }
+      ]
+    },
+    "step7Handoff": { "$ref": "#/$defs/step7Handoff" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "green" } } },
+      "then": {
+        "properties": {
+          "gates": {
+            "type": "array",
+            "allOf": [
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "hello-learn-render" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": { "id": { "const": "browser" }, "status": { "const": "passed" } }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": { "id": { "const": "dawn" }, "status": { "const": "passed" } }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": { "id": { "const": "parity" }, "status": { "const": "passed" } }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": { "id": { "const": "metrics" }, "status": { "const": "passed" } }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "asset-audit" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "smoke-fleet-0" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "smoke-fleet-1" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "smoke-fleet-2" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "smoke-fleet-3" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              },
+              {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "const": "full-local-gate" },
+                    "status": { "const": "passed" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "command",
+        "exitStatus",
+        "candidateSourceSha",
+        "status",
+        "artifactRefs",
+        "detail"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "hello-learn-render",
+            "browser",
+            "dawn",
+            "parity",
+            "metrics",
+            "asset-audit",
+            "smoke-fleet-0",
+            "smoke-fleet-1",
+            "smoke-fleet-2",
+            "smoke-fleet-3",
+            "full-local-gate"
+          ]
+        },
+        "command": { "type": "string", "minLength": 1 },
+        "exitStatus": { "type": ["integer", "null"], "minimum": 0 },
+        "candidateSourceSha": { "$ref": "#/$defs/sourceSha" },
+        "status": { "enum": ["passed", "failed", "blocked", "pending"] },
+        "artifactRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "detail": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "passed" } } },
+          "then": { "properties": { "exitStatus": { "const": 0 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "failed" } } },
+          "then": { "properties": { "exitStatus": { "type": "integer", "minimum": 1 } } }
+        }
+      ]
+    },
+    "step7Handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mainAncestry", "postMergeCi", "harnessPersistence", "worktreeCleanup", "ac14"],
+      "properties": {
+        "mainAncestry": { "enum": ["pending", "blocked", "verified"] },
+        "postMergeCi": { "enum": ["pending", "blocked", "verified"] },
+        "harnessPersistence": { "enum": ["pending", "blocked", "verified"] },
+        "worktreeCleanup": { "enum": ["pending", "blocked", "verified"] },
+        "ac14": { "enum": ["blocked", "not-claimed", "verified"] }
+      }
+    }
+  }
+}

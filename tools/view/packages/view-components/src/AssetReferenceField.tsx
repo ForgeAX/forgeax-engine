@@ -1,4 +1,4 @@
-import { Box, ChevronDown, Crosshair, Focus, Folder, Image, Paintbrush } from 'lucide-react';
+import { Box, ChevronDown, Crosshair, ExternalLink, Focus, Folder, Image, Paintbrush } from 'lucide-react';
 
 import { MenuDropdown } from './components';
 import { useClipboardAction } from './clipboard';
@@ -7,6 +7,9 @@ export type AssetReferenceLabels = {
   none: string;
   missing: string;
   open: string;
+  openUnavailable: string;
+  identityUnavailable: string;
+  readOnly: string;
   useSelection: string;
   browse: string;
   reveal: string;
@@ -18,9 +21,12 @@ export type AssetReferenceLabels = {
 const DEFAULT_LABELS: AssetReferenceLabels = {
   none: 'None',
   missing: 'Missing asset',
-  open: 'Open asset',
+  open: 'Open asset viewer',
+  openUnavailable: 'Asset viewer unavailable',
+  identityUnavailable: 'Asset identity unavailable',
+  readOnly: 'Read-only asset reference',
   useSelection: 'Use selected asset',
-  browse: 'Browse assets',
+  browse: 'Browse to Asset',
   reveal: 'Reveal in Content Browser',
   more: 'More reference actions',
   clear: 'Clear',
@@ -58,6 +64,9 @@ export function AssetReferenceField({
   const missing = record?.missing === true;
   const bound = Boolean(guid || name);
   const displayName = missing ? labels.missing : bound ? name || guid : labels.none;
+  const canOpen = Boolean(guid && !missing && onOpen);
+  const openLabel = `${labels.open}: ${name || guid || displayName}`;
+  const openTitle = canOpen ? openLabel : `${openLabel} · ${missing ? labels.missing : !guid ? bound ? labels.identityUnavailable : labels.none : labels.openUnavailable}`;
   const ThumbnailIcon = /texture|image/i.test(kind) ? Image
     : /material/i.test(kind) ? Paintbrush : Box;
 
@@ -68,11 +77,11 @@ export function AssetReferenceField({
           : <span className="asset-ref-thumb-empty" />}
       </div>
       <div className="asset-ref-body">
-        <button type="button" className="asset-ref-combo" disabled={!onOpen && !onBrowse}
-          title={onOpen ? labels.open : labels.browse} data-action={openAction} onClick={onOpen ?? onBrowse}>
+        <div className="asset-ref-combo" role="textbox" aria-readonly="true" tabIndex={0}
+          aria-label={labels.readOnly} title={`${name || guid || displayName} · ${labels.readOnly}`}>
           <span className={`asset-ref-combo-label${bound && !missing ? '' : ' empty'}`}>{displayName}</span>
           <ChevronDown size={12} aria-hidden="true" />
-        </button>
+        </div>
         <div className="asset-ref-actions">
           <button type="button" className="asset-ref-act" disabled={!onUseSelection}
             title={labels.useSelection} aria-label={labels.useSelection} onClick={onUseSelection}>
@@ -81,6 +90,10 @@ export function AssetReferenceField({
           <button type="button" className="asset-ref-act" disabled={!onBrowse}
             title={labels.browse} aria-label={labels.browse} onClick={onBrowse}>
             <Folder size={13} />
+          </button>
+          <button type="button" className="asset-ref-act" disabled={!canOpen}
+            title={openTitle} aria-label={openLabel} data-action={openAction} data-testid="asset-reference-open" onClick={onOpen}>
+            <ExternalLink size={13} />
           </button>
           <button type="button" className="asset-ref-act" disabled={!guid || !onReveal}
             title={labels.reveal} aria-label={labels.reveal} onClick={onReveal}>

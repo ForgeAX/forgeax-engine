@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
-import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
+import { rendererBackend, runSmokeAppFrames, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
 // Dawn smoke for Bevy's shader/fullscreen_material reproduction.
 // FALSIFY=force-no-effect removes the post-process and must remove its pass.
 
@@ -160,23 +160,14 @@ world.spawn(
 
 world.spawn({ component: PostProcessParams, data: { shader: effectId, data: paramsBytes } }).unwrap();
 
-const started = app.start();
-if (!started.ok) {
-  console.error(`[smoke] FAIL - app.start: ${started.error.code} - ${started.error.hint}`);
-  process.exit(1);
-}
-let frames = 0;
-let passNames = [];
-for (let i = 0; i < targetFrames; i += 1) {
+const frames = await runSmokeAppFrames(app, () => {
   const due = rafQueue.shift();
-  if (!due) break;
+  if (!due) return false;
   now += 16.67;
   due.callback(now);
-  frames += 1;
-  if (i === 5) passNames = [...app.renderer.inspect().perFramePassNames];
-  if (i % 16 === 15) await delay(1);
-}
-app.stop();
+  return true;
+}, targetFrames);
+const passNames = [...app.renderer.inspect().perFramePassNames];
 
 if (!sharedDevice || !renderTarget) {
   console.error('[smoke] FAIL - no Dawn device/render target');

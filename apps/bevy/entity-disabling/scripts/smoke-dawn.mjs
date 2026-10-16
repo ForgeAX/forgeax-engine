@@ -70,7 +70,7 @@ let disabledSnapshot;
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update(DELTA_SECONDS).unwrap();
   if (frame === Math.floor(FRAMES * 40 / 180)) disabledSnapshot = example.readEntityDisablingState(world, state);
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`[smoke] draw=${draw.error.code}`);
 }
 const snapshot = example.readEntityDisablingState(world, state);

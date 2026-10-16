@@ -200,12 +200,20 @@ it.each([
         .filter((resource) => resource.kind === 'compute-program')
         .map((resource) => resource.program);
     const initialPrograms = programs(initial);
-    expect(initialPrograms).toHaveLength(2);
+    expect(initialPrograms).toHaveLength(programSource === 'loaded' ? 1 : 2);
     const repeatedPrograms = programs(f.plan(await transfer(f.extract().unwrap())).unwrap());
     expect(repeatedPrograms).toEqual(initialPrograms);
     for (let index = 0; index < initialPrograms.length; index++)
       expect(repeatedPrograms[index] === initialPrograms[index]).toBe(programSource === 'loaded');
-    if (programSource === 'loaded') expect(initialPrograms[0]).toBe(initialPrograms[1]);
+    const programNames = planResources(initial)
+      .filter((resource) => resource.kind === 'compute-program')
+      .map((resource) => resource.name);
+    const projectPrograms = planPasses(initial).flatMap((pass) =>
+      pass.kind === 'compute' && pass.name.endsWith('.project') ? [pass.program] : [],
+    );
+    expect(projectPrograms).toHaveLength(2);
+    expect(projectPrograms.every((name) => programNames.includes(name))).toBe(true);
+    expect(projectPrograms[0] === projectPrograms[1]).toBe(programSource === 'loaded');
     expect(freezeVfxPlan(f.host.feature.identity, initial, f.targets).ok).toBe(true);
     expect(planPasses(initial).filter((pass) => pass.kind === 'raster')).toHaveLength(1);
     expect(

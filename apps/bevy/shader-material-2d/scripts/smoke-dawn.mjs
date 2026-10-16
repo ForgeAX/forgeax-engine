@@ -84,7 +84,7 @@ buildShaderMaterial2dWorld(world, unwrapHandle(textureHandle), WIDTH / HEIGHT);
 
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update().unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`${draw.error.code}: ${draw.error.hint}`);
   await delay(0);
 }

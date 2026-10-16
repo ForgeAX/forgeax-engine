@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -10,6 +10,7 @@ import { ViewWorkspaceBroker } from '../packages/view-workspace-core/src/broker.
 import { VIEW_FILE_GET_SERVICE } from '../packages/view-workspace-core/src/contract.ts';
 import {
   classifyFile,
+  listWorkspaceHtmlFiles,
   MAX_BINARY_PREVIEW_BYTES,
   readFilePreview,
   readWorkspaceFilePreview,
@@ -110,4 +111,18 @@ describe('content-browser source file preview', () => {
       (error) => error.detail?.remoteCode === 'view-workspace-invalid-args' || /path/.test(error.message),
     );
   });
+});
+
+it('lists HTML only beneath configured asset directories, including non-default roots', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'view-html-roots-')));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  for (const directory of ['content/ui', 'shared', 'assets', 'src']) {
+    await mkdir(join(root, directory), { recursive: true });
+    await writeFile(join(root, directory, 'guide.html'), '<main>Guide</main>');
+  }
+  await writeFile(join(root, 'index.html'), '<main>Entry</main>');
+  const result = await listWorkspaceHtmlFiles({ project: { id: 'p', root, assetRoots: ['content', 'content/ui', 'shared', 'missing'] } });
+  assert.deepEqual(result.files.sort(), ['content/ui/guide.html', 'shared/guide.html']);
+  assert.equal(result.hasMore, false);
+  assert.deepEqual((await listWorkspaceHtmlFiles({ project: { id: 'p', root, assetRoots: [] } })).files, []);
 });

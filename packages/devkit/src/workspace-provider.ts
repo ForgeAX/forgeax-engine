@@ -284,6 +284,7 @@ function assertProject(value: unknown, facts: ProjectFacts): EngineWorkspaceProj
   return {
     id: facts.id,
     root: facts.root,
+    assetRoots: facts.assetRoots,
     ...(typeof project.name === 'string' ? { name: project.name } : { name: facts.name }),
     ...(typeof project.revision === 'string' ? { revision: project.revision } : {}),
   };
@@ -1545,7 +1546,12 @@ export function createDevKitWorkspaceProvider(
               },
             }
           : {}),
-        project: { id: facts.value.id, root: facts.value.root, name: facts.value.name },
+        project: {
+          id: facts.value.id,
+          root: facts.value.root,
+          name: facts.value.name,
+          assetRoots: facts.value.assetRoots,
+        },
         get target() {
           return currentTarget;
         },

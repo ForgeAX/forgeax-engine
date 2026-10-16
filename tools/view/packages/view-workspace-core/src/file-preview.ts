@@ -135,12 +135,19 @@ export async function listWorkspaceHtmlFiles(workspace: { project?: WorkspacePro
   const root = workspace?.project?.root;
   if (typeof root !== 'string' || !root) throw workspaceError('view-workspace-project-closed', 'an open project', 'Open a project before listing HTML files.');
   const files: string[] = [];
-  const queue = [''];
+  const queue = [...(workspace?.project?.assetRoots ?? [])];
   let visited = 0;
+  const directories = new Set<string>();
   while (queue.length && visited < 5000 && files.length < 500) {
     const directory = queue.shift()!;
+    if (directories.has(directory)) continue;
+    directories.add(directory);
     let entries;
-    try { entries = await readdir(resolve(root, directory), { withFileTypes: true }); }
+    try {
+      const path = resolve(root, directory);
+      if (await realpath(path) !== path) continue;
+      entries = await readdir(path, { withFileTypes: true });
+    }
     catch { continue; }
     for (const entry of entries) {
       if (++visited > 5000) break;

@@ -129,7 +129,11 @@ describe('post shader color-domain contract', () => {
   it('keeps the sole OETF free of software precision emulation', () => {
     expect(common).not.toContain('quantizeToF16');
     expect(outputEncoding).not.toContain('quantizeToF16');
-    expect(tonemap).not.toContain('quantizeToF16');
+    const code = codeOnly(tonemap);
+    expect(functionBody(code, 'mapTonemap')).not.toContain('quantizeToF16');
+    expect(functionBody(code, 'encodeFinal')).not.toContain('quantizeToF16');
+    // Fused tone/LUT work retains the two physical binary16 store boundaries.
+    expect(functionBody(code, 'fs_tone_lut_encode').match(/quantizeToF16/g)).toHaveLength(2);
     expect(tonemap).not.toContain('Float16');
   });
 

@@ -63,12 +63,10 @@ describe('volumetric fog RenderGraph topology', () => {
       fileURLToPath(new URL('../volume/resources.ts', import.meta.url)),
       'utf8',
     );
-    const passes = readFileSync(
-      fileURLToPath(new URL('../volume/passes.ts', import.meta.url)),
-      'utf8',
-    );
     expect(resources).toContain("VOLUME_FROXEL_FORMAT = 'rgba8unorm'");
-    expect(passes).toContain('format: VOLUME_FROXEL_FORMAT');
+    expect(
+      readFileSync(fileURLToPath(new URL('../volume/programs.ts', import.meta.url)), 'utf8'),
+    ).toContain('format: VOLUME_FROXEL_FORMAT');
     expect(shaderSource('volume-inject.wgsl')).toContain(
       'texture_storage_2d_array<rgba8unorm, write>',
     );
@@ -156,7 +154,9 @@ describe('volumetric fog RenderGraph topology', () => {
     expect(shaderSource('volume-composite.wgsl')).toContain('edge_aware_resolved_volume');
     expect(shaderSource('volume-composite.wgsl')).toContain('textureDimensions(resolved_volume)');
     expect(passes).toContain("{ resource: inputs.density, usage: 'sampled-read' }");
-    expect(passes).toContain("viewDimension: '2d-array'");
+    expect(
+      readFileSync(fileURLToPath(new URL('../volume/programs.ts', import.meta.url)), 'utf8'),
+    ).toContain("viewDimension: '2d-array'");
     expect(shaderSource('volume-composite.wgsl')).toContain('linear_scene_depth');
     expect(shaderSource('volume-composite.wgsl')).toContain('depth_weight');
     expect(shaderSource('volume-temporal.wgsl')).toContain('temporalPreviousViewProj');

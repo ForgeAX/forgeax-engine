@@ -51,6 +51,56 @@ afterEach(async () => {
 });
 
 describe('native preview subject evidence', () => {
+  it('retries an unavailable adapter once with the software backend', async () => {
+    const unavailable = {
+      ok: false,
+      error: {
+        code: 'tool-preview-browser-host-failed',
+        expected: 'an available adapter',
+        hint: 'select an available adapter',
+        detail: { phase: 'capture-startup', cause: { code: 'adapter-unavailable' } },
+      },
+    };
+    runBrowserResourcePreviewHost.mockResolvedValue(unavailable);
+    const preview = nativePreviewTools.find((tool) => tool.descriptor.id === 'asset.mesh.preview');
+    if (!preview) throw new Error('Missing mesh preview');
+    await expect(
+      runNativePreviewTool(
+        preview,
+        { guid: '019fb7ce-3200-7000-8000-00000000000d' },
+        {},
+        '/tmp/forgeax-preview-adapter-unavailable',
+      ),
+    ).resolves.toMatchObject({ outcome: 'failed' });
+    expect(runBrowserResourcePreviewHost).toHaveBeenCalledTimes(2);
+    expect(runBrowserResourcePreviewHost.mock.calls[1]?.[6]).toMatchObject({ backend: 'software' });
+  });
+
+  it('returns a GPU replay failure once without rerunning the completed capture', async () => {
+    const evidence = { kind: 'png' as const, digest: 'sha256:failed', uri: 'capture.png' };
+    runBrowserResourcePreviewHost.mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'tool-preview-browser-host-failed',
+        expected: 'fresh replay',
+        hint: 'repair the replay validation error',
+        detail: { phase: 'replay-run', cause: { code: 'webgpu-runtime-error' } },
+      },
+      artifacts: [evidence],
+    });
+    const preview = nativePreviewTools.find((tool) => tool.descriptor.id === 'asset.mesh.preview');
+    if (!preview) throw new Error('Missing mesh preview');
+    await expect(
+      runNativePreviewTool(
+        preview,
+        { guid: '019fb7ce-3200-7000-8000-00000000000d' },
+        {},
+        '/tmp/forgeax-preview-replay-failed',
+      ),
+    ).resolves.toMatchObject({ outcome: 'failed', artifacts: [evidence] });
+    expect(runBrowserResourcePreviewHost).toHaveBeenCalledOnce();
+  });
+
   it('retains capture artifacts while returning a structured capability failure', async () => {
     const guid = '019fb7ce-3200-7000-8000-00000000000e';
     const evidence = {

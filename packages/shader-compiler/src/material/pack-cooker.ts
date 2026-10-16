@@ -21,8 +21,13 @@ import {
   standardSurfaceParameters,
   unlitMaterialParameters,
 } from '@forgeax/engine-types';
-import { cookMaterialAsset } from './cook.js';
+import type { MaterialCookRequest } from './cook.js';
+import { withNodeMaterialWorkers } from './node-material-cooker.js';
 import { createNodeMaterialProgramCompiler, mapMaterialVariants } from './node-program-compiler.js';
+import {
+  createMaterialPackVariantCompiler,
+  materialPackSourceIdentity,
+} from './pack-variant-reuse.js';
 import { cookedRecord, materialPrograms, rayMaterialProgram } from './publication.js';
 import { type CookedRayMaterial, cookRayMaterial } from './ray-material.js';
 import { resolveMaterialAsset } from './resolve.js';
@@ -315,12 +320,6 @@ function materialModuleAliases(
 const compiler = createNodeMaterialProgramCompiler();
 const compile = compiler.compile;
 
-async function cookVariant(request: Parameters<typeof cookMaterialAsset>[0]) {
-  const cooked = await cookMaterialAsset(request, compile);
-  if (!cooked.ok) throw cooked.error;
-  return cooked.value;
-}
-
 function materialSourceRelativePath(path: string, root: string): string | undefined {
   const absolutePath = resolve(path);
   const localPath = relative(root, absolutePath);
@@ -348,7 +347,15 @@ export function createMaterialPackCooker(
   if (options.profile !== undefined && options.profile !== 'webgpu-storage')
     throw new Error('material profile must be webgpu-storage when provided');
   const storageOnly = options.profile === 'webgpu-storage';
-  return {
+  // The material Worker replaces this cooker when roots/profile change; its
+  // bounded preparation roster never outlives that existing owner.
+  const compilePackVariant = createMaterialPackVariantCompiler(compile);
+  const cookVariant = async (request: MaterialCookRequest, sourceIdentity: string | undefined) => {
+    const cooked = await compilePackVariant(request, sourceIdentity);
+    if (!cooked.ok) throw cooked.error;
+    return cooked.value;
+  };
+  const cooker: NativeCooker = {
     key: 'material',
     concurrency: 'parallel',
     async cacheIdentity() {
@@ -456,6 +463,24 @@ export function createMaterialPackCooker(
       if (!catalog.ok) {
         throw catalog.error;
       }
+      // All records have just been read from their authoritative files. Retain
+      // the complete namespace and paths, including aliases and transitive inputs.
+      const fingerprintField = Object.getOwnPropertyDescriptor(input, 'compilerFingerprint');
+      const wasm = Object.getOwnPropertyDescriptor(input, 'wasm');
+      const sourceIdentity = [fingerprintField, wasm].some(
+        (field) => field !== undefined && !('value' in field),
+      )
+        ? undefined
+        : materialPackSourceIdentity([
+            sourceRoots,
+            sources.engine,
+            sources.project,
+            aliases,
+            fingerprintField?.value,
+            wasm?.value,
+          ]);
+      const cookRaster = (request: MaterialCookRequest) =>
+        compilePackVariant(request, sourceIdentity);
       const table = { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source };
       const resolved = resolveMaterialAsset(normalizedInput.guid, table);
       if (!resolved.ok) throw resolved.error;
@@ -477,15 +502,12 @@ export function createMaterialPackCooker(
             ? ('skinned' as const)
             : ('mesh' as const),
       };
-      const cooked = await cookMaterialAsset(
-        {
-          material: normalizedInput.guid,
-          table,
-          sources: catalog.value,
-          context,
-        },
-        compile,
-      );
+      const cooked = await cookRaster({
+        material: normalizedInput.guid,
+        table,
+        sources: catalog.value,
+        context,
+      });
       if (!cooked.ok) {
         throw cooked.error;
       }
@@ -509,15 +531,12 @@ export function createMaterialPackCooker(
         ) === true;
 
       if (resolvedAsset.passes?.some((pass) => UNLIT_ROOT_MODULES.has(pass.program.module))) {
-        const skinned = await cookMaterialAsset(
-          {
-            material: normalizedInput.guid,
-            table,
-            sources: catalog.value,
-            context: { ...context, geometry: 'skinned' },
-          },
-          compile,
-        );
+        const skinned = await cookRaster({
+          material: normalizedInput.guid,
+          table,
+          sources: catalog.value,
+          context: { ...context, geometry: 'skinned' },
+        });
         if (!skinned.ok) throw skinned.error;
         passes.push(...skinned.value.passes);
       }
@@ -531,20 +550,17 @@ export function createMaterialPackCooker(
         isStandardRootModule(pass.program.module),
       );
       if (visiblePasses !== undefined && visiblePasses.length > 0) {
-        const visible = await cookMaterialAsset(
-          {
-            material: normalizedInput.guid,
-            table: {
-              [normalizedInput.guid]: {
-                ...resolvedAsset,
-                passes: visiblePasses as unknown as NonNullable<MaterialAsset['passes']>,
-              },
+        const visible = await cookRaster({
+          material: normalizedInput.guid,
+          table: {
+            [normalizedInput.guid]: {
+              ...resolvedAsset,
+              passes: visiblePasses as unknown as NonNullable<MaterialAsset['passes']>,
             },
-            sources: catalog.value,
-            context: { ...context, visibleSurface: true },
           },
-          compile,
-        );
+          sources: catalog.value,
+          context: { ...context, visibleSurface: true },
+        });
         if (!visible.ok) throw visible.error;
         passes.push(...visible.value.passes.filter((pass) => pass.context.visibleSurface === true));
       }
@@ -564,29 +580,23 @@ export function createMaterialPackCooker(
       );
       for (const geometry of fallbackGeometries) {
         for (const backend of ['webgpu', 'webgl2'] as const) {
-          const fallback = await cookMaterialAsset(
-            {
-              material: normalizedInput.guid,
-              table,
-              sources: catalog.value,
-              context: { ...context, geometry, backend, capability: 'uniform-fallback' },
-            },
-            compile,
-          );
+          const fallback = await cookRaster({
+            material: normalizedInput.guid,
+            table,
+            sources: catalog.value,
+            context: { ...context, geometry, backend, capability: 'uniform-fallback' },
+          });
           if (!fallback.ok) throw fallback.error;
           passes.push(...fallback.value.passes);
         }
       }
       if (spriteRoot) {
-        const instanced = await cookMaterialAsset(
-          {
-            material: normalizedInput.guid,
-            table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
-            sources: catalog.value,
-            context: { ...DEFAULT_MATERIAL_VARIANT_CONTEXT, geometry: 'sprite-instances' },
-          },
-          compile,
-        );
+        const instanced = await cookRaster({
+          material: normalizedInput.guid,
+          table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
+          sources: catalog.value,
+          context: { ...DEFAULT_MATERIAL_VARIANT_CONTEXT, geometry: 'sprite-instances' },
+        });
         if (!instanced.ok) throw instanced.error;
         passes.push(...instanced.value.passes);
       }
@@ -614,12 +624,15 @@ export function createMaterialPackCooker(
         textureVariants,
         compiler.concurrency,
         ({ projection, capability }) =>
-          cookVariant({
-            material: normalizedInput.guid,
-            table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
-            sources: catalog.value,
-            context: { ...context, ...projection, capability },
-          }),
+          cookVariant(
+            {
+              material: normalizedInput.guid,
+              table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
+              sources: catalog.value,
+              context: { ...context, ...projection, capability },
+            },
+            sourceIdentity,
+          ),
       );
       for (const [index, specialized] of specializedVariants.entries()) {
         const projection = textureVariants[index]?.projection;
@@ -656,13 +669,16 @@ export function createMaterialPackCooker(
         [...colorContexts.values()],
         compiler.concurrency,
         (colorContext) =>
-          cookVariant({
-            material: normalizedInput.guid,
-            table,
-            sources: catalog.value,
-            context: { ...colorContext, pipeline: context.pipeline, pass: context.pass },
-            vertexColorAvailable: true,
-          }),
+          cookVariant(
+            {
+              material: normalizedInput.guid,
+              table,
+              sources: catalog.value,
+              context: { ...colorContext, pipeline: context.pipeline, pass: context.pass },
+              vertexColorAvailable: true,
+            },
+            sourceIdentity,
+          ),
       );
       for (const colored of coloredVariants) {
         passes.push(
@@ -779,4 +795,5 @@ export function createMaterialPackCooker(
       };
     },
   };
+  return withNodeMaterialWorkers(cooker, roots, options.profile);
 }

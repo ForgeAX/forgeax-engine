@@ -554,15 +554,17 @@ async function createSnapshot(
   );
   const scanned =
     options.inventory === undefined
-      ? await scanInventory(
-          scanRoots(options),
-          partialRead
+      ? await scanInventory(scanRoots(options), {
+          // Authoring queries and source edits consume declarations, never
+          // executable build closures or their retained Worker leases.
+          scriptablePack: { metadataOnly: true },
+          ...(partialRead
             ? {
                 onSourceFailure: (sourcePath, error) =>
                   sourceFailures.set(sourcePath, scanFailure(operation, error)),
               }
-            : {},
-        )
+            : {}),
+        })
       : await options.inventory();
   if (!scanned.ok) return err(scanFailure(operation, scanned.error));
   const subjects = new Map<string, Subject>();

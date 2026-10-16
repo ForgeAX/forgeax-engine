@@ -11,7 +11,7 @@ export async function mountSceneTreePanel(props: ComponentProps<typeof SceneTree
   const root = createRoot(props.mountElement);
   root.render(
     <PanelVisibilityProvider element={props.mountElement}><ClipboardProvider writeText={props.writeClipboard}><OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
-      <SceneTreePanel client={props.client} />
+      <SceneTreePanel client={props.client} browseAsset={props.browseAsset} canBrowseAsset={props.canBrowseAsset} assetReferences={props.assetReferences} />
     </OverlayRootProvider></ClipboardProvider></PanelVisibilityProvider>,
   );
   return async () => root.unmount();

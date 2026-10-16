@@ -96,7 +96,7 @@ for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
   const elapsed = process.env.FALSIFY === 'freeze-material' ? 0 : frame * FIXED_DT;
   stepAnimatedMaterials(world, scene, elapsed);
   world.update().unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) errors.push(draw.error);
   if (frame === 0) await capture('early');
   if (frame === FRAME_COUNT - 1) await capture('late');

@@ -21,6 +21,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { withFoliageMaterialModule } from '../../../../apps/hello/foliage-transmission/src/material-contract';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -218,16 +219,12 @@ export async function verifySubsurface(
     for (let frame = 0; frame < testQuality.staticFrames; frame++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      if (frame === testQuality.staticFrames - 1) {
-        if (renderer.requestObservation === undefined)
-          throw new Error('HDR observations unavailable');
-        renderValue(renderer.requestObservation(['linear-hdr']));
-      }
       const draw = async () => {
-        receipt = renderValue(
-          renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+        receipt = await drawReadyFrame(
+          renderer,
+          { leases: [lease], camera: { lease }, environment: { lease } },
+          frame === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
         );
-        renderValue(await receipt.completed);
       };
       if (
         kind === 'rigid' &&

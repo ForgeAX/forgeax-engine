@@ -40,7 +40,7 @@ import {
 } from './fold-buckets';
 import { createPassTimingInstrumentation } from './gpu-pass-timing/instrumentation';
 import { uploadMaterialUniforms } from './material-uniforms';
-import { createShadowDispatchProjectionOwner } from './shadow-pass';
+import { createShadowDispatchProjectionOwner, prepareShadowMaterialPipelines } from './shadow-pass';
 import {
   disposeTargetCaptureLighting,
   prepareTargetCaptureLighting,
@@ -117,6 +117,7 @@ import {
 } from '../pipeline/dynamic-resolution';
 import { inspectStandardLighting } from '../pipeline/standard-lighting/inspection';
 import { standardLightingTopologySignature } from '../pipeline/standard-lighting/topology';
+import { standardPipeline } from '../pipeline/standard-pipeline';
 import { inspectPointShadow } from '../point-shadow-inspection';
 import type {
   CameraSnapshot,
@@ -149,6 +150,7 @@ import type { SurfaceDynamicInputFrame } from '../surface/dynamic-input';
 import { terrainShadowReceivers } from '../terrain/shadow-family';
 import type { TransmissionDemand } from '../transmission/projection';
 import { hasVolumetricFogCapability } from '../volume/capability';
+import { projectVolumeCompositeBounds } from '../volume/composite-scissor';
 import { inspectVolumetricFogResources } from '../volume/resources';
 import { resolveVolumeTemporalReset, type VolumeTemporalSignature } from '../volume/temporal';
 import {
@@ -188,6 +190,7 @@ import {
   promoteVolumetricFogParams,
   stageVolumetricFogParams,
 } from './volume-params';
+import { volumetricFogForView } from './volume-view';
 
 export {
   buildDispatchPlan,
@@ -1611,12 +1614,22 @@ export function* prepareFrameRecording(
       >;
     }
   > = [];
+  let completion: Promise<unknown> | undefined;
+  let fallbackReadback:
+    | Promise<{
+        readonly linearHdr: readonly [number, number, number, number];
+        readonly hash: string;
+        readonly graphGeneration: number;
+        readonly textureIdentity: number;
+      }>
+    | undefined;
   let captureCompletion: Promise<unknown> | undefined;
   let resolutionTiming: GpuTimingCapture | undefined;
   let volumeInspectionReady = false;
   let volumeSubmissionAttempted = false;
   let preparedVolumetricFogForInspection: VolumetricFogFrameContext | undefined;
   let volumeCapabilityForInspection = false;
+  let viewVolumetricFogForInspection = volumetricFog;
   try {
     // Case D: N>1 Camera => fire onError, use first hit (D-S7).
     if (activeCameras.length > 1) {
@@ -1832,6 +1845,7 @@ export function* prepareFrameRecording(
       }
       const generation = internals.deviceScope.generation;
       const pending = yield {
+        presentation: 'pending' as const,
         encoder: pendingEncoder.value,
         device: internals.device,
         beforeSubmit: internals.beforeSubmit,
@@ -1891,6 +1905,13 @@ export function* prepareFrameRecording(
     volumeInspectionReady = true;
     volumeCapabilityForInspection = volumeCapability;
 
+    const viewVolumetricFog = volumeCapability
+      ? volumetricFogForView(volumetricFog, camera, internals.canvas.width, internals.canvas.height)
+      : volumetricFog;
+    const volumeViewCulled =
+      volumetricFog?.status === 'available' && viewVolumetricFog === undefined;
+    viewVolumetricFogForInspection = viewVolumetricFog;
+
     const preparedSpotLightProjector = prepareSpotLightProjectorFrame(
       internals,
       world,
@@ -1905,7 +1926,7 @@ export function* prepareFrameRecording(
       frameState,
       world,
       worlds,
-      volumetricFog,
+      viewVolumetricFog,
       lights,
       volumeCapability,
       preparedSpotLightProjector,
@@ -1917,7 +1938,7 @@ export function* prepareFrameRecording(
     // An absent component is different: a successful no-volume frame retires
     // the accepted projection and compiles the normal graph.
     const acceptedFallback =
-      volumeCapability && volumetricFog !== undefined && preparedVolumetricFog === undefined
+      volumeCapability && viewVolumetricFog !== undefined && preparedVolumetricFog === undefined
         ? frameState.volumetricFogAccepted
         : undefined;
     const acceptedFallbackContext =
@@ -1931,7 +1952,7 @@ export function* prepareFrameRecording(
     const graphVolumetricFog = volumeCapability
       ? preparedVolumetricFog === undefined
         ? acceptedFallback
-        : volumetricFog
+        : viewVolumetricFog
       : undefined;
     const baseVolumetricFogContext = preparedVolumetricFog ?? acceptedFallbackContext;
     // A volume graph replacement is provisional whenever it can affect the
@@ -2278,6 +2299,11 @@ export function* prepareFrameRecording(
             ...(internals.getMaterialShaderPipelineEntry === undefined
               ? {}
               : { materialPipelineFactory: internals.getMaterialShaderPipelineEntry }),
+            ...(internals.prepareMaterialShaderPipelineEntry === undefined
+              ? {}
+              : {
+                  materialPipelinePreparationFactory: internals.prepareMaterialShaderPipelineEntry,
+                }),
             ...(gpuShadowViews
               ? {
                   ...(shadowCasterDrawKeys === undefined ? {} : { shadowCasterDrawKeys }),
@@ -3063,6 +3089,7 @@ export function* prepareFrameRecording(
         validatedShadowForResidency ?? [],
         materialBindingClasses,
         gpuOwnsShadowGeometry,
+        rendererRecording,
       ),
     );
     const validatedOrdered = dispatchPlan.validatedOrdered;
@@ -3394,6 +3421,9 @@ export function* prepareFrameRecording(
       ...(shadowDispatch === undefined ? {} : { shadowDispatch }),
     };
     const passCtx: _InternalRenderPipelineContext = {
+      pipelinePreparationEntries: validatedProjection.filter(
+        (entry) => entry.source.pipelinePreparation !== undefined,
+      ),
       mainPassMaterialSelection: createMainPassMaterialSelectionOwner(shadowRoster),
       shadowDispatchProjection: createShadowDispatchProjectionOwner(shadowRoster),
       ...(visibleSurface === undefined ? {} : { visibleSurface }),
@@ -3456,7 +3486,31 @@ export function* prepareFrameRecording(
         : { atmosphereShaders: internals.atmosphereShaders }),
       ...(activeVolumetricFogContext === undefined
         ? {}
-        : { volumetricFog: activeVolumetricFogContext }),
+        : {
+            volumetricFog: {
+              ...activeVolumetricFogContext,
+              compositeProjectedBounds:
+                camera.captureProjection === undefined &&
+                camera.target === undefined &&
+                camera.view === undefined &&
+                graphVolumetricFog?.status === 'available' &&
+                graphVolumetricFog.fog !== undefined &&
+                (graphVolumetricFog.additional ?? []).every(
+                  (member) => member.status === 'available' && member.fog !== undefined,
+                )
+                  ? projectVolumeCompositeBounds(
+                      [
+                        graphVolumetricFog.fog.bounds,
+                        ...(graphVolumetricFog.additional ?? []).flatMap((member) =>
+                          member.fog === undefined ? [] : [member.fog.bounds],
+                        ),
+                      ],
+                      currentUnjitteredViewProjection,
+                      camera.position,
+                    )
+                  : undefined,
+            },
+          }),
       ...(preparedSpotLightProjector === undefined
         ? {}
         : { spotLightProjector: preparedSpotLightProjector }),
@@ -3484,6 +3538,9 @@ export function* prepareFrameRecording(
                   ...(gpuDrawReceipts === undefined
                     ? {}
                     : { gpuDrivenDrawReceipts: gpuDrawReceipts }),
+                  ...(acceptedShadowMaterialArtifacts === undefined
+                    ? {}
+                    : { gpuDrivenShadowPreparationArtifacts: acceptedShadowMaterialArtifacts }),
                   gpuDrivenShadowViews: rasterGpuDriven.shadowViewPool,
                   gpuDrivenShadowBatchProjections: rasterGpuDriven.shadowBatchProjections,
                   gpuDrivenShadowDrawKeys: rasterGpuDriven.shadowDrawKeys,
@@ -3523,6 +3580,40 @@ export function* prepareFrameRecording(
       ...(shadowCasterWorldKeys === undefined ? {} : { shadowCasterWorldKeys }),
       ...(profilePhase !== undefined ? { profilePhase } : {}),
     };
+    if (
+      frameState.compiledFrameGraph?.graph === preflightGraph &&
+      frameState.compiledFrameGraph.prepareGpuDrivenPipelines?.(
+        passCtx.pipelinePreparationEntries,
+        acceptedMaterialArtifacts,
+      ) === false
+    ) {
+      frameState.pipelinePreparationPending = true;
+    }
+    if (hasShadowViews)
+      prepareShadowMaterialPipelines(
+        passCtx,
+        rendererRecording,
+        frameState.compiledFrameGraph?.graph === preflightGraph
+          ? frameState.compiledFrameGraph.requiresShadowPipelinePreparation
+          : undefined,
+      );
+    if (frameState.pipelinePreparationPending) {
+      // Required authored depth PSOs are still compiling. Submit the ordinary
+      // completion barrier, but do not encode a partial atlas or promote scene,
+      // shadow-cache, capture, or temporal-history state as a rendered picture.
+      const generation = internals.deviceScope.generation;
+      const pending = yield {
+        presentation: 'pending' as const,
+        encoder,
+        device: internals.device,
+        beforeSubmit: internals.beforeSubmit,
+        isCurrent: () => internals.deviceScope.generation === generation,
+        reportError: (error: RhiError) => internals.errorRegistry.fire(error),
+      };
+      abortPreparedGpuDriven();
+      featureGraphCandidate?.onRejected?.();
+      return pending.ok;
+    }
     uploadMaterialUniforms(passCtx);
     {
       const timing = internals.gpuPassTimingCapture;
@@ -3606,7 +3697,7 @@ export function* prepareFrameRecording(
       if (submitted)
         for (const capture of captureFrames)
           internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
-      if (submitted && captureFrames.length > 0)
+      if (submitted && (captureFrames.length > 0 || probeCaptureFrames.length > 0))
         captureCompletion =
           internals.gpuPassTimingSubmittedWork ?? internals.device.queue.onSubmittedWorkDone();
       return submitted;
@@ -3618,15 +3709,6 @@ export function* prepareFrameRecording(
     if (fallbackReadbackRequest !== undefined) {
       frameState.reflectionFallbackReadback = fallbackReadbackRequest;
     }
-    let completion: Promise<unknown> | undefined;
-    let fallbackReadback:
-      | Promise<{
-          readonly linearHdr: readonly [number, number, number, number];
-          readonly hash: string;
-          readonly graphGeneration: number;
-          readonly textureIdentity: number;
-        }>
-      | undefined;
     const stagedTemporalFrame = {
       frameId: frameState.frameNumber,
       currentViewProjection: new Float32Array(currentViewProjection),
@@ -3642,6 +3724,15 @@ export function* prepareFrameRecording(
     volumeSubmissionAttempted = volumeTopologyCandidate || activeVolumetricFogContext !== undefined;
     const ssrOwner = frameState.ssrHistoryOwner;
     const ssrCandidate = ssrOwner?.candidate;
+    // Preparation precedes graph compilation. Accept the submitted stock graph's
+    // generation with its depth, rather than invalidating it again next frame.
+    const submittedShadowGraphGeneration =
+      rendererRecording &&
+      !captureOnly &&
+      frameState.activePipeline === standardPipeline &&
+      frameState.compiledFrameGraph?.graph === preflightGraph
+        ? frameState.graphGeneration
+        : undefined;
     const frameHooks =
       preparedGpuDriven === undefined &&
       ssrCandidate === undefined &&
@@ -3690,7 +3781,7 @@ export function* prepareFrameRecording(
                   reportSsrHistoryFailure(internals, 'submit', committed.error);
                 }
               }
-              preparedGpuDriven?._commitResourceReplacement();
+              preparedGpuDriven?._commitResourceReplacement(submittedShadowGraphGeneration);
               const consumed = preparedGpuDriven?._consumeSurfaceDynamicInput?.(
                 frameState.frameNumber,
               );
@@ -3801,25 +3892,6 @@ export function* prepareFrameRecording(
     if (!submitted && fallbackReadbackRequest !== undefined) {
       internals.device.destroyBuffer(fallbackReadbackRequest.buffer);
     }
-    const fallbackSource =
-      frameState.reflectionFallbackObservationSource as RenderFrameState['reflectionFallbackObservationSource'];
-    const reflectionFallbackCompletion = cubeCapture?.reflectionProbes?.completeSubmission(
-      submitted,
-      completion,
-      fallbackSource === undefined
-        ? undefined
-        : {
-            format: fallbackSource.descriptor.format,
-            size: fallbackSource.descriptor.size,
-            frameId: fallbackSource.frameId,
-            graphGeneration: frameState.graphGeneration,
-            textureIdentity: getTextureIdentity(fallbackSource.texture),
-            ...(fallbackReadback === undefined ? {} : { readback: fallbackReadback }),
-          },
-      frameState.reflectionFallbackDemand,
-    );
-    frameState.reflectionFallbackCompletion = reflectionFallbackCompletion;
-    frameState.reflectionFallbackObservationSource = undefined;
     if (submitted) {
       frameState.shadowRaster.commit();
       frameState.directionalShadowProjection = lights.lightViewProj;
@@ -3834,12 +3906,18 @@ export function* prepareFrameRecording(
       frameState.recoveryMaterialArtifacts = acceptedMaterialArtifacts;
       frameState.recoveryShadowMaterialArtifacts = acceptedShadowMaterialArtifacts;
       if (graphVolumetricFog === undefined) {
-        frameState.volumetricFogAccepted = undefined;
-        frameState.volumetricFogAcceptedContext = undefined;
+        // A valid offscreen view is an actual no-volume submission, not an
+        // upload failure. Retain only the previously accepted source/resources
+        // for degraded-authoring LKG; never replay that projection offscreen.
+        // Genuine component removal still retires everything normally.
+        if (!volumeViewCulled) {
+          frameState.volumetricFogAccepted = undefined;
+          frameState.volumetricFogAcceptedContext = undefined;
+          retireVolumetricFogParams(internals, frameState);
+        }
         frameState.volumetricFogHistoryGraph = null;
         frameState.volumetricFogHistorySlot = null;
         frameState.volumetricFogHistorySignature = null;
-        retireVolumetricFogParams(internals, frameState);
       } else if (
         activeVolumetricFogContext !== undefined &&
         activeVolumetricFogSignature !== undefined
@@ -3879,6 +3957,27 @@ export function* prepareFrameRecording(
     }
     return submitted;
   } finally {
+    // Probe tickets belong to this recording attempt, including native
+    // preparation barriers which return before queue submission.
+    const fallbackSource =
+      frameState.reflectionFallbackObservationSource as RenderFrameState['reflectionFallbackObservationSource'];
+    const reflectionFallbackCompletion = cubeCapture?.reflectionProbes?.completeSubmission(
+      submitted,
+      completion ?? captureCompletion,
+      fallbackSource === undefined
+        ? undefined
+        : {
+            format: fallbackSource.descriptor.format,
+            size: fallbackSource.descriptor.size,
+            frameId: fallbackSource.frameId,
+            graphGeneration: frameState.graphGeneration,
+            textureIdentity: getTextureIdentity(fallbackSource.texture),
+            ...(fallbackReadback === undefined ? {} : { readback: fallbackReadback }),
+          },
+      frameState.reflectionFallbackDemand,
+    );
+    frameState.reflectionFallbackCompletion = reflectionFallbackCompletion;
+    frameState.reflectionFallbackObservationSource = undefined;
     frameState.probePlacementFrame?.abort();
     frameState.probePlacementFrame = undefined;
     cubeCapture?.state.planar?.submit(submitted, captureCompletion);
@@ -3902,7 +4001,7 @@ export function* prepareFrameRecording(
     if (volumeInspectionReady && (submitted || volumeSubmissionAttempted)) {
       updateVolumetricFogInspection(
         frameState,
-        volumetricFog,
+        viewVolumetricFogForInspection,
         lights,
         preparedVolumetricFogForInspection,
         submitted,

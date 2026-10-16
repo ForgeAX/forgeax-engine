@@ -326,7 +326,13 @@ function hasActiveAlphaMask(
 }
 
 function eligibleDraws(slot: RenderSceneSlot): readonly EligibleGpuDrivenDraw[] {
-  const snapshot = slot.snapshot;
+  return eligibleGpuDrivenDraws(slot.snapshot);
+}
+
+/** Shared admission for real scene draws and explicit hidden pipeline requests. */
+export function eligibleGpuDrivenDraws(
+  snapshot: RenderableSnapshot,
+): readonly EligibleGpuDrivenDraw[] {
   const draws = snapshot.gpuDrivenDraws;
   if (
     draws === undefined ||

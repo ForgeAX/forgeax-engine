@@ -946,20 +946,15 @@ describe('GPU-driven shadow view owner contract', () => {
     expect(shadowViewHasStaticLayer({ kind: 'spot', index: 1, layer: 'static' })).toBe(false);
   });
 
-  it('culls casters below one static or two composed-layer texels', () => {
+  it('uses one texel threshold independently of caster cache classification', () => {
     const ortho = mat4.orthographic(mat4.create(), -32, 32, -32, 32, 0.1, 100);
     const view = mat4.lookAt(mat4.create(), [0, 50, 0], [0, 0, 0], [0, 0, -1]);
     const matrix = new Float32Array(mat4.multiply(mat4.create(), ortho, view));
     const texel = 64 / 2048;
-    const directional: ShadowViewIdentity = { kind: 'directional', index: 0 };
-    expect(shadowMinCasterDiameter(directional, matrix, 2048)).toBeCloseTo(2 * texel, 6);
-    expect(shadowMinCasterDiameter({ ...directional, layer: 'static' }, matrix, 2048)).toBeCloseTo(
-      texel,
-      6,
-    );
+    expect(shadowMinCasterDiameter(matrix, 2048)).toBeCloseTo(texel, 6);
     const perspective = new Float32Array(mat4.perspective(mat4.create(), 1, 1, 0.1, 100));
-    expect(shadowMinCasterDiameter({ kind: 'spot', index: 0 }, perspective, 2048)).toBe(0);
-    expect(shadowMinCasterDiameter(directional, matrix, undefined)).toBe(0);
+    expect(shadowMinCasterDiameter(perspective, 2048)).toBe(0);
+    expect(shadowMinCasterDiameter(matrix, undefined)).toBe(0);
   });
 
   it('merges changed boxes into at most four dirty rects and falls back to full', () => {

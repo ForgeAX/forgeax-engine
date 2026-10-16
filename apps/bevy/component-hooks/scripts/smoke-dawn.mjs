@@ -75,7 +75,7 @@ const state = buildComponentHooksWorld(world);
 for (let frame = 0; frame < FRAMES; frame++) {
   // Cover the original 1.6-second add/rekey/remove timeline in the frame budget.
   world.update(1.6 / FRAMES).unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`draw ${frame}: ${draw.error.code}`);
 }
 await device.queue.onSubmittedWorkDone();

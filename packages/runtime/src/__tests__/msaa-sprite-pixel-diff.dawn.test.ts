@@ -317,7 +317,7 @@ describe('feat-20260604-msaa M2 w9 [F-1]: LDR sprite + MSAA split sub-pass cover
     // Pass 1: antialias=none baseline.
     const worldNone = new World();
     spawnSpriteScene(worldNone, spriteMaterialPayload, ANTIALIAS_NONE);
-    const drawnNone = drawPublished(renderer, worldNone);
+    const drawnNone = await drawPublished(renderer, worldNone);
     expect(drawnNone.ok, 'LDR sprite none-AA draw').toBe(true);
     await device.queue.onSubmittedWorkDone();
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
@@ -334,7 +334,7 @@ describe('feat-20260604-msaa M2 w9 [F-1]: LDR sprite + MSAA split sub-pass cover
     });
     const worldMsaa = new World();
     spawnSpriteScene(worldMsaa, spriteMaterialPayload, ANTIALIAS_MSAA);
-    const drawnMsaa = drawPublished(renderer, worldMsaa);
+    const drawnMsaa = await drawPublished(renderer, worldMsaa);
     await device.queue.onSubmittedWorkDone();
     if (typeof unsubscribe === 'function') unsubscribe();
     expect(drawnMsaa.ok, 'LDR sprite MSAA draw').toBe(true);

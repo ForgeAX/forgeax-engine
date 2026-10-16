@@ -10,6 +10,10 @@ import { PlanarReflection, PlanarReflectionInvalidError } from './components/pla
 import { supportsGpuShadowRenderState } from './material-render-state';
 import type { LightTextureSource } from './prepare/extended-lighting/spot-modifiers';
 import { computeProjectionMatrix } from './record/helpers';
+import { textureDigest } from './texture-digest';
+
+export { textureDigest } from './texture-digest';
+
 // @forgeax/engine-runtime - RenderSystem Extract stage (D-S2 + plan-strategy R-15
 // fallback split). Pure ECS query phase: walks Camera / DirectionalLight /
 // the merged-MeshRenderer renderable archetype and produces SoA-free snapshot
@@ -756,6 +760,8 @@ export interface ExtractedVolumetricFog {
 }
 
 export interface RenderableSnapshot {
+  /** Explicit non-drawing material pass preparation, independent of visibility. */
+  readonly pipelinePreparation?: readonly Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>[];
   readonly terrain?: import('./terrain/source.js').TerrainRenderSource;
   readonly terrainSection?: {
     readonly index: number;
@@ -1206,6 +1212,7 @@ export interface MaterialCacheChainIdentity {
 export interface MaterialSnapshotCacheEntry {
   readonly snapshot: MaterialSnapshot;
   readonly passes: readonly MaterialPass[];
+  readonly programSelections?: readonly MaterialProgramSelection[];
   /** Root/chain identities are present only on cross-frame-safe entries. */
   readonly chain?: readonly MaterialCacheChainIdentity[];
   /** AssetRegistry epoch at which the root/parent chain was last validated. */
@@ -2609,12 +2616,14 @@ export function storeMaterialSnapshot(
   root: MaterialAsset,
   assets: AssetRegistry,
   world: World,
+  programSelections?: readonly MaterialProgramSelection[],
 ): MaterialSnapshotCacheEntry {
   const chain = captureMaterialCacheChain(root, assets);
   const crossFrameSafe = chain?.every(({ asset }) => isDeepFrozen(asset)) === true;
   const entry: MaterialSnapshotCacheEntry = {
     snapshot: crossFrameSafe ? { ...snapshot, immutableValues: true } : snapshot,
     passes,
+    ...(programSelections === undefined ? {} : { programSelections }),
     crossFrameSafe,
     ...(chain === undefined ? {} : { chain }),
     ...(chain === undefined ? {} : { catalogEpoch: assets.catalogEpoch }),
@@ -3862,18 +3871,6 @@ export function selectFogFrame(world: World): FogFrame | undefined {
   });
   if (state.lkg !== undefined) return state.lkg;
   throw fogSelection.error;
-}
-
-export function textureDigest(texture: TextureAsset): string {
-  // The render inspection needs a stable identity token, not a second byte
-  // store.  FNV-1a is deterministic, synchronous, and deliberately labelled
-  // as a non-cryptographic digest so it cannot be mistaken for Catalog proof.
-  let hash = 2166136261;
-  const bytes = texture.data;
-  for (const byte of bytes) {
-    hash = Math.imul(hash ^ byte, 16777619) >>> 0;
-  }
-  return `fnv1a:${hash.toString(16).padStart(8, '0')}`;
 }
 
 export function extractVolumeSnapshot(

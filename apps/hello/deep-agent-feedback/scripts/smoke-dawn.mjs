@@ -25,6 +25,7 @@ const carrierResult = spawnSync(process.execPath, [carrier], {
 });
 if (carrierResult.error !== undefined) throw carrierResult.error;
 if (carrierResult.status !== 0) {
+  process.stderr.write(carrierResult.stdout);
   throw new Error(`deep-agent-feedback: Dawn point-shadow carrier exited ${carrierResult.status}`);
 }
 const evidenceLine = carrierResult.stdout

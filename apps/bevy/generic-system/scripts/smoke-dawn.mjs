@@ -59,7 +59,7 @@ const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error.code));
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update(DELTA_SECONDS).unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`[smoke] draw=${draw.error.code}`);
 }
 const snapshot = readGenericSystemState(world, state);

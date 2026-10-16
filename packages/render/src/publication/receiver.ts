@@ -31,6 +31,7 @@ import {
   type RenderPublicationIdentity,
 } from './contract';
 import { publicationDependencies, publicationFrameDependencies } from './dependencies';
+import { retainPublicationDispatchGroups } from './dispatch-groups';
 import { copyPublishedMesh, ownReceivedPublishedMesh, samePublishedMesh } from './mesh';
 import { installPublicationPrograms, rebindPublicationMaterialSchemas } from './programs';
 import type { PublishedRenderResources } from './resource-scope';
@@ -358,6 +359,11 @@ export class RenderPublicationReceiver {
       if (!Array.isArray(template.snapshot?.materials) || !Array.isArray(template.dispatch))
         return reject('shape', 'template');
       if (
+        template.snapshot.pipelinePreparation !== undefined &&
+        !Array.isArray(template.snapshot.pipelinePreparation)
+      )
+        return reject('shape', 'pipeline preparation passes');
+      if (
         validateLightingChannels(
           template.snapshot.lightingChannels === undefined
             ? LIGHTING_CHANNELS_DEFAULT
@@ -544,11 +550,16 @@ export class RenderPublicationReceiver {
       entries.push(item);
       dispatchByEntity.set(entity, entries);
     }
-    for (const snapshot of prepared.frame.renderables)
+    const dispatchGroups: (readonly DispatchEntry[])[] = [];
+    for (const snapshot of prepared.frame.renderables) {
+      const dispatch = dispatchByEntity.get(snapshot.entityKey) ?? [];
       this.entities.set(snapshot.entityKey, {
         snapshot,
-        dispatch: dispatchByEntity.get(snapshot.entityKey) ?? [],
+        dispatch,
       });
+      dispatchGroups.push(dispatch);
+    }
+    retainPublicationDispatchGroups(prepared.frame.dispatch, dispatchGroups);
     for (const [entity, world] of matrices) {
       const row = this.entities.get(entity);
       if (!updated.has(entity) && row !== undefined)
@@ -569,11 +580,18 @@ export class RenderPublicationReceiver {
   snapshot(input: PreparedRenderPublication): PreparedRenderPublication {
     const renderables: RenderableSnapshot[] = [];
     const dispatch: DispatchEntry[] = [];
+    const dispatchGroups: DispatchEntry[][] = [];
     for (const row of this.entities.values()) {
-      for (const item of row.dispatch)
-        dispatch.push({ ...item, renderableIndex: renderables.length });
+      const group: DispatchEntry[] = [];
+      for (const item of row.dispatch) {
+        const entry = { ...item, renderableIndex: renderables.length };
+        dispatch.push(entry);
+        group.push(entry);
+      }
+      dispatchGroups.push(group);
       renderables.push(row.snapshot);
     }
+    retainPublicationDispatchGroups(dispatch, dispatchGroups);
     return {
       ...input,
       packet: { ...input.packet, baseline: true },

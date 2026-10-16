@@ -19,8 +19,24 @@ import { inspectEngineWorkspace } from '../engine-binding.js';
 import {
   createRunSnapshot,
   inspectRunDependencyClosure,
+  runStateDirectory,
   snapshotDirectoryInsideProject,
 } from '../run-snapshot.js';
+
+it('shares independent run ownership across project directory aliases', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'run-directory-identity-'));
+  try {
+    const project = join(directory, 'project');
+    const alias = join(directory, 'alias');
+    await mkdir(project);
+    await symlink(project, alias, 'junction');
+    expect(runStateDirectory(alias)).toBe(runStateDirectory(await realpath(project)));
+    expect(runStateDirectory(project)).toBe(runStateDirectory(alias));
+    expect(runStateDirectory(join(directory, 'missing'))).not.toBe(runStateDirectory(project));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 const workspaceMetadataMutation = vi.hoisted(() => ({
   path: '',
@@ -112,7 +128,7 @@ async function createStrictProject(directory: string) {
   await writeFile(join(project, 'pnpm-lock.yaml'), lockText);
   await writeFile(
     join(project, 'node_modules/.modules.yaml'),
-    'packageManager: pnpm@11.7.0\nvirtualStoreDir: node_modules/.pnpm\nvirtualStoreDirMaxLength: 60\n',
+    'packageManager: pnpm@11.7.0\nvirtualStoreDir: .pnpm\nvirtualStoreDirMaxLength: 60\n',
   );
   await writeJson(join(project, 'node_modules/.pnpm-workspace-state-v1.json'), {
     projects: { [await realpath(project)]: projectManifest },
@@ -122,6 +138,63 @@ async function createStrictProject(directory: string) {
   if (!inspected.ok) throw new Error(inspected.error.hint);
   return { project, engine, packageRoot, digest: inspected.value.digest };
 }
+
+it.each([
+  'configuration-only',
+  'no-config',
+])('verifies a single-package file SDK without an Engine binding (%s)', async (configuration) => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-single-file-sdk-'));
+  try {
+    const { project } = await createStrictProject(directory);
+    await rm(join(project, '.forgeax/engine-binding.json'));
+    if (configuration === 'no-config') await rm(join(project, 'pnpm-workspace.yaml'));
+    else await writeFile(join(project, 'pnpm-workspace.yaml'), 'allowBuilds: {esbuild: true}\n');
+    const sdk = join(project, 'vendor/platform-sdk');
+    await mkdir(sdk, { recursive: true });
+    await writeJson(join(sdk, 'package.json'), {
+      name: 'platform-sdk',
+      version: '0.2.0',
+      files: ['index.js'],
+    });
+    await writeFile(join(sdk, 'index.js'), 'export const platform = true;\n');
+    await symlink(sdk, join(project, 'node_modules/platform-sdk'), 'junction');
+    const manifest = {
+      name: 'snapshot-fixture',
+      version: '1.0.0',
+      dependencies: { 'platform-sdk': 'file:vendor/platform-sdk' },
+    };
+    await writeJson(join(project, 'package.json'), manifest);
+    await writeJson(join(project, 'pnpm-lock.yaml'), {
+      lockfileVersion: '9.0',
+      importers: {
+        '.': {
+          dependencies: {
+            'platform-sdk': {
+              specifier: 'file:vendor/platform-sdk',
+              version: 'file:vendor/platform-sdk',
+            },
+          },
+        },
+      },
+      packages: {
+        'platform-sdk@file:vendor/platform-sdk': {
+          resolution: { type: 'directory', directory: 'vendor/platform-sdk' },
+        },
+      },
+      snapshots: { 'platform-sdk@file:vendor/platform-sdk': {} },
+    });
+    await writeJson(join(project, 'node_modules/.pnpm-workspace-state-v1.json'), {
+      projects: { [await realpath(project)]: manifest },
+      settings: {},
+    });
+
+    await expect(
+      inspectRunDependencyClosure(project, null, undefined, '11.7.0'),
+    ).resolves.toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 async function writeNpmAliasLock(
   project: string,
@@ -244,7 +317,7 @@ it.each([
     );
     await writeFile(
       join(fixture.project, 'node_modules/.modules.yaml'),
-      'packageManager: pnpm@12.10.1\nvirtualStoreDir: node_modules/.pnpm\nvirtualStoreDirMaxLength: 60\n',
+      'packageManager: pnpm@12.10.1\nvirtualStoreDir: .pnpm\nvirtualStoreDirMaxLength: 60\n',
     );
     await writeJson(join(fixture.project, 'node_modules/.pnpm-workspace-state-v1.json'), {
       projects: {
@@ -832,7 +905,7 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
       join(fixture.project, 'node_modules/.modules.yaml'),
       [
         'packageManager: pnpm@11.7.0',
-        'virtualStoreDir: node_modules/.pnpm',
+        'virtualStoreDir: .pnpm',
         'virtualStoreDirMaxLength: 60',
         'hoistedDependencies:',
         '  "file-lib@file:../file-source":',

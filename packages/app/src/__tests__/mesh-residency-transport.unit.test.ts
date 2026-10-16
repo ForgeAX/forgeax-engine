@@ -64,6 +64,37 @@ function sourceFixture() {
 }
 afterEach(() => vi.useRealTimers());
 
+it('changes collective lease currentness before ready, release, clear and session invalidation are observable', async () => {
+  const f = sourceFixture(),
+    initial = f.source.currentnessToken();
+  expect(initial).toBeDefined();
+  expect(f.source.currentnessToken()).toBe(initial);
+  const pending = f.source.prepare(f.input);
+  expect(f.source.currentnessToken()).toBe(initial);
+  f.respond('mesh-ready');
+  const lease = (await pending).unwrap(),
+    ready = f.source.currentnessToken();
+  expect(ready).not.toBe(initial);
+  expect(f.source.currentnessToken()).toBe(ready);
+  expect(lease.isCurrent()).toBe(true);
+  f.session({ ...identity, epoch: 2, generation: 7 });
+  expect(f.source.currentnessToken()).not.toBe(ready);
+  expect(lease.isCurrent()).toBe(false);
+  f.session({ ...identity, generation: 7 });
+  const returned = f.source.currentnessToken();
+  expect(lease.isCurrent()).toBe(true);
+  const release = lease.release(true);
+  expect(f.source.currentnessToken()).not.toBe(returned);
+  expect(lease.isCurrent()).toBe(false);
+  f.respond('mesh-released');
+  await release;
+  const released = f.source.currentnessToken();
+  f.source.clear('reset');
+  expect(f.source.currentnessToken()).not.toBe(released);
+  f.session(undefined);
+  expect(f.source.currentnessToken()).toBeUndefined();
+});
+
 it('clones only mesh POD and retains source buffers through remote preparation', async () => {
   const f = sourceFixture();
   const pending = f.source.prepare(f.input);
@@ -796,5 +827,92 @@ it('reads mesh release generation after its fence without constructing diagnosti
   expect(inspect).not.toHaveBeenCalled();
   await receiver.receive({ kind: 'mesh-release', requestId: 1, identity, evict: true });
   expect(inspect).not.toHaveBeenCalled();
+  await receiver.dispose();
+});
+
+it('skips stale physical evidence without retiring its owner and rechecks recovery and replacement', async () => {
+  const f = sourceFixture();
+  let current = true;
+  const release = vi.fn(() => undefined);
+  const recordStageLane = vi.fn(() => {
+    if (!current) throw new Error('stale physical evidence must not be requested');
+    return ok('cpu' as const);
+  });
+  const receiver = new RenderMeshResidency(
+    {
+      currentDeviceGeneration: () => 7,
+      preparePublishedMeshResidency: async () =>
+        ok({ deviceGeneration: 7, isCurrent: () => current, release, recordStageLane }),
+    } as unknown as Renderer,
+    identity,
+    () => {},
+  );
+  const prepare = (requestId: number) =>
+    receiver.receive({
+      kind: 'mesh-prepare',
+      requestId,
+      entity: 42,
+      input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+    });
+  const frame = { frameId: 1, deviceGeneration: 7 } as FrameReceipt;
+  await prepare(1);
+  expect(Array.from(receiver.consumed(frame, 1).bindings)).toEqual([1, 0]);
+  recordStageLane.mockClear();
+  current = false;
+  for (let index = 0; index < 10; index++)
+    expect(receiver.consumed({ ...frame, frameId: index + 2 }, index + 2).bindings).toHaveLength(0);
+  expect(recordStageLane).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  current = true;
+  expect(Array.from(receiver.consumed({ ...frame, frameId: 12 }, 12).bindings)).toEqual([1, 0]);
+  await receiver.receive({ kind: 'mesh-release', requestId: 1, identity, evict: true });
+  await prepare(2);
+  expect(Array.from(receiver.consumed({ ...frame, frameId: 13 }, 13).bindings)).toEqual([2, 0]);
+  await receiver.dispose();
+  expect(release).toHaveBeenCalledTimes(2);
+});
+
+it('retains current-frame rejection and unexpected physical failures after currentness preflight', async () => {
+  const f = sourceFixture();
+  let failure = false;
+  const recordStageLane = vi.fn((frame: FrameReceipt) =>
+    frame.frameId === 2
+      ? ok('gpu' as const)
+      : err(new RenderPublicationError({ reason: 'revision', subject: 'exact submitted frame' })),
+  );
+  const receiver = new RenderMeshResidency(
+    {
+      preparePublishedMeshResidency: async () =>
+        ok({
+          deviceGeneration: 7,
+          isCurrent: () => {
+            if (failure) throw Error('physical owner failed');
+            return true;
+          },
+          release: () => undefined,
+          recordStageLane,
+        }),
+    } as unknown as Renderer,
+    identity,
+    () => {},
+  );
+  await receiver.receive({
+    kind: 'mesh-prepare',
+    requestId: 1,
+    entity: 42,
+    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+  });
+  expect(
+    receiver.consumed({ frameId: 1, deviceGeneration: 7 } as FrameReceipt, 1).bindings,
+  ).toHaveLength(0);
+  expect(
+    Array.from(receiver.consumed({ frameId: 2, deviceGeneration: 7 } as FrameReceipt, 2).bindings),
+  ).toEqual([1, 1]);
+  expect(recordStageLane).toHaveBeenCalledTimes(2);
+  failure = true;
+  expect(() => receiver.consumed({ frameId: 3, deviceGeneration: 7 } as FrameReceipt, 3)).toThrow(
+    'physical owner failed',
+  );
+  expect(recordStageLane).toHaveBeenCalledTimes(2);
   await receiver.dispose();
 });

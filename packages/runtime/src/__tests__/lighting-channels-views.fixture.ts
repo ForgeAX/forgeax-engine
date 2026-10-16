@@ -28,6 +28,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { CHANNEL_EPSILON, CHANNEL_SIZE } from './lighting-channels.fixture';
@@ -157,45 +158,47 @@ export async function verifyChannelViews(
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     time += 1 / 60;
-    const candidate = publisher?.prepare(time).unwrap();
-    const packet =
-      candidate === undefined
-        ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
-          });
-    candidate?.accept();
-    const pending = capture ? recorder.captureFrame() : undefined;
-    if (pending) (await recorder.frameBoundary()).unwrap();
-    try {
-      const receipt = renderValue(
-        renderer.draw(
-          packet === undefined
-            ? {
-                leases: [required(lease)],
-                camera: { lease: required(lease) },
-                environment: { lease: required(lease) },
-              }
-            : { publication: packet },
-        ),
-      );
-      renderValue(await receipt.completed);
-      if (pending) {
-        (await recorder.frameBoundary()).unwrap();
-        const tape = compactTape((await pending).unwrap());
-        lastTape = tape;
-        expect(
-          decodeTape(tape.bytes)
-            .unwrap()
-            .events.filter((event) => event.kind === 'submit'),
-        ).toHaveLength(1);
-        await save(`view-${receipt.frameId}.rhitape`, tape.bytes);
+    return completeReadyFrame(async () => {
+      const candidate = publisher?.prepare(time).unwrap();
+      const packet =
+        candidate === undefined
+          ? undefined
+          : structuredClone(candidate.packet, {
+              transfer: renderPublicationTransfers(candidate.packet),
+            });
+      candidate?.accept();
+      const pending = capture ? recorder.captureFrame() : undefined;
+      if (pending) (await recorder.frameBoundary()).unwrap();
+      try {
+        const receipt = renderValue(
+          renderer.draw(
+            packet === undefined
+              ? {
+                  leases: [required(lease)],
+                  camera: { lease: required(lease) },
+                  environment: { lease: required(lease) },
+                }
+              : { publication: packet },
+          ),
+        );
+        renderValue(await receipt.completed);
+        if (pending) {
+          (await recorder.frameBoundary()).unwrap();
+          const tape = compactTape((await pending).unwrap());
+          lastTape = tape;
+          expect(
+            decodeTape(tape.bytes)
+              .unwrap()
+              .events.filter((event) => event.kind === 'submit'),
+          ).toHaveLength(1);
+          await save(`view-${receipt.frameId}.rhitape`, tape.bytes);
+        }
+        return receipt;
+      } finally {
+        if (packet)
+          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
       }
-      return receipt;
-    } finally {
-      if (packet)
-        required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-    }
+    });
   };
   const read = async (
     outputs: readonly { target: RenderTarget; layer: number; name: string }[],

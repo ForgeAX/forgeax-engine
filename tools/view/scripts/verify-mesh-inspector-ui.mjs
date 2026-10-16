@@ -35,8 +35,39 @@ try {
   assert.equal(await panel.locator('.insp-detail-section').count(), 3);
   assert.equal(await panel.getByTestId('insp-material-slot-0').count(), 1);
   assert.equal(await panel.getByTestId('insp-material-slot-2').count(), 1);
-  assert.equal(await panel.getByTestId('insp-section-mesh').getByRole('button', { name: '打开资源', exact: true }).isDisabled(), true);
+  const meshOpen = () => panel.getByTestId('insp-section-mesh').locator('.asset-ref-combo');
+  assert.equal(await meshOpen().isDisabled(), true);
+  const transformHeading = panel.getByTestId('insp-section-Transform').locator('.fx-collapsible__heading');
+  const transformCopy = transformHeading.locator('.insp-component-copy');
+  await page.mouse.move(0, 0);
+  assert.deepEqual(await panel.locator('.insp-component-copy').evaluateAll(buttons => buttons.map(button => getComputedStyle(button).opacity)), ['0', '0', '0']);
+  const copyBounds = await transformCopy.boundingBox();
+  await transformHeading.hover();
+  assert.deepEqual(await panel.locator('.insp-component-copy').evaluateAll(buttons => buttons.map(button => getComputedStyle(button).opacity)), ['1', '0', '0']);
+  assert.deepEqual(await transformCopy.boundingBox(), copyBounds);
+  await panel.getByTestId('insp-field-Transform-pos').hover();
+  assert.equal(await transformCopy.evaluate(button => getComputedStyle(button).opacity), '0');
+  await transformHeading.locator('.fx-collapsible__trigger').focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await transformCopy.evaluate(button => button.matches(':focus-visible')), true);
+  assert.equal(await transformCopy.evaluate(button => getComputedStyle(button).opacity), '1');
+  const componentCopyWrites = await page.evaluate(() => globalThis.meshInspectorFixture.clipboardWrites());
+  await transformCopy.press('Enter');
+  const copiedComponent = JSON.parse(await page.evaluate(() => globalThis.meshInspectorFixture.copyText()));
+  assert.equal(copiedComponent.name, 'Transform');
+  assert.deepEqual(copiedComponent.values.quat, [-0.2588190451, 0, 0, 0.9659258263]);
+  assert.equal(await page.evaluate(() => globalThis.meshInspectorFixture.clipboardWrites()), componentCopyWrites + 1);
+  await panel.getByTestId('insp-search').focus();
+  await page.mouse.move(0, 0);
+  assert.equal(await panel.getByTestId('insp-root-node').count(), 0);
+  assert.equal(await panel.getByTestId('insp-component-list').locator('button').count(), 11);
+  for (const component of ['Entity', 'Transform', 'GlobalTransform', 'TransformInterpolation', 'ChildOf', 'Name', 'MeshFilter', 'MeshRenderer']) {
+    assert.equal(await panel.getByTestId(`insp-comprow-${component}`).count(), 1);
+  }
   assert.deepEqual(await panel.getByTestId('insp-field-Transform-quat').locator('input').evaluateAll(inputs => inputs.map(input => input.value)), ['-30.0°', '0.0°', '0.0°']);
+  assert.deepEqual(await panel.getByTestId('insp-field-Transform-pos').locator('.fx-inspector-form__vcell').evaluateAll(cells =>
+    cells.map(cell => ({ label: getComputedStyle(cell, '::before').content, layer: getComputedStyle(cell, '::before').zIndex }))),
+  [{ label: '"X"', layer: '1' }, { label: '"Y"', layer: '1' }, { label: '"Z"', layer: '1' }]);
   for (const theme of ['light', 'dark']) for (const width of [220, 280, 300, 320, 480, 640]) {
     await page.setViewportSize({ width, height: 860 });
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
@@ -56,13 +87,23 @@ try {
         return [key, new Set(cells.map(cell => cell.getBoundingClientRect().top)).size];
       }));
       const card = element.querySelector('.insp-components-card');
-      const tree = element.querySelector('.insp-component-tree');
+      const tree = element.querySelector('.insp-component-browser');
       return { escaped, clippedValues, rows, cardHeight: card.getBoundingClientRect().height,
         treeHeight: tree.getBoundingClientRect().height, treeOverflow: getComputedStyle(tree).overflowY };
     });
     assert.deepEqual(geometry.escaped, [], `controls overflow at ${width}/${theme}`);
     assert.deepEqual(geometry.clippedValues, [], `values clipped at ${width}/${theme}`);
-    assert.deepEqual(geometry.rows, { pos: width <= 300 ? 2 : 1, quat: width <= 300 ? 2 : 1, scale: width <= 300 ? 2 : 1 });
+    assert.deepEqual(geometry.rows, { pos: 1, quat: 1, scale: 1 });
+    for (const key of ['pos', 'quat', 'scale']) {
+      const alignment = await panel.getByTestId(`insp-field-Transform-${key}`).evaluate(row => {
+        const label = row.querySelector('.fx-property-row__label').getBoundingClientRect();
+        return [...row.querySelectorAll('.fx-inspector-form__vcell')].every(cell => {
+          const rect = cell.getBoundingClientRect();
+          return rect.left >= label.right && Math.abs((rect.top + rect.bottom - label.top - label.bottom) / 2) < 2;
+        });
+      });
+      assert.equal(alignment, true, `${key} label and XYZ must remain on one line at ${width}/${theme}`);
+    }
     assert(geometry.cardHeight >= 160 && geometry.cardHeight <= 280);
     assert(geometry.treeHeight < geometry.cardHeight);
     assert.equal(geometry.treeOverflow, 'auto');
@@ -91,25 +132,60 @@ try {
   await panel.getByTestId('insp-field-MeshRenderer-lightingChannels').waitFor();
   await panel.getByTestId('insp-group-all').click();
   await panel.getByTestId('insp-field-GlobalTransform-world').waitFor();
+  await panel.getByTestId('insp-field-GlobalTransform-presentation').waitFor();
+  await panel.getByTestId('insp-section-TransformInterpolation').waitFor();
+  assert.equal(await panel.getByTestId('insp-field-MeshRenderer-materials').getByTestId('insp-material-slot-1').count(), 1);
+  await panel.getByTestId('insp-search').fill('Painted Trim');
+  assert.equal(await panel.getByTestId('insp-field-MeshRenderer-materials').getByTestId('insp-material-slot-0').count(), 0);
+  assert.equal(await panel.getByTestId('insp-field-MeshRenderer-materials').getByTestId('insp-material-slot-1').count(), 1);
+  await panel.getByTestId('insp-search').fill('');
   await panel.getByTestId('insp-field-CustomHealth-health').waitFor();
-  await panel.getByTestId('insp-component-node-CustomHealth').getByText('CustomHealth', { exact: true }).waitFor();
+  await panel.getByTestId('insp-comprow-CustomHealth').getByText('CustomHealth', { exact: true }).waitFor();
   await panel.getByTestId('insp-section-CustomHealth').getByText('CustomHealth', { exact: true }).waitFor();
   const sceneSelectCalls = await page.evaluate(() => globalThis.meshInspectorFixture.calls.filter(call => call.operation === 'scene.select').length);
-  await panel.getByTestId('insp-component-node-mesh').click();
-  assert.equal(await panel.getByTestId('insp-entity-body').getAttribute('data-group'), 'common');
+  const cardBeforeNavigation = await panel.getByTestId('insp-components-card').boundingBox();
+  await panel.getByTestId('insp-search').fill('no matching property');
+  await panel.getByTestId('insp-comprow-MeshFilter').click();
+  assert.equal(await panel.getByTestId('insp-entity-body').getAttribute('data-group'), 'all');
+  assert.equal(await panel.getByTestId('insp-search').inputValue(), '');
   assert.equal(await panel.getAttribute('data-entity-id'), 'floor');
-  assert.deepEqual(await panel.locator('.insp-detail-section').evaluateAll(elements => elements.map(element => element.getAttribute('data-testid'))), ['insp-section-mesh', 'insp-section-materials']);
-  assert.equal(await panel.getByTestId('insp-field-Transform-pos').count(), 0);
-  await panel.getByTestId('insp-group-all').click();
-  assert.deepEqual(await panel.locator('.insp-detail-section').evaluateAll(elements => elements.map(element => element.getAttribute('data-testid'))), ['insp-section-MeshFilter', 'insp-section-MeshRenderer']);
+  assert.equal(await panel.locator('.insp-detail-section').count(), 11);
+  await page.waitForFunction(() => {
+    const details = document.querySelector('[data-testid="insp-scroll"]');
+    const section = document.querySelector('[data-testid="insp-section-MeshFilter"]');
+    const viewport = details.getBoundingClientRect();
+    const target = section.getBoundingClientRect();
+    return details.scrollTop > 0 && target.top >= viewport.top - 2 && target.bottom <= viewport.bottom + 2;
+  });
+  assert.deepEqual(await panel.getByTestId('insp-components-card').boundingBox(), cardBeforeNavigation);
+  assert.equal(await panel.getByTestId('insp-comprow-MeshFilter').getAttribute('aria-current'), 'location');
+  await panel.getByTestId('insp-settings').click();
+  await page.getByRole('menuitem', { name: '全部折叠', exact: true }).click();
+  await panel.getByTestId('insp-comprow-TransformInterpolation').click();
+  assert.equal(await panel.getByTestId('insp-section-TransformInterpolation').locator('.fx-collapsible__trigger').getAttribute('aria-expanded'), 'true');
   assert.equal(await page.evaluate(() => globalThis.meshInspectorFixture.calls.filter(call => call.operation === 'scene.select').length), sceneSelectCalls);
-  await panel.getByTestId('insp-root-node').click();
+  await panel.getByTestId('insp-group-common').click();
   assert.equal(await panel.locator('.insp-detail-section').count(), 3);
+  await panel.getByTestId('insp-settings').click();
+  await page.getByRole('menuitem', { name: '全部展开', exact: true }).click();
   assert.equal(await panel.getByTestId('insp-field-Transform-pos').count(), 1);
+  assert.equal(await panel.getByTestId('insp-component-list').locator('[aria-current]').count(), 0);
+  await panel.getByTestId('insp-comprow-CustomHealth').click();
+  await panel.getByTestId('insp-search').fill('health');
+  await page.evaluate(() => globalThis.meshInspectorFixture.removeComponent('CustomHealth'));
+  await panel.getByTestId('insp-comprow-CustomHealth').waitFor({ state: 'detached' });
+  await page.waitForFunction(() => document.querySelector('[data-testid="insp-entity-body"]')?.dataset.group === 'common');
+  assert.equal(await panel.getByTestId('insp-search').inputValue(), '');
+  assert.equal(await panel.getByTestId('insp-entity-body').getAttribute('data-group'), 'common');
+  await page.evaluate(() => globalThis.meshInspectorFixture.restoreComponents());
+  await panel.getByTestId('insp-settings').click();
+  await page.getByRole('menuitem', { name: '全部展开', exact: true }).click();
+  const entityCopyWrites = await page.evaluate(() => globalThis.meshInspectorFixture.clipboardWrites());
   await panel.getByRole('button', { name: '复制 JSON', exact: true }).click();
   const copied = JSON.parse(await page.evaluate(() => globalThis.meshInspectorFixture.copyText()));
   assert.deepEqual(copied.components.find(component => component.name === 'Transform').values.quat, [-0.2588190451, 0, 0, 0.9659258263]);
-  await panel.getByTestId('insp-section-mesh').getByRole('button', { name: '打开资源', exact: true }).click();
+  assert.equal(await page.evaluate(() => globalThis.meshInspectorFixture.clipboardWrites()), entityCopyWrites + 1);
+  await meshOpen().click();
   assert.equal(await panel.getAttribute('data-entity-id'), 'floor');
   const opened = await page.evaluate(() => globalThis.meshInspectorFixture.calls.find(call => call.operation === 'asset.open'));
   assert.equal(opened.args.guid, 'mesh-guid');
@@ -134,11 +210,20 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="panel-inspector"]').dataset.entityId === 'light');
   await page.waitForFunction(() => document.querySelector('[data-testid="insp-entity-body"]')?.dataset.entityKind === 'directionalLight');
   assert.equal(await page.getByTestId('insp-entity-body').count(), 1);
-  await page.evaluate(() => { globalThis.meshInspectorFixture.select('floor'); globalThis.meshInspectorFixture.replaceTarget(); });
+  await page.evaluate(() => globalThis.meshInspectorFixture.select('floor'));
+  await panel.getByTestId('insp-comprow-MeshFilter').click();
+  await page.evaluate(() => globalThis.meshInspectorFixture.replaceTarget());
   await page.getByTestId('insp-entity-body').waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-testid="insp-entity-body"]')?.dataset.group === 'common');
+  assert.equal(await panel.getByTestId('insp-component-list').locator('[aria-current]').count(), 0);
+  await panel.getByTestId('insp-comprow-MeshFilter').click();
+  await page.evaluate(() => globalThis.meshInspectorFixture.replaceProject());
+  await page.waitForFunction(() => document.querySelector('[data-testid="insp-entity-body"]')?.dataset.group === 'common');
+  assert.equal(await panel.getByTestId('insp-component-list').locator('[aria-current]').count(), 0);
+  assert.equal(await panel.getByTestId('insp-entity-body').getAttribute('data-group'), 'common');
   await page.evaluate(() => globalThis.meshInspectorFixture.missingBindings());
   await panel.getByText('资源绑定不可用', { exact: true }).waitFor();
-  assert.equal(await panel.getByTestId('insp-section-mesh').getByRole('button', { name: '打开资源', exact: true }).isDisabled(), true);
+  assert.equal(await meshOpen().isDisabled(), true);
   const kinds = ['entity', 'sceneInstance', 'mesh', 'skinnedMesh', 'instancedMesh', 'camera', 'directionalLight', 'pointLight', 'spotLight', 'areaLight', 'skylight', 'sky', 'fog', 'reflection', 'postProcess', 'physics', 'animation', 'audio', 'vfx', 'sprite', 'tilemap', 'text', 'geometry', 'decal', 'terrain', 'navigation', 'npc', 'video'];
   for (const theme of ['light', 'dark']) for (const width of [320, 480, 640]) {
     await page.setViewportSize({ width, height: 860 });
@@ -159,10 +244,22 @@ try {
         }).map(input => input.value);
       });
       assert.deepEqual(clipped, [], `${kind} numeric values clipped at ${width}/${theme}`);
-      assert.equal(await panel.locator('input:not([readonly]):not([type="search"]):not([type="checkbox"]), select:not([disabled])').count(), 0);
+      for (const key of ['pos', 'quat', 'scale']) {
+        assert.equal(await panel.getByTestId(`insp-field-Transform-${key}`).locator('.fx-inspector-form__vcell')
+          .evaluateAll(cells => new Set(cells.map(cell => cell.getBoundingClientRect().top)).size), 1,
+        `${kind}/${key} must keep XYZ on one row at ${width}/${theme}`);
+      }
+      assert.equal(await panel.locator('input:not([readonly]):not([disabled]):not([type="search"]), select:not([disabled]):not(.fx-inspector-form__color-mode)').count(), 0, `${kind} exposes an editable data field`);
       if (['sceneInstance', 'camera', 'directionalLight', 'animation', 'physics', 'audio', 'entity'].includes(kind)) await page.screenshot({ path: resolve(output, `${kind}-${theme}-${width}.png`) });
     }
   }
+  await page.evaluate(() => globalThis.meshInspectorFixture.select('case-directionalLight'));
+  const color = panel.getByTestId('insp-field-DirectionalLight-color');
+  await color.waitFor();
+  const beforeColorMode = await page.evaluate(() => globalThis.meshInspectorFixture.calls.filter(call => call.operation !== 'entity.inspect').length);
+  await color.getByRole('combobox', { name: 'Color display mode' }).selectOption('linear');
+  assert.match(await color.locator('.fx-inspector-form__color-hex').textContent(), /^rgba\(/);
+  assert.equal(await page.evaluate(() => globalThis.meshInspectorFixture.calls.filter(call => call.operation !== 'entity.inspect').length), beforeColorMode);
   await page.evaluate(() => globalThis.meshInspectorFixture.select('world'));
   await page.waitForFunction(() => document.querySelector('[data-testid="insp-entity-body"]')?.dataset.entityKind === 'sceneInstance');
   assert.equal(await panel.locator('.insp-detail-section').count(), 2);

@@ -38,6 +38,41 @@ const release = (session: RenderFeatureGpuPrepareSession) => {
 };
 
 describe('feature GPU frame transactions', () => {
+  it('restores accepted active-name order and first values after repeated overwrites and new names', async () => {
+    const { session, owner, destroyed } = await fixture();
+    const accepted = ['a', 'b', 'c'].map((name) =>
+      session.prepareBuffer(name, { size: 16, usage: ['storage'] }).unwrap(),
+    );
+    const acceptedBuffers = accepted.map((reference) => session.resolveBuffer(reference)?.buffer);
+    release(session);
+    session.beginFrame();
+    const first = session.prepareBuffer('b', { size: 64, usage: ['storage'] }).unwrap();
+    const temporary = session.prepareBuffer('new', { size: 16, usage: ['storage'] }).unwrap();
+    const second = session.prepareBuffer('b', { size: 128, usage: ['storage'] }).unwrap();
+    session.prepareBuffer('a', { size: 16, usage: ['storage'] }).unwrap();
+    session.abortFrame().unwrap();
+    const names: string[] = [];
+    session.retainResources((name) => {
+      names.push(name);
+      return true;
+    });
+    expect(names).toEqual(['a', 'b', 'c']);
+    expect(accepted.map((reference) => session.resolveBuffer(reference)?.buffer)).toEqual(
+      acceptedBuffers,
+    );
+    for (const reference of [first, second, temporary])
+      expect(session.resolveBuffer(reference)).toBeUndefined();
+    expect(destroyed).toHaveBeenCalledTimes(3);
+    session.beginFrame();
+    for (const [index, name] of ['a', 'b', 'c'].entries())
+      expect(session.prepareBuffer(name, { size: 16, usage: ['storage'] }).unwrap()).toBe(
+        accepted[index],
+      );
+    release(session);
+    owner.dispose().unwrap();
+    expect(destroyed).toHaveBeenCalledTimes(6);
+  });
+
   it('aborts every staged replacement of one name while retaining the accepted buffer and bindings', async () => {
     const { session, owner, destroyed } = await fixture();
     const accepted = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();

@@ -11,8 +11,13 @@ import type {
   RenderPipeline,
   RhiDevice,
   Sampler,
+  ShaderModule,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import type { DeviceScope } from '../../device/device-scope';
+import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
 import { bradfordAdaptD65 } from './auto-exposure/oracle';
 
@@ -139,6 +144,39 @@ export interface StandardColorStageResources {
   ): { readonly layout: BindGroupLayout; readonly bindGroup: BindGroup };
 }
 
+interface ColorStageProgram {
+  readonly device: RhiDevice;
+  readonly factory: object;
+  readonly createModule: unknown;
+  readonly name: string;
+  readonly code: string;
+  readonly module: ShaderModule;
+  readonly moduleLabel: string;
+  readonly format: string;
+  readonly sampleCount: number;
+  readonly stageLayout: BindGroupLayout | undefined;
+  readonly layout: BindGroupLayout;
+  readonly sampler: Sampler;
+  readonly pipeline: RenderPipeline;
+}
+
+const colorStagePrograms = new WeakMap<DeviceScope, ColorStageProgram[]>();
+const MAX_COLOR_STAGE_PROGRAMS = 16;
+
+function programsFor(scope: DeviceScope): ColorStageProgram[] {
+  let programs = colorStagePrograms.get(scope);
+  if (programs === undefined) {
+    programs = [];
+    colorStagePrograms.set(scope, programs);
+    const owned = programs;
+    scope._adopt('post-effect', programs, () => {
+      colorStagePrograms.delete(scope);
+      owned.length = 0;
+    });
+  }
+  return programs;
+}
+
 /**
  * Record one fullscreen Standard color stage. `fragmentWgsl` follows the
  * shared prelude (`source` / `sourceSampler` / `VertexOutput`) and defines
@@ -152,9 +190,11 @@ export function addStandardColorStagePass(
   fragmentWgsl: string,
   stage?: StandardColorStageResources,
 ): Result<void, RenderGraphError> {
-  let pipeline: RenderPipeline | undefined;
-  let layout: BindGroupLayout | undefined;
-  let sampler: Sampler | undefined;
+  const code = COLOR_STAGE_PRELUDE_WGSL + fragmentWgsl;
+  // The adapter keys modules by label; strengths and other source constants
+  // must not alias the first module requested under the stage's display name.
+  let moduleLabel: string | undefined;
+  let unscopedPrograms: ColorStageProgram[] | undefined;
   const added = graph.addRasterPass(name, {
     accesses: [
       { resource: input.view, usage: 'sampled-read' },
@@ -170,33 +210,46 @@ export function addStandardColorStagePass(
       },
     ],
     encode: ({ pass, frame, resources }) => {
-      const device = frame.runtime.device;
+      const runtime = (frame as _InternalRenderPipelineContext).runtime;
+      const device = runtime.device;
+      const scope = runtime.deviceScope;
+      const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
+      if (factory === undefined) throw new Error(`${name} shader factory unavailable`);
       const stageBinding = stage?.bind(device, resources);
-      if (layout === undefined) {
-        const created = device.createBindGroupLayout({
+      if (scope === undefined) unscopedPrograms ??= [];
+      const programs =
+        scope === undefined ? unscopedPrograms : scope.isAlive() ? programsFor(scope) : undefined;
+      moduleLabel ??=
+        programs?.find((entry) => entry.name === name && entry.code === code)?.moduleLabel ??
+        `${name}-sha256:${bytesToHex(sha256(utf8ToBytes(code)))}`;
+      // The factory remains the module/pending authority, including invalidation
+      // that does not replace its object or method.
+      const source = factory.createShaderModule({ code, label: moduleLabel });
+      if (!source.ok) throw source.error;
+      let program = programs?.find(
+        (entry) =>
+          entry.device === device &&
+          entry.factory === factory &&
+          entry.createModule === factory.createShaderModule &&
+          entry.name === name &&
+          entry.code === code &&
+          entry.module === source.value &&
+          entry.format === output.format &&
+          entry.sampleCount === output.sampleCount &&
+          entry.stageLayout === stageBinding?.layout,
+      );
+      if (program === undefined) {
+        const createdLayout = device.createBindGroupLayout({
           label: `${name}.bgl`,
           entries: [
             { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
             { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
           ],
         });
-        if (!created.ok) throw created.error;
-        layout = created.value;
-      }
-      if (sampler === undefined) {
-        const created = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
-        if (!created.ok) throw created.error;
-        sampler = created.value;
-      }
-      if (pipeline === undefined) {
-        const factory =
-          frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory;
-        if (factory === undefined) throw new Error(`${name} shader factory unavailable`);
-        const source = factory.createShaderModule({
-          code: COLOR_STAGE_PRELUDE_WGSL + fragmentWgsl,
-          label: name,
-        });
-        if (!source.ok) throw source.error;
+        if (!createdLayout.ok) throw createdLayout.error;
+        const layout = createdLayout.value;
+        const createdSampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+        if (!createdSampler.ok) throw createdSampler.error;
         const pipelineLayout = device.createPipelineLayout({
           label: `${name}.layout`,
           bindGroupLayouts: stageBinding === undefined ? [layout] : [layout, stageBinding.layout],
@@ -214,19 +267,39 @@ export function addStandardColorStagePass(
           primitive: { topology: 'triangle-list' },
         });
         if (!created.ok) throw created.error;
-        pipeline = created.value;
+        program = {
+          device,
+          factory,
+          createModule: factory.createShaderModule,
+          name,
+          code,
+          module: source.value,
+          moduleLabel,
+          format: output.format,
+          sampleCount: output.sampleCount,
+          stageLayout: stageBinding?.layout,
+          layout,
+          sampler: createdSampler.value,
+          pipeline: created.value,
+        };
+        // Graph views/bind groups remain current; only immutable device objects
+        // survive a topology replacement. Failed creations never enter this list.
+        if (programs !== undefined && (scope === undefined || scope.isAlive())) {
+          if (programs.length === MAX_COLOR_STAGE_PROGRAMS) programs.shift();
+          programs.push(program);
+        }
       }
       const inputView = resources.textureView(input.view);
       if (!inputView.ok) throw inputView.error;
       const bindings = device.createBindGroup({
-        layout,
+        layout: program.layout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: inputView.value } },
-          { binding: 1, resource: { kind: 'sampler', value: sampler } },
+          { binding: 1, resource: { kind: 'sampler', value: program.sampler } },
         ],
       });
       if (!bindings.ok) throw bindings.error;
-      pass.setPipeline(pipeline);
+      pass.setPipeline(program.pipeline);
       pass.setBindGroup(0, bindings.value);
       if (stageBinding !== undefined) pass.setBindGroup(1, stageBinding.bindGroup);
       pass.draw(3, 1, 0, 0);

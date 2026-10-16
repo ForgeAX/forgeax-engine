@@ -11,10 +11,12 @@ import {
   Camera,
   createRenderPublisher,
   DirectionalLight,
+  type FrameReceipt,
   MeshFilter,
   MeshRenderer,
   PointLight,
   PointLightShadow,
+  type RenderError,
   renderPublicationAssetTransfers,
   renderPublicationTransfers,
   Skylight,
@@ -34,6 +36,10 @@ import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import type { ParticleCodeModuleSet } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect, onTestFailed, onTestFinished } from 'vitest';
+import {
+  completeReadyFrame,
+  drawReadyFrame,
+} from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { loadBackendPack } from '../backend-selection';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -317,37 +323,48 @@ async function runVfxMeshLighting(options: {
     const attachedVfx = await vfx.attachWorld({ world, assets });
     if (!attachedVfx.ok) throw attachedVfx.error;
     vfxAttached = true;
-    const drawFrame = async () => {
+    const drawFrame = async (): Promise<Result<FrameReceipt, RenderError>> => {
       options.signal.throwIfAborted();
       if (publisher === undefined) {
         if (lease === undefined) throw new Error('Missing World lease');
-        return renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        return ok(
+          await drawReadyFrame(renderer, {
+            leases: [lease],
+            camera: { lease },
+            environment: { lease },
+          }),
+        );
       }
       const source = publisher;
-      const candidate = source.prepare(0).unwrap();
-      const packet = structuredClone(candidate.packet, {
-        transfer: [
-          ...renderPublicationTransfers(candidate.packet),
-          ...renderPublicationAssetTransfers(candidate.packet),
-        ],
+      const receipt = await completeReadyFrame(async () => {
+        const candidate = source.prepare(0).unwrap();
+        const packet = structuredClone(candidate.packet, {
+          transfer: [
+            ...renderPublicationTransfers(candidate.packet),
+            ...renderPublicationAssetTransfers(candidate.packet),
+          ],
+        });
+        candidate.accept();
+        try {
+          const draw = renderer.draw({
+            publication: packet,
+            onFeatureSourceSubmitted: (identity, feedback) => {
+              source
+                .acknowledgeFeatures(packet.revision, [
+                  { identity, feedback: structuredClone(feedback) },
+                ])
+                .unwrap();
+            },
+          });
+          if (!draw.ok) throw draw.error;
+          const complete = await draw.value.completed;
+          if (!complete.ok) throw complete.error;
+          return draw.value;
+        } finally {
+          source.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        }
       });
-      candidate.accept();
-      const draw = renderer.draw({
-        publication: packet,
-        onFeatureSourceSubmitted: (identity, feedback) => {
-          source
-            .acknowledgeFeatures(packet.revision, [
-              { identity, feedback: structuredClone(feedback) },
-            ])
-            .unwrap();
-        },
-      });
-      if (draw.ok) {
-        const complete = await draw.value.completed;
-        if (!complete.ok) throw complete.error;
-      }
-      source.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-      return draw;
+      return ok(receipt);
     };
     const pixel = async () => {
       options.signal.throwIfAborted();
@@ -593,11 +610,12 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
           const projectIndices = names.flatMap((name, index) =>
             name.endsWith('.project') ? [index] : [],
           );
-          expect(projectIndices).toHaveLength(2);
+          expect(projectIndices.length).toBeGreaterThan(0);
           for (const projectIndex of projectIndices)
             expect(projectIndex, names.join('\n')).toBeLessThan(names.indexOf('shadowCascade0'));
         }
         if (
+          caster?.enabled === true ||
           surface?.ordinary === true ||
           (env.FORGEAX_POINT_SHADOW_TAPE !== undefined && pointShadowCaptureStage === 2) ||
           (caster?.enabled &&
@@ -643,8 +661,28 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
           }
           const decoded = decodeTape(encoded.value.bytes);
           if (!decoded.ok) throw decoded.error;
+          const model = buildFrameModel(decoded.value);
+          if (caster?.enabled) {
+            // Logical projections may share one native compute pass. Require
+            // both actual dispatches before any depth-only shadow draw.
+            const projects = model.works.filter((work) =>
+              work.pipeline?.shaders.some(
+                (shader) => shader.entryPoint === 'forgeax_vfx_mesh_main',
+              ),
+            );
+            expect(projects).toHaveLength(2);
+            const firstShadow = model.works.find(
+              (work) =>
+                work.attachments !== null &&
+                work.attachments.depthStencilViewHandleId !== null &&
+                work.attachments.colorViewHandleIds.length === 0,
+            );
+            if (firstShadow === undefined) throw new Error('Missing captured shadow draw');
+            for (const project of projects)
+              expect(project.workIndex).toBeLessThan(firstShadow.workIndex);
+          }
           capturedWork.push(
-            ...buildFrameModel(decoded.value).works.map((work) => ({
+            ...model.works.map((work) => ({
               index: work.workIndex,
               kind: work.kind,
               pipeline: work.pipeline?.shaders?.map((shader) => shader.entryPoint),

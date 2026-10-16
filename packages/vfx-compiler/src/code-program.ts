@@ -145,6 +145,116 @@ const REQUIRED_UPDATE_V3 =
   /\bfn\s+vfx_update\s*\(\s*\w+\s*:\s*VfxUpdateContext\s*,\s*\w+\s*:\s*ptr\s*<\s*function\s*,\s*VfxParticle\s*>\s*(?:,\s*\w+\s*:\s*ptr\s*<\s*function\s*,\s*VfxCustom\s*>)?\s*\)/;
 const RESERVED = /@(group|binding|compute|vertex|fragment)\b|\bfn\s+forgeax_vfx_/;
 
+// The original entry remains the fallback and the byte-identical tiny-emitter path.
+const PARTICLE_SORT_MAIN_V3 = `@compute @workgroup_size(1)
+fn forgeax_vfx_sort_main() {
+  if (forgeax_vfx_runtime.sorting < 2u) { return; }
+  let aliveCount = atomicLoad(&forgeax_vfx_counters.aliveCount);
+  var index = 1u;
+  loop {
+    if (index >= aliveCount) { break; }
+    let candidate = forgeax_vfx_alive_indices[index];
+    let candidateWorldPosition = forgeax_vfx_world_position(
+      forgeax_vfx_renderer_position(candidate),
+    );
+    let candidateDepth = forgeax_vfx_project(
+      candidateWorldPosition,
+    ).z;
+    let candidateDistance = dot(
+      candidateWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
+      candidateWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
+    );
+    var cursor = index;
+    loop {
+      if (cursor == 0u) { break; }
+      let previous = forgeax_vfx_alive_indices[cursor - 1u];
+      let previousWorldPosition = forgeax_vfx_world_position(
+        forgeax_vfx_renderer_position(previous),
+      );
+      let previousDepth = forgeax_vfx_project(
+        previousWorldPosition,
+      ).z;
+      let previousDistance = dot(
+        previousWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
+        previousWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
+      );
+      let candidateKey = forgeax_vfx_custom_sort_key(candidate);
+      let previousKey = forgeax_vfx_custom_sort_key(previous);
+      if (forgeax_vfx_runtime.sorting == 3u) {
+        if (previousKey <= candidateKey) { break; }
+      } else if (forgeax_vfx_runtime.sorting == 4u) {
+        if (previousKey >= candidateKey) { break; }
+      } else if (forgeax_vfx_runtime.sorting == 5u) {
+        if (previousDistance >= candidateDistance) { break; }
+      } else if (previousDepth <= candidateDepth) {
+        break;
+      }
+      forgeax_vfx_alive_indices[cursor] = previous;
+      cursor -= 1u;
+    }
+    forgeax_vfx_alive_indices[cursor] = candidate;
+    index += 1u;
+  }
+}`;
+
+function particleSortRuntime(capacity: number): string {
+  // Tiny emitters regress with a private key array; large capacities retain
+  // the original unbounded insertion path and its existing resource contract.
+  if (capacity < 16 || capacity > 256) return PARTICLE_SORT_MAIN_V3;
+  const fallback = PARTICLE_SORT_MAIN_V3.replace(
+    '@compute @workgroup_size(1)\nfn forgeax_vfx_sort_main()',
+    'fn forgeax_vfx_sort_insertion()',
+  );
+  return `${fallback}\n\nconst FORGEAX_VFX_SORT_KEY_CAPACITY: u32 = ${capacity}u;
+
+fn forgeax_vfx_sort_key(index: u32) -> f32 {
+  if (forgeax_vfx_runtime.sorting == 3u || forgeax_vfx_runtime.sorting == 4u) {
+    return forgeax_vfx_custom_sort_key(index);
+  }
+  let worldPosition = forgeax_vfx_world_position(forgeax_vfx_renderer_position(index));
+  if (forgeax_vfx_runtime.sorting == 5u) {
+    let delta = worldPosition - forgeax_vfx_runtime.cameraPosition.xyz;
+    return dot(delta, delta);
+  }
+  return forgeax_vfx_project(worldPosition).z;
+}
+
+@compute @workgroup_size(1)
+fn forgeax_vfx_sort_main() {
+  if (forgeax_vfx_runtime.sorting < 2u) { return; }
+  let aliveCount = atomicLoad(&forgeax_vfx_counters.aliveCount);
+  if (aliveCount < 16u || aliveCount > FORGEAX_VFX_SORT_KEY_CAPACITY) {
+    forgeax_vfx_sort_insertion();
+    return;
+  }
+  // Renderer attributes are generated reads of the unchanged particle/custom
+  // state. Only the alive roster moves during sorting, so evaluate each key
+  // once and move it beside the original stable insertion order.
+  var keys: array<f32, FORGEAX_VFX_SORT_KEY_CAPACITY>;
+  for (var rank = 0u; rank < aliveCount; rank += 1u) {
+    keys[rank] = forgeax_vfx_sort_key(forgeax_vfx_alive_indices[rank]);
+  }
+  let descending = forgeax_vfx_runtime.sorting == 4u || forgeax_vfx_runtime.sorting == 5u;
+  for (var index = 1u; index < aliveCount; index += 1u) {
+    let candidate = forgeax_vfx_alive_indices[index];
+    let candidateKey = keys[index];
+    var cursor = index;
+    loop {
+      if (cursor == 0u) { break; }
+      let previousKey = keys[cursor - 1u];
+      if (descending) {
+        if (previousKey >= candidateKey) { break; }
+      } else if (previousKey <= candidateKey) { break; }
+      forgeax_vfx_alive_indices[cursor] = forgeax_vfx_alive_indices[cursor - 1u];
+      keys[cursor] = previousKey;
+      cursor -= 1u;
+    }
+    forgeax_vfx_alive_indices[cursor] = candidate;
+    keys[cursor] = candidateKey;
+  }
+}`;
+}
+
 /** Single executable Program v3 GPU shell; no legacy-ABI rewrite step. */
 export const PARTICLE_MANAGED_RUNTIME_V3 = `
 struct ForgeaxVfxRuntime {
@@ -346,56 +456,7 @@ fn forgeax_vfx_custom_sort_key(index: u32) -> f32 {
   return 0.0;
 }
 
-@compute @workgroup_size(1)
-fn forgeax_vfx_sort_main() {
-  if (forgeax_vfx_runtime.sorting < 2u) { return; }
-  let aliveCount = atomicLoad(&forgeax_vfx_counters.aliveCount);
-  var index = 1u;
-  loop {
-    if (index >= aliveCount) { break; }
-    let candidate = forgeax_vfx_alive_indices[index];
-    let candidateWorldPosition = forgeax_vfx_world_position(
-      forgeax_vfx_renderer_position(candidate),
-    );
-    let candidateDepth = forgeax_vfx_project(
-      candidateWorldPosition,
-    ).z;
-    let candidateDistance = dot(
-      candidateWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
-      candidateWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
-    );
-    var cursor = index;
-    loop {
-      if (cursor == 0u) { break; }
-      let previous = forgeax_vfx_alive_indices[cursor - 1u];
-      let previousWorldPosition = forgeax_vfx_world_position(
-        forgeax_vfx_renderer_position(previous),
-      );
-      let previousDepth = forgeax_vfx_project(
-        previousWorldPosition,
-      ).z;
-      let previousDistance = dot(
-        previousWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
-        previousWorldPosition - forgeax_vfx_runtime.cameraPosition.xyz,
-      );
-      let candidateKey = forgeax_vfx_custom_sort_key(candidate);
-      let previousKey = forgeax_vfx_custom_sort_key(previous);
-      if (forgeax_vfx_runtime.sorting == 3u) {
-        if (previousKey <= candidateKey) { break; }
-      } else if (forgeax_vfx_runtime.sorting == 4u) {
-        if (previousKey >= candidateKey) { break; }
-      } else if (forgeax_vfx_runtime.sorting == 5u) {
-        if (previousDistance >= candidateDistance) { break; }
-      } else if (previousDepth <= candidateDepth) {
-        break;
-      }
-      forgeax_vfx_alive_indices[cursor] = previous;
-      cursor -= 1u;
-    }
-    forgeax_vfx_alive_indices[cursor] = candidate;
-    index += 1u;
-  }
-}
+${PARTICLE_SORT_MAIN_V3}
 
 fn forgeax_vfx_project(position: vec3<f32>) -> vec3<f32> {
   let clip = forgeax_vfx_runtime.viewProjection * vec4<f32>(position, 1.0);
@@ -1051,7 +1112,73 @@ function replaceParticleMaterialWrites(runtime: string, maxLanes: number, offset
   return runtime.replaceAll(block, replacement);
 }
 
+function singleBlockParticleRuntime(runtime: string, capacity: number): string {
+  if (capacity > 256) return runtime;
+  const update =
+    '@compute @workgroup_size(256)\nfn forgeax_vfx_update_main(@builtin(global_invocation_id) invocation: vec3<u32>)';
+  const scan = `@compute @workgroup_size(256)
+fn forgeax_vfx_scan_blocks_main(
+  @builtin(global_invocation_id) invocation: vec3<u32>,
+  @builtin(local_invocation_id) local: vec3<u32>,
+  @builtin(workgroup_id) group: vec3<u32>,
+)`;
+  const compact =
+    '@compute @workgroup_size(256)\nfn forgeax_vfx_compact_main(@builtin(global_invocation_id) invocation: vec3<u32>)';
+  return (
+    runtime
+      .replace(update, 'fn forgeax_vfx_update_particle(invocation: vec3<u32>)')
+      .replace(
+        scan,
+        'fn forgeax_vfx_scan_block(invocation: vec3<u32>, local: vec3<u32>, group: vec3<u32>)',
+      )
+      .replace(compact, 'fn forgeax_vfx_compact_particle(invocation: vec3<u32>)') +
+    `
+
+@compute @workgroup_size(256)
+fn forgeax_vfx_update_main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  forgeax_vfx_update_particle(invocation);
+}
+@compute @workgroup_size(256)
+fn forgeax_vfx_scan_blocks_main(
+  @builtin(global_invocation_id) invocation: vec3<u32>,
+  @builtin(local_invocation_id) local: vec3<u32>,
+  @builtin(workgroup_id) group: vec3<u32>,
+) {
+  forgeax_vfx_scan_block(invocation, local, group);
+}
+@compute @workgroup_size(256)
+fn forgeax_vfx_compact_main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  forgeax_vfx_compact_particle(invocation);
+}
+@compute @workgroup_size(256)
+fn forgeax_vfx_scan_compact_main(
+  @builtin(global_invocation_id) invocation: vec3<u32>,
+  @builtin(local_invocation_id) local: vec3<u32>,
+  @builtin(workgroup_id) group: vec3<u32>,
+) {
+  forgeax_vfx_scan_block(invocation, local, group);
+  storageBarrier();
+  forgeax_vfx_compact_particle(invocation);
+}
+@compute @workgroup_size(256)
+fn forgeax_vfx_update_compact_main(
+  @builtin(global_invocation_id) invocation: vec3<u32>,
+  @builtin(local_invocation_id) local: vec3<u32>,
+  @builtin(workgroup_id) group: vec3<u32>,
+) {
+  // Every lane reaches both storage barriers, including inactive particles.
+  // One workgroup covers the entire emitter, matching dispatch boundaries.
+  forgeax_vfx_update_particle(invocation);
+  storageBarrier();
+  forgeax_vfx_scan_block(invocation, local, group);
+  storageBarrier();
+  forgeax_vfx_compact_particle(invocation);
+}`
+  );
+}
+
 function createParticleManagedRuntimeV3(options: {
+  readonly capacity: number;
   readonly custom: import('@forgeax/engine-vfx').VfxCustomLayout | undefined;
   readonly parameters: boolean;
   readonly customHook: boolean;
@@ -1070,7 +1197,10 @@ function createParticleManagedRuntimeV3(options: {
   ]
     .filter((line) => line.length > 0)
     .join('\n');
-  let runtime = PARTICLE_MANAGED_RUNTIME_V3;
+  let runtime = PARTICLE_MANAGED_RUNTIME_V3.replace(
+    PARTICLE_SORT_MAIN_V3,
+    particleSortRuntime(options.capacity),
+  );
   if (declarations.length > 0) runtime = `${declarations}\n${runtime}`;
   if (custom !== undefined && custom.stride > 0) {
     const initial = `var custom = VfxCustom(${custom.fields.map((field) => wgslDefault(field.type)).join(', ')});`;
@@ -1122,7 +1252,7 @@ function createParticleManagedRuntimeV3(options: {
   const generatedHelpers = `${rendererAttributes}\n${materialInputs.wgsl}\n${meshControls}`;
   const marker = '@compute @workgroup_size(256)\nfn forgeax_vfx_spawn_main';
   runtime = runtime.replace(marker, `${generatedHelpers}\n${marker}`);
-  return runtime;
+  return singleBlockParticleRuntime(runtime, options.capacity);
 }
 
 export interface ParticleCodeModuleSet {
@@ -1364,6 +1494,7 @@ async function compileEmitterV3(
     ),
   };
   const managed = createParticleManagedRuntimeV3({
+    capacity: emitter.capacity,
     parameters: layout.value.parameters.fields.length > 0,
     custom: layout.value.customLayout,
     customHook,
@@ -1467,6 +1598,9 @@ async function compileEmitterV3(
         'forgeax_vfx_add_offsets_main',
         'forgeax_vfx_compact_main',
         'forgeax_vfx_sort_main',
+        ...(emitter.capacity <= 256
+          ? ['forgeax_vfx_scan_compact_main', 'forgeax_vfx_update_compact_main']
+          : []),
         ...(hasEvents ? ['forgeax_vfx_event_main'] : []),
         'forgeax_vfx_billboard_main',
         'forgeax_vfx_mesh_main',

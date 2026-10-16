@@ -16,6 +16,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RendererHostAssembly } from '../renderer-host';
 
 export function value<T>(
@@ -129,14 +130,13 @@ export async function verifyLodTransition(
     world.set(camera, Camera, { left: -half, right: half, bottom: -half, top: half }).unwrap();
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (!renderer.requestObservation) throw new Error('Observation unavailable');
-    value(renderer.requestObservation(['linear-hdr']));
     const pending = capture ? options.recorder?.captureFrame() : undefined;
     if (pending && options.recorder) (await options.recorder.frameBoundary()).unwrap();
-    const drawn = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const drawn = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      ['linear-hdr'],
     );
-    value(await drawn.completed);
     frames++;
     if (pending && options.recorder) (await options.recorder.frameBoundary()).unwrap();
     const observation = value(

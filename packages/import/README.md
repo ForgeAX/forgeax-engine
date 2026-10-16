@@ -154,12 +154,15 @@ reference/deletion graph and current source revision before atomic publication.
 Local owner failures never fall through to an older external snapshot. Concurrent
 content cycles return the same structured stalled-worklist failure as serial cycles.
 
-The worklist defaults to serial admission. `maxConcurrency` admits bounded waves
-against a fixed staged snapshot, joins all started subjects before returning an
-error, and publishes each wave in source order. Forward content reads keep the
-existing bounded retry/stall path. Production admits at most two Pack workers,
-reserving 2 GiB of host headroom and 2 GiB per lane from both free memory and
-remaining Node heap. `FORGEAX_BUILD_CONCURRENCY=1` selects serial admission.
+The worklist defaults to serial admission. `maxConcurrency` refills idle lanes
+without waiting for a slow earlier subject, while retaining at most twice the
+lane count of admitted, unpublished products. Publication remains in source
+order; errors join all started subjects before returning. Each admission reads
+the published prefix snapshot. Speculative content reads superseded by an earlier
+producer retry through the existing bounded dependency/stall path. Production
+admits at most four Pack workers, reserving 2 GiB of host headroom and 2 GiB per
+lane from both free memory and remaining Node heap.
+`FORGEAX_BUILD_CONCURRENCY=1..4` can lower this memory/CPU admission limit.
 Custom native cookers keep host admission serial unless they explicitly declare
 `concurrency: 'parallel'` for reentrant, input-isolated cooking. The builtin
 material and particle cookers declare that capability. Existing worker lifetime

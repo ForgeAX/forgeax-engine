@@ -2,6 +2,7 @@ import {
   type GpuDrivenResidencyValidationInput,
   ResidencyValidationOwner,
 } from '../record/residency-validation-owner';
+import { prepareHiddenGpuDrivenPipelines } from './pipeline-preparation';
 import { RasterGraphIdentity } from './raster-graph-identity';
 
 export type { GpuDrivenResidencyValidationInput } from '../record/residency-validation-owner';
@@ -475,7 +476,7 @@ export interface PreparedGpuDrivenFrame {
   /** Published Surface admission and its pass lane decision. */
   readonly surfaceSubmission?: SurfaceGpuSubmissionAdmission;
   /** @internal Commits a replacement generation only after graph promotion. */
-  readonly _commitResourceReplacement: () => void;
+  readonly _commitResourceReplacement: (submittedGraphGeneration?: number) => void;
   /** @internal Retires superseded view buffers when graph compilation promotes them. */
   readonly _commitGpuResourceReplacement?: () => void;
   /** @internal Discards staged shadow cache publication after a failed frame. */
@@ -568,6 +569,7 @@ export function classifyRecoveryCapability(
 type RasterPipelineFor = (
   formats: readonly TextureFormat[],
   formatKey?: string,
+  preparation?: boolean,
 ) => Result<RenderPipeline, RhiError>;
 
 /** One filtered batch as the compiled raster encoder reads it on each frame. */
@@ -960,6 +962,7 @@ export class GpuDrivenProduction {
     readonly standardPbrPipelineState?: PipelineState;
     /** Existing renderer owner that builds the selected artifact PSO/BGL. */
     readonly materialPipelineFactory?: MaterialPipelineFactory;
+    readonly materialPipelinePreparationFactory?: MaterialPipelineFactory;
     /** Extracted ShadowCaster ownership keyed by concrete draw item and pass. */
     readonly shadowCasterDrawKeys?: ReadonlySet<string>;
     /** Structured ShadowCaster ownership facts for exact pass admission. */
@@ -1796,9 +1799,9 @@ export class GpuDrivenProduction {
       _commitGpuResourceReplacement: () => {
         view._commitResourceReplacement();
       },
-      _commitResourceReplacement: () => {
+      _commitResourceReplacement: (submittedGraphGeneration) => {
         view._commitResourceReplacement();
-        shadowViewPool._commitResourceReplacement();
+        shadowViewPool._commitResourceReplacement(submittedGraphGeneration);
         this.committedPaletteContentRevision = paletteContentRevision;
         this.committedViewClipping = viewClipping;
         this.submissionState = 'submitted';
@@ -2101,7 +2104,7 @@ export class GpuDrivenProduction {
               ): RasterPipelineFor => {
                 let projectedPipelines: Map<string, ResultOk<RenderPipeline>> | undefined;
                 let selectedArtifact: MaterialShaderArtifact | undefined;
-                return (formats, formatKey) => {
+                return (formats, formatKey, preparation = false) => {
                   const key = formatKey ?? formats.join(',');
                   const projected = projectedPipelines?.get(key);
                   if (projected !== undefined)
@@ -2146,6 +2149,7 @@ export class GpuDrivenProduction {
                     formats.slice(1),
                     rendererRecording ? standardTextureMask : prepared.standardTextureMask,
                     forwardColorPass,
+                    preparation ? input.materialPipelinePreparationFactory : undefined,
                   );
                   if (selected.ok) {
                     projectedPipelines ??= new Map();
@@ -2190,11 +2194,13 @@ export class GpuDrivenProduction {
             }
             // Admit the batch with the pipeline its ordinary forward encode
             // binds, so a frame that never needs fs_main does not compile it.
-            const initialPipeline = pipelines.opaquePipelineFor(
-              initialFormats ?? [format, ...(additionalColorFormats ?? [])],
-              initialFormatKey,
-            );
-            if (!initialPipeline.ok) return initialPipeline;
+            if (!rendererRecording || input.materialPipelinePreparationFactory === undefined) {
+              const initialPipeline = pipelines.opaquePipelineFor(
+                initialFormats ?? [format, ...(additionalColorFormats ?? [])],
+                initialFormatKey,
+              );
+              if (!initialPipeline.ok) return initialPipeline;
+            }
             const projectedClass = {
               artifact,
               mesh: prepared.mesh,
@@ -2254,8 +2260,82 @@ export class GpuDrivenProduction {
             }
             return batch;
           };
+          const preparationFactory = input.materialPipelinePreparationFactory;
+          const preparationJobs = new Map<
+            string,
+            (
+              entries: readonly ValidatedRenderable[],
+              artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
+            ) => boolean
+          >();
+          const selectPipeline = (
+            batch: ProjectedRasterClass,
+            fragmentEntryPoint: string | undefined,
+            coverageOnly: boolean,
+          ) =>
+            fragmentEntryPoint === 'fs_temporal'
+              ? coverageOnly
+                ? batch.pipelines.coveragePipelineFor
+                : batch.pipelines.temporalPipelineFor
+              : fragmentEntryPoint === 'fs_gbuffer'
+                ? batch.pipelines.gbufferPipelineFor
+                : fragmentEntryPoint === 'fs_nearest_layer'
+                  ? (batch.pipelines.nearestPipelineFor ?? batch.pipelines.pipelineFor)
+                  : fragmentEntryPoint === 'fs_color'
+                    ? (batch.pipelines.colorPipelineFor ?? batch.pipelines.pipelineFor)
+                    : fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY
+                      ? batch.pipelines.opaquePipelineFor
+                      : batch.pipelines.pipelineFor;
           return ok({
             accesses: standardAccesses,
+            ...(rendererRecording && preparationFactory !== undefined
+              ? {
+                  registerPipelinePreparation: (
+                    formats,
+                    filter,
+                    fragmentEntryPoint,
+                    coverageOnly = false,
+                  ) => {
+                    const key = JSON.stringify([formats, filter, fragmentEntryPoint, coverageOnly]);
+                    if (preparationJobs.has(key)) return;
+                    const selected = new Set<RasterPipelineFor>();
+                    for (const live of production.liveRasterBatches) {
+                      const batch = rasterClassFor(live, filter, fragmentEntryPoint);
+                      if (batch !== undefined)
+                        selected.add(selectPipeline(batch, fragmentEntryPoint, coverageOnly));
+                    }
+                    const ownedFormats = [...formats],
+                      formatKey = ownedFormats.join(',');
+                    preparationJobs.set(key, (entries, artifacts) => {
+                      let ready = true;
+                      for (const pipelineFor of selected)
+                        if (!pipelineFor(ownedFormats, formatKey, true).ok) ready = false;
+                      if (
+                        !prepareHiddenGpuDrivenPipelines({
+                          entries,
+                          artifacts,
+                          factory: preparationFactory,
+                          formats: ownedFormats,
+                          sampleCount,
+                          shaderUvSetCount: materialPipelineState.standardPbrShaderUvSetCount,
+                          filter,
+                          fragmentEntry: fragmentEntryPoint,
+                          coverageOnly,
+                          visibleSurface: input.visibleSurface !== undefined,
+                        })
+                      )
+                        ready = false;
+                      return ready;
+                    });
+                  },
+                  preparePipelines: (entries = [], artifacts) => {
+                    let ready = true;
+                    for (const prepare of preparationJobs.values())
+                      if (!prepare(entries, artifacts)) ready = false;
+                    return ready;
+                  },
+                }
+              : {}),
             hasWork: (filter, fragmentEntryPoint) =>
               production.liveRasterBatches.some(
                 (live) => rasterClassFor(live, filter, fragmentEntryPoint) !== undefined,
@@ -2375,20 +2455,7 @@ export class GpuDrivenProduction {
                   !frameResources.selectedMaterialSlots.has(globalMaterialSlot)
                 )
                   continue;
-                const pipelineFor =
-                  fragmentEntryPoint === 'fs_temporal'
-                    ? coverageOnly
-                      ? batch.pipelines.coveragePipelineFor
-                      : batch.pipelines.temporalPipelineFor
-                    : fragmentEntryPoint === 'fs_gbuffer'
-                      ? batch.pipelines.gbufferPipelineFor
-                      : fragmentEntryPoint === 'fs_nearest_layer'
-                        ? (batch.pipelines.nearestPipelineFor ?? batch.pipelines.pipelineFor)
-                        : fragmentEntryPoint === 'fs_color'
-                          ? (batch.pipelines.colorPipelineFor ?? batch.pipelines.pipelineFor)
-                          : fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY
-                            ? batch.pipelines.opaquePipelineFor
-                            : batch.pipelines.pipelineFor;
+                const pipelineFor = selectPipeline(batch, fragmentEntryPoint, coverageOnly);
                 const selectedPipeline = pipelineFor(colorFormats, formatKey);
                 if (!selectedPipeline.ok) throw selectedPipeline.error;
                 if (currentPipeline !== selectedPipeline.value) {

@@ -949,7 +949,7 @@ describe('barrel distortion real output on Dawn', () => {
         if (armed === undefined || !armed.ok) {
           throw new Error('Dawn FXAA edge fixture could not arm linear-LDR observation');
         }
-        const receipt = drawPublished(fixture.renderer, world);
+        const receipt = await drawPublished(fixture.renderer, world);
         expect(receipt.ok).toBe(true);
         if (!receipt.ok) throw receipt.error;
         await fixture.device.queue.onSubmittedWorkDone();
@@ -1176,7 +1176,7 @@ describe('barrel distortion real output on Dawn', () => {
         barrel: { strength: 0.35, centerX: 0.5, centerY: 0.5 },
         geometry: false,
       });
-      const whiteReceipt = drawPublished(fixture.renderer, whiteWorld);
+      const whiteReceipt = await drawPublished(fixture.renderer, whiteWorld);
       expect(whiteReceipt.ok).toBe(true);
       await fixture.device.queue.onSubmittedWorkDone();
       const white = await readBarrelPixels(fixture.device, fixture.renderTarget);

@@ -7,7 +7,7 @@ import { MeshPreviewPanel } from './MeshPreviewPanel';
 import { MeshPropertiesPanel } from './MeshPropertiesPanel';
 import './mesh.css';
 
-type MountProps = ComponentProps<typeof MeshPreviewPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
+type MountProps = ComponentProps<typeof MeshPreviewPanel> & ComponentProps<typeof MeshPropertiesPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
 
 function mountPanel(node: Parameters<ReturnType<typeof createRoot>['render']>[0], props: MountProps) {
   if (!props.mountElement) throw new TypeError('mesh panel mount requires mountElement');
@@ -34,7 +34,7 @@ export async function mountMeshPreviewPanel(props: MountProps) {
 
 export async function mountMeshPropertiesPanel(props: MountProps) {
   return mountPanel(
-    <MeshPropertiesPanel client={props.client} />,
+    <MeshPropertiesPanel client={props.client} assetActions={props.assetActions} />,
     props,
   );
 }

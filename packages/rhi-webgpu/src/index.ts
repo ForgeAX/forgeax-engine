@@ -150,6 +150,8 @@ export interface GpuDeviceLike {
   createBindGroup(descriptor: GPUBindGroupDescriptor): unknown;
   createPipelineLayout(descriptor: GPUPipelineLayoutDescriptor): unknown;
   createRenderPipeline(descriptor: GPURenderPipelineDescriptor): unknown;
+  createRenderPipelineAsync?(descriptor: GPURenderPipelineDescriptor): Promise<unknown>;
+  createComputePipelineAsync?(descriptor: GPUComputePipelineDescriptor): Promise<unknown>;
   createShaderModule(descriptor: GPUShaderModuleDescriptor): unknown;
 }
 

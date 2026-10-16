@@ -4,11 +4,14 @@ import { inspectorCollection, type InspectorField } from '../inspection.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import { InspectorAssetReference } from './InspectorAssetReference';
 
-export function InspectorFieldView({ field, openAsset }: { field: InspectorField; openAsset: (guid: string) => void }) {
+export function InspectorFieldView({ field, openAsset, browseAsset }: { field: InspectorField; openAsset: (guid: string) => void; browseAsset?: (guid: string) => void }) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
   if (field.presentation === 'handle') return <span className="insp-handle-value" title={JSON.stringify(field.rawValue)}>{t('inspector.handleReference', { handle: String(field.rawValue) })}</span>;
-  if (field.presentation === 'resource' && field.resource) return <InspectorAssetReference reference={field.resource} openAsset={openAsset} inline />;
+  if (field.presentation === 'resource' && field.resource) return <InspectorAssetReference reference={field.resource} openAsset={openAsset} browseAsset={browseAsset} inline />;
+  if (field.resources) return <div className="insp-material-list">{field.resources.map((resource, index) => <div className="insp-material-item" key={index}>
+    <span className="insp-material-index">{index}</span><InspectorAssetReference reference={resource} openAsset={openAsset} browseAsset={browseAsset} inline />
+  </div>)}</div>;
   if (field.presentation === 'color' && field.colorChannels) {
     return <InspectorFieldControl field={{ ...field, kind: 'color', value: field.colorChannels }} />;
   }

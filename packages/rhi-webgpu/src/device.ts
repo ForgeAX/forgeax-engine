@@ -1928,6 +1928,68 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
         );
       }
     },
+    ...(typeof rawDevice.createRenderPipelineAsync !== 'function'
+      ? {}
+      : {
+          async createRenderPipelineAsync(
+            desc: RenderPipelineDescriptor,
+          ): Promise<Result<RenderPipeline, RhiError>> {
+            try {
+              // forgeax-async-whitelist: dom-native - WebGPU pipeline compilation completion.
+              const pipeline = await rawDevice.createRenderPipelineAsync(
+                mirrorRenderPipelineDescriptor(desc),
+              );
+              return ok(pipeline as unknown as RenderPipeline);
+            } catch (cause) {
+              const reason =
+                cause !== null && typeof cause === 'object' && 'reason' in cause
+                  ? cause.reason
+                  : undefined;
+              return err(
+                new RhiErrorClass({
+                  code: reason === 'validation' ? 'rhi-descriptor-invalid' : 'webgpu-runtime-error',
+                  expected: 'WebGPU render pipeline compilation to complete successfully',
+                  hint: cause instanceof Error ? cause.message : String(cause),
+                }),
+              );
+            }
+          },
+        }),
+    ...(typeof rawDevice.createComputePipelineAsync !== 'function'
+      ? {}
+      : {
+          async createComputePipelineAsync(
+            desc: ComputePipelineDescriptor,
+          ): Promise<Result<ComputePipeline, RhiError>> {
+            if (caps.compute === false)
+              return err(
+                new RhiErrorClass({
+                  code: 'feature-not-enabled',
+                  expected: 'caps.compute === true',
+                  hint: 'check compute capability before preparing a compute pipeline',
+                }),
+              );
+            try {
+              // forgeax-async-whitelist: dom-native - WebGPU compute pipeline compilation completion.
+              const pipeline = await rawDevice.createComputePipelineAsync(
+                mirror(desc, CP_KEYS) as unknown as GPUComputePipelineDescriptor,
+              );
+              return ok(pipeline as unknown as ComputePipeline);
+            } catch (cause) {
+              const reason =
+                cause !== null && typeof cause === 'object' && 'reason' in cause
+                  ? cause.reason
+                  : undefined;
+              return err(
+                new RhiErrorClass({
+                  code: reason === 'validation' ? 'rhi-descriptor-invalid' : 'webgpu-runtime-error',
+                  expected: 'WebGPU compute pipeline compilation to complete successfully',
+                  hint: cause instanceof Error ? cause.message : String(cause),
+                }),
+              );
+            }
+          },
+        }),
     createComputePipeline(desc: ComputePipelineDescriptor): Result<ComputePipeline, RhiError> {
       // Capability gate (research §1.2 NOTE; plan-strategy §4.3 boundary
       // case row 1). MVP WebGPU path always has caps.compute=true; the gate

@@ -29,6 +29,14 @@ Program v3 path) and one FixedUpdate producer. `detachWorld` removes both the
 system and runtime resource. Material and mesh GUIDs resolve through the
 attached World's `AssetRegistry`.
 
+The stock host captures each material GUID once per synchronous World extraction,
+sharing that frame's authored values and cooked projection across particle Players.
+The next candidate always reads current values, including an in-place edit or a
+same-GUID replacement. Custom projection methods and accessors keep their per-use
+observation and error behavior. Direct feature providers can opt into this frame
+snapshot contract with `material.captureFrame`; no author data is frozen or retained
+as immutable across frames.
+
 An explicitly authored mesh source `{ source: 'player' }` instead reads the
 Player entity's `MeshFilter` through `resolveAssetHandle`. This preserves World
 shared-reference generations and the existing managed runtime-content projection.
@@ -41,6 +49,11 @@ stable frames carry no duplicate mesh payload. Distinct custom provider meshes
 remain inline, preserving their captured values and unmanaged edits on later frames.
 The normal feature geometry cache and Renderer submission fences own GPU upload,
 replacement and retirement. A source upload/preparation is not a draw receipt.
+
+An explicitly unlit mesh renderer without an authored `particle-mesh` pass
+selects a dedicated built-in unlit entry. It keeps the material interface,
+base/emissive textures, alpha and fog while omitting discarded Standard lighting;
+lit meshes and authored particle programs retain their original paths.
 
 ## Frame path
 
@@ -57,6 +70,21 @@ stable frames carry current parameters and tick state. The plan resolves definit
 from the accepted resource owner during its existing traversal. Same-GUID replacements,
 old queued ticks, discard/retry, two outstanding frames and receiver recovery preserve
 exact program identity without a second program cache or receiver World.
+
+For immutable emitters without data interfaces or force fields, the producer retains
+its detached logical compute-binding declarations through the existing owned-program
+data boundary. Current buffer uploads and execution state remain per-frame. Raw
+mutable definitions retain their original reads; an empty or replaced roster drops
+unused templates. Device recovery still prepares the current native resources.
+The [complete FX owner comparison](reports/vfx-immutable-binding-layouts-20261017.json)
+measures this scope without making a whole-game FPS claim.
+
+Players using the same exact immutable emitter share one stateless compute-program
+declaration. Their particle, event, history and binding resources remain independent.
+An actual preparation request by any live user keeps the shared program completion
+qualified; mutable definitions keep separate declarations. The
+[shared-program owner comparison](reports/vfx-shared-compute-programs-20261017.json)
+records the complete FX-chain cost and its measurement limits.
 
 The explicit simulation camera provider receives `read(world, views)`, where
 `views` is the existing extracted display roster. Hosts may select a submitted

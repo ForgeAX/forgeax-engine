@@ -28,6 +28,7 @@
 //   [smoke] case falsifier maxDelta=<f>
 //   [smoke] PASS / FAIL - <reason>
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -404,13 +405,12 @@ async function renderCase({ includePoint, includeSpot, label }) {
   let drawErrors = 0;
   for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
     world.update().unwrap();
-    const r = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attached.value],
       camera: { lease: attached.value },
       environment: { lease: attached.value },
     });
-    if (!r.ok) drawErrors++;
-    else draws++;
+    draws++;
   }
   await sharedDevice?.queue.onSubmittedWorkDone();
   if (drawErrors > 0) {

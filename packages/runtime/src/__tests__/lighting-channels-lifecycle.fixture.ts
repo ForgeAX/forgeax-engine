@@ -15,6 +15,7 @@ import type { RhiDevice } from '@forgeax/engine-rhi';
 import { decodeTape, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import type { RhiBackendInstrumentation } from '../../../render/src/assembly/backend-contract';
 import { compactTape } from './compact-tape.fixture';
@@ -115,15 +116,13 @@ export async function verifyChannelLifecycle(
   const draw = async (name?: string) => {
     scene.world.update(1 / 60).unwrap();
     propagateTransforms(scene.world).unwrap();
-    if (renderer.requestObservation === undefined)
-      throw new Error('missing HDR observation capability');
-    renderValue(renderer.requestObservation(['linear-hdr']));
     const pending = name === undefined ? undefined : recorder.captureFrame();
     if (pending) (await recorder.frameBoundary()).unwrap();
-    const receipt = renderValue(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      ['linear-hdr'],
     );
-    renderValue(await receipt.completed);
     if (pending) {
       (await recorder.frameBoundary()).unwrap();
       const tape = compactTape((await pending).unwrap());

@@ -182,7 +182,7 @@ let earlyChildWorld, lateChildWorld;
 
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const r = drawSmokeFrame(renderer, world);
+  const r = await drawSmokeFrame(renderer, world);
   if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
   framesObserved++;
 

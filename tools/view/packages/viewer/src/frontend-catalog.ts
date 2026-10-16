@@ -26,7 +26,11 @@ import * as assetIdentity from '@forgeax/view-plugin-asset/identity';
 import * as viewportIdentity from '@forgeax/view-plugin-viewport/identity';
 import * as sceneIdentity from '@forgeax/view-plugin-scene/identity';
 import htmlUiPlugin from '@forgeax/view-plugin-html/frontend';
+import historyPlugin from '@forgeax/view-plugin-history/frontend';
+import * as historyIdentity from '@forgeax/view-plugin-history/identity';
 import * as htmlIdentity from '@forgeax/view-plugin-html/identity';
+import assetReferencesPlugin from '@forgeax/view-plugin-asset-references/frontend';
+import * as assetReferencesIdentity from '@forgeax/view-plugin-asset-references/identity';
 
 import {
   VIEW_PLUGIN_VERSION,
@@ -35,6 +39,7 @@ import {
 } from './catalog-shared.ts';
 
 const implementations = new Map<string, Plugin.Object<ViewFrontendConfig>>([
+  [assetReferencesIdentity.FRONTEND_MODULE, assetReferencesPlugin],
   [VIEW_WORKSPACE_CORE.FRONTEND_MODULE, workspaceCorePlugin],
   [sceneIdentity.FRONTEND_MODULE, scenePagePlugin],
   [displayIdentity.FRONTEND_MODULE, displayPlugin],
@@ -48,6 +53,7 @@ const implementations = new Map<string, Plugin.Object<ViewFrontendConfig>>([
   [textureIdentity.FRONTEND_MODULE, texturePlugin],
   [assetIdentity.FRONTEND_MODULE, assetPlugin],
   [htmlIdentity.FRONTEND_MODULE, htmlUiPlugin],
+  [historyIdentity.FRONTEND_MODULE, historyPlugin],
 ]);
 
 // Asset type-preview pages borrow the App-owned surface. Starting them before
@@ -65,7 +71,7 @@ const presentationPages = new Set([
 ]);
 
 export const VIEW_PRODUCT_FRONTEND_CATALOG = new Map<string, { realm: 'engine'; version: string; requiresWorkspacePresentation?: boolean; load: () => Promise<{ default: Plugin.Object<ViewFrontendConfig> }> }>(
-  [VIEW_WORKSPACE_CORE, ...VIEW_PRODUCT_PLUGINS].map((plugin) => [
+  [VIEW_WORKSPACE_CORE, assetReferencesIdentity, ...VIEW_PRODUCT_PLUGINS].map((plugin) => [
     plugin.FRONTEND_MODULE,
     {
       realm: 'engine',

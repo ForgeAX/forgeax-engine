@@ -164,17 +164,7 @@ export async function doctorCommand(
   const localDependencies = [...workspaceDependencies].sort();
   const binding = await readEngineBinding(facts.value.root);
   if (!binding.ok) return binding;
-  if (binding.value === null && localDependencies.length > 0) {
-    return {
-      ok: false,
-      error: {
-        code: 'project-local-dependency',
-        expected: 'all external project dependencies to use SDK-resolved exact versions',
-        hint: 'Run forgeax project init from the unpacked SDK and commit the resulting lockfile.',
-        detail: { dependencies: localDependencies },
-      },
-    };
-  }
+  let engineDigest: string | undefined;
   if (binding.value !== null) {
     const engine = await engineDoctorCommand({ root: facts.value.root });
     if (!engine.ok) return engine;
@@ -193,13 +183,11 @@ export async function doctorCommand(
           detail: { binding: binding.value.path, mode: engine.value.mode },
         },
       };
+    engineDigest = engine.value.workspace.digest;
+  }
+  if (binding.value !== null || localDependencies.length > 0) {
     try {
-      await inspectRunDependencyClosure(
-        facts.value.root,
-        engine.value.binding,
-        engine.value.workspace.digest,
-        pnpm,
-      );
+      await inspectRunDependencyClosure(facts.value.root, binding.value, engineDigest, pnpm);
     } catch (cause) {
       return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
     }

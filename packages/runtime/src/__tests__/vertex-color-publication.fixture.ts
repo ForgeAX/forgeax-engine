@@ -4,6 +4,7 @@ import { AssetGuid } from '@forgeax/engine-pack';
 import { ANTIALIAS_NONE, Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 export async function verifyVertexColorPublication(options: {
@@ -104,15 +105,12 @@ export async function verifyVertexColorPublication(options: {
           world.set(entity, MeshFilter, { assetHandle: handle }).unwrap();
           for (let frame = 0; frame < (options.warmupFrames ?? 60); frame++) {
             world.update(1 / 60).unwrap();
-            const drawn = renderer.draw({
+            await drawReadyFrame(renderer, {
               leases: [lease],
               camera: { lease, entityKey: camera },
               environment: { lease },
               ...(lane === 'direct' ? { geometryLane: 'direct' as const } : {}),
             });
-            if (!drawn.ok) throw drawn.error;
-            const completed = await drawn.value.completed;
-            if (!completed.ok) throw completed.error;
           }
           if (device === undefined || target === undefined) throw new Error('missing GPU target');
           const buffer = device.createBuffer({ size: 256, usage: 0x08 | 0x01 });

@@ -15,6 +15,8 @@ it.each([
   { render: true, failure: 'submit' },
   { render: false, failure: 'submit' },
   { render: false, failure: 'complete' },
+  { render: true, failure: 'pending' },
+  { render: true, failure: 'barrier' },
 ] as const)('drains scene inputs with render=$render and $failure failure', async ({
   render,
   failure,
@@ -111,9 +113,10 @@ it.each([
     expect(work).toHaveLength(1);
     events.push('capture');
     if (failure === 'capture') throw new Error('capture failure');
-    yield { kind: 'scene-inputs', encoder };
+    if (failure !== 'pending' && failure !== 'barrier') yield { kind: 'scene-inputs', encoder };
     events.push('view');
     const submitted = yield {
+      ...(failure === 'pending' ? { presentation: 'pending' as const } : {}),
       device,
       encoder,
       reportError() {},
@@ -123,7 +126,8 @@ it.each([
     return submitted.ok;
   }
   try {
-    if (failure === 'submit')
+    if (failure === 'pending') expect(submitFrameRecordings([record()])).toBe(true);
+    else if (failure === 'submit')
       expect(() => submitFrameRecordings([record()])).toThrowError(
         expect.objectContaining({
           code: 'frame-submit-rejected',
@@ -132,14 +136,18 @@ it.each([
       );
     else
       expect(() => submitFrameRecordings([record()])).toThrow(
-        failure === 'capture' ? 'capture failure' : 'scene complete failure',
+        failure === 'capture'
+          ? 'capture failure'
+          : failure === 'barrier'
+            ? 'Scene input capture did not reach the shared Feature barrier'
+            : 'scene complete failure',
       );
     expect(events.slice(0, failure === 'capture' ? 1 : 2)).toEqual(
       failure === 'capture' ? ['capture'] : ['capture', 'view'],
     );
     expect(completed).toHaveBeenCalledExactlyOnceWith(
       failure === 'complete',
-      failure === 'complete' ? expect.any(Promise) : undefined,
+      failure === 'complete' || failure === 'pending' ? expect.any(Promise) : undefined,
     );
     expect(events.filter((event) => event === 'feature-abort')).toHaveLength(
       failure === 'complete' ? 0 : 1,
@@ -147,7 +155,7 @@ it.each([
     expect(events.filter((event) => event === 'source-ack')).toHaveLength(
       failure === 'complete' ? 1 : 0,
     );
-    expect(submit).toHaveBeenCalledTimes(failure === 'complete' ? 1 : 0);
+    expect(submit).toHaveBeenCalledTimes(failure === 'complete' || failure === 'pending' ? 1 : 0);
     // The candidate scope is closed even when another finalizer reports an error.
     completed.mockImplementation(complete);
     owner.begin(2);

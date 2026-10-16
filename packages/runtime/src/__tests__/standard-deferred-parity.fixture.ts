@@ -16,6 +16,7 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 
 function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
@@ -198,23 +199,22 @@ export async function verifyStandardDeferredParity(
     for (let index = 0; index < testQuality.staticFrames; index++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      if (index === testQuality.staticFrames - 1)
-        unwrap(renderer.requestObservation?.(['linear-hdr']));
       const capture =
         !capturedPaths.has(renderPath) && !direct && index === testQuality.staticFrames - 1
           ? options.recorder?.captureFrame()
           : undefined;
       if (capture !== undefined && options.recorder !== undefined)
         (await options.recorder.frameBoundary()).unwrap();
-      const frame = unwrap(
-        renderer.draw({
+      const frame = await drawReadyFrame(
+        renderer,
+        {
           leases: [lease],
           camera: { lease },
           environment: { lease },
           ...(direct ? { geometryLane: 'direct' as const } : {}),
-        }),
+        },
+        index === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
       );
-      unwrap(await frame.completed);
       if (capture !== undefined && options.recorder !== undefined) {
         (await options.recorder.frameBoundary()).unwrap();
         await options.capture?.((await capture).unwrap(), renderPath);

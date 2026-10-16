@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { AnimationPlayer, AnimationTargetId, animationPlugin, bindAnimationTargets } from '@forgeax/engine-animation';
 import { World, createWorldContext } from '@forgeax/engine-ecs';
@@ -138,8 +139,7 @@ async function run() {
         rawTimings.push({poseTime:time,actual,expected,error:Math.abs(actual-expected)});
       } propagateTransforms(world);
       const start = performance.now();
-      const submitted = value(host.renderer.draw(request));
-      value(await submitted.completed);
+      const submitted = await drawReadyFrame(host.renderer, request);
       const wallMs=performance.now()-start;
       const observation=value(await host.renderer.observe(submitted,{include:['timings']}));
       rawTimings.push({frame,wallMs,observation,resources:host.renderer.inspect().renderGraphResourceAllocation});
@@ -154,11 +154,9 @@ async function run() {
     }
     // One live submitted frame is the capture authority. Fresh-device replay is supplementary.
     if (host.renderer.requestObservation === undefined) throw new Error('live HDR observation is unavailable');
-    host.renderer.requestObservation(['linear-hdr']);
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const submitted = value(host.renderer.draw(request));
-    value(await submitted.completed);
+    const submitted = await drawReadyFrame(host.renderer, request, ['linear-hdr']);
     (await recorder.frameBoundary()).unwrap();
     const captured = (await pending).unwrap();
     save(`${fixture.id}/frame.rhitape`, captured.bytes);

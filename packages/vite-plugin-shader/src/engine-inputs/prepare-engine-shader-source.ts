@@ -43,6 +43,8 @@ export function engineMaterialParamSchema(identifier: string): readonly ParamSch
     // as it references the Standard bindings.
     case 'forgeax::vfx-render.particles.mesh':
     case 'forgeax::vfx-render.particles.mesh-inputs':
+    case 'forgeax::vfx-render.particles.mesh-unlit':
+    case 'forgeax::vfx-render.particles.mesh-inputs-unlit':
       return PARTICLE_MESH_SURFACE_PARAM_SCHEMA;
     case 'forgeax::msdf-text':
       return MSDF_TEXT_PARAM_SCHEMA;

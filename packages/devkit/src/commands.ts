@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, relative, resolve } from 'node:path';
 import { startVitest } from 'vitest/node';
 import { createZip } from './archive.js';
+import type { PluginSourceInventory } from './build/plugin-assets.js';
 import { verifyDist } from './dist.js';
 import { buildProject, startDevProjectWithHost, startPreviewProjectWithHost } from './host.js';
 import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from './package-documents.js';
@@ -87,8 +88,11 @@ export function runRhiDebugCommand(
   return runRhiDebugOperation(name, input, context);
 }
 
-export async function buildCommand(options: BuildOptions = {}): Promise<CommandResult<unknown>> {
-  return buildProject(options);
+export async function buildCommand(
+  options: BuildOptions = {},
+  initialSources?: PluginSourceInventory,
+): Promise<CommandResult<unknown>> {
+  return buildProject(options, initialSources);
 }
 
 function releaseSlug(name: string): string {

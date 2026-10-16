@@ -63,4 +63,6 @@ export const MeshRenderer = defineComponent('MeshRenderer', {
   materials: { type: 'array<shared<MaterialAsset>>', default: [] },
   // Current-joint conservative envelopes trade tighter culling for less CPU work.
   conservativeSkinBounds: { type: 'bool', default: false },
+  // Prepare the actual view's material pipelines without making this mesh visible.
+  preparePipelines: { type: 'bool', default: false },
 });

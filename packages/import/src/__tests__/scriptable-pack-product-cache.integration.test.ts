@@ -196,7 +196,10 @@ it('shares equal artifact bytes across a Pack product without changing their con
   }
 }, 15_000);
 
-it('migrates a verified preceding product without rebuilding or accepting changed source', async () => {
+it.each([
+  'scriptable-pack-product/5',
+  'scriptable-pack-product/6',
+])('migrates verified %s products without rebuilding or accepting changed source', async (schema) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-migrate-'));
   const sourcePath = join(root, 'scene.pack.ts');
   const packageId = definePackageId('01900000-0000-7000-8000-0000000000e3');
@@ -218,7 +221,6 @@ it('migrates a verified preceding product without rebuilding or accepting change
       externalEvidence: [],
       inputFingerprint: 'sha256:original',
     } as unknown as ScriptablePackBuildProduct;
-    const schema = 'scriptable-pack-product/5';
     const guid = '01900000-0000-7000-8000-0000000000e3';
     const key = semanticDdcKey({
       schemaVersion: schema,
@@ -371,20 +373,32 @@ it('reuses each unchanged Pack product and rebuilds only the edited Pack', async
   }
 });
 
-it('invalidates one material Pack when its cooker source identity changes', async () => {
+it('invalidates the material Pack while retaining an unrelated scene Pack when shader sources change', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-material-pack-cache-'));
   const sourcePath = join(root, 'material.pack.ts');
+  const scenePath = join(root, 'scene.pack.ts');
   const text = 'material source';
   let builds = 0;
   let cooks = 0;
+  let sceneBuilds = 0;
   let shaderRevision = 'shader-a';
+  let nestedRevision = 'nested-a';
+  let nestedCooks = 0;
   const material = {
     kind: 'material' as const,
     passes: [{ name: 'forward', program: { module: 'game::surface' } }] as const,
     parameters: [],
   };
+  const nestedCooker = {
+    key: 'dependent-material-resource',
+    cacheIdentity: () => nestedRevision,
+    cook() {
+      nestedCooks++;
+      return nestedRevision;
+    },
+  };
   try {
-    await writeFile(sourcePath, text);
+    await Promise.all([writeFile(sourcePath, text), writeFile(scenePath, 'scene source')]);
     const run = (publicationGeneration = 1) =>
       produceScriptablePackProducts({
         sources: [
@@ -407,6 +421,25 @@ it('invalidates one material Pack when its cooker source identity changes', asyn
               artifactPath: (guid, key) => `${guid}/${key}`,
             },
           },
+          {
+            sourcePath: scenePath,
+            displaySourcePath: scenePath,
+            definition: definePack({
+              schemaVersion: '2.0.0',
+              packageId: definePackageId('01900000-0000-7000-8000-0000000000c2'),
+              build: () => {
+                sceneBuilds++;
+                return ok({ 'scene/main': { kind: 'scene' as const, entities: {} } });
+              },
+            }),
+            sourceClosure: [{ path: scenePath, digest: revision('scene source') }],
+            publicationGeneration,
+            policy: {
+              base: '/',
+              packagePath: 'scene.pack.json',
+              artifactPath: (guid, key) => `${guid}/${key}`,
+            },
+          },
         ],
         buildCacheRoot: join(root, 'ddc'),
         cookers: [
@@ -416,13 +449,20 @@ it('invalidates one material Pack when its cooker source identity changes', asyn
             cook(input: unknown) {
               cooks++;
               const draft = input as { guid: string; source: typeof material };
+              const dependent = nestedCooker.cook();
               return {
                 guid: draft.guid,
                 payload: draft.source,
                 refs: [],
                 artifacts: {},
-                inputFingerprint: shaderRevision,
+                inputFingerprint: shaderRevision + dependent,
               };
+            },
+          },
+          {
+            ...nestedCooker,
+            cook() {
+              throw Error('Dependent cooker is invoked by its material owner');
             },
           },
         ],
@@ -435,6 +475,10 @@ it('invalidates one material Pack when its cooker source identity changes', asyn
     shaderRevision = 'shader-b';
     expect((await run()).ok).toBe(true);
     expect([builds, cooks]).toEqual([2, 2]);
+    expect(sceneBuilds).toBe(1);
+    nestedRevision = 'nested-b';
+    expect((await run()).ok).toBe(true);
+    expect([builds, cooks, nestedCooks, sceneBuilds]).toEqual([3, 3, 3, 1]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -504,6 +548,78 @@ it('cold builds Packs with dynamic content reads and recovers from damaged DDC e
     );
     expect((await run(false)).ok).toBe(true);
     expect(builds).toBe(4);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('observes newly added, removed and unversioned cookers for a native-free output kind', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-cooker-roster-'));
+  const sourcePath = join(root, 'scene.pack.ts');
+  let builds = 0;
+  try {
+    await writeFile(sourcePath, 'scene source');
+    const source = {
+      sourcePath,
+      displaySourcePath: sourcePath,
+      definition: definePack({
+        schemaVersion: '2.0.0',
+        packageId: definePackageId('01900000-0000-7000-8000-0000000000f1'),
+        build: () => {
+          builds++;
+          return ok({ scene: { kind: 'scene' as const, entities: {} } });
+        },
+      }),
+      sourceClosure: [{ path: sourcePath, digest: revision('scene source') }],
+      publicationGeneration: 1,
+      policy: {
+        base: '/',
+        packagePath: 'scene.pack.json',
+        artifactPath: (guid: string, key: string) => `${guid}/${key}`,
+      },
+    };
+    const run = (identity: string | undefined | null) =>
+      produceScriptablePackProducts({
+        sources: [source],
+        buildCacheRoot: join(root, 'ddc'),
+        cookers:
+          identity === null
+            ? []
+            : [
+                {
+                  key: 'scene',
+                  ...(identity === undefined ? {} : { cacheIdentity: () => identity }),
+                  cook() {
+                    throw Error('Standard scene output does not invoke native cooking');
+                  },
+                },
+              ],
+      });
+    expect((await run(null)).ok).toBe(true);
+    expect((await run('scene-cooker')).ok).toBe(true);
+    expect(builds).toBe(2);
+    expect((await run('scene-cooker')).ok).toBe(true);
+    expect(builds).toBe(2);
+    expect((await run(null)).ok).toBe(true);
+    expect(builds).toBe(2);
+    expect((await run(undefined)).ok).toBe(true);
+    expect((await run(undefined)).ok).toBe(true);
+    expect(builds).toBe(4);
+    const manifests = new DdcEntryStore(join(root, 'ddc', 'scriptable-pack-product-kinds'));
+    const [key] = await manifests.listKeys();
+    if (key === undefined) throw Error('Missing immutable output-kind discovery');
+    const entry = await manifests.read(key);
+    if (entry === null) throw Error('Missing verified discovery');
+    await manifests.remove(key);
+    const altered = {
+      ...entry,
+      payload: { ...(entry.payload as object), kinds: ['material'] },
+      receipt: { ...entry.receipt },
+    };
+    altered.receipt.outputDigest = ddcOutputDigest(altered);
+    await manifests.write(altered);
+    expect((await run(null)).ok).toBe(true);
+    expect(builds).toBe(5);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

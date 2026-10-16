@@ -16,6 +16,8 @@ export const SCENE_TREE_ACTIONS = Object.freeze({
   reparent: 'scene-tree.reparent',
   group: 'scene-tree.group',
   focus: 'scene-tree.focus',
+  browseAsset: 'scene-tree.asset.browse',
+  editAsset: 'scene-tree.asset.edit',
   copyJson: 'scene-tree.copy-json',
   referenceInChat: 'scene-tree.reference-in-chat',
   showContextMenu: 'scene-tree.context-menu.show',

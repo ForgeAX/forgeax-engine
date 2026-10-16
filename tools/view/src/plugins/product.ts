@@ -142,7 +142,7 @@ export default {
       };
       const plan = createViewProductPlan({
         disabledPages: config.disabledPages,
-        backendConfig: { workspaceAccessToken: token, packSources: listPackSources },
+        backendConfig: { workspaceAccessToken: token, packSources: (root, assetRoots) => listPackSources(root, 200, assetRoots) },
         frontendConfig,
       });
       const installation = {

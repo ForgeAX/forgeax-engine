@@ -2,23 +2,9 @@
 import { parseArgs } from 'node:util';
 import { canonical, emitJson, loadJson, pointer, requireFact, runCli, statistics } from './lib.mjs';
 
-export function analyzeCpuProfile(profile, top = 30) {
-  requireFact(Number.isSafeInteger(top) && top > 0 && top <= 1000, 'top must be 1..1000');
-  requireFact(
-    Array.isArray(profile.nodes) &&
-      Array.isArray(profile.samples) &&
-      profile.samples.length > 0 &&
-      Array.isArray(profile.timeDeltas) &&
-      profile.samples.length === profile.timeDeltas.length,
-    'Require nodes, samples, and matching timeDeltas',
-  );
-  requireFact(
-    Number.isFinite(profile.startTime) &&
-      Number.isFinite(profile.endTime) &&
-      profile.endTime > profile.startTime,
-    'Invalid profile interval',
-  );
-  statistics(profile.timeDeltas);
+/** Shared validation and stack ownership for whole-profile and clipped analysis. */
+export function cpuProfileGraph(profile) {
+  requireFact(Array.isArray(profile.nodes), 'Require CPU nodes');
   const nodes = new Map();
   const parents = new Map();
   const symbols = new Map();
@@ -68,6 +54,27 @@ export function analyzeCpuProfile(profile, top = 30) {
     return chain;
   };
   for (const id of nodes.keys()) chainFor(id);
+  return { nodes, symbols, nodeSymbols, chainFor };
+}
+
+export function analyzeCpuProfile(profile, top = 30) {
+  requireFact(Number.isSafeInteger(top) && top > 0 && top <= 1000, 'top must be 1..1000');
+  requireFact(
+    Array.isArray(profile.nodes) &&
+      Array.isArray(profile.samples) &&
+      profile.samples.length > 0 &&
+      Array.isArray(profile.timeDeltas) &&
+      profile.samples.length === profile.timeDeltas.length,
+    'Require nodes, samples, and matching timeDeltas',
+  );
+  requireFact(
+    Number.isFinite(profile.startTime) &&
+      Number.isFinite(profile.endTime) &&
+      profile.endTime > profile.startTime,
+    'Invalid profile interval',
+  );
+  statistics(profile.timeDeltas);
+  const { symbols, nodeSymbols, chainFor } = cpuProfileGraph(profile);
   let sampledUs = 0;
   profile.samples.forEach((id, index) => {
     const chain = chainFor(id);
@@ -112,8 +119,8 @@ runCli(import.meta.url, async () => {
     },
   });
   if (values.help) {
-    console.log(
-      'node analyze_cpu_profile.mjs INPUT [--profile-pointer /profiles/0/profile] [--top 30] [--output FILE]',
+    process.stdout.write(
+      'node analyze_cpu_profile.mjs INPUT [--profile-pointer /profiles/0/profile] [--top 30] [--output FILE]\n',
     );
     return;
   }

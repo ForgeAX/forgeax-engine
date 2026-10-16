@@ -230,17 +230,12 @@ function validateIdentity(identity: ShadowViewIdentity): RhiError | undefined {
 }
 
 const PLANE_FLOATS = 24;
-/** Minimum projected caster diameter in texels: settled casters, then moving ones. */
-const STATIC_MIN_CASTER_TEXELS = 1;
-const DYNAMIC_MIN_CASTER_TEXELS = 2;
-
 /**
- * Casters smaller than a few texels only add aliasing noise to a cascade. The
+ * A single projected texel bounds subpixel caster suppression in every layer. The
  * texel edge is exact for an orthographic light; a perspective light has no
  * single texel size, so it keeps every caster.
  */
 export function shadowMinCasterDiameter(
-  identity: ShadowViewIdentity,
   matrix: Float32Array | undefined,
   targetSize: number | undefined,
 ): number {
@@ -248,14 +243,9 @@ export function shadowMinCasterDiameter(
   if (matrix[3] !== 0 || matrix[7] !== 0 || matrix[11] !== 0 || matrix[15] !== 1) return 0;
   const scaleX = Math.hypot(matrix[0] ?? 0, matrix[4] ?? 0, matrix[8] ?? 0);
   if (!(scaleX > 0)) return 0;
-  const texel = 2 / (scaleX * targetSize);
-  const texels =
-    identity.layer === 'static'
-      ? STATIC_MIN_CASTER_TEXELS
-      : shadowViewHasStaticLayer(identity)
-        ? DYNAMIC_MIN_CASTER_TEXELS
-        : STATIC_MIN_CASTER_TEXELS;
-  return texel * texels;
+  // Static/dynamic membership is a cache policy, not a visibility policy.
+  // Changing class must not remove a shadow the static layer previously drew.
+  return 2 / (scaleX * targetSize);
 }
 
 function planesError(): RhiError {
@@ -1052,11 +1042,7 @@ export class ShadowViewStatePool {
       if (!created.ok) return created;
       view = created.value;
     }
-    const minCasterDiameter = shadowMinCasterDiameter(
-      input.identity,
-      input.matrix,
-      input.targetSize,
-    );
+    const minCasterDiameter = shadowMinCasterDiameter(input.matrix, input.targetSize);
     const cameraCull =
       input.cameraCull !== undefined &&
       input.matrix !== undefined &&
@@ -1369,8 +1355,12 @@ export class ShadowViewStatePool {
     }
   }
 
-  /** @internal Commit every view resource replacement after a successful submit. */
-  _commitResourceReplacement(): void {
+  /**
+   * @internal Commit after queue submit. The stock graph forces every projected
+   * view's compute and fresh-target raster on compile, so that submission also
+   * accepts its graph generation. Raw owners omit it and keep explicit invalidation.
+   */
+  _commitResourceReplacement(submittedGraphGeneration?: number): void {
     for (const record of this.records.values()) record.view._commitResourceReplacement();
     for (const key of this.pendingPublication) {
       const record = this.records.get(key);
@@ -1385,6 +1375,13 @@ export class ShadowViewStatePool {
       }
     }
     this.pendingPublication.clear();
+    if (submittedGraphGeneration !== undefined) {
+      for (const key of this.activeKeys) {
+        const record = this.records.get(key);
+        if (record?.published && record.identity.layer !== 'static')
+          record.graphGeneration = submittedGraphGeneration;
+      }
+    }
     this.staticLayers._commit();
     for (const [key, record] of this.retiring) {
       record.view.dispose();

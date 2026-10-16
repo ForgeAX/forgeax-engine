@@ -74,11 +74,9 @@ const embeddedShell: Plugin = {
               hostConnection={hostConnection}
               workspaceClient={client}
               selectedPageType={selectedTabId === VIEW_DISPLAY_TAB_ID ? 'display' : 'editor'}
-              onSelectPageType={typeId => {
+              onSelectPageType={(typeId, signal) => {
                 if (typeId === 'display' || typeId === 'editor') {
-                  void client.selectTab(typeId === 'display' ? VIEW_DISPLAY_TAB_ID : VIEW_WORKSPACE_TAB_ID).catch(error => {
-                    state.__forgeaxViewReady = { mounted: false, error: String(error) };
-                  });
+                  return client.selectTab(typeId === 'display' ? VIEW_DISPLAY_TAB_ID : VIEW_WORKSPACE_TAB_ID, { signal });
                 }
               }} />
           </ThemeProvider></OverlayRootProvider>;

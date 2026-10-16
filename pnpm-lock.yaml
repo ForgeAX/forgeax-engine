@@ -13998,6 +13998,9 @@ importers:
       '@forgeax/engine-tool-runtime':
         specifier: workspace:*
         version: link:../../packages/tool-runtime
+      '@forgeax/view-plugin-history':
+        specifier: workspace:*
+        version: link:packages/view-plugin-history
       dockview:
         specifier: ^6.6.1
         version: 6.6.1(react@19.2.8)
@@ -14023,6 +14026,9 @@ importers:
       '@forgeax/view-plugin-asset':
         specifier: workspace:*
         version: link:packages/view-plugin-asset
+      '@forgeax/view-plugin-asset-references':
+        specifier: workspace:*
+        version: link:packages/view-plugin-asset-references
       '@forgeax/view-plugin-content-browser':
         specifier: workspace:*
         version: link:packages/view-plugin-content-browser
@@ -14140,6 +14146,21 @@ importers:
         specifier: 19.3.0
         version: 19.3.0(@types/react@19.3.0)
 
+  tools/view/packages/view-plugin-asset-references:
+    dependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../../packages/engine
+      '@forgeax/engine-plugin':
+        specifier: workspace:*
+        version: link:../../../../packages/plugin
+      '@forgeax/engine-tool-runtime':
+        specifier: workspace:*
+        version: link:../../../../packages/tool-runtime
+      '@forgeax/view-workspace-core':
+        specifier: workspace:*
+        version: link:../view-workspace-core
+
   tools/view/packages/view-plugin-content-browser:
     dependencies:
       '@forgeax/engine-plugin':
@@ -14189,6 +14210,21 @@ importers:
       playwright:
         specifier: 1.63.0
         version: 1.63.0
+
+  tools/view/packages/view-plugin-history:
+    dependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../../packages/engine
+      '@forgeax/engine-plugin':
+        specifier: workspace:*
+        version: link:../../../../packages/plugin
+      '@forgeax/view-components':
+        specifier: workspace:*
+        version: link:../view-components
+      '@forgeax/view-workspace-core':
+        specifier: workspace:*
+        version: link:../view-workspace-core
 
   tools/view/packages/view-plugin-html:
     dependencies:
@@ -14457,12 +14493,18 @@ importers:
       '@forgeax/view-plugin-asset':
         specifier: workspace:*
         version: link:../view-plugin-asset
+      '@forgeax/view-plugin-asset-references':
+        specifier: workspace:*
+        version: link:../view-plugin-asset-references
       '@forgeax/view-plugin-content-browser':
         specifier: workspace:*
         version: link:../view-plugin-content-browser
       '@forgeax/view-plugin-display':
         specifier: workspace:*
         version: link:../view-plugin-display
+      '@forgeax/view-plugin-history':
+        specifier: workspace:*
+        version: link:../view-plugin-history
       '@forgeax/view-plugin-html':
         specifier: workspace:*
         version: link:../view-plugin-html

@@ -6,6 +6,7 @@ import { entityInspectorCases, fixtureTransform } from './entity-inspections';
 
 setLocale('zh');
 let revision = 1;
+let projectId = 'project';
 let generation = 1;
 let selected = 'floor';
 let selectedIds = ['floor'];
@@ -16,11 +17,13 @@ let failOperation: string | undefined;
 let deferInspection = false;
 let finishInspection: (() => void) | undefined;
 let copyText = '';
+let clipboardWrites = 0;
+const removedComponents = new Set<string>();
 const calls: { operation: string; args: Record<string, unknown>; aborted: boolean }[] = [];
 let sceneTreeRequests = 0;
 const listeners = new Set<(state: ReturnType<typeof state>) => void>();
 const target = () => ({ targetId: 'editor', generation });
-const state = () => ({ revision, project: { id: 'project', name: 'Inspector fixture', root: '/fixture' }, preview: { target: target() }, sceneSelection: { primary: { entityId: selected }, entityIds: selectedIds }, assets: [
+const state = () => ({ revision, project: { id: projectId, name: 'Inspector fixture', root: '/fixture' }, preview: { target: target() }, sceneSelection: { primary: { entityId: selected }, entityIds: selectedIds }, assets: [
   { guid: 'mesh-guid', kind: 'mesh', name: meshName, path: 'assets/farm.pack.ts', previewable: true },
   { guid: 'ground-material', kind: 'material', name: 'Farm Ground', path: 'assets/farm.pack.ts', previewable: true },
   { guid: 'trim-material', kind: 'material', name: 'Painted Trim', path: 'assets/farm.pack.ts', previewable: true },
@@ -45,7 +48,8 @@ function inspect(id: string) {
     : id === 'light' ? [component('DirectionalLight', { intensity: { type: 'f32' } }, { intensity: 3 })] : [
     component('Entity', { self: { type: 'entity' } }, { self: node.entity }),
     component('Transform', { pos: { type: 'array<f32, 3>' }, quat: { type: 'array<f32, 4>' }, scale: { type: 'array<f32, 3>' } }, { pos: [0, -0.2800000011920929, 0], quat: [-0.2588190451, 0, 0, 0.9659258263], scale: [1, 1, 1] }),
-    component('GlobalTransform', { world: { type: 'array<f32, 16>' } }, { world: Array(16).fill(0) }),
+    component('GlobalTransform', { world: { type: 'array<f32, 16>' }, presentation: { type: 'array<f32, 16>' } }, { world: Array(16).fill(0), presentation: Array(16).fill(1) }),
+    component('TransformInterpolation', {}, {}),
     component('ChildOf', { parent: { type: 'entity' } }, { parent: 11 }),
     component('Name', { value: { type: 'string' } }, { value: node.name }),
     component('MeshFilter', { assetHandle: { type: 'shared<MeshAsset>' } }, { assetHandle: missingBindings ? undefined : explicitGuids ? 'mesh-guid' : 1025 }),
@@ -55,7 +59,8 @@ function inspect(id: string) {
     component('CustomHealth', { health: { type: 'f32' } }, { health: 7 }),
   ];
   return {
-    entityId: id, entity: node.entity, name: node.name, targetId: 'editor', worldId: 'world', sampledAt: Date.now(), components,
+    entityId: id, entity: node.entity, name: node.name, targetId: 'editor', worldId: 'world', sampledAt: Date.now(),
+    components: components.filter(component => !removedComponents.has(component.name)),
   };
 }
 const client = {
@@ -79,11 +84,11 @@ const client = {
     throw new Error(`Unexpected fixture operation ${operation}`);
   },
 };
-Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value: string) { copyText = value; } } });
 Object.assign(globalThis, { meshInspectorFixture: {
   calls,
   sceneTreeRequests: () => sceneTreeRequests,
   copyText: () => copyText,
+  clipboardWrites: () => clipboardWrites,
   select(id: string, entityIds = [id]) { selected = id; selectedIds = entityIds; changed(); },
   missingBindings() { missingBindings = true; changed(); },
   explicitGuids() { explicitGuids = true; changed(); },
@@ -94,5 +99,12 @@ Object.assign(globalThis, { meshInspectorFixture: {
   inspectionPending() { return finishInspection !== undefined; },
   finishInspection() { finishInspection?.(); },
   replaceTarget() { generation++; changed(); },
+  replaceProject() { projectId = 'replacement-project'; changed(); },
+  removeComponent(name: string) { removedComponents.add(name); changed(); },
+  restoreComponents() { removedComponents.clear(); changed(); },
 } });
-await mountInspectorPanel({ client: client as unknown as ViewWorkspaceClient, mountElement: document.getElementById('app')! });
+await mountInspectorPanel({
+  client: client as unknown as ViewWorkspaceClient,
+  mountElement: document.getElementById('app')!,
+  writeClipboard: async value => { copyText = value; clipboardWrites++; },
+});

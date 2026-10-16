@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // hello-fbx-cube dawn smoke (M4 / T17): structural gate + pixel readback.
 //
 // Two layers:
@@ -233,15 +234,11 @@ renderer.subscribe((event) => {
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) {
-    const code = r.error && typeof r.error === 'object' && 'code' in r.error ? r.error.code : 'unknown';
-    errors.push(code);
-  }
   framesObserved++;
 }
 

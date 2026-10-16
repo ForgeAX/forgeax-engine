@@ -327,6 +327,7 @@ async function renderMixedPair(maskedSkin = false): Promise<{
     );
     if (!host.ok) throw host.error;
     renderer = host.value.renderer;
+    const activeRenderer = host.value.renderer;
     unsubscribe = renderer.subscribe((event) => {
       if (event.kind === 'error') {
         errors.push(event.error);
@@ -335,14 +336,12 @@ async function renderMixedPair(maskedSkin = false): Promise<{
     const renderWorld = async (castShadow: boolean, omitSkin = false): Promise<MixedCapture> => {
       const world = new World();
       spawnMixedScene(world, castShadow, maskedSkin, omitSkin);
-      const attached = renderer?.attach(world);
-      if (attached === undefined || !attached.ok) {
-        throw attached?.error ?? new Error('renderer attachment missing');
-      }
+      const attached = activeRenderer.attach(world);
+      if (!attached.ok) throw attached.error;
       // The first frame warms the static and skinned PSOs; the second frame is
       // the asserted mixed command stream after both cache entries exist.
       for (let frame = 0; frame < 2; frame += 1) {
-        const receipt = drawPublished(renderer, world);
+        const receipt = await drawPublished(activeRenderer, world);
         expect(receipt.ok, `mixed ${castShadow ? 'shadow' : 'baseline'} draw`).toBe(true);
         if (!receipt.ok) throw receipt.error;
         const completed = await receipt.value.completed;

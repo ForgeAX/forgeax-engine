@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 import { dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -626,6 +627,18 @@ const resized = renderer.resizeRenderTarget(targetResult.value, {
   sampled: true,
   readback: true,
 });
+const drawEvidenceFrame = async () => {
+  const updated = world.update(1 / 60);
+  if (!updated.ok) throw updated.error;
+  const receipt = await drawReadyFrame(renderer, {
+    leases: [attached.value],
+    camera: { lease: attached.value },
+    environment: { lease: attached.value },
+  });
+  for (const passName of renderer.inspect().perFramePassNames) reflectionPassNames.add(passName);
+  await delay(0);
+  return receipt;
+};
 if (REFLECTION_EVIDENCE) {
   for (let settle = 0; settle < 64; settle += 1) {
     const current = renderer.inspect().reflectionProbes;
@@ -649,17 +662,7 @@ if (REFLECTION_EVIDENCE) {
     ) {
       break;
     }
-    const updated = world.update(1 / 60);
-    if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
-    if (!next.ok) throw next.error;
-    const completed = await next.value.completed;
-    if (!completed.ok) throw completed.error;
-    for (const passName of renderer.inspect().perFramePassNames) reflectionPassNames.add(passName);
+    await drawEvidenceFrame();
   }
   const settled = renderer.inspect().reflectionProbes;
   if (
@@ -697,20 +700,6 @@ if (REFLECTION_EVIDENCE) {
     console.error(`[smoke] FAIL - evidence app stop failed: ${stopped.error.code}`);
     process.exit(1);
   }
-  const drawEvidenceFrame = async () => {
-    const updated = world.update(1 / 60);
-    if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
-    if (!next.ok) throw next.error;
-    const completed = await next.value.completed;
-    if (!completed.ok) throw completed.error;
-    for (const passName of renderer.inspect().perFramePassNames) reflectionPassNames.add(passName);
-    return next.value;
-  };
   const fallbackRow = (owner, source) => owner?.reflectionFallbacks?.find((row) => row.source === source);
 
   const beforeFailure = inspectionBeforeNeutral.reflectionProbes;
@@ -769,7 +758,6 @@ if (REFLECTION_EVIDENCE) {
   let recoveryReceipt;
   for (let frame = 0; frame < 40; frame += 1) {
     recoveryReceipt = await drawEvidenceFrame();
-    await delay(0);
   }
   const afterRecovery = renderer.inspect();
   const replacementOwner = afterRecovery.reflectionProbes;

@@ -19,6 +19,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { IesProfileAsset } from '@forgeax/engine-types';
 import { toShared } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
@@ -165,63 +166,66 @@ export async function verifyLocalIes(
   const draw = async (name?: string, capture = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (name !== undefined) {
-      const request = renderer.requestObservation?.(['linear-hdr']);
-      if (request === undefined) throw new Error('missing HDR observation capability');
-      renderValue(request);
-    }
     const pending = capture ? options.recorder?.captureFrame() : undefined;
     if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
     time += 1 / 60;
-    const candidate = publisher?.prepare(time).unwrap();
-    const packet =
-      candidate === undefined
-        ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
-          });
-    candidate?.accept();
-    try {
-      const input =
-        packet !== undefined
-          ? { publication: packet }
-          : lease !== undefined
-            ? {
-                leases: [lease],
-                camera: { lease },
-                environment: { lease },
-              }
-            : undefined;
-      if (input === undefined) throw new Error('missing IES scene lease');
-      const receipt = renderValue(renderer.draw(input));
-      renderValue(await receipt.completed);
-      let tape: EncodedTape | undefined;
-      if (pending !== undefined) {
-        (await options.recorder?.frameBoundary())?.unwrap();
-        tape = compactTape((await pending).unwrap());
+    const receipt = await completeReadyFrame(async () => {
+      const candidate = publisher?.prepare(time).unwrap();
+      const packet =
+        candidate === undefined
+          ? undefined
+          : structuredClone(candidate.packet, {
+              transfer: renderPublicationTransfers(candidate.packet),
+            });
+      candidate?.accept();
+      try {
+        const input =
+          packet !== undefined
+            ? { publication: packet }
+            : lease !== undefined
+              ? {
+                  leases: [lease],
+                  camera: { lease },
+                  environment: { lease },
+                }
+              : undefined;
+        if (input === undefined) throw new Error('missing IES scene lease');
+        if (name !== undefined) {
+          const armed = renderer.requestObservation?.(['linear-hdr']);
+          if (armed === undefined) throw new Error('missing HDR observation capability');
+          renderValue(armed);
+        }
+        const receipt = renderValue(renderer.draw(input));
+        renderValue(await receipt.completed);
+        return receipt;
+      } finally {
+        if (packet !== undefined)
+          publisher?.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
       }
-      if (name === undefined) return undefined;
-      const observation = renderValue(
-        await renderer.observe(receipt, { include: ['linear-hdr'] }),
-      ).observations?.find((value) => value.domain === 'linear-hdr');
-      if (observation === undefined) throw new Error('missing IES HDR observation');
-      const image = luminanceRgba16f(
-        observation.bytes,
-        IES_TEST_SIZE,
-        IES_TEST_SIZE,
-        observation.metadata.bytesPerRow,
-      );
-      expect([...image].every(Number.isFinite)).toBe(true);
-      await options.capture?.(
-        `${path}-${kind}-${options.combined ? 'combined-' : ''}${name}`,
-        tape,
-        image,
-      );
-      return image;
-    } finally {
-      if (packet !== undefined)
-        publisher?.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    });
+    let tape: EncodedTape | undefined;
+    if (pending !== undefined) {
+      (await options.recorder?.frameBoundary())?.unwrap();
+      tape = compactTape((await pending).unwrap());
     }
+    if (name === undefined) return undefined;
+    const observation = renderValue(
+      await renderer.observe(receipt, { include: ['linear-hdr'] }),
+    ).observations?.find((value) => value.domain === 'linear-hdr');
+    if (observation === undefined) throw new Error('missing IES HDR observation');
+    const image = luminanceRgba16f(
+      observation.bytes,
+      IES_TEST_SIZE,
+      IES_TEST_SIZE,
+      observation.metadata.bytesPerRow,
+    );
+    expect([...image].every(Number.isFinite)).toBe(true);
+    await options.capture?.(
+      `${path}-${kind}-${options.combined ? 'combined-' : ''}${name}`,
+      tape,
+      image,
+    );
+    return image;
   };
   const samples: IesPixelSample[] = [];
   const sample = async (name: string, capture = false) => {

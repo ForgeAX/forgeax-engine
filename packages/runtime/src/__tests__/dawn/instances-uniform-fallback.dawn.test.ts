@@ -266,7 +266,7 @@ describe('World Instances storage and uniform submission', () => {
     );
 
     for (let i = 0; i < 5; i++) {
-      const r = drawPublished(renderer, world);
+      const r = await drawPublished(renderer, world);
       if (!r.ok) throw new Error(`draw frame ${i} error: ${r.error.code}`);
     }
     await sharedDevice?.queue.onSubmittedWorkDone();

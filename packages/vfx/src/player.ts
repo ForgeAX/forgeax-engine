@@ -8,11 +8,13 @@ export const ParticleEffectPlayer = defineComponent('ParticleEffectPlayer', {
   // playback intent remains portable simulation state.
   effect: { type: 'shared<ParticleEffectAsset>' },
   playing: { type: 'bool', default: true },
+  // Keep effect GPU programs and storage ready while paused, without simulation or drawing.
+  preparePipelines: { type: 'bool', default: false },
   seed: { type: 'u32', default: 0 },
   timeScale: { type: 'f32', default: 1 },
 });
 
-/** The four serializable fields stored by {@link ParticleEffectPlayer}. */
+/** The serializable fields stored by {@link ParticleEffectPlayer}. */
 export type ParticleEffectPlayerData = ShapeOf<SchemaOf<typeof ParticleEffectPlayer>>;
 
 /** Runtime-owned typed values associated with a player without extending ECS storage. */

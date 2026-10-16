@@ -20,6 +20,7 @@ import {
   createCatalogClient,
 } from '@forgeax/engine-vite-plugin-pack/catalog-client';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -304,7 +305,8 @@ export async function verifySurfaceMaterialPublication(options: {
       material: MaterialAsset,
       input: SurfaceDynamicInputFrame,
       armObservation: boolean,
-    ): Promise<FrameReceipt> => awaitCompletion(draw(material, input, armObservation));
+    ): Promise<FrameReceipt> =>
+      completeReadyFrame(() => awaitCompletion(draw(material, input, armObservation)));
     const readObservationRois = (
       observation: FrameDomainObservation,
     ): readonly [SurfaceAppLifecycleRoi, SurfaceAppLifecycleRoi] => {
@@ -333,10 +335,15 @@ export async function verifySurfaceMaterialPublication(options: {
       readonly memberIdsByPass: SurfacePassMemberIds;
     }> => {
       let receipt: FrameReceipt | undefined;
+      let firstSubmitted = onFirstSubmitted;
       for (let frame = 0; frame < 12; frame += 1) {
-        const submitted = draw(material, input, frame === 11, lane);
-        if (frame === 0) onFirstSubmitted?.(submitted);
-        receipt = await awaitCompletion(submitted);
+        receipt = await completeReadyFrame(async () => {
+          const submitted = draw(material, input, frame === 11, lane);
+          const notify = firstSubmitted;
+          firstSubmitted = undefined;
+          notify?.(submitted);
+          return awaitCompletion(submitted);
+        });
       }
       if (receipt === undefined) throw new Error('Surface HMR frame receipt unavailable');
       const observed = await renderer.observe(receipt, { include: ['linear-hdr', 'draws'] });

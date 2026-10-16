@@ -89,13 +89,13 @@ const clips = new Map([[EASED_MOTION_CLIP_GUID, clip]]);
 await createWorldContext(world, [scenePlugin(), animationPlugin((guid) => clips.get(guid))]);
 const state = buildEasedMotionWorld(world, clip);
 world.update(0);
-drawSmokeFrame(renderer, world);
+await drawSmokeFrame(renderer, world);
 await delay(30);
 const earlyFrame = await capture();
 const earlyState = readEasedMotionState(world, state);
 for (let frame = 1; frame < frames; frame++) {
   world.update(1 / 60);
-  drawSmokeFrame(renderer, world);
+  await drawSmokeFrame(renderer, world);
 }
 await delay(30);
 const lateFrame = await capture();

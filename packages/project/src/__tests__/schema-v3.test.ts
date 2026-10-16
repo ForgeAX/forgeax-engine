@@ -34,3 +34,29 @@ describe('project root assets', () => {
     }
   });
 });
+
+it('resolves authored asset directories with one manifest default', () => {
+  expect(GameProjectSchema.parse(valid).assetRoots).toEqual(['assets']);
+  expect(
+    GameProjectSchema.parse({ ...valid, assetRoots: ['content/art', 'shared'] }).assetRoots,
+  ).toEqual(['content/art', 'shared']);
+  expect(GameProjectSchema.parse({ ...valid, assetRoots: [] }).assetRoots).toEqual([]);
+});
+
+it('rejects asset directories that are not portable project-relative paths', () => {
+  for (const path of [
+    '',
+    '.',
+    '..',
+    '../outside',
+    '/absolute',
+    'C:/outside',
+    'assets/../src',
+    'assets//models',
+    'assets/',
+    'assets\\models',
+    'assets/\0bad',
+  ]) {
+    expect(GameProjectSchema.safeParse({ ...valid, assetRoots: [path] }).success, path).toBe(false);
+  }
+});

@@ -133,6 +133,42 @@ describe('GPU VFX fixed-tick intents', () => {
     expect(runtime.lastCommittedEmitter(player, 'sparks')?.sequence).toBe(dispatched.sequence);
   });
 
+  it('restarts same-seed playback after source observes paused preparation', async () => {
+    const world = new World();
+    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const player = world
+      .spawn({
+        component: ParticleEffectPlayer,
+        data: {
+          effect: handle,
+          playing: true,
+          preparePipelines: true,
+          seed: 9,
+          timeScale: 1,
+        },
+      })
+      .unwrap();
+    await createWorldContext(world, [vfxGpuRuntimePlugin()]);
+    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    world.update(1 / 60).unwrap();
+    const queued = runtime.snapshot()[0];
+    expect(queued?.reset).toBe(true);
+    if (queued === undefined) throw new Error('missing initial reset');
+    // Park and resume between fixed ticks. The first render acknowledgement
+    // can still be in flight when the next actual playback tick is queued.
+    world.set(player, ParticleEffectPlayer, { playing: false }).unwrap();
+    runtime.forEachEmitterSource(world, () => {});
+    world.set(player, ParticleEffectPlayer, { playing: true }).unwrap();
+    world.update(1 / 60).unwrap();
+    expect(runtime.snapshot()).toHaveLength(2);
+    expect(runtime.snapshot()[1]?.reset).toBe(true);
+    expect(runtime.snapshot()[1]?.playCycle).toBeGreaterThan(queued.playCycle);
+    runtime.commit([queued.sequence], []);
+    expect(runtime.snapshot()).toHaveLength(1);
+    expect(runtime.snapshot()[0]?.reset).toBe(true);
+    expect(runtime.lastCommittedEmitter(player, 'sparks')).toBeUndefined();
+  });
+
   it('defers a seed reset until a session-disabled emitter can submit', async () => {
     const world = new World();
     const handle = world.allocSharedRef('ParticleEffectAsset', effect);

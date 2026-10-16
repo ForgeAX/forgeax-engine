@@ -37,6 +37,38 @@ describe('all scene entity Details', () => {
     assert.deepEqual(inspectorSections(source, 'common').map(section => section.component), ['Transform', 'SceneInstance']);
     assert.equal(source.components[1].fields.find(field => field.key === 'mapping').presentation, 'collection');
   });
+  it('keeps current Engine presentation facts at the entity root without losing returned fields', () => {
+    const source = inspect([
+      fixtureTransform,
+      { name: 'GlobalTransform', fields: { world: { type: 'array<f32, 16>' }, presentation: { type: 'array<f32, 16>' } },
+        values: { world: Array(16).fill(0), presentation: Array(16).fill(1) } },
+      { name: 'TransformInterpolation', fields: {}, values: {} },
+      ...entityInspectorCases.find(item => item.kind === 'mesh').components,
+    ]);
+    assert.deepEqual(inspectorComponentTree(source).map(node => node.key), ['mesh']);
+    const all = inspectorSections(source, 'all');
+    assert(all.some(section => section.component === 'TransformInterpolation'));
+    const transforms = all.find(section => section.component === 'GlobalTransform');
+    assert.deepEqual(transforms.fields.map(field => field.key), ['world', 'presentation']);
+    assert(transforms.fields.every(field => field.presentation === 'collection'));
+    assert.deepEqual(all.flatMap(section => section.fields), source.components.flatMap(component => component.fields));
+  });
+  it('preserves current object-vector, enum-list, color and explicit asset-reference schemas', () => {
+    const source = inspectorEntityFromInspection({ entityId: 'modern', components: [{
+      name: 'Custom',
+      fields: { vector: { type: 'vec3' }, mode: { type: 'enum', enum: ['first', 'second'] },
+        color: { type: 'color' }, mesh: { type: 'AssetRef' } },
+      values: { vector: { x: 1, y: 2, z: 3 }, mode: 'first', color: [0.5, 0.25, 0.125, 1],
+        mesh: { guid: 'mesh-guid', kind: 'mesh', name: 'Current Mesh' } },
+    }] }, [{ guid: 'mesh-guid', kind: 'mesh', name: 'Current Mesh' }]);
+    const fields = Object.fromEntries(source.components[0].fields.map(field => [field.key, field]));
+    assert.equal(fields.vector.kind, 'vector3');
+    assert.deepEqual(fields.vector.value, { x: 1, y: 2, z: 3 });
+    assert.deepEqual(fields.mode.options, ['first', 'second']);
+    assert.deepEqual(fields.color.colorChannels, [0.5, 0.25, 0.125, 1]);
+    assert.equal(fields.mesh.resource.guid, 'mesh-guid');
+    assert.equal(fields.mesh.resource.asset.name, 'Current Mesh');
+  });
   it('hides empty groups and falls back to Object for a transform-free generic entity', () => {
     const source = inspect([{ name: 'Entity', values: { self: 5 }, fields: { self: { type: 'entity' } } }]);
     assert.deepEqual(inspectorGroups(source), ['object', 'all']);

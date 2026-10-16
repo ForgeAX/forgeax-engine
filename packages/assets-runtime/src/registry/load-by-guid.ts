@@ -1,5 +1,9 @@
 import type { PackageFetcher } from '@forgeax/engine-types';
-import { copyPreparedAsset, validateAssetReferences } from '../prepare-payload.js';
+import {
+  copyPreparedAsset,
+  prepareAssetPayload,
+  validateAssetReferences,
+} from '../prepare-payload.js';
 import { captureTerrainClosure } from '../terrain-closure.js';
 // @forgeax/engine-assets-runtime -- load-by-guid + pack-fetch collaboration module
 // (feat-20260705-runtime-tier2-decomposition M1 / w7, D-4). Free functions
@@ -27,6 +31,7 @@ import {
   type ImageMetadata,
   type LoadContext,
   type MaterialAsset,
+  type MeshAsset,
   materialChildForbiddenFields,
   type ParseErrorDetail,
 } from '@forgeax/engine-types';
@@ -362,6 +367,89 @@ async function loadMaterialReadyPublication(
   const readiness = fence() ?? loaded;
   if (isCurrent()) registry.recordMaterialReadiness(request.guid, readiness);
   return readiness;
+}
+
+/** Owned base geometry for source processing, without Asset/Ready authority. */
+export type MeshGeometrySource = Pick<
+  MeshAsset,
+  'vertices' | 'attributes' | 'indices' | 'submeshes' | 'aabb'
+>;
+
+/** Read a published Mesh root without admitting it or its render dependencies. */
+export async function readMeshGeometryByGuid(
+  registry: AssetRegistry,
+  guid: AssetGuid,
+): Promise<Result<MeshGeometrySource, AssetError | ImageError | RhiError>> {
+  const key = AssetGuid.format(guid).toLowerCase();
+  const isCurrent = currentLoad(registry, key);
+  const fail = (expected: string) =>
+    err(
+      new AssetError({
+        code: 'asset-parse-failed',
+        expected,
+        hint: 'read an existing Mesh publication; use loadByGuid for render-ready Assets',
+        detail: { sourcePath: key },
+      }),
+    );
+  const geometry = (asset: Asset): Result<MeshGeometrySource, AssetError> => {
+    if (asset.kind !== 'mesh') return fail('Mesh geometry from a Mesh publication');
+    try {
+      // A registered custom decoder may retain its output. Both ready and
+      // freshly decoded payloads must leave this read with private storage.
+      const prepared = prepareAssetPayload(copyPreparedAsset(asset));
+      if (!prepared.ok) return prepared;
+      const mesh = prepared.value as MeshAsset;
+      return ok({
+        vertices: mesh.vertices,
+        attributes: mesh.attributes,
+        submeshes: mesh.submeshes,
+        ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
+        ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
+      });
+    } catch {
+      return fail('independently owned, attached Mesh geometry storage');
+    }
+  };
+  const existing = registry.assetCatalog.get(key)?.payload;
+  if (existing !== undefined) return geometry(existing);
+  if (registry.packIndexUrl === undefined && !registry.hasCatalogSource)
+    return err(
+      new AssetError({
+        code: 'asset-not-found',
+        expected: `Mesh GUID ${key} in the Catalog`,
+        hint: ASSET_ERROR_HINTS['asset-not-found'],
+      }),
+    );
+  const resolved = await resolveCatalogEntry(registry, key);
+  if (!isCurrent()) return invalidated(key);
+  if (!resolved.ok) return resolved;
+  const entry = resolved.value;
+  if (entry === undefined)
+    return err(
+      new AssetError({
+        code: 'asset-not-imported',
+        expected: `published Mesh GUID ${key}`,
+        hint: ASSET_ERROR_HINTS['asset-not-imported'],
+      }),
+    );
+  if (entry.kind !== 'mesh') return fail('Mesh geometry from a Mesh Catalog row');
+  const projection = resolveRuntimeProjection(key, entry);
+  if (!projection.ok) return projection;
+  if (projection.value?.lifecycle !== undefined && projection.value.lifecycle !== 'current')
+    return err(
+      new AssetError({
+        code: 'asset-not-imported',
+        expected: `current Mesh publication for ${key}`,
+        hint: ASSET_ERROR_HINTS['asset-not-imported'],
+      }),
+    );
+  const root = await loadPackV2Asset(registry, key, entry.packageUrl, isCurrent);
+  if (!isCurrent()) return invalidated(key);
+  if (root === undefined) return fail('a Pack v2 Mesh publication');
+  if (!root.ok) return root;
+  // The existing decoder verifies artifacts and Mesh metadata. No decoded
+  // root enters catalog/load-state/World registration after this read.
+  return geometry(root.value.asset);
 }
 
 async function loadByGuidInternal<T = Asset>(

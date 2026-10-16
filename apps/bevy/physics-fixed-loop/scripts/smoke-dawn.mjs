@@ -80,7 +80,7 @@ for (let i = 0; i < frames; i++) {
     console.error(`[smoke] FAIL - world.update: ${updated.error.code}`);
     process.exit(1);
   }
-  const drawn = drawSmokeFrame(renderer, world);
+  const drawn = await drawSmokeFrame(renderer, world);
   if (!drawn.ok) console.error(`[smoke] draw ${i}: ${drawn.error.code}`);
 }
 const state = readPhysicsFixedState(world);

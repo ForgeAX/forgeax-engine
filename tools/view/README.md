@@ -139,13 +139,23 @@ forgeax engine run start --root /path/to/game --json
 forgeax engine run status --root /path/to/game --json
 ```
 
-In View, select **Runtime capture** (AI Display), enter the game project path and the exact
-`runId` from Engine, then select **Observe run**. First complete the required
-project dialog; the observed run can belong to a different project.
-View receives cached status, logs and timestamped screenshots from that run.
-A different run at the same path requires an explicit new binding; opening or
-closing an Editor project does not change the observed run. **Disconnect**
-removes the observation binding and does not stop the game.
+In View, select **Runtime capture** and choose the screenshot source:
+
+| Source | Interaction |
+|:--|:--|
+| **Editor Play** | Displays screenshots of this document's Play target. Start and interact with the game in Scene. Visible capture pages sample about once a second; hidden pages stop sampling. Stop preserves the last image until another Play or project is selected. |
+| **Independent Engine run** | Select **View project run** to discover the open project's current Engine run and pin that exact identity. No project path or run ID needs typing. Cached Engine screenshots refresh at most once every five seconds. |
+
+Screenshots show their capture time and frame number. Logs and runtime identities
+are folded into details. A replacement run never silently replaces the observed
+run; **Reconnect current run** explicitly discovers and pins the new identity.
+The last accepted image remains marked after the old run ends. **Disconnect**
+clears the binding and image without stopping the game.
+
+API/CLI clients can still bind an independent project with exact `{root, runId}`.
+Omitting `runId` in `view.display.bind` discovers the run once through
+`engine.run.observe`; it does not start a run or follow replacements. Opening or
+closing an Editor project does not change an existing independent binding.
 
 ### Open an Editor project
 
@@ -372,8 +382,39 @@ declared-slot/default-material facts, so an empty override array never means
 the mesh has no materials. All preserves the raw component fields. Resource links use the existing
 independent asset pages and do not replace the Editor surface or control runs.
 
-Content Browser's **Runtime content** section consumes Engine's optional
-`engine.runtime-pack.*` operations. It lists admitted generators, edits parameters,
+Scene Tree entities offer **Browse to Asset** and **Edit Asset** for direct asset
+references. A resident optional native query plugin resolves held resources to
+Engine Registry identities, including effective material slots, using existing
+Runtime Pack and ToolApi contracts. It runs in the ordinary Editor and writes no
+entity data. View and game source require no Engine change. A unique primary is
+available directly; without one, the shortcuts stay disabled and direct users
+to exact Inspector reference fields. Scene Tree has no Related Assets submenu.
+Asset names are read-only; separate folder and external-link buttons browse to
+the asset or open its asset viewer. Unsupported reference controls stay visible
+but disabled, and multi-selection continues to address the primary entity.
+
+Dedicated pages retain their previews. Other registered assets open generic
+read-only details without creating a hidden preview; resource tabs use asset
+names. Builtins, uncatalogued resources and stale references remain unavailable.
+The service stays resident across panel/selection/tab changes, and cleans only
+its owned plugin and runtime definition when its Editor binding retires.
+Runtime Content omits that exact tooling package and native installation from
+user controls and saved content; Engine's raw queries still report them. New-page
+menus keep their registered type labels while open tabs show asset names. Play
+and independent AI runs receive no automatic query plugin. See the
+[design and verification boundaries](docs/2026-10-15-view-resident-asset-references-design.md).
+
+Content Browser shows only authored source directories from the Engine project's
+`assetRoots`, resolved from `forge.json` (default `["assets"]`). Generated files,
+external catalog sources and standalone files outside those roots remain absent
+from the directory tree, cards, searches and source navigation. Empty configured
+roots remain visible. Runtime catalog identities remain complete for inspection
+and asset viewers; the browser does not redefine the Engine catalog.
+
+Content Browser settings expose the optional **Runtime asset tools** panel.
+The ordinary asset browser keeps this panel closed and its details pane off by
+default. Runtime asset tools consume Engine's optional
+`engine.runtime-pack.*` operations. The panel lists admitted generators, edits parameters,
 creates or updates an identified instance, imports content/snapshots, and downloads
 durable content JSON. Generated assets appear in the ordinary catalog and use the
 existing dedicated previews. Its plugin controls install existing PluginAssets
@@ -725,7 +766,56 @@ under `artifacts/page-plugins/`.
 For the focused page lifecycle probe without Play stress cycles, run
 `xvfb-run -a node scripts/verify-page-plugin-lifecycle.mjs`.
 
+### Operation history
+
+Engine CLI and SDK command-client work is recorded even while View is closed.
+The Operation history page reads the current project's receipts: operation,
+time, outcome, arguments, result/failure and retained preview images. Select a
+record to see what that command actually produced. Browsing history neither
+replays the command nor starts a game. Runtime observation remains a separate
+page with periodically refreshed output from a running instance.
+
+The latest history page refreshes every two seconds while visible; older pages
+remain stable. Images load individually on demand. Closing or hiding View stops
+its reads without deleting Engine history or controlling an independent run.
+The public `view.workspace.history.list/get/artifact.read` operations delegate
+to Engine with the accepted project identity; no user-entered path or run ID is
+needed. Engine also exposes these as `forgeax engine history ...` without View.
+See the history design.
+
 ### Workspace CLI
+
+To inspect the View the user is actually looking at, use:
+
+```sh
+forgeax view workspace presentation get --root /path/to/backend --input '{}' --json
+```
+
+The result includes the server-selected `connectionId`, that document's bounded
+workspace summary, actual open pages and active page, active-page panels, Shell
+mount/restoration state, and appearance. `tabs.get` instead describes the two
+Editor/Display runtime bindings and their Engine resources. Presentation reads
+do not serialize the asset catalog or wait for GPU readiness.
+
+| Action | Public operation suffix | Input |
+|:--|:--|:--|
+| Open a registered page type | `presentation.page.open` | `{ "typeId": "mesh" }` |
+| Activate a returned page | `presentation.page.select` | `{ "pageId": "page-mesh" }` |
+| Close a closable page | `presentation.page.close` | `{ "pageId": "page-mesh" }` |
+| Reveal a registered native panel | `presentation.panel.reveal` | `{ "panelId": "content-browser" }` |
+
+These suffixes have the public `view.workspace.` prefix and derive CLI segments
+under `forgeax view workspace`. Pass their JSON arguments through `--input`.
+Use the IDs returned by the snapshot; titles are translated display text.
+Resource pages include the native controller's exact asset GUID/kind or project
+file identity; the Shell never infers these from tab titles or keeps a catalog.
+Use `pages.list` to discover connected documents when more than one exists,
+then include `connectionId` in presentation requests. A frontend may address
+only itself. Missing or retired pages, cancellation, a three-second response
+deadline and disposal fail explicitly. Already applied writes are never replayed.
+Successful commands return committed Shell state. Panel facts distinguish native
+mounting from actual visibility, including edge drawers and inactive pages.
+All observation is on demand; the backend owns no second page/layout model.
 
 Agent guidance: [forgeax-view-cli](skills/forgeax-view-cli/SKILL.md). The
 resident workspace API is authoritative; the browser and CLI are its clients.
@@ -937,7 +1027,7 @@ CLI contribution metadata uses the actual operation ID without a second
 
 ## Frontend platform producers
 
-`@forgeax/engine-host/platform` owns `FrontendPlatform`: the frontend realm's document, fetch, authenticated Host connection, navigation, clipboard and host appearance. This is distinct from the Engine's realm-neutral clocks/display primitives. `mountViewApplication` is the shared browser/embedded entry; product panels consume capabilities supplied by native Fibers. Browser behavior remains the default. An optional generic MCP Apps producer delivers isolated documents and bytes; the Codex producer adds only its supported conversation-draft capability. Source, design and evidence live in the unified platform contract.
+`@forgeax/engine-host/platform` owns `FrontendPlatform`: the frontend realm's document, fetch, authenticated Host connection, optional host navigation, clipboard and host appearance. Workspace browser navigation is explicitly imported from `@forgeax/view/workspace/document-navigation`; ordinary game platform namespaces do not contain it. This is distinct from the Engine's realm-neutral clocks/display primitives. `mountViewApplication` is the shared browser/embedded entry; product panels consume capabilities supplied by native Fibers. Browser behavior remains the default. An optional generic MCP Apps producer delivers isolated documents and bytes; the Codex producer adds only its supported conversation-draft capability. Source, design and evidence live in the unified platform contract.
 
 Public `view.start` and `view.status` publish `presentationId`, derived from the current native frontend admission lease without exposing its credential. Healthy repeated starts retain it; a replacement changes it even at the same URL. Embedded transports use that identity to retire stale resource caches and documents before admitting a replacement.
 

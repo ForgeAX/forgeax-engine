@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { driveReadyAppFrames } from '../../test/ready-render-frame.mjs';
 import * as smoke from '../run-dawn-smoke-roster.mjs';
 
 const head = '0123456789abcdef0123456789abcdef01234567';
@@ -515,4 +516,49 @@ test('CI lightweight routing reaches only the TransformGizmo browser child', asy
     }
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+function driver(presentations, completion = { ok: true }) {
+  let listener;
+  let ticks = 0;
+  let disposed = false;
+  const renderer = {
+    subscribe(fn) {
+      listener = fn;
+      return () => {
+        disposed = true;
+      };
+    },
+  };
+  const tick = () => {
+    const presentation = presentations[ticks++];
+    if (presentation === undefined) return false;
+    listener({
+      kind: 'frame-submitted',
+      receipt: {
+        presentation,
+        completed: Promise.resolve(completion),
+      },
+    });
+  };
+  return { renderer, tick, state: () => ({ ticks, disposed }) };
+}
+
+test('App acceptance counts ready receipts, never preparation callbacks', async () => {
+  const d = driver(['pending', 'ready', 'pending', 'ready']);
+  assert.equal(await driveReadyAppFrames(d.renderer, d.tick, 2), 2);
+  assert.deepEqual(d.state(), { ticks: 4, disposed: true });
+});
+
+test('App acceptance preserves completion failures and releases its listener', async () => {
+  const error = new Error('native completion failed');
+  const d = driver(['ready'], { ok: false, error });
+  await assert.rejects(driveReadyAppFrames(d.renderer, d.tick), (actual) => actual === error);
+  assert.equal(d.state().disposed, true);
+});
+
+test('missing App callbacks fail immediately and release their listener', async () => {
+  const d = driver([]);
+  await assert.rejects(driveReadyAppFrames(d.renderer, d.tick), /did not schedule/);
+  assert.equal(d.state().disposed, true);
 });

@@ -56,6 +56,27 @@ function shader(marker: string): string {
   return entry.wgsl;
 }
 
+function replaceFunctionBody(
+  source: string,
+  name: string,
+  replacement: string | ((parameter: string) => string),
+): string {
+  const start = source.indexOf(`fn ${name}(`);
+  if (start < 0) throw new Error(`missing production function ${name}`);
+  const body = source.indexOf('{', start);
+  let end = body + 1;
+  let depth = 1;
+  while (depth > 0 && end < source.length) {
+    if (source[end] === '{') depth++;
+    if (source[end] === '}') depth--;
+    end++;
+  }
+  if (depth !== 0) throw new Error(`unclosed production function ${name}`);
+  const parameter = source.slice(source.indexOf('(', start) + 1, source.indexOf(':', start)).trim();
+  const value = typeof replacement === 'string' ? replacement : replacement(parameter);
+  return `${source.slice(0, body + 1)} ${value} ${source.slice(end - 1)}`;
+}
+
 function viewUniform(): Float32Array {
   const values = new Float32Array(60);
   values[44] = 1;
@@ -77,7 +98,12 @@ interface CompositeReadback {
   readonly center: [number, number, number, number];
 }
 
-type CompositeMode = 'production' | 'single-bilinear';
+type CompositeMode =
+  | 'production'
+  | 'single-bilinear'
+  | 'without-vacuum-shortcut'
+  | 'low-profile'
+  | 'five-tap';
 
 async function runComposite(
   device: GPUDevice,
@@ -125,13 +151,19 @@ async function runComposite(
   );
   device.queue.writeBuffer(uniform, 0, viewUniform());
   const productionSource = shader('fn volume_fs');
+  // The producer emits valid Naga WGSL with renamed locals and condition
+  // temporaries. Change the named function body, not its source spelling.
   const source =
-    mode === 'single-bilinear'
-      ? productionSource.replace(
-          'let sample = edge_aware_resolved_volume(input.uv);',
-          'let sample = textureSampleLevel(resolved_volume, volume_sampler, input.uv, 0.0);',
-        )
-      : productionSource;
+    mode === 'without-vacuum-shortcut'
+      ? replaceFunctionBody(productionSource, 'vacuum_volume_neighborhood', 'return false;')
+      : mode === 'single-bilinear'
+        ? replaceFunctionBody(
+            productionSource,
+            'edge_aware_resolved_volume',
+            (parameter) =>
+              `return textureSampleLevel(resolved_volume, volume_sampler, ${parameter}, 0.0);`,
+          )
+        : productionSource;
   const module = device.createShaderModule({ code: source });
   const depthEdgePipeline = edgeDepth
     ? device.createRenderPipeline({
@@ -168,6 +200,9 @@ async function runComposite(
     fragment: {
       module,
       entryPoint: 'volume_fs',
+      constants: {
+        VOLUME_COMPOSITE_NEIGHBORS: mode === 'low-profile' ? 2 : mode === 'five-tap' ? 4 : 8,
+      },
       targets: [
         {
           format: 'rgba16float',
@@ -263,6 +298,52 @@ async function runComposite(
 }
 
 describe('volumetric fog composite HDR stage on Dawn', () => {
+  it('keeps bounded optical edges and finite HDR in the spatially stratified three-tap low profile and four-neighbor compatibility', async () => {
+    const device = await requestDevice();
+    const values = Array.from({ length: SIZE * SIZE }, (_, index) =>
+      index % SIZE < 2 ? ([0.4, 0.2, 0.1, 0.3] as const) : ([0, 0, 0, 1] as const),
+    );
+    for (const depthEdge of [false, true]) {
+      const high = await runComposite(device, values, depthEdge);
+      for (const mode of ['low-profile', 'five-tap'] as const) {
+        const low = await runComposite(device, values, depthEdge, mode);
+        expect(low.pixels.every(Number.isFinite)).toBe(true);
+        for (let index = 0; index < high.pixels.length; index += 1) {
+          expect(Math.abs((high.pixels[index] ?? 0) - (low.pixels[index] ?? 0))).toBeLessThan(0.08);
+          expect(low.pixels[index]).toBeGreaterThanOrEqual(0);
+          expect(low.pixels[index]).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
+  it('keeps HDR pixels within one half ULP for vacuum, smoke boundaries, absorption and emission', async () => {
+    const device = await requestDevice();
+    const vacuum = [0, 0, 0, 1] as const;
+    const fields = [
+      Array.from({ length: SIZE * SIZE }, () => vacuum),
+      Array.from({ length: SIZE * SIZE }, (_, index) =>
+        index === 5 ? ([0.4, 0.2, 0.1, 0.3] as const) : vacuum,
+      ),
+      Array.from({ length: SIZE * SIZE }, () => [0, 0, 0, 0.3] as const),
+      Array.from({ length: SIZE * SIZE }, () => [0.4, 0.2, 0.1, 1] as const),
+    ];
+    for (const field of fields) {
+      for (const depthEdge of [false, true]) {
+        const before = await runComposite(device, field, depthEdge, 'without-vacuum-shortcut');
+        const after = await runComposite(device, field, depthEdge);
+        // The original normalized vacuum may round just below one. Exact
+        // transparency keeps the HDR background instead of darkening it by
+        // one half-float ULP; non-vacuum inputs retain the original filter.
+        for (let index = 0; index < before.pixels.length; index += 1) {
+          const previous = floatToHalf(before.pixels[index] ?? Number.NaN);
+          const next = floatToHalf(after.pixels[index] ?? Number.NaN);
+          expect(Math.abs(previous - next)).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
   it('preserves premultiplied scatter over HDR and survives depth edges', async () => {
     const device = await requestDevice();
     const scatter = Array.from({ length: SIZE * SIZE }, () => [0.25, 0.1, 0.05, 0.5] as const);

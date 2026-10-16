@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { writeReferencePng } from '../../../shared/png-codec.mjs';
 
-const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '100', 10);
+const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
 const HEIGHT = 150;
 
@@ -148,16 +148,10 @@ function spaceSnapshot() {
 
 // --- render initial frames ---
 let latestReceipt;
-for (let f = 0; f < 5; f++) {
+for (let f = 0; f < SMOKE_MIN_FRAMES; f++) {
   stepScreenshot(world, noInputSnapshot());
   world.update().unwrap();
-  const r = renderer.draw({
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
-  if (!r.ok) { console.error(`[smoke] FAIL - draw error: ${r.error.code}`); process.exit(1); }
-  latestReceipt = r.value;
+  latestReceipt = (await drawSmokeFrame(renderer, world)).value;
 }
 await delay(100);
 

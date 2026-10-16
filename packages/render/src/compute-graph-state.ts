@@ -9,6 +9,8 @@ import type {
   BindGroupLayout,
   Buffer,
   ComputePipeline,
+  RhiDevice,
+  ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
@@ -62,6 +64,17 @@ export function createComputeState(
   const module = factory.createShaderModule({ code: source, label });
   if (!module.ok) throw module.error;
   const device = (frame as RenderPipelineFrame).runtime.device;
+  return createComputeStateForModule(device, module.value, label, entries, entryPoint);
+}
+
+/** Build against the exact module witness already admitted by its factory. */
+export function createComputeStateForModule(
+  device: RhiDevice,
+  module: ShaderModule,
+  label: string,
+  entries: readonly unknown[],
+  entryPoint: string,
+): ComputeState {
   const layout = device.createBindGroupLayout({
     label: `${label}.bind-group-layout`,
     entries: entries as never,
@@ -75,7 +88,7 @@ export function createComputeState(
   const pipeline = device.createComputePipeline({
     label,
     layout: pipelineLayout.value,
-    compute: { module: module.value, entryPoint },
+    compute: { module, entryPoint },
   });
   if (!pipeline.ok) throw pipeline.error;
   return { label, pipeline: pipeline.value, layout: layout.value, bindGroups: new WeakMap() };

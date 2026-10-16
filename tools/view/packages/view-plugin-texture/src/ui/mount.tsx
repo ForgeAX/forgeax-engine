@@ -7,7 +7,7 @@ import { TexturePreviewPanel } from './TexturePreviewPanel';
 import { TexturePropertiesPanel } from './TexturePropertiesPanel';
 import './texture.css';
 
-type MountProps = ComponentProps<typeof TexturePreviewPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
+type MountProps = ComponentProps<typeof TexturePreviewPanel> & ComponentProps<typeof TexturePropertiesPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
 
 function mountPanel(node: Parameters<ReturnType<typeof createRoot>['render']>[0], props: MountProps) {
   if (!props.mountElement) throw new TypeError('texture panel mount requires mountElement');
@@ -29,7 +29,7 @@ export async function mountTexturePreviewPanel(props: MountProps) {
 
 export async function mountTexturePropertiesPanel(props: MountProps) {
   return mountPanel(
-    <TexturePropertiesPanel client={props.client} />,
+    <TexturePropertiesPanel client={props.client} assetActions={props.assetActions} />,
     props,
   );
 }

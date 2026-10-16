@@ -218,7 +218,7 @@ describe('feat-20260527-sprite-nineslice w13 dawn smoke (HANDLE_NINESLICE_QUAD b
       },
     );
 
-    const drawn = drawPublished(renderer, world);
+    const drawn = await drawPublished(renderer, world);
     expect(drawn.ok).toBe(true);
     if (sharedDevice !== undefined) {
       await sharedDevice.queue.onSubmittedWorkDone();

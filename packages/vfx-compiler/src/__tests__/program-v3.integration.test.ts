@@ -58,7 +58,7 @@ const sourceRenderer = sourceEmitter.renderers[0];
 if (sourceRenderer === undefined) throw new Error('Missing source renderer fixture');
 
 describe('Program v3 compiler', () => {
-  it('validates two emitters and reuses real composition across cooks', async () => {
+  it('validates capacity-specific emitters and reuses real composition across cooks', async () => {
     const compile = vi.spyOn(naga, 'composeShader');
     try {
       const cooked = await cookParticleCodeProgram(
@@ -73,7 +73,18 @@ describe('Program v3 compiler', () => {
         ['custom-billboard', 8],
         ['second', 16],
       ]);
-      expect(compile).toHaveBeenCalledTimes(1);
+      // The bounded sort-key working set is compiled for each capacity.
+      expect(compile).toHaveBeenCalledTimes(2);
+      expect(cooked.value.program.emitters[1]?.wgsl).not.toBe(
+        cooked.value.program.emitters[0]?.wgsl,
+      );
+      const repeated = await cookParticleCodeProgram(
+        { ...source, emitters: [sourceEmitter, { ...sourceEmitter, id: 'second', capacity: 16 }] },
+        { 'custom.vfx.wgsl': module },
+        { material: [{ name: 'heat', type: 'f32', visibility: 'fragment', lane: 0 }] },
+      );
+      if (!repeated.ok) throw repeated.error;
+      expect(compile).toHaveBeenCalledTimes(2);
       const distinct = await cookParticleCodeProgram(
         {
           ...source,
@@ -91,7 +102,7 @@ describe('Program v3 compiler', () => {
         { material: [{ name: 'heat', type: 'f32', visibility: 'fragment', lane: 0 }] },
       );
       if (!distinct.ok) throw distinct.error;
-      expect(compile).toHaveBeenCalledTimes(2);
+      expect(compile).toHaveBeenCalledTimes(3);
       expect(distinct.value.program.emitters[0]?.wgsl).toBe(cooked.value.program.emitters[0]?.wgsl);
       expect(distinct.value.program.emitters[1]?.wgsl).not.toBe(
         cooked.value.program.emitters[0]?.wgsl,

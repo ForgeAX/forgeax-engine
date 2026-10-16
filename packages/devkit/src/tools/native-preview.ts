@@ -10,6 +10,7 @@ import {
 } from '@forgeax/engine-plugin';
 import { createNativePreviewHost, RESOURCE_PREVIEW_DEFAULT_SIZE } from '@forgeax/engine-preview';
 import type {
+  ArtifactRef,
   JsonValue,
   ToolApi,
   ToolContribution,
@@ -48,6 +49,14 @@ interface NativePreviewCatalogRow {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function adapterUnavailable(value: unknown, depth = 0): boolean {
+  if (depth > 8 || value === null || typeof value !== 'object') return false;
+  return (
+    (isRecord(value) && value.code === 'adapter-unavailable') ||
+    Object.values(value).some((nested) => adapterUnavailable(nested, depth + 1))
+  );
 }
 
 type PreviewCatalogLookup =
@@ -129,12 +138,15 @@ function previewCatalogFailure(
   return undefined;
 }
 
-function failed(failure: {
-  readonly code: string;
-  readonly expected?: string;
-  readonly hint?: string;
-  readonly detail?: unknown;
-}): ToolTerminal<never> {
+function failed(
+  failure: {
+    readonly code: string;
+    readonly expected?: string;
+    readonly hint?: string;
+    readonly detail?: unknown;
+  },
+  artifacts: readonly ArtifactRef[] = [],
+): ToolTerminal<never> {
   return {
     outcome: 'failed',
     failure: {
@@ -146,7 +158,7 @@ function failed(failure: {
         ...(failure.detail === undefined ? {} : { payload: failure.detail as JsonValue }),
       },
     },
-    artifacts: [],
+    artifacts,
   };
 }
 
@@ -283,8 +295,10 @@ export async function runNativePreviewTool(
     const first = await runBrowser(previewOptions.backend);
     if (
       first.ok ||
+      previewController.signal.aborted ||
       requestedBackend !== 'auto' ||
-      !/backend|webgpu|adapter|gpu/i.test(JSON.stringify(first.error.detail))
+      (first.artifacts?.length ?? 0) > 0 ||
+      !adapterUnavailable(first.error)
     ) {
       return { value: first, fallbackReason: undefined } as const;
     }
@@ -321,13 +335,16 @@ export async function runNativePreviewTool(
     // Vite/Chromium realm. Wait for that owner to observe cancellation and
     // dispose its resources before returning the terminal result; otherwise a
     // one-shot CLI can print JSON and keep its event loop alive behind it.
-    await browserPromise.catch(() => undefined);
-    return failed({
-      code: 'tool-preview-timeout',
-      expected: `the asset preview to complete within ${timeoutMs}ms`,
-      hint: 'Inspect the preview bootstrap or producer output; retry only after the owner is ready.',
-      detail: { guid, timeoutMs },
-    });
+    const retired = await browserPromise.catch(() => undefined);
+    return failed(
+      {
+        code: 'tool-preview-timeout',
+        expected: `the asset preview to complete within ${timeoutMs}ms`,
+        hint: 'Inspect the preview bootstrap or producer output; retry only after the owner is ready.',
+        detail: { guid, timeoutMs },
+      },
+      retired && !retired.value.ok ? (retired.value.artifacts ?? []) : [],
+    );
   }
   const browser = browserRace.value.value;
   const backendFallbackReason = browserRace.value.fallbackReason;
@@ -351,7 +368,7 @@ export async function runNativePreviewTool(
           ...(failure.detail === undefined ? {} : { payload: failure.detail }),
         },
       },
-      artifacts: [],
+      artifacts: browser.ok ? [] : (browser.artifacts ?? []),
     };
   }
   const resource = browser.value.resource;

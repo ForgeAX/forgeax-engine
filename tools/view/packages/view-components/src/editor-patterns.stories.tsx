@@ -139,6 +139,22 @@ export const ReadOnlyInspectorForm: Story = {
   ),
 };
 
+function NavigableAssetFields() {
+  const [action, setAction] = useState('');
+  return <div style={{ width: 380 }}><InspectorForm groups={[{ key: 'references', name: 'Asset References', fields: [
+    { key: 'material', label: 'Material', kind: 'asset', value: { guid: 'surface', name: 'Surface', kind: 'material' } },
+    { key: 'missing', label: 'Missing', kind: 'asset', value: { guid: 'missing', name: 'Missing', missing: true } },
+    { key: 'unregistered', label: 'Unregistered', kind: 'asset', value: { name: 'World handle 1028', kind: 'mesh' } },
+    { key: 'unavailable', label: 'Unavailable viewer', kind: 'asset', value: { guid: 'unavailable', name: 'Unavailable', kind: 'mesh' } },
+  ] }]} assetActions={value => value && typeof value === 'object' && 'guid' in value && value.guid === 'surface'
+    ? { onOpen: () => setAction('Opened Surface'), onBrowse: () => setAction('Located Surface') } : undefined} />
+    <output aria-live="polite">{action}</output></div>;
+}
+export const InspectorAssetNavigation: Story = {
+  parameters: { docs: { description: { story: 'Asset names are read-only and never navigate. Separate folder and external-link buttons locate the asset or open its viewer. Existing unsupported controls remain visible but disabled. Missing identities and unavailable viewers explain their disabled open action in a tooltip.' } } },
+  render: () => <NavigableAssetFields />,
+};
+
 function LayoutExample() {
   const [active, setActive] = useState('model');
   return (

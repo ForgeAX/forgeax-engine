@@ -52,6 +52,7 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
         currentRenderFeaturePass(frame, pass.featureIdentity, pass.name, scope)
           ?.resolvedGpuCopies ?? copies;
       for (const copy of current) {
+        if (copy.enabled === false) continue;
         encoder.copyBufferToBuffer(
           copy.source.buffer,
           copy.sourceOffset,

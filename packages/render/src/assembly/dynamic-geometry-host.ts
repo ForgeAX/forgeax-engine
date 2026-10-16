@@ -154,6 +154,9 @@ export interface DynamicGeometryResidency extends Pick<ResidencyLease, 'release'
 
 export interface DynamicGeometryResidencyPort {
   readonly maxConcurrentPreparations: number;
+  /** Optional collective proof: change before any issued lease's isCurrent
+   * answer changes. Unknown physical owners retain individual live checks. */
+  currentnessToken?(): object | undefined;
   prepare(
     input: {
       readonly world: World;
@@ -327,6 +330,10 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
   } = options;
   const hostCandidates = new Map<string, HostCandidateRecord>();
   const faultedWorlds = new WeakMap<World, DynamicGeometryError>();
+  let currentnessRevision: object = Object.freeze({});
+  const invalidateCurrentness = () => {
+    currentnessRevision = Object.freeze({});
+  };
   let observedGeneration = -1;
   let batchActive = false;
   const fault = (
@@ -342,6 +349,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         ? cause
         : new DynamicGeometryError('dynamic-geometry-invalid', expected, hint, { actual: cause });
     faultedWorlds.set(world, error);
+    invalidateCurrentness();
     return error;
   };
   const throwFault = (world: World, cause: unknown): never => {
@@ -439,6 +447,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       complete = resolve;
     });
     record.cleanup = { completed, receipt: lifecycle.receipt(record.candidate) };
+    invalidateCurrentness();
     const cancel = (completion?: Promise<void>): void => {
       const cancelled = lifecycle.cancel(record.candidate, completion);
       if (!cancelled.ok) throw cancelled.error;
@@ -456,6 +465,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         if (!finalized.ok) throw finalized.error;
       }
       hostCandidates.delete(record.candidate.candidateId);
+      invalidateCurrentness();
       complete();
     };
     if (terminal === 'retire') {
@@ -994,6 +1004,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         if (entry === undefined || committed === undefined)
           throw fault(world, new Error('lifecycle acceptance returned an incomplete batch'));
         entry.record.candidate = committed;
+        invalidateCurrentness();
       }
 
       const postCommitFailures: DynamicGeometryError[] = [];
@@ -1202,6 +1213,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         previousMeshLeaseHeld: true,
       };
       hostCandidates.set(prepared.value.candidateId, record);
+      invalidateCurrentness();
       return ok(record);
     } catch (cause) {
       if (preparationWasRestored()) throw cause;
@@ -1544,7 +1556,10 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       ),
     );
     record.residencyPending = pending.then((result) => {
-      if (result.ok) record.residency = result.value;
+      if (result.ok) {
+        record.residency = result.value;
+        invalidateCurrentness();
+      }
     });
     void record.residencyPending.catch((cause) => fault(record.world, cause));
     const cancel = () => {
@@ -1663,6 +1678,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
   };
   return {
     host,
+    currentnessRevision: () => currentnessRevision,
     fault,
     ensureHealthyWorld,
     async prepareAsync(
@@ -1870,9 +1886,40 @@ export function createDynamicGeometrySourceHost(
     ...options,
     currentGeneration: () => options.currentGeneration() ?? 0,
   });
+  const currentness = new WeakMap<
+    World,
+    {
+      generation: number;
+      residency: object;
+      owner: object;
+      token: object;
+    }
+  >();
   return {
     ...owner.host,
     currentGeneration: options.currentGeneration,
+    dynamicGeometryCurrentness(world) {
+      const generation = options.currentGeneration();
+      const residency = options.residency.currentnessToken?.();
+      if (
+        generation === undefined ||
+        residency === undefined ||
+        !options.attachedWorlds.has(world) ||
+        owner.host.dynamicGeometryFault(world) !== undefined
+      )
+        return undefined;
+      const revision = owner.currentnessRevision(),
+        previous = currentness.get(world);
+      if (
+        previous?.generation === generation &&
+        previous.residency === residency &&
+        previous.owner === revision
+      )
+        return previous.token;
+      const token = Object.freeze({});
+      currentness.set(world, { generation, residency, owner: revision, token });
+      return token;
+    },
     prepareDynamicGeometry(input, preparation) {
       if (options.currentGeneration() === undefined)
         return Promise.resolve(

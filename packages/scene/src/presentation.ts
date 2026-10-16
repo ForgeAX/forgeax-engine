@@ -97,14 +97,22 @@ function parent(world: World, entity: EntityHandle): number | undefined {
   return value === ENTITY_NULL_RAW ? undefined : value;
 }
 function validHistory(world: World, entity: EntityHandle, history: History): boolean {
-  const local = world.get(entity, Transform);
+  if (
+    !world.hasComponent(entity, Transform) ||
+    history.tick !== world.getResource(FixedTime).tick ||
+    history.parent !== parent(world, entity)
+  )
+    return false;
+  const position = readRenderArrayView(world, entity, Transform, 'pos');
+  const rotation = readRenderArrayView(world, entity, Transform, 'quat');
+  const scale = readRenderArrayView(world, entity, Transform, 'scale');
   return (
-    local.ok &&
-    history.tick === world.getResource(FixedTime).tick &&
-    history.parent === parent(world, entity) &&
-    equal(history.current.pos, local.value.pos) &&
-    equal(history.current.rotation, local.value.quat) &&
-    equal(history.current.scale, local.value.scale)
+    position !== undefined &&
+    rotation !== undefined &&
+    scale !== undefined &&
+    equal(history.current.pos, position) &&
+    equal(history.current.rotation, rotation) &&
+    equal(history.current.scale, scale)
   );
 }
 
@@ -176,8 +184,15 @@ function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 |
       quat.slerp(state.rotation, history.previous.rotation, history.current.rotation, alpha);
       mat4.compose(cached.local, state.position, state.rotation, state.scale);
     } else {
-      const local = world.get(node, Transform).unwrap();
-      mat4.compose(cached.local, local.pos, local.quat, local.scale);
+      const position = readRenderArrayView(world, node, Transform, 'pos');
+      const rotation = readRenderArrayView(world, node, Transform, 'quat');
+      const scale = readRenderArrayView(world, node, Transform, 'scale');
+      if (position !== undefined && rotation !== undefined && scale !== undefined) {
+        mat4.compose(cached.local, position, rotation, scale);
+      } else {
+        const local = world.get(node, Transform).unwrap();
+        mat4.compose(cached.local, local.pos, local.quat, local.scale);
+      }
     }
     if (resolved === undefined) cached.matrix.set(cached.local);
     else mat4.multiply(cached.matrix, resolved, cached.local);
@@ -297,9 +312,12 @@ export function publishPresentationTransforms(world: World): void {
       if (next.has(node)) continue;
       next.add(node);
       pending.add(node);
-      const children = world.get(node, Children);
-      if (children.ok)
-        for (const child of children.value.entities) state.path.push(child as EntityHandle);
+      const children = readRenderArrayView(world, node, Children, 'entities');
+      if (children !== undefined)
+        for (let index = 0; index < children.length; index += 1) {
+          const child = children[index];
+          if (child !== undefined) state.path.push(child as EntityHandle);
+        }
     }
   }
   for (const entity of pending) {

@@ -9,7 +9,7 @@ const fixtures = vi.hoisted(() => {
     on: vi.fn(),
     off: vi.fn(),
     goto: vi.fn(async () => undefined),
-    waitForFunction: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async () => ({ jsonValue: async () => true, dispose: async () => {} })),
     waitForTimeout: vi.fn(async () => undefined),
     locator: vi.fn(),
     evaluate: vi.fn(async () => ({ ok: true, result: { captureId: 'capture-1' } })),
@@ -19,7 +19,7 @@ const fixtures = vi.hoisted(() => {
   const replayPage = {
     on: vi.fn(),
     goto: vi.fn(async () => undefined),
-    waitForFunction: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async () => ({ jsonValue: async () => true, dispose: async () => {} })),
     evaluate: vi.fn(async () => ({
       ok: true,
       result: {
@@ -47,7 +47,7 @@ const fixtures = vi.hoisted(() => {
   };
   const captureBrowser = {
     newPage: vi.fn(async () => capturePage),
-    close: vi.fn(async () => undefined),
+    close: vi.fn(async (): Promise<void> => undefined),
   };
   const replayBrowser = {
     newPage: vi.fn(async () => replayPage),
@@ -55,8 +55,22 @@ const fixtures = vi.hoisted(() => {
   };
   let launchCount = 0;
   let borrowedSelected = false;
-  const launch = vi.fn(async () =>
-    borrowedSelected ? replayBrowser : launchCount++ === 0 ? captureBrowser : replayBrowser,
+  const browserServers: { kill: ReturnType<typeof vi.fn> }[] = [];
+  const launchServer = vi.fn(async (_options?: unknown) => {
+    const browser = borrowedSelected
+      ? replayBrowser
+      : launchCount++ === 0
+        ? captureBrowser
+        : replayBrowser;
+    const server = {
+      wsEndpoint: () => (browser === captureBrowser ? 'ws://capture' : 'ws://replay'),
+      kill: vi.fn(async () => {}),
+    };
+    browserServers.push(server);
+    return server;
+  });
+  const connect = vi.fn(async (endpoint: string) =>
+    endpoint === 'ws://capture' ? captureBrowser : replayBrowser,
   );
   const server = {
     httpServer: {
@@ -99,6 +113,7 @@ const fixtures = vi.hoisted(() => {
   const reset = () => {
     launchCount = 0;
     borrowedSelected = false;
+    browserServers.length = 0;
     for (const mock of [
       capturePage.on,
       capturePage.off,
@@ -119,7 +134,8 @@ const fixtures = vi.hoisted(() => {
       captureBrowser.close,
       replayBrowser.newPage,
       replayBrowser.close,
-      launch,
+      launchServer,
+      connect,
       server.httpServer.address,
       server.listen,
       server.transformRequest,
@@ -143,7 +159,9 @@ const fixtures = vi.hoisted(() => {
     replayPage,
     captureBrowser,
     replayBrowser,
-    launch,
+    launchServer,
+    connect,
+    browserServers,
     server,
     createServer,
     createViteConfig,
@@ -158,7 +176,12 @@ const fixtures = vi.hoisted(() => {
   };
 });
 
-vi.mock('playwright', () => ({ chromium: { launch: fixtures.launch } }));
+vi.mock('playwright', () => ({
+  chromium: {
+    launchServer: fixtures.launchServer,
+    connect: fixtures.connect,
+  },
+}));
 vi.mock('vite', () => ({ createServer: fixtures.createServer }));
 vi.mock('../../host.js', () => ({ createViteConfig: fixtures.createViteConfig }));
 vi.mock('../../project.js', () => ({ readProjectFacts: fixtures.readProjectFacts }));
@@ -190,6 +213,66 @@ const recipe = {
 const snapshot = { revision: 1, digest: 'sha256:test' } as never;
 
 describe('one-shot Browser Host borrowed carrier boundary', () => {
+  it('awaits browser retirement already started by cancellation', async () => {
+    const root = await fixtureRoot();
+    const controller = new AbortController();
+    let release!: () => void;
+    const retirement = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fixtures.captureBrowser.close.mockImplementationOnce(() => retirement);
+    fixtures.capturePage.evaluate.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('capture cancelled');
+    });
+    let settled = false;
+    const pending = runBrowserPreviewHost(
+      root,
+      recipe,
+      snapshot,
+      'preview-1',
+      controller.signal,
+      'project-bootstrap',
+      undefined,
+      { publish: false },
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+    try {
+      await vi.waitFor(() => expect(fixtures.captureBrowser.close).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      release();
+      expect((await pending).ok).toBe(false);
+    } finally {
+      release();
+      await pending;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retires private native processes even when their browser connection is already closed', async () => {
+    const root = await fixtureRoot();
+    fixtures.replayBrowser.close.mockRejectedValueOnce(new Error('Browser connection closed'));
+    try {
+      await runBrowserPreviewHost(
+        root,
+        recipe,
+        snapshot,
+        'preview-1',
+        new AbortController().signal,
+        'project-bootstrap',
+        undefined,
+        { publish: false },
+      );
+      expect(fixtures.browserServers).toHaveLength(2);
+      for (const server of fixtures.browserServers) expect(server.kill).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     undefined,
     'chrome-beta',
@@ -211,8 +294,8 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
         { publish: false },
       );
       expect(result.ok).toBe(true);
-      expect(fixtures.launch).toHaveBeenCalledTimes(2);
-      for (const [options] of fixtures.launch.mock.calls as unknown as [
+      expect(fixtures.launchServer).toHaveBeenCalledTimes(2);
+      for (const [options] of fixtures.launchServer.mock.calls as unknown as [
         Record<string, unknown>,
       ][]) {
         if (channel === undefined) {
@@ -262,7 +345,7 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
       expect(fixtures.adapter.attach).toHaveBeenCalledTimes(1);
-      expect(fixtures.launch).toHaveBeenCalledTimes(1);
+      expect(fixtures.launchServer).toHaveBeenCalledTimes(1);
       expect(fixtures.capturePage.goto).toHaveBeenCalledWith(
         expect.stringContaining('forgeax-tool-run-id=preview-1'),
         { waitUntil: 'domcontentloaded', timeout: 45_000 },
@@ -304,7 +387,7 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
         value: { actualCarrier: 'headed-private', carrierFallbackReason: 'view-busy' },
       });
       expect(fallback.attach).not.toHaveBeenCalled();
-      expect(fixtures.launch).toHaveBeenCalledTimes(2);
+      expect(fixtures.launchServer).toHaveBeenCalledTimes(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -456,7 +539,10 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
     });
     const frame = {
       goto: vi.fn(async () => undefined),
-      waitForFunction: vi.fn(async () => undefined),
+      waitForFunction: vi.fn(async () => ({
+        jsonValue: async () => true,
+        dispose: async () => {},
+      })),
       evaluate: vi.fn(async () => ({ ok: true, result: { captureId: 'capture-frame-1' } })),
       locator: vi.fn(() => ({ screenshot: frameScreenshot })),
       waitForTimeout: vi.fn(async () => undefined),

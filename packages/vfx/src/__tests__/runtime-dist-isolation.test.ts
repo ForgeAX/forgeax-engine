@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const vfxRoot = resolve(import.meta.dirname, '..', '..');
@@ -44,6 +45,16 @@ function dependencyNames(manifest: unknown): readonly string[] {
   return dependencies === undefined ? [] : Object.keys(record(dependencies));
 }
 
+function identifiers(source: string): readonly string[] {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) names.add(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile('entry.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS));
+  return [...names];
+}
+
 const runtimeForbiddenDependencies = [
   '@forgeax/engine-vfx-compiler',
   '@forgeax/engine-shader-compiler',
@@ -61,6 +72,12 @@ const compilerForbiddenDependencies = [
 ];
 
 describe('VFX runtime/compiler physical boundary', () => {
+  it('distinguishes JavaScript device symbols from comments and shader text', () => {
+    expect(identifiers('const shader = `// Renderer computes keys`; // World')).not.toContain(
+      'Renderer',
+    );
+    expect(identifiers('const device = GPUDevice;')).toContain('GPUDevice');
+  });
   it('keeps forbidden packages out of both production dependency manifests', () => {
     const runtimeDependencies = dependencyNames(readJson(resolve(vfxRoot, 'package.json')));
     const compilerDependencies = dependencyNames(readJson(resolve(compilerRoot, 'package.json')));
@@ -79,14 +96,19 @@ describe('VFX runtime/compiler physical boundary', () => {
     const compilerDist = readFileSync(resolve(compilerRoot, 'dist', 'index.mjs'), 'utf8');
 
     expect(runtimeDist).not.toMatch(/engine-vfx-compiler|shader-compiler|engine-naga/);
-    expect(runtimeDist).not.toMatch(
-      /\b(?:RenderFeature|Renderer|RenderGraph|GPUDevice|RhiDevice)\b/,
-    );
+    for (const name of ['RenderFeature', 'Renderer', 'RenderGraph', 'GPUDevice', 'RhiDevice'])
+      expect(identifiers(runtimeDist)).not.toContain(name);
     expect(runtimeDeclarations).not.toMatch(/engine-vfx-compiler|shader-compiler|engine-naga/);
     expect(compilerDist).not.toMatch(/engine-ecs|engine-render|engine-rhi|engine-naga/);
-    expect(compilerDist).not.toMatch(
-      /\b(?:World|RenderFeature|Renderer|RenderGraph|GPUDevice|RhiDevice)\b/,
-    );
+    for (const name of [
+      'World',
+      'RenderFeature',
+      'Renderer',
+      'RenderGraph',
+      'GPUDevice',
+      'RhiDevice',
+    ])
+      expect(identifiers(compilerDist)).not.toContain(name);
   });
 
   it('does not hide the boundary behind a source-level optional import', () => {

@@ -79,7 +79,11 @@ export function observeMaterialResidency(
         const error = materialResult.error;
         failure ??= preparationFailureFrom(error);
       } else {
-        const guid = internals.assets.guidOf(materialResult.value);
+        // A values-only child renders its accepted root publication. Its own
+        // uncooked GUID is not a second program owner.
+        const guid =
+          material.materialPublication?.identity.materialGuid ??
+          internals.assets.guidOf(materialResult.value);
         if (guid !== undefined) {
           const readiness = internals.assets.getMaterialReadiness(guid);
           if (readiness?.status === 'Error') {

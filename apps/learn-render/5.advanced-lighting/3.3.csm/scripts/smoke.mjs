@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { driveReadyAppFrames } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 // apps/learn-render/5.advanced-lighting/3.3.csm/scripts/smoke.mjs
 // feat-20260621-learn-render-5-3-production-shadow-demos M4 / M4-T-SMOKE-DAWN.
@@ -45,7 +46,6 @@ import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { writeReferencePng } from '../../../../shared/png-codec.mjs';
 
@@ -520,15 +520,13 @@ if (!startResult.ok) {
 // Public Renderer inspection exposes the installed feature identities. The
 // historical perFramePassNames diagnostic was a private host detail and is no
 // longer part of the renderer contract.
-let totalFrames = 0;
-for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
+const tickFrame = () => {
   const due = rafQueue.shift();
-  if (!due) break;
+  if (!due) return false;
   fakeNow += 16.67;
   due.cb(fakeNow);
-  totalFrames++;
-  if (i % 16 === 15) await delay(1);
-}
+};
+const totalFrames = await driveReadyAppFrames(app.renderer, tickFrame, SMOKE_MIN_FRAMES);
 
 let timingBenchReceipt = {
   status: 'not-run',
@@ -537,21 +535,11 @@ let timingBenchReceipt = {
   groups: [],
 };
 if (process.env.CSM_TIMING_BENCH === '1') {
-  const advanceFrames = (count) => {
-    let observed = 0;
-    for (let i = 0; i < count; i++) {
-      const due = rafQueue.shift();
-      if (!due) break;
-      fakeNow += 16.67;
-      due.cb(fakeNow);
-      observed++;
-    }
-    return observed;
-  };
+  const advanceFrames = (count) => driveReadyAppFrames(app.renderer, tickFrame, count);
   const profileValue = (profile) => MVD_FILTER_BY_PROFILE[profile];
   const groupProfiles = ['pcf3', 'pcssMedium'];
   const groups = [];
-  const warmupFrames = advanceFrames(120);
+  const warmupFrames = await advanceFrames(120);
   for (let group = 0; group < 5; group++) {
     for (const profile of groupProfiles) {
       world.set(lightEntity, DirectionalLight, {
@@ -560,7 +548,7 @@ if (process.env.CSM_TIMING_BENCH === '1') {
         maxPenumbraTexels: profile === 'pcssMedium' ? 24 : 9,
       });
       const before = app.renderer.inspect().directionalShadow;
-      const observedFrames = advanceFrames(60);
+      const observedFrames = await advanceFrames(60);
       const after = app.renderer.inspect().directionalShadow;
       groups.push({
         group,
@@ -659,12 +647,7 @@ let tightRgba = await readTightRgba('cascadeBlend=0.2');
 // fixed while only tintMode changes from all-bands (0) to cascade 2 (2).
 if (highlightLayerControl && shadowPresent && !oneCascade && !falsifyFakeDepth) {
   world.set(paramsEntity, PostProcessParams, { data: packOverlayParams(2 /* c2 */, 0 /* real */) });
-  for (let i = 0; i < 60; i++) {
-    const due = rafQueue.shift();
-    if (!due) break;
-    fakeNow += 16.67;
-    due.cb(fakeNow);
-  }
+  await driveReadyAppFrames(app.renderer, tickFrame, 60);
   const highlightedRgba = await readTightRgba('cascade-highlight=c2');
   let highlightChangedPixels = 0;
   let highlightMeanRgbDelta = 0;
@@ -695,12 +678,7 @@ if (highlightLayerControl && shadowPresent && !oneCascade && !falsifyFakeDepth) 
 const blendControlFrames = 60;
 if (shadowPresent && !oneCascade) {
   world.set(lightEntity, DirectionalLight, { cascadeBlend: 0 });
-  for (let i = 0; i < blendControlFrames; i++) {
-    const due = rafQueue.shift();
-    if (!due) break;
-    fakeNow += 16.67;
-    due.cb(fakeNow);
-  }
+  await driveReadyAppFrames(app.renderer, tickFrame, blendControlFrames);
   const noBlendRgba = await readTightRgba('cascadeBlend=0');
   let blendChangedPixels = 0;
   let blendMeanRgbDelta = 0;

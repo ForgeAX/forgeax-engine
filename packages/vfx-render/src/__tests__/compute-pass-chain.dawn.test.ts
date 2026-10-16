@@ -408,7 +408,8 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         baseline = compile(prepared, false);
         chain = compile(prepared, true);
         expect(baseline.inspect().passes).toHaveLength(18);
-        expect(chain.inspect().passes).toHaveLength(4);
+        // Disjoint emitter programs now share their native compute pass.
+        expect(chain.inspect().passes).toHaveLength(3);
       } else {
         expect(renderFeaturePlanSignatureSnapshotEquals(prepared.work, signature)).toBe(true);
         for (const [name, buffer] of prepared.buffers)
@@ -431,7 +432,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       expect(right.bytes).toEqual(left.bytes);
       expect(right.trace).toEqual(left.trace);
       expect(left.begins).toBe(ticks * 4);
-      expect(right.begins).toBe(ticks === 0 ? 0 : 2);
+      expect(right.begins).toBe(ticks === 0 ? 0 : 1);
       if (ticks === 4) {
         for (const [name, bytes] of required(right.bytes)) {
           const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);

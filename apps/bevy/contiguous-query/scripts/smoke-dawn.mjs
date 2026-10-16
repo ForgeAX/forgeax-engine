@@ -50,7 +50,7 @@ const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error.code));
 for (let frame = 0; frame < 60; frame++) {
   world.update(0.016).unwrap();
-  const draw = drawSmokeFrame(renderer, world);
+  const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) throw new Error(`[smoke] draw=${draw.error.code}`);
 }
 const finalState = readContiguousQueryState(state);

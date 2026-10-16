@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 const appRoot = resolve(import.meta.dirname, '..');
 const repoRoot = resolve(appRoot, '../../..');
@@ -301,13 +302,11 @@ try {
   let receipt;
   for (let frame = 0; frame < frameTarget; frame += 1) {
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
+    receipt = await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    if (!drawn.ok) throw drawn.error;
-    receipt = drawn.value;
     frames += 1;
   }
   if (receipt === undefined) throw new Error('point-shadow smoke: no FrameReceipt');
@@ -390,12 +389,11 @@ try {
   if (!noShadowAttachment.ok) throw noShadowAttachment.error;
   for (let frame = 0; frame < 6; frame += 1) {
     noShadowWorld.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [noShadowAttachment.value],
       camera: { lease: noShadowAttachment.value },
       environment: { lease: noShadowAttachment.value },
     });
-    if (!drawn.ok) throw drawn.error;
   }
   inactiveInspection = renderer.inspect().pointShadow;
   inactiveProjection = render.inspectPointShadow([], atlasCapacity);

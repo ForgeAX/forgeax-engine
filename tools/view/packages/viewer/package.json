@@ -25,6 +25,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
+    "@forgeax/view-plugin-asset-references": "workspace:*",
     "@forgeax/engine": "workspace:*",
     "@forgeax/view-workspace-core": "workspace:*",
     "@forgeax/engine-host": "workspace:*",
@@ -45,7 +46,8 @@
     "dockview": "^6.6.1",
     "lucide-react": "^0.460.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "@forgeax/view-plugin-history": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",

@@ -7,7 +7,7 @@ import { MaterialPanel, MaterialPropertiesPanel } from './MaterialPanel';
 import { MaterialPreviewPanel } from './MaterialPreviewPanel';
 import './material.css';
 
-type MountProps = ComponentProps<typeof MaterialPreviewPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
+type MountProps = ComponentProps<typeof MaterialPreviewPanel> & ComponentProps<typeof MaterialPropertiesPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement };
 
 function mount(node: Parameters<ReturnType<typeof createRoot>['render']>[0], props: MountProps) {
   if (!props.mountElement) throw new TypeError('material panel mount requires mountElement');
@@ -22,14 +22,14 @@ function mount(node: Parameters<ReturnType<typeof createRoot>['render']>[0], pro
 
 export async function mountMaterialPanel(props: MountProps) {
   return mount(
-    <MaterialPanel client={props.client} />,
+    <MaterialPanel client={props.client} assetActions={props.assetActions} />,
     props,
   );
 }
 
 export async function mountMaterialPropertiesPanel(props: MountProps) {
   return mount(
-    <MaterialPropertiesPanel client={props.client} />,
+    <MaterialPropertiesPanel client={props.client} assetActions={props.assetActions} />,
     props,
   );
 }

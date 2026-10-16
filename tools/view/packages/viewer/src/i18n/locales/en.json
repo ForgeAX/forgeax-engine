@@ -5,8 +5,6 @@
     "theme": "Theme",
     "themeLight": "Light",
     "themeDark": "Dark",
-    "traceExport": "Export viewport trace",
-    "traceExportHint": "Download viewport interaction diagnostics (click canvas, drag, press Esc, then export)",
     "close": "Close",
     "localeShort": {
       "zh": "中",
@@ -85,13 +83,14 @@
     },
     "pages": {
       "editor": "Scene",
-      "display": "Runtime capture",
+      "display": "Runtime observation",
       "plugins": "Plugins",
       "material": "Material",
       "mesh": "Mesh",
       "texture": "Texture",
       "asset": "Asset",
-      "html": "HTML UI"
+      "html": "HTML UI",
+      "history": "Operation history"
     },
     "slots": {
       "plugins": "Plugins",

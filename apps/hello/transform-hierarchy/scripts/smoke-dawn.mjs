@@ -37,6 +37,7 @@
 // Charter P3 explicit failure: on fail, output structured diagnostic with
 // actual diffCount / stabilityDiff vs thresholds so AI users can self-diagnose.
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -399,12 +400,7 @@ renderer.subscribe((event) => {
 
 let framesObserved = 0;
 world.update(1 / 60).unwrap(); // runs propagateTransforms so child GlobalTransform.world is composed
-const drawARes = renderer.draw({ leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
-if (!drawARes.ok) {
-  console.error(`[smoke] FAIL - draw (frame A) failed: ${drawARes.error.code}`);
-  process.exit(1);
-}
-(await drawARes.value.completed).unwrap();
+await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsA = await doReadPixels();
@@ -426,12 +422,7 @@ setMalformedParentEdge(world, cycleA, cycleB, ChildOf);
 setMalformedParentEdge(world, cycleB, cycleA, ChildOf);
 const faultHierarchy = projectHierarchy(world);
 const faultPropagation = propagateTransforms(world, faultHierarchy);
-const drawFaultRes = renderer.draw({ leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
-if (!drawFaultRes.ok) {
-  console.error(`[smoke] FAIL - draw (fault frame) failed: ${drawFaultRes.error.code}`);
-  process.exit(1);
-}
-(await drawFaultRes.value.completed).unwrap();
+await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsFault = await doReadPixels();
@@ -447,12 +438,7 @@ const repairEdges = [
 ];
 const repairedHierarchy = projectHierarchy(world);
 const repairedPropagation = propagateTransforms(world, repairedHierarchy);
-const drawRepairedRes = renderer.draw({ leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
-if (!drawRepairedRes.ok) {
-  console.error(`[smoke] FAIL - draw (repaired frame) failed: ${drawRepairedRes.error.code}`);
-  process.exit(1);
-}
-(await drawRepairedRes.value.completed).unwrap();
+await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsRepaired = await doReadPixels();
@@ -483,12 +469,7 @@ console.log(
 // --- 9. Stability re-render (parent still at rest) -------------------------
 
 world.update(1 / 60).unwrap();
-const drawAARes = renderer.draw({ leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
-if (!drawAARes.ok) {
-  console.error(`[smoke] FAIL - draw (stability frame) failed: ${drawAARes.error.code}`);
-  process.exit(1);
-}
-(await drawAARes.value.completed).unwrap();
+await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsAA = await doReadPixels();
@@ -501,28 +482,18 @@ if (!setRes.ok) {
   process.exit(1);
 }
 world.update(1 / 60).unwrap(); // re-runs propagateTransforms; child GlobalTransform.world follows parent
-const drawBRes = renderer.draw({ leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
-if (!drawBRes.ok) {
-  console.error(`[smoke] FAIL - draw (frame B) failed: ${drawBRes.error.code}`);
-  process.exit(1);
-}
-(await drawBRes.value.completed).unwrap();
+await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsB = await doReadPixels();
 
 for (let frame = framesObserved; frame < FLEET_FRAME_COUNT; frame += 1) {
   world.update(1 / 60).unwrap();
-  const draw = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!draw.ok) {
-    console.error(`[smoke] FAIL - fleet frame ${frame + 1} failed: ${draw.error.code}`);
-    process.exit(1);
-  }
-  (await draw.value.completed).unwrap();
   framesObserved += 1;
 }
 console.log(`[smoke] frames observed=${framesObserved}`);

@@ -24,6 +24,21 @@ export const GameProjectSchema = z
     name: z.string().min(1),
     schemaVersion: z.literal('3.0.0'),
     roots: GameProjectRootsSchema,
+    assetRoots: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine(
+            (path) =>
+              !path.includes('\\') &&
+              !path.includes(':') &&
+              !path.includes('\0') &&
+              path.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
+            'expected a project-relative asset directory with forward slashes',
+          ),
+      )
+      .default(['assets']),
   })
   .strict();
 

@@ -60,3 +60,7 @@
   position: relative;
   overflow: hidden;
 }
+.mesh-properties-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mesh-bound-identity { margin: 0; padding: var(--fx-ref-space-8); font-size: var(--fx-type-caption-font-size); }
+.mesh-bound-identity > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--fx-ref-space-8); margin-block: var(--fx-ref-space-4); }
+.mesh-bound-identity dt, .mesh-bound-identity dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }

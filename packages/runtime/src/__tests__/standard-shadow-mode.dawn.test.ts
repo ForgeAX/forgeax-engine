@@ -16,6 +16,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -135,11 +136,11 @@ it('light shadow settings: PCF1 collapses the PCSS penumbra and castShadow false
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const last = index === 5;
-      if (last) unwrap(renderer.requestObservation?.(['linear-hdr']));
-      const frame = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      const frame = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        last ? ['linear-hdr'] : undefined,
       );
-      unwrap(await frame.completed);
       if (!last) continue;
       const observation = unwrap(
         await renderer.observe(frame, { include: ['linear-hdr'] }),

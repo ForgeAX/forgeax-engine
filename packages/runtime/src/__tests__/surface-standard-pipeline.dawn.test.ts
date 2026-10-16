@@ -22,6 +22,7 @@ import {
 } from '@forgeax/engine-types';
 import { createServer, loadConfigFromFile } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
@@ -626,7 +627,7 @@ describe('Standard Surface runtime Dawn publication', () => {
         frameTime,
       });
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
+      const receipt = await drawReadyFrame(renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
@@ -636,26 +637,6 @@ describe('Standard Surface runtime Dawn publication', () => {
           ? { geometryLane: 'direct' as const }
           : {}),
       });
-      const drawFailure = drawn.ok
-        ? ''
-        : JSON.stringify({
-            draw: JSON.parse(describeStructuredError(drawn.error)),
-            rendererErrors: rendererErrors.map((error) =>
-              JSON.parse(describeStructuredError(error)),
-            ),
-          });
-      expect(drawn.ok, drawFailure).toBe(true);
-      if (!drawn.ok) throw new Error(drawFailure);
-      expect(
-        drawn.ok,
-        drawn.ok ? undefined : JSON.stringify({ error: drawn.error, rendererErrors }),
-      ).toBe(true);
-      if (!drawn.ok) throw drawn.error;
-      const completion = await drawn.value.completed;
-      expect(completion.ok, completion.ok ? '' : describeStructuredError(completion.error)).toBe(
-        true,
-      );
-      if (!completion.ok) throw new Error(describeStructuredError(completion.error));
       completedFrames += 1;
       const evidenceFrames = [
         SURFACE_TIMELINE.direct,
@@ -684,7 +665,7 @@ describe('Standard Surface runtime Dawn publication', () => {
             SURFACE_TIMELINE.restoredProbes,
           ].includes(frame)
         ) {
-          const observed = await renderer.observe(drawn.value, { include: ['draws'] });
+          const observed = await renderer.observe(receipt, { include: ['draws'] });
           expect(observed.ok, observed.ok ? '' : describeStructuredError(observed.error)).toBe(
             true,
           );
@@ -704,6 +685,7 @@ describe('Standard Surface runtime Dawn publication', () => {
           if (submission === undefined) {
             throw new Error(`surface-standard: frame ${frame} submission receipt unavailable`);
           }
+          expect(submission.frameId).toBe(receipt.frameId);
           laneReceiptsByFrame.set(frame, submission);
           const laneInspection = renderer.inspect();
           laneGpuDrivenByFrame.set(frame, laneInspection.renderScene.gpuDriven);
@@ -809,15 +791,14 @@ describe('Standard Surface runtime Dawn publication', () => {
             command.receiptGeneration !== undefined,
         ),
       ).toBe(true);
-      expect(
-        [SURFACE_TIMELINE.direct, SURFACE_TIMELINE.gpu, SURFACE_TIMELINE.directRestored].map(
-          (frame) => laneReceiptsByFrame.get(frame)?.frameId,
-        ),
-      ).toEqual(
-        [SURFACE_TIMELINE.direct, SURFACE_TIMELINE.gpu, SURFACE_TIMELINE.directRestored].map(
-          (frame) => msaaEdgeEvidence.resized.fourX.receipt.frameId + frame + 1,
-        ),
-      );
+      const directFrame = laneReceiptsByFrame.get(SURFACE_TIMELINE.direct)?.frameId;
+      const gpuFrame = laneReceiptsByFrame.get(SURFACE_TIMELINE.gpu)?.frameId;
+      const restoredFrame = laneReceiptsByFrame.get(SURFACE_TIMELINE.directRestored)?.frameId;
+      if (directFrame === undefined || gpuFrame === undefined || restoredFrame === undefined)
+        throw new Error('Surface lane frame receipts unavailable');
+      expect(directFrame).toBeGreaterThan(msaaEdgeEvidence.resized.fourX.receipt.frameId);
+      expect(gpuFrame).toBeGreaterThan(directFrame);
+      expect(restoredFrame).toBeGreaterThan(gpuFrame);
       expect(
         directCommands.some(
           (command) =>
@@ -1153,31 +1134,13 @@ describe('Standard Surface runtime Dawn publication', () => {
           (await recorder.frameBoundary()).unwrap();
         world.update(1 / 60).unwrap();
         temporalTarget = undefined;
-        const draw = renderer.draw({
+        const receipt = await drawReadyFrame(renderer, {
           ...('geometryLane' in combination ? { geometryLane: combination.geometryLane } : {}),
           leases: [attached.value],
           camera: { lease: attached.value },
           environment: { lease: attached.value },
         });
-        if (!draw.ok) {
-          throw new Error(
-            JSON.stringify(
-              {
-                stage: 'surface-profile-draw',
-                combination,
-                frame,
-                error: parseStructuredError(draw.error),
-                rendererErrors: rendererErrors.map(parseStructuredError),
-                profile: renderer.inspect().profile,
-                gpuDriven: renderer.inspect().renderScene.gpuDriven,
-                perFramePassNames: renderer.inspect().perFramePassNames,
-              },
-              null,
-              2,
-            ),
-          );
-        }
-        const completed = await draw.value.completed;
+        const completed = await receipt.completed;
         if (!completed.ok) {
           throw new Error(
             JSON.stringify(
@@ -1359,14 +1322,11 @@ describe('Standard Surface runtime Dawn publication', () => {
     renderer.setSurfaceDynamicInput({ ...recoveredSurfaceDynamicInput, frameTime: 2.5 });
     for (let frame = 0; frame < 10; frame++) {
       world.update(1 / 60).unwrap();
-      const draw = renderer.draw({
+      await drawReadyFrame(renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
       });
-      if (!draw.ok) throw draw.error;
-      const completed = await draw.value.completed;
-      if (!completed.ok) throw completed.error;
     }
     expect(renderer.inspect().renderScene.gpuDriven.submitted).toBe(true);
     expect(renderer.inspect().renderScene.gpuDriven.cpuFallbackDrawItems).toBe(0);

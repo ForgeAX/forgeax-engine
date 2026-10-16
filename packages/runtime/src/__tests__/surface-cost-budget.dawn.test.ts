@@ -11,6 +11,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterEach, describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -488,21 +489,12 @@ describe('Surface water bounded cost budget', () => {
       const pendingUpload = input.page.beginUpload();
       if (!pendingUpload.ok) throw pendingUpload.error;
       const started = performance.now();
-      const drawn = activeRenderer.draw({
+      const drawn = await drawReadyFrame(activeRenderer, {
         leases: [lease],
         camera: { lease },
         environment: { lease },
       });
       const cpuSubmitElapsedMs = performance.now() - started;
-      if (drawn === undefined || !drawn.ok) {
-        throw new Error(
-          `surface-cost-budget: draw failed ${inspectError(drawn?.error)} errors=${JSON.stringify(
-            renderErrors.map((error) => inspectError(error)),
-          )}`,
-        );
-      }
-      const completed = await drawn.value.completed;
-      if (!completed.ok) throw completed.error;
       const inspection = activeRenderer.inspect();
       const gpuDriven = inspection.renderScene.gpuDriven;
       const allocation = gpuDriven.resourceAllocation;
@@ -519,7 +511,7 @@ describe('Surface water bounded cost budget', () => {
       }
       const mainDraws = mainGpuAndResidualDraws(gpuDriven.channels);
       const timing = captureTiming
-        ? timingReport(await activeRenderer.observe(drawn.value, { include: ['timings'] }))
+        ? timingReport(await activeRenderer.observe(drawn, { include: ['timings'] }))
         : { status: 'unavailable' as const, reason: 'capture-not-requested' };
       return {
         coverageWaterBlocks: 0,
@@ -608,10 +600,10 @@ describe('Surface water bounded cost budget', () => {
         filteredPlanBuilds: gpuDriven.filteredPlanBuilds,
         stableFrame: false,
         frameIdentity: {
-          frameId: drawn.value.frameId,
-          deviceGeneration: drawn.value.deviceGeneration,
-          graphGeneration: drawn.value.graphGeneration,
-          backendId: drawn.value.backendId,
+          frameId: drawn.frameId,
+          deviceGeneration: drawn.deviceGeneration,
+          graphGeneration: drawn.graphGeneration,
+          backendId: drawn.backendId,
         },
       };
     };

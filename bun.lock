@@ -6662,6 +6662,7 @@
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/engine-tool-runtime": "workspace:*",
+        "@forgeax/view-plugin-history": "workspace:*",
         "dockview": "^6.6.1",
         "lucide-react": "^0.460.0",
         "playwright": "1.63.0",
@@ -6672,6 +6673,7 @@
       "devDependencies": {
         "@forgeax/view-components": "workspace:*",
         "@forgeax/view-plugin-asset": "workspace:*",
+        "@forgeax/view-plugin-asset-references": "workspace:*",
         "@forgeax/view-plugin-content-browser": "workspace:*",
         "@forgeax/view-plugin-display": "workspace:*",
         "@forgeax/view-plugin-html": "workspace:*",
@@ -6730,6 +6732,16 @@
         "@types/react-dom": "19.3.0",
       },
     },
+    "tools/view/packages/view-plugin-asset-references": {
+      "name": "@forgeax/view-plugin-asset-references",
+      "version": "0.0.0",
+      "dependencies": {
+        "@forgeax/engine": "workspace:*",
+        "@forgeax/engine-plugin": "workspace:*",
+        "@forgeax/engine-tool-runtime": "workspace:*",
+        "@forgeax/view-workspace-core": "workspace:*",
+      },
+    },
     "tools/view/packages/view-plugin-content-browser": {
       "name": "@forgeax/view-plugin-content-browser",
       "version": "0.0.0",
@@ -6758,6 +6770,16 @@
       },
       "devDependencies": {
         "playwright": "1.63.0",
+      },
+    },
+    "tools/view/packages/view-plugin-history": {
+      "name": "@forgeax/view-plugin-history",
+      "version": "0.0.0",
+      "dependencies": {
+        "@forgeax/engine": "workspace:*",
+        "@forgeax/engine-plugin": "workspace:*",
+        "@forgeax/view-components": "workspace:*",
+        "@forgeax/view-workspace-core": "workspace:*",
       },
     },
     "tools/view/packages/view-plugin-html": {
@@ -6919,8 +6941,10 @@
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/view-components": "workspace:*",
         "@forgeax/view-plugin-asset": "workspace:*",
+        "@forgeax/view-plugin-asset-references": "workspace:*",
         "@forgeax/view-plugin-content-browser": "workspace:*",
         "@forgeax/view-plugin-display": "workspace:*",
+        "@forgeax/view-plugin-history": "workspace:*",
         "@forgeax/view-plugin-html": "workspace:*",
         "@forgeax/view-plugin-inspector": "workspace:*",
         "@forgeax/view-plugin-material": "workspace:*",
@@ -7808,9 +7832,13 @@
 
     "@forgeax/view-plugin-asset": ["@forgeax/view-plugin-asset@workspace:tools/view/packages/view-plugin-asset"],
 
+    "@forgeax/view-plugin-asset-references": ["@forgeax/view-plugin-asset-references@workspace:tools/view/packages/view-plugin-asset-references"],
+
     "@forgeax/view-plugin-content-browser": ["@forgeax/view-plugin-content-browser@workspace:tools/view/packages/view-plugin-content-browser"],
 
     "@forgeax/view-plugin-display": ["@forgeax/view-plugin-display@workspace:tools/view/packages/view-plugin-display"],
+
+    "@forgeax/view-plugin-history": ["@forgeax/view-plugin-history@workspace:tools/view/packages/view-plugin-history"],
 
     "@forgeax/view-plugin-html": ["@forgeax/view-plugin-html@workspace:tools/view/packages/view-plugin-html"],
 

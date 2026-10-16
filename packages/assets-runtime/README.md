@@ -96,6 +96,28 @@ The runtime matrix is the same 17 durable kinds as `SCRIPTABLE_PACK_ASSET_KINDS`
 
 The authority map is [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json). Runtime reads Catalog decisions and validated Pack/DDC projections by GUID; it never writes Pack, Meta, DDC, or authoring state.
 
+## Transient Mesh geometry reads
+
+`AssetRegistry.readMeshGeometry(guid)` reads the existing published Mesh root for
+source processing. It returns `MeshGeometrySource`: independently owned vertices,
+attributes, optional indices, submeshes and AABB. The same Pack decoder verifies
+artifact lengths, digests and geometry metadata; invalidation fences late reads.
+The registry retains package metadata and ordinary read caches, but does not
+admit the decoded Mesh root or recursively load its render dependencies.
+
+| Consumer intent | API | Result authority |
+| --- | --- | --- |
+| Process base geometry and discard the source | `readMeshGeometry` | Owned geometry data |
+| Render a Mesh with its published dependencies | `loadByGuid<MeshAsset>` | Complete Asset closure |
+| Rebuild missing or stale source output | Existing producer/import workflow | Published replacement |
+
+> [!IMPORTANT]
+> Geometry data has no Asset `kind`, material slots, LOD dependencies or Ready
+> receipt. Submesh slot indices remain intact for an explicit caller-owned
+> material mapping. Render or mode-switch consumers must separately load their
+> required dependencies through the ordinary readiness path. This read neither
+> imports missing source nor invalidates existing assets to reclaim memory.
+
 ## Material publication inspection
 
 `inspectMaterialRuntime(ready)` is the read-only, GUID-addressed inspection

@@ -80,23 +80,23 @@ async function capture() {
   return tight;
 }
 
-function draw(count) {
+async function draw(count) {
   let drawErrors = 0;
   for (let i = 0; i < count; i += 1) {
     world.update().unwrap();
-    if (!drawSmokeFrame(renderer, world).ok) drawErrors += 1;
+    if (!(await drawSmokeFrame(renderer, world)).ok) drawErrors += 1;
   }
   return drawErrors;
 }
 
 world.set(scene.camera, Camera, { bloom: BLOOM_DISABLED });
-const offErrors = draw(Math.max(1, Math.floor(frames / 3)));
+const offErrors = await draw(Math.max(1, Math.floor(frames / 3)));
 const offPixels = await capture();
 world.set(scene.camera, Camera, { bloom: BLOOM_ENABLED });
-const onErrors = draw(Math.max(1, Math.floor(frames / 3)));
+const onErrors = await draw(Math.max(1, Math.floor(frames / 3)));
 const onPixels = await capture();
 const remaining = frames - Math.floor(frames / 3) * 2;
-const tailErrors = draw(Math.max(0, remaining));
+const tailErrors = await draw(Math.max(0, remaining));
 const passNames = renderer.inspect().perFramePassNames;
 
 let totalDiff = 0;

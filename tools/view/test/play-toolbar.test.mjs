@@ -40,6 +40,7 @@ function fixture({ state = { project: { id: 'project' }, play: null }, call } = 
 it('allows Stop to cancel preparation before Engine has published a Play target', async () => {
   const view = fixture();
   const toggle = view.button('Play');
+  assert.equal(view.status.hidden, true);
   assert.match(toggle.innerHTML, /<svg/);
   assert.equal(toggle.title, 'Play');
   assert.equal(view.button('Stop'), undefined);
@@ -48,13 +49,15 @@ it('allows Stop to cancel preparation before Engine has published a Play target'
   assert.match(toggle.innerHTML, /<rect/);
   assert.equal(toggle.disabled, false);
   assert.match(view.status.textContent, /Preparing Play/);
+  assert.equal(view.status.hidden, false);
   await view.button('Stop').click();
   await starting;
   assert.equal(view.signal.aborted, true);
   assert.equal(view.button('Play'), toggle);
   assert.match(toggle.innerHTML, /<polygon/);
   assert.equal(toggle.disabled, false);
-  assert.equal(view.status.textContent, 'Editor tools · Speed 4.00');
+  assert.equal(view.status.textContent, '');
+  assert.equal(view.status.hidden, true);
   view.mounted.dispose();
   assert.equal(view.released, true);
 });
@@ -104,5 +107,14 @@ it('shows only the actions available for the current Play view', () => {
   assert.equal(view.button('Possess'), undefined);
   assert.ok(view.button('Editor'));
   assert.equal(view.button('Game'), undefined);
+  view.mounted.dispose();
+});
+
+it('keeps an actionable Play failure visible while idle labels stay hidden', async () => {
+  const view = fixture({ call() { throw new Error('Project assets could not be prepared'); } });
+  await view.button('Play').click();
+  assert.equal(view.status.hidden, false);
+  assert.equal(view.status.textContent, 'Project assets could not be prepared');
+  assert.equal(view.button('Play').disabled, false);
   view.mounted.dispose();
 });

@@ -58,6 +58,7 @@ const DISMISS_EXEMPT_SELECTORS = '.dv-context-menu, .fx-ue-overlay, .fx-ue-tab-s
 const DRAWER_CROSS_INSET_PX = 6;
 
 export type EdgeDrawerController = {
+  getOpenPanelId: () => string | null;
   close: () => void;
   forceClose: () => void;
   revealPanel: (panelId: string) => boolean;
@@ -601,6 +602,7 @@ export function installEdgeDrawer(
   hostResize?.observe(root);
 
   return {
+    getOpenPanelId: () => openGroup?.activePanel?.id ?? null,
     close,
     forceClose,
     revealPanel(panelId) {

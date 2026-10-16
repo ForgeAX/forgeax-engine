@@ -72,6 +72,13 @@ export {
   runLiveProjectProcess,
   startLiveDev,
 } from './live-dev.js';
+export {
+  createOperationHistoryStore,
+  createOperationHistoryTools,
+  type OperationHistoryEntry,
+  type OperationHistoryPage,
+  type OperationHistorySummary,
+} from './operation-history.js';
 export { type PluginMigrationOptions, pluginMigrateCommand } from './plugin/migration.js';
 export {
   type BootstrapRoot,

@@ -20,6 +20,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
@@ -173,13 +174,11 @@ export async function verifyChannelShadows(
     if (pending) (await recorder.frameBoundary()).unwrap();
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (renderer.requestObservation === undefined)
-      throw new Error('missing HDR observation capability');
-    renderValue(renderer.requestObservation(['linear-hdr']));
-    const receipt = renderValue(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      ['linear-hdr'],
     );
-    renderValue(await receipt.completed);
     if (pending) (await recorder.frameBoundary()).unwrap();
     const observation = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),

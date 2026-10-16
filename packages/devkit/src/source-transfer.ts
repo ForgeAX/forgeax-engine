@@ -35,7 +35,7 @@ import type { CommandResult, ProjectCommandOptions } from './types.js';
 export interface SourceTransferOptions extends ProjectCommandOptions {
   readonly sourceRoot: string;
   readonly sourcePath: string;
-  /** New directory beneath the target project's assets tree. */
+  /** New directory beneath one of the target project's configured asset directories. */
   readonly targetPath: string;
   readonly cloneIdentities?: boolean;
   readonly expectedRevision?: string;
@@ -281,14 +281,16 @@ export async function assetSourceImportCommand(
     if (!facts.ok) return facts;
     const root = await realpath(facts.value.root);
     const target = resolve(root, options.targetPath);
-    const targetRelative = relative(resolve(root, 'assets'), target).replaceAll('\\', '/');
     if (
-      !targetRelative ||
-      targetRelative === '..' ||
-      targetRelative.startsWith('../') ||
-      isAbsolute(targetRelative)
+      !facts.value.assetRoots.some((directory) => {
+        const path = relative(resolve(root, directory), target).replaceAll('\\', '/');
+        return path !== '' && path !== '..' && !path.startsWith('../') && !isAbsolute(path);
+      })
     )
-      conflict(options.targetPath, 'target must be a new directory beneath assets');
+      conflict(
+        options.targetPath,
+        'target must be a new directory beneath a configured asset directory',
+      );
     await assertWritablePath(root, target);
     for (const name of ['package.json', 'pnpm-lock.yaml', '.forgeax/source-transfer.lock'])
       await assertWritablePath(root, resolve(root, name));
@@ -296,7 +298,13 @@ export async function assetSourceImportCommand(
     await mkdir(dirname(lockPath), { recursive: true });
     await mkdir(lockPath);
     lock = lockPath;
-    const closure = await collectAuthorPackClosure(options.sourceRoot, options.sourcePath);
+    const sourceFacts = await readProjectFacts(options.sourceRoot);
+    if (!sourceFacts.ok) return sourceFacts;
+    const closure = await collectAuthorPackClosure(
+      options.sourceRoot,
+      options.sourcePath,
+      sourceFacts.value.assetRoots,
+    );
     const sourceLock = await optionalText(resolve(closure.root, 'pnpm-lock.yaml'));
     if (
       options.expectedRevision &&
@@ -331,7 +339,9 @@ export async function assetSourceImportCommand(
       if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
     }
     const targetInventory = await discoverPluginAssets(facts.value);
-    const targetSources = await scanInventory([resolve(root, 'assets')]);
+    const targetSources = await scanInventory(
+      facts.value.assetRoots.map((directory) => resolve(root, directory)),
+    );
     if (!targetSources.ok) throw targetSources.error;
     const targetRevisions = JSON.stringify(
       [...targetSources.value.declarations]
@@ -354,7 +364,8 @@ export async function assetSourceImportCommand(
     }
     const originalManifest = await readFile(resolve(root, 'package.json'), 'utf8');
     const originalLock = await optionalText(resolve(root, 'pnpm-lock.yaml'));
-    candidate = await mkdtemp(resolve(dirname(root), '.forgeax-transfer-'));
+    const candidateRoot = await mkdtemp(resolve(dirname(root), '.forgeax-transfer-'));
+    candidate = candidateRoot;
     await cp(root, candidate, {
       recursive: true,
       filter: (path) =>
@@ -401,11 +412,14 @@ export async function assetSourceImportCommand(
     // Source discovery evaluates Pack declarations. Its locked dependencies
     // must exist in the isolated candidate before that first evaluation.
     // Duplicate identities still fail before any target files are published.
-    const scanned = await scanInventory([resolve(candidate, 'assets')]);
+    const scanned = await scanInventory(
+      facts.value.assetRoots.map((directory) => resolve(candidateRoot, directory)),
+    );
     if (!scanned.ok) throw scanned.error;
     const candidateClosure = await collectAuthorPackClosure(
       candidate,
       relative(candidate, resolve(destination, closure.sourcePath)),
+      facts.value.assetRoots,
     );
     const destinationPrefix = `${relative(candidate, destination).replaceAll('\\', '/')}/`;
     if (
@@ -413,9 +427,10 @@ export async function assetSourceImportCommand(
       candidateClosure.files.some((file) => !file.path.startsWith(destinationPrefix))
     )
       conflict(destination, 'computed references must resolve inside the cloned source closure');
-    const inventory = await discoverPluginAssets({ root: candidate, assetRoots: ['assets'] });
-    const sourceFacts = await readProjectFacts(closure.root);
-    if (!sourceFacts.ok) throw sourceFacts.error;
+    const inventory = await discoverPluginAssets({
+      root: candidate,
+      assetRoots: facts.value.assetRoots,
+    });
     const sourceInventory = await discoverPluginAssets(sourceFacts.value);
     const buildGuids = new Set([
       ...pluginAssetClosure(sourceInventory, sourceFacts.value.roots.build).map(
@@ -476,7 +491,9 @@ export async function assetSourceImportCommand(
     )
       conflict(root, 'target dependencies changed during transfer');
     await assertPluginSourceInputs(targetInventory, root);
-    const currentSources = await scanInventory([resolve(root, 'assets')]);
+    const currentSources = await scanInventory(
+      facts.value.assetRoots.map((directory) => resolve(root, directory)),
+    );
     if (!currentSources.ok) throw currentSources.error;
     if (
       JSON.stringify(

@@ -35,7 +35,7 @@ import {
   terrainShadowLayoutMatches,
   terrainShadowTopology,
 } from '../terrain/shadow-family';
-import { addTypedShadowPasses } from '../typed-shadow-passes';
+import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
 import { addTargetCaptureGraphPasses, type CubeCaptureGraphState } from './target-capture-graph';
 import { translucentViewOffset, VIEW_UNIFORM_BYTES } from './view-ubo';
 
@@ -2765,6 +2765,7 @@ export function ensureCompiledFrameGraph(
     | ReturnType<typeof projectRenderFeatureShadows<RenderPipelineFrame>>
     | undefined;
   let projectedGpuDriven = false;
+  let prepareGpuDrivenPipelines: import('./frame-snapshot').InstalledFrameGraph['prepareGpuDrivenPipelines'];
   const activePipeline = frameState.activePipeline;
   let directionalShadowViewCount: number | undefined;
   // Direct and custom graph builds cannot admit callback or accessor elision.
@@ -2844,7 +2845,7 @@ export function ensureCompiledFrameGraph(
       projectGpuDriven: (target) => {
         if (projectedGpuDriven || gpuDriven === undefined) return ok(undefined);
         projectedGpuDriven = true;
-        return gpuDriven.project(
+        const projected = gpuDriven.project(
           builder,
           target.format,
           target.sampleCount,
@@ -2853,6 +2854,8 @@ export function ensureCompiledFrameGraph(
           target.lateOcclusion === true,
           rendererRecording && activePipeline === standardPipeline,
         );
+        if (projected.ok) prepareGpuDrivenPipelines = projected.value.preparePipelines;
+        return projected;
       },
       ...(gpuDriven?.projectShadow === undefined
         ? {}
@@ -3068,7 +3071,15 @@ export function ensureCompiledFrameGraph(
   // resource transition back to an empty key on the following frame.
   const preparedResourceKey =
     featureGraphCandidate?.preparedResourceKey ?? installed?.preparedResourceKey;
+  const requiresShadowPipelinePreparation =
+    rendererRecording && activePipeline === standardPipeline
+      ? shadowPipelinePreparationDemand(builder)
+      : undefined;
   frameState.compiledFrameGraph = {
+    ...(requiresShadowPipelinePreparation === undefined
+      ? {}
+      : { requiresShadowPipelinePreparation }),
+    ...(prepareGpuDrivenPipelines === undefined ? {} : { prepareGpuDrivenPipelines }),
     ...(directionalShadowViewCount === undefined ? {} : { directionalShadowViewCount }),
     graph: compiled.value,
     topologyKey: key,

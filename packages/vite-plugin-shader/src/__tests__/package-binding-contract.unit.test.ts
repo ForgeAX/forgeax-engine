@@ -10,6 +10,8 @@ it('loads the VFX owner declarations for depth, View-only and Standard programs'
     ['trail', 'view-only', undefined],
     ['beam', 'view-only', undefined],
     ['mesh', 'render-material', undefined],
+    ['mesh-unlit', 'render-material', undefined],
+    ['mesh-inputs-unlit', 'render-material', undefined],
     ['mesh-shadow', 'view-only', undefined],
   ] as const) {
     const entry = entries.find(

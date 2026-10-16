@@ -18,6 +18,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { rayPathCommands } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -219,9 +220,13 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
     throw new Error(JSON.stringify(renderer.inspect().probePlacement));
   };
   const hdr = async () => {
-    assert(renderer.requestObservation);
-    renderValue(renderer.requestObservation(['linear-hdr']));
-    const receipt = await draw();
+    world.update(1 / 60).unwrap();
+    propagateTransforms(world).unwrap();
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease }, geometryLane: 'automatic' },
+      ['linear-hdr'],
+    );
     const observation = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');

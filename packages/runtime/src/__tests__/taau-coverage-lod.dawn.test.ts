@@ -19,6 +19,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { LOD_SIZE, value } from './lod-transition.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -110,10 +111,11 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
       propagateTransforms(world).unwrap();
       const pending = capture ? recorder.captureFrame() : undefined;
       if (pending) (await recorder.frameBoundary()).unwrap();
-      const drawn = value(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
-      value(await drawn.completed);
+      await drawReadyFrame(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
       if (pending) (await recorder.frameBoundary()).unwrap();
       return pending;
     };

@@ -1,10 +1,8 @@
+import { navigateBrowserDocument } from '@forgeax/view/workspace/document-navigation';
 import { APP_VERSION, TRANSPORT_TOOL } from '../contract';
 import { z } from 'zod/v4';
 import { App } from '@modelcontextprotocol/ext-apps';
-import {
-  navigateBrowserDocument,
-  createFrontendPlatformPlugin,
-} from '@forgeax/engine-host/platform';
+import { createFrontendPlatformPlugin } from '@forgeax/engine-host/platform';
 import { connectMcpHost } from './host-transport';
 import { viewportInputPlugin } from '@forgeax/view/plugins/viewport/input';
 import type { HostTransportClient } from '@forgeax/engine-host/transport';

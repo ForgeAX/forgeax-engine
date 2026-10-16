@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // point-light-shadow.browser.test.ts
 // feat-20260612-point-light-shadows-urp-hdrp M0 / T-M0-2.
 //
@@ -358,13 +359,11 @@ it.skipIf(!browserReady)(
       if (!shadowAttachment.ok) throw shadowAttachment.error;
       for (let frame = 0; frame < 6; frame += 1) {
         shadowWorld.update(1 / 60).unwrap();
-        const drawn = renderer.draw({
+        await drawReadyFrame(renderer, {
           leases: [shadowAttachment.value],
           camera: { lease: shadowAttachment.value },
           environment: { lease: shadowAttachment.value },
         });
-        expect(drawn.ok).toBe(true);
-        if (!drawn.ok) throw drawn.error;
       }
       const shadowPixels = await waitForPresentedPixels(canvas);
       const shadowInspection = renderer.inspect();
@@ -382,13 +381,11 @@ it.skipIf(!browserReady)(
       if (!noShadowAttachment.ok) throw noShadowAttachment.error;
       for (let frame = 0; frame < 6; frame += 1) {
         noShadowWorld.update(1 / 60).unwrap();
-        const drawn = renderer.draw({
+        await drawReadyFrame(renderer, {
           leases: [noShadowAttachment.value],
           camera: { lease: noShadowAttachment.value },
           environment: { lease: noShadowAttachment.value },
         });
-        expect(drawn.ok).toBe(true);
-        if (!drawn.ok) throw drawn.error;
       }
       const noShadowPixels = await waitForPresentedPixels(canvas);
       const noShadowInspection = renderer.inspect();

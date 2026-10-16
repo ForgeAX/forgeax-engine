@@ -1,5 +1,6 @@
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
 import type { GameProjectRoots } from '@forgeax/engine-project';
+import type { ArtifactRef } from '@forgeax/engine-tool-runtime';
 import type { BrowserCarrierAdapter, BrowserCarrierRunIdentity } from './tools/display-carrier.js';
 
 export interface CommandError {
@@ -10,8 +11,12 @@ export interface CommandError {
 }
 
 export type CommandResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: CommandError };
+  | { readonly ok: true; readonly value: T; readonly artifacts?: readonly ArtifactRef[] }
+  | {
+      readonly ok: false;
+      readonly error: CommandError;
+      readonly artifacts?: readonly ArtifactRef[];
+    };
 
 export interface ProjectFacts {
   readonly root: string;

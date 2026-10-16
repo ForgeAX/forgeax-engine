@@ -23,6 +23,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const hdr = (bytes: Uint8Array, rowBytes: number) => {
@@ -146,17 +147,21 @@ export async function verifyGeneratedLods(
         propagateTransforms(world).unwrap();
         let pending: ReturnType<RecorderAttachment['captureFrame']> | undefined;
         if (frame === 59) {
-          renderValue(required(renderer.requestObservation)(['linear-hdr']));
           pending = recorder.captureFrame();
           renderValue(await recorder.frameBoundary());
         }
-        const drawn = renderer.draw({
-          ...(level === 3 ? {} : { geometryLane: 'direct' as const }),
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-        });
-        if (!drawn.ok) {
+        try {
+          receipt = await drawReadyFrame(
+            renderer,
+            {
+              ...(level === 3 ? {} : { geometryLane: 'direct' as const }),
+              leases: [lease],
+              camera: { lease },
+              environment: { lease },
+            },
+            frame === 59 ? ['linear-hdr'] : undefined,
+          );
+        } catch (error) {
           await save(
             'failure.json',
             new TextEncoder().encode(
@@ -164,7 +169,7 @@ export async function verifyGeneratedLods(
                 {
                   level,
                   frame,
-                  error: drawn.error,
+                  error,
                   events: renderErrors,
                   inspection: renderer.inspect(),
                 },
@@ -173,10 +178,8 @@ export async function verifyGeneratedLods(
               ),
             ),
           );
-          throw drawn.error;
+          throw error;
         }
-        receipt = drawn.value;
-        renderValue(await receipt.completed);
         if (!pending) continue;
         renderValue(await recorder.frameBoundary());
         const observed = renderValue(

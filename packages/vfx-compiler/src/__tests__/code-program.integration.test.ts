@@ -47,6 +47,8 @@ describe('code-first VFX program cook', () => {
       'forgeax_vfx_add_offsets_main',
       'forgeax_vfx_compact_main',
       'forgeax_vfx_sort_main',
+      'forgeax_vfx_scan_compact_main',
+      'forgeax_vfx_update_compact_main',
       'forgeax_vfx_billboard_main',
       'forgeax_vfx_mesh_main',
       'forgeax_vfx_ribbon_main',

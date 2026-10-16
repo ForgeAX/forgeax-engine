@@ -16,7 +16,7 @@ import type { ShadowViewInvalidationReason } from '../inspection-types';
 import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
-import { addTypedShadowPasses } from '../typed-shadow-passes';
+import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
 
 function spotTopology(spotMapSize = 32): RenderPipelineTopology {
   return {
@@ -57,9 +57,12 @@ function compile(
   staticLayers?: StaticShadowLayers,
   spotMapSize?: number,
   terrainReceivers?: readonly TerrainShadowReceiver[],
+  point = false,
+  pool?: ShadowViewStatePool,
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-  const base = spotTopology(spotMapSize);
+  const spot = spotTopology(spotMapSize);
+  const base = point ? { ...spot, shadow: { ...spot.shadow, pointCount: 1, spotCount: 0 } } : spot;
   const topology: RenderPipelineTopology =
     terrainReceivers === undefined
       ? base
@@ -74,12 +77,27 @@ function compile(
   addTypedShadowPasses(
     graph,
     topology,
-    () => ok(undefined),
+    (identity, pyramid) => pool?.project(graph, identity, true, pyramid) ?? ok(undefined),
     undefined,
     undefined,
     staticLayers,
   ).unwrap();
-  return graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap();
+  return Object.assign(graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap(), {
+    preparationDemand: shadowPipelinePreparationDemand(graph),
+    pointTexture: point
+      ? device
+          .createTexture({
+            format: 'depth32float',
+            size: {
+              width: topology.shadow.pointFaceSize,
+              height: topology.shadow.pointFaceSize,
+              depthOrArrayLayers: 24,
+            },
+            usage: 22,
+          })
+          .unwrap()
+      : undefined,
+  });
 }
 
 /** Runs one frame and returns each spot view's decision as `layer:reason`. */
@@ -103,6 +121,11 @@ function frame(
       operations.push(`raster:${descriptor.label}`);
       return begin(descriptor);
     };
+    const compute = encoder.beginComputePass.bind(encoder);
+    encoder.beginComputePass = (descriptor) => {
+      operations.push(`compute:${descriptor?.label}`);
+      return compute(descriptor);
+    };
     const copy = encoder.copyTextureToTexture.bind(encoder);
     encoder.copyTextureToTexture = (source, destination, size) => {
       operations.push(
@@ -114,7 +137,14 @@ function frame(
   compiled
     .execute({
       encoder,
-      frameState: { spotShadowSnapshots: [], shadowRaster: ledger },
+      frameState: {
+        spotShadowSnapshots: [],
+        pointShadowSnapshots: [],
+        shadowRaster: ledger,
+        ...(compiled.pointTexture === undefined
+          ? {}
+          : { pointShadowAtlas: { getTexture: () => compiled.pointTexture } }),
+      },
       gpuDrivenShadowViews: gpuShadowViews,
       runtime: { device },
       pipelineState: { perPassResources: { shadowSampler: null } },
@@ -158,6 +188,110 @@ function expectFullCopies(operations: readonly string[], producerName = 'shadowC
 }
 
 describe('static shadow layer retention', () => {
+  it('commits the submitted graph generation after compile without a second shadow raster', async () => {
+    const device = await nullDevice();
+    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+    const available = GpuScene.create(device, 1).unwrap();
+    if (available.status !== 'available') throw Error('scene unavailable');
+    const pool = ShadowViewStatePool.create({
+      device,
+      shaderModuleFactory: { createShaderModule: () => ok(shader) },
+    }).unwrap();
+    const sourcePlan = new BatchTopology().plan();
+    const matrix = new Float32Array(mat4.identity(mat4.create()));
+    const planes = frustum.fromViewProjection(frustum.create(), matrix);
+    const identities: readonly ShadowViewIdentity[] = [
+      { kind: 'spot', index: 0, layer: 'static' },
+      { kind: 'spot', index: 0 },
+    ];
+    const update = (graphGeneration: number, view = matrix) =>
+      identities.map(
+        (identity) =>
+          pool
+            .update({
+              identity,
+              sourcePlan,
+              scene: available.scene,
+              matrix: view,
+              planes,
+              targetSize: 32,
+              graphGeneration,
+            })
+            .unwrap().cache,
+      );
+    const firstUpdate = update(0);
+    expect(firstUpdate).toEqual(['invalidated', 'invalidated']);
+    const first = compile(device, pool.staticLayers, undefined, undefined, false, pool);
+    const firstOps: string[] = [];
+    expect(frame(device, first, pool.staticLayers, 'submit', firstOps, pool)).toEqual([
+      'static:graph-compiled',
+      'final:graph-compiled',
+    ]);
+    expect(firstOps.filter((op) => op.startsWith('compute:'))).toHaveLength(6);
+    pool._commitResourceReplacement(1);
+    expect(update(1)).toEqual(['hit', 'hit']);
+    const secondOps: string[] = [];
+    expect(frame(device, first, pool.staticLayers, 'submit', secondOps, pool)).toEqual([
+      'static:hit',
+      'final:hit',
+    ]);
+    expect(secondOps.filter((op) => op.startsWith('raster:'))).toHaveLength(0);
+    expect(secondOps.filter((op) => op.startsWith('compute:'))).toHaveLength(0);
+    pool._commitResourceReplacement(1);
+
+    // Real recording prepares the pool before ensureCompiledFrameGraph changes the generation.
+    expect(update(1)).toEqual(['hit', 'hit']);
+    const replacement = compile(device, pool.staticLayers, undefined, undefined, false, pool);
+    const replacementOps: string[] = [];
+    expect(frame(device, replacement, pool.staticLayers, 'submit', replacementOps, pool)).toEqual([
+      'static:hit',
+      'final:graph-compiled',
+    ]);
+    expect(replacementOps.filter((op) => op.startsWith('compute:'))).toHaveLength(6);
+    pool._commitResourceReplacement(2);
+    expect(update(2)).toEqual(['hit', 'hit']);
+    expect(frame(device, replacement, pool.staticLayers, 'submit', undefined, pool)).toEqual([
+      'static:hit',
+      'final:hit',
+    ]);
+    pool._commitResourceReplacement(2);
+
+    // A failed candidate does not advance the pool or publish its staged depth.
+    const shifted = new Float32Array(matrix);
+    shifted[12] = 0.125;
+    expect(update(2, shifted)).toEqual(['invalidated', 'invalidated']);
+    const aborted = compile(device, pool.staticLayers, undefined, undefined, false, pool);
+    frame(device, aborted, pool.staticLayers, 'abort', undefined, pool);
+    pool._abortResourceReplacement();
+    expect(update(2, shifted)).toEqual(['invalidated', 'invalidated']);
+    expect(pool.invalidationReason({ kind: 'spot', index: 0 })).toBe('submit-aborted');
+    frame(device, replacement, pool.staticLayers, 'submit', undefined, pool);
+    pool._commitResourceReplacement(2);
+    expect(update(2, shifted)).toEqual(['hit', 'hit']);
+    expect(update(2)).toEqual(['invalidated', 'invalidated']);
+    expect(pool.invalidationReason({ kind: 'spot', index: 0 })).toBe('view-changed');
+    frame(device, replacement, pool.staticLayers, 'submit', undefined, pool);
+    pool._commitResourceReplacement(2);
+
+    // The raw commit contract stays conservative when no submitted generation is supplied.
+    expect(update(2)).toEqual(['hit', 'hit']);
+    const raw = compile(device, pool.staticLayers, undefined, undefined, false, pool);
+    frame(device, raw, pool.staticLayers, 'submit', undefined, pool);
+    pool._commitResourceReplacement();
+    expect(update(3)).toEqual(['hit', 'invalidated']);
+    const rawOps: string[] = [];
+    expect(frame(device, raw, pool.staticLayers, 'submit', rawOps, pool)).toEqual([
+      'static:hit',
+      'final:graph-compiled',
+    ]);
+    expect(rawOps.filter((op) => op.startsWith('compute:'))).toHaveLength(3);
+    expect(rawOps.filter((op) => op.startsWith('raster:'))).toHaveLength(1);
+    pool._commitResourceReplacement();
+    for (const graph of [first, replacement, aborted, raw]) (await graph.retire()).unwrap();
+    pool.dispose();
+    available.scene.dispose();
+  });
+
   it('fully copies every Terrain family after a partial static producer update', async () => {
     const device = await nullDevice();
     const staticLayers = new StaticShadowLayers(device);
@@ -336,4 +470,82 @@ describe('static shadow layer retention', () => {
     (await large.retire()).unwrap();
     staticLayers.dispose();
   });
+});
+
+it.each([
+  'spot',
+  'directional',
+  'point',
+] as const)('uses the same pure %s raster demand before preparation', async (kind) => {
+  const device = await nullDevice();
+  const staticLayers = new StaticShadowLayers(device);
+  const compiled = compile(
+    device,
+    staticLayers,
+    undefined,
+    kind === 'directional' ? [] : undefined,
+    kind === 'point',
+  );
+  const identity: ShadowViewIdentity = { kind, index: 0, ...(kind === 'point' ? { face: 0 } : {}) };
+  const context = { gpuDrivenShadowViews: hitPool } as unknown as RenderPipelineFrame;
+  const demand = compiled.preparationDemand;
+  expect(demand).toBeDefined();
+  try {
+    // Repeated pending attempts do not consume graph-compiled or retained depth.
+    expect(demand?.(context, identity)).toBe(true);
+    expect(demand?.(context, identity)).toBe(true);
+    expect(demand?.(context, { ...identity, layer: 'static' })).toBe(true);
+    frame(device, compiled, staticLayers);
+    expect(demand?.(context, identity)).toBe(false);
+    expect(demand?.(context, { ...identity, layer: 'static' })).toBe(false);
+    const dynamic = {
+      gpuDrivenShadowViews: {
+        ...hitPool,
+        invalidationReason: (view: ShadowViewIdentity) =>
+          view.layer === 'static' ? undefined : 'content-changed',
+      },
+    } as unknown as RenderPipelineFrame;
+    expect(demand?.(dynamic, identity)).toBe(true);
+    expect(demand?.(dynamic, { ...identity, layer: 'static' })).toBe(false);
+    const unsubmittedLayers = new StaticShadowLayers(device);
+    const unsubmitted = compile(
+      device,
+      unsubmittedLayers,
+      undefined,
+      kind === 'directional' ? [] : undefined,
+      kind === 'point',
+    );
+    try {
+      frame(device, unsubmitted, unsubmittedLayers, 'abort');
+      expect(unsubmitted.preparationDemand?.(context, identity)).toBe(true);
+      expect(unsubmitted.preparationDemand?.(context, { ...identity, layer: 'static' })).toBe(true);
+    } finally {
+      (await unsubmitted.retire()).unwrap();
+      unsubmittedLayers.dispose();
+      if (unsubmitted.pointTexture !== undefined)
+        device.destroyTexture(unsubmitted.pointTexture).unwrap();
+    }
+  } finally {
+    (await compiled.retire()).unwrap();
+    staticLayers.dispose();
+    if (compiled.pointTexture !== undefined) device.destroyTexture(compiled.pointTexture).unwrap();
+  }
+});
+
+it('keeps preparation conservative when a Terrain family re-records a logical view', async () => {
+  const device = await nullDevice();
+  const staticLayers = new StaticShadowLayers(device);
+  const compiled = compile(device, staticLayers, undefined, [{ worldId: 0, entityKey: 7 }]);
+  try {
+    expect(compiled.preparationDemand).toBeUndefined();
+    frame(device, compiled, staticLayers);
+    expect(frame(device, compiled, staticLayers)).toEqual([
+      'static:hit',
+      'final:hit',
+      'terrain-0-7:hit',
+    ]);
+  } finally {
+    (await compiled.retire()).unwrap();
+    staticLayers.dispose();
+  }
 });

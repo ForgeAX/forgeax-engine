@@ -27,6 +27,7 @@ import {
   createWave1RenderingRecipe,
   WAVE1_ATMOSPHERE_PRESET,
 } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RhiBackendInstrumentation } from '../../../render/src/assembly/backend-contract';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
@@ -325,16 +326,12 @@ async function submitFrame(
   label: string,
 ): Promise<FrameSample> {
   propagateTransforms(world).unwrap();
-  const drawn = renderer.draw({
+  const receipt = await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
     fixedStep: world.getResource(FixedTime).tick,
   });
-  if (!drawn.ok) throw drawn.error;
-  const receipt = drawn.value;
-  const completed = await receipt.completed;
-  if (!completed.ok) throw completed.error;
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   const pixels = await screenshotPixels(canvas, label);
   const inspection = renderer.inspect();

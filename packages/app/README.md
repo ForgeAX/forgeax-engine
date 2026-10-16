@@ -1177,6 +1177,10 @@ full-access agent route; it does not grant frontend callers access to
 `engine.run.eval`. Workspace UI operations use their authorized command channel,
 which also works before the preview frame loop starts.
 
+Filesystem project metadata includes the resolved `assetRoots` from the project
+owner. Catalog sources may include builtins or dependencies outside those roots;
+consumers use the roots to present authored files without changing runtime identity.
+
 The project session exposes `runtimePack(input)` through existing Workspace
 ToolApi contributions. Callers use `projectId`, `targetId` and `worldId` from
 `engine.workspace.get`; the project target follows the session's actual World

@@ -196,21 +196,21 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
     const renderer = await createRenderer();
     const { world, shadowEntity } = buildScene(4, MAP_SIZE);
 
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
 
     world.set(shadowEntity, DirectionalLight, {
       mapSize: MAP_SIZE,
       shadowDistance: 50,
       cascadeCount: 2,
     });
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
 
     world.set(shadowEntity, DirectionalLight, {
       mapSize: MAP_SIZE,
       shadowDistance: 50,
       cascadeCount: 4,
     });
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
   });
 
   it('rebuilds a smaller shadow atlas and restores its dimensions and allocation', async () => {
@@ -218,7 +218,7 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
     const renderer = await createRenderer();
     const { world, shadowEntity } = buildScene(4, MAP_SIZE);
 
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
     const initial = renderer.inspect().directionalShadow;
     expect(initial?.shadowMapBytes).toBeGreaterThan(0);
 
@@ -227,7 +227,7 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
       shadowDistance: 50,
       cascadeCount: 4,
     });
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
     const reduced = renderer.inspect().directionalShadow;
     expect(reduced?.mapSize).toBeLessThan(initial?.mapSize ?? 0);
     expect(reduced?.shadowMapBytes).toBeLessThan(initial?.shadowMapBytes ?? 0);
@@ -237,7 +237,7 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
       shadowDistance: 50,
       cascadeCount: 4,
     });
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
     expect(renderer.inspect().directionalShadow?.mapSize).toBe(initial?.mapSize);
     expect(renderer.inspect().directionalShadow?.shadowMapBytes).toBe(initial?.shadowMapBytes);
   });
@@ -246,7 +246,7 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
     if (!dawnReady) return;
     const renderer = await createRenderer();
     const { world } = buildScene(1, MAP_SIZE);
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
   });
 
   it('castShadow true -> false -> true toggles the directional graph without device error', async () => {
@@ -254,15 +254,15 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
     const renderer = await createRenderer();
     const { world, shadowEntity } = buildScene(4, MAP_SIZE);
 
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
     world.set(shadowEntity, DirectionalLight, { castShadow: false });
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
     world.set(shadowEntity, DirectionalLight, {
       castShadow: true,
       mapSize: MAP_SIZE,
       shadowDistance: 50,
       cascadeCount: 4,
     });
-    expect(drawPublished(renderer, world).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
   });
 });

@@ -26,6 +26,7 @@ import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { derive, type MeshAsset, type TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -336,18 +337,19 @@ export async function verifyStandardDisplacement(
           })
           .unwrap();
         let completedFrames = 0;
-        const draw = async () => {
+        const draw = async (observe = false) => {
           world.update(1 / 60).unwrap();
           propagateTransforms(world).unwrap();
-          const r = renderValue(
-            renderer.draw({
+          const r = await drawReadyFrame(
+            renderer,
+            {
               ...(entry.gpu ? {} : { geometryLane: 'direct' as const }),
               leases: [lease],
               camera: { lease },
               environment: { lease },
-            }),
+            },
+            observe ? ['linear-hdr'] : undefined,
           );
-          renderValue(await r.completed);
           completedFrames++;
           return r;
         };
@@ -365,10 +367,9 @@ export async function verifyStandardDisplacement(
           await save(`${renderPath}-${entry.name}-writer.rhitape`, writerCapture.unwrap().bytes);
         }
         while (completedFrames < frameCount - 1) await draw();
-        renderValue(required(renderer.requestObservation?.(['linear-hdr'])));
         const capture = captureCase ? recorder.captureFrame() : undefined;
         if (capture) (await recorder.frameBoundary()).unwrap();
-        const receipt = await draw();
+        const receipt = await draw(true);
         expect(completedFrames).toBe(frameCount);
         if (capture) (await recorder.frameBoundary()).unwrap();
         const live = renderValue(

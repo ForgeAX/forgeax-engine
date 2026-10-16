@@ -27,6 +27,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ChildOf, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { verifyMeshDecalReplay } from './decals-mesh-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -131,19 +132,17 @@ export async function verifyDecals(
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const draw = async () => {
+  const draw = async (observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    return drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      observe ? ['linear-hdr'] : undefined,
     );
-    value(await receipt.completed);
-    return receipt;
   };
   const observe = async (name: string) => {
-    if (!renderer.requestObservation) throw new Error('observation unavailable');
-    value(renderer.requestObservation(['linear-hdr']));
-    const receipt = await draw();
+    const receipt = await draw(true);
     const observations = value(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations;

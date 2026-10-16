@@ -7,22 +7,48 @@ import { brotliCompress, brotliDecompress, constants } from 'node:zlib';
 import { DdcEntryStore, ddcOutputDigest, semanticDdcKey } from '@forgeax/engine-ddc';
 import { withMaterialPublicationGeneration } from '@forgeax/engine-pack/material-cook';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
-import { PackageId } from '@forgeax/engine-pack/source';
+import { AssetGuid, isScriptablePackAssetKind, PackageId } from '@forgeax/engine-pack/source';
 import type {
   ScriptablePackBuildProduct,
   ScriptablePackBuildProductCache,
   ScriptablePackBuildWorkItem,
 } from './scriptable-pack-build-core.js';
 
-const CACHE_SCHEMA = 'scriptable-pack-product/6';
+const CACHE_SCHEMA = 'scriptable-pack-product/7';
 const PRODUCT_ARTIFACT = 'product.v8.br';
-const LEGACY_CACHE_SCHEMA = 'scriptable-pack-product/5';
+const LEGACY_CACHE_SCHEMAS = ['scriptable-pack-product/6', 'scriptable-pack-product/5'] as const;
+const KINDS_SCHEMA = 'scriptable-pack-product-kinds/1';
 const compress = promisify(brotliCompress);
 const decompress = promisify(brotliDecompress);
 
 interface CachePayload {
-  readonly schemaVersion: typeof CACHE_SCHEMA | typeof LEGACY_CACHE_SCHEMA;
+  readonly schemaVersion: typeof CACHE_SCHEMA | (typeof LEGACY_CACHE_SCHEMAS)[number];
   readonly sourcePath: string;
+}
+
+interface CookerDependencies {
+  readonly kinds: readonly string[];
+  readonly nativeFree: boolean;
+}
+
+function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
+  if (product.stagedOutputs.length !== product.product.assets.length) return false;
+  const outputs = new Map(product.product.assets.map((asset) => [asset.guid, asset.kind]));
+  if (outputs.size !== product.product.assets.length) return false;
+  return product.stagedOutputs.every(({ guid, asset }) => {
+    if (asset === null || typeof asset !== 'object') return false;
+    const output = asset as unknown as Record<string, unknown>;
+    // These are the two Native registry branches in the Pack build owner.
+    // Any native/custom work keeps the complete registry signature, including
+    // dependent cookers its implementation may invoke. Unknown products do too.
+    return (
+      typeof output.kind === 'string' &&
+      isScriptablePackAssetKind(output.kind) &&
+      !('execution' in output) &&
+      !(output.kind === 'material' && Array.isArray(output.passes)) &&
+      outputs.get(AssetGuid.format(guid)) === output.kind
+    );
+  });
 }
 
 /**
@@ -136,6 +162,7 @@ export async function createScriptablePackProductCache(options: {
   readonly cookers: readonly NativeCooker[];
 }): Promise<ScriptablePackBuildProductCache> {
   const store = new DdcEntryStore(join(options.root, 'scriptable-pack-products'));
+  const kindStore = new DdcEntryStore(join(options.root, 'scriptable-pack-product-kinds'));
   const timing = (
     state: 'hit' | 'miss' | 'write' | 'skip' | 'write-failed',
     sourcePath: string,
@@ -162,6 +189,8 @@ export async function createScriptablePackProductCache(options: {
     }
   }
   const cookerIdentity = [...cookerIdentities].sort(([left], [right]) => left.localeCompare(right));
+  const productKinds = (product: ScriptablePackBuildProduct): readonly string[] =>
+    [...new Set(product.product.assets.map((asset) => asset.kind))].sort();
   const cacheable = (product: ScriptablePackBuildProduct): boolean =>
     product.externalEvidence.length === 0 &&
     product.product.assets.every(
@@ -194,7 +223,8 @@ export async function createScriptablePackProductCache(options: {
   };
   const identity = (
     subject: ScriptablePackBuildWorkItem,
-    schema: CachePayload['schemaVersion'] = CACHE_SCHEMA,
+    schema: string,
+    dependencies?: CookerDependencies,
   ): { key: string; guid: string } => {
     const guid = PackageId.format(subject.subjectPackageId ?? subject.definition.packageId);
     return {
@@ -209,7 +239,14 @@ export async function createScriptablePackProductCache(options: {
           values: subject.values ?? null,
           inheritedValues: subject.inheritedValues ?? null,
           outputVersions: options.outputVersions,
-          cookerIdentity,
+          ...(schema === KINDS_SCHEMA
+            ? {}
+            : {
+                cookerIdentity:
+                  dependencies?.nativeFree !== true
+                    ? cookerIdentity
+                    : dependencies.kinds.map((kind) => [kind, cookerIdentities.get(kind) ?? null]),
+              }),
         },
         sourceBytes: (subject.sourceClosure ?? []).map((entry) =>
           new TextEncoder().encode(`${entry.path}\0${entry.digest}`),
@@ -225,8 +262,9 @@ export async function createScriptablePackProductCache(options: {
     schema: CachePayload['schemaVersion'],
     artifact: string,
     decode: (bytes: Uint8Array) => Promise<Uint8Array>,
+    dependencies?: CookerDependencies,
   ): Promise<{ product?: ScriptablePackBuildProduct; reason: string; key: string }> => {
-    const { key, guid } = identity(subject, schema);
+    const { key, guid } = identity(subject, schema, dependencies);
     try {
       const entry = await store.read(key);
       if (entry === null) return { reason: 'entry-not-found', key };
@@ -245,7 +283,10 @@ export async function createScriptablePackProductCache(options: {
           typeof product.inputFingerprint === 'string' &&
           Array.isArray(product.externalEvidence) &&
           Array.isArray(product.product?.assets) &&
-          cacheable(product)
+          cacheable(product) &&
+          (dependencies === undefined ||
+            (JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
+              nativeFreeProduct(product) === dependencies.nativeFree))
         ) {
           const rebound = bindGeneration(product, subject.publicationGeneration ?? 1);
           return rebound === undefined
@@ -259,6 +300,26 @@ export async function createScriptablePackProductCache(options: {
       // A damaged optional entry is disposable; try the preceding format or cook.
       return { reason: 'entry-read-invalid', key };
     }
+  };
+  // A source generation determines its output kinds before native cooking.
+  // This immutable discovery row selects a fully semantic product key; it is
+  // never a substitute for checking current source bytes or cooker versions.
+  const readDependencies = async (subject: ScriptablePackBuildWorkItem) => {
+    const { key, guid } = identity(subject, KINDS_SCHEMA);
+    const entry = await kindStore.read(key);
+    const payload = entry?.payload as
+      | { schemaVersion?: unknown; sourcePath?: unknown; kinds?: unknown; nativeFree?: unknown }
+      | undefined;
+    const kinds = payload?.kinds;
+    return entry?.guid === guid &&
+      payload?.schemaVersion === KINDS_SCHEMA &&
+      payload.sourcePath === subject.sourcePath &&
+      typeof payload.nativeFree === 'boolean' &&
+      Array.isArray(kinds) &&
+      kinds.every((kind) => typeof kind === 'string') &&
+      JSON.stringify(kinds) === JSON.stringify([...new Set(kinds)].sort())
+      ? { kinds: kinds as readonly string[], nativeFree: payload.nativeFree }
+      : undefined;
   };
   const write: ScriptablePackBuildProductCache['write'] = async (subject, product) => {
     const startedAt = performance.now();
@@ -279,7 +340,8 @@ export async function createScriptablePackProductCache(options: {
       const compressed = await compress(bytes, {
         params: { [constants.BROTLI_PARAM_QUALITY]: 4 },
       });
-      const { key, guid } = identity(subject);
+      const dependencies = { kinds: productKinds(product), nativeFree: nativeFreeProduct(product) };
+      const { key, guid } = identity(subject, CACHE_SCHEMA, dependencies);
       const entry = {
         key,
         guid,
@@ -301,6 +363,23 @@ export async function createScriptablePackProductCache(options: {
       };
       entry.receipt.outputDigest = ddcOutputDigest(entry);
       await store.write(entry);
+      const discoveryKey = identity(subject, KINDS_SCHEMA).key;
+      const discovery = {
+        key: discoveryKey,
+        guid,
+        payload: { schemaVersion: KINDS_SCHEMA, sourcePath: subject.sourcePath, ...dependencies },
+        refs: [] as string[],
+        artifacts: {},
+        receipt: {
+          guid,
+          key: discoveryKey,
+          producer: KINDS_SCHEMA,
+          inputFingerprint: discoveryKey,
+          outputDigest: '',
+        },
+      };
+      discovery.receipt.outputDigest = ddcOutputDigest(discovery);
+      await kindStore.write(discovery);
       timing('write', subject.sourcePath, startedAt, {
         key,
         serializedBytes: bytes.byteLength,
@@ -319,11 +398,17 @@ export async function createScriptablePackProductCache(options: {
         timing('miss', subject.sourcePath, startedAt, { reason: 'source-changed' });
         return undefined;
       }
-      const current = await readEntry(subject, CACHE_SCHEMA, PRODUCT_ARTIFACT, decompress);
-      const legacy =
-        current.product === undefined
-          ? await readEntry(subject, LEGACY_CACHE_SCHEMA, PRODUCT_ARTIFACT, decompress)
-          : undefined;
+      const dependencies = await readDependencies(subject);
+      const current: Awaited<ReturnType<typeof readEntry>> =
+        dependencies === undefined
+          ? { reason: 'entry-not-found', key: identity(subject, KINDS_SCHEMA).key }
+          : await readEntry(subject, CACHE_SCHEMA, PRODUCT_ARTIFACT, decompress, dependencies);
+      let legacy: Awaited<ReturnType<typeof readEntry>> | undefined;
+      if (current.product === undefined)
+        for (const schema of LEGACY_CACHE_SCHEMAS) {
+          legacy = await readEntry(subject, schema, PRODUCT_ARTIFACT, decompress);
+          if (legacy.product !== undefined) break;
+        }
       const product = current.product ?? legacy?.product;
       if (product !== undefined && (await sourceClosureCurrent(subject))) {
         // Format migration only republishes a verified immutable product; it

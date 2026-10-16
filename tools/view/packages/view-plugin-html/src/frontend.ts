@@ -12,7 +12,7 @@ const htmlUiPlugin = {
     const pageHost = config.pageHost ?? ctx.get('pageHost', false);
     if (!pageHost) throw new TypeError('HTML UI page requires pageHost');
     const state = createHtmlUiViewState();
-    const unregister = pageHost.registerType({ typeId: HTML_UI_PAGE_TYPE, context: 'project', title: 'HTML UI', order: 60, closable: true, singleton: true, initial: false, openable: true, layout: 'dock', showPanelRail: true, hideWhenInactive: true, resourceSelector: { extensions: ['.html'] }, createController: () => ({ getTitle: () => state.getSnapshot().file?.path.split('/').at(-1) ?? 'HTML UI', subscribeTitle: state.subscribe }) });
+    const unregister = pageHost.registerType({ typeId: HTML_UI_PAGE_TYPE, context: 'project', title: 'HTML UI', order: 60, closable: true, singleton: true, initial: false, openable: true, layout: 'dock', showPanelRail: true, hideWhenInactive: true, resourceSelector: { extensions: ['.html'] }, createController: () => ({ getResource: () => { const file = state.getSnapshot().file; return file ? { file } : undefined; }, getTitle: () => state.getSnapshot().file?.path.split('/').at(-1) ?? 'HTML UI', subscribeTitle: state.subscribe }) });
     const unsubscribe = pageHost.subscribeResourceOpen((request) => { if ('file' in request && request.file.extension === '.html') state.open(request.file); });
     const disposers: Dispose[] = [];
     ctx.effect(() => async () => { unsubscribe(); for (const dispose of [...disposers].reverse()) await dispose(); unregister(); state.dispose(); });

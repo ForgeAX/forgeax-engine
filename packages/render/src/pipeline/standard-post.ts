@@ -52,6 +52,7 @@ import {
 } from './standard-output/auto-exposure/gpu';
 import { createStandardOutputPlan } from './standard-output/graph';
 import { addStandardColorLutPass } from './standard-output/lut-gpu';
+import { addStandardToneLutPass } from './standard-output/tone-lut';
 
 interface StandardPostSurface {
   readonly display?: RenderPipelineTarget;
@@ -772,13 +773,27 @@ export function addStandardPost(
       outputPlan.features.outline ||
       outputPlan.features.smaa);
 
+  // Only adjacent pointwise stages may fuse. Intermediate observers, spatial
+  // effects and raw-only overlays retain their original attachment boundaries.
+  const fusedToneLut =
+    !clearOnly &&
+    !rawOnly &&
+    outputPlan.features.lut &&
+    topology.camera.antialias === 'none' &&
+    !outputPlan.features.outline &&
+    !outputPlan.features.barrelDistortion &&
+    !outputPlan.features.lensEffects &&
+    postEffects.length === 0 &&
+    (context.observationCaptureDomains?.length ?? 0) === 0;
+
   // Tone mapping and output encoding are separate entry points when a LUT is
   // enabled or auto exposure is active: the LUT must sample linear LDR, and
   // the single OETF writer runs only after LUT and optional FXAA.
   // A missing linear-LDR observation needs its own tone-only producer. It must
   // not move the ordinary FXAA pass across the output encoding boundary.
   const toneOutput =
-    splitOutput || context.observationCaptureDomains?.includes('linear-ldr') === true
+    !fusedToneLut &&
+    (splitOutput || context.observationCaptureDomains?.includes('linear-ldr') === true)
       ? target(context, 'standard-tone-output', {
           format: 'rgba16float',
           size: 'surface',
@@ -813,15 +828,27 @@ export function addStandardPost(
         }),
       );
     }
-    const lutOutput = target(context, 'standard-color-lut', {
-      format: 'rgba16float',
-      size: 'surface',
-      domain: 'linear-ldr',
-    });
-    if (!lutOutput.ok) return lutOutput;
-    const lutPass = addStandardColorLutPass(context.graph, postInput, lutOutput.value, colorLut);
-    if (!lutPass.ok) return lutPass;
-    postInput = lutOutput.value;
+    if (fusedToneLut) {
+      const fused = addStandardToneLutPass(
+        context.graph,
+        postInput,
+        finalPresent,
+        colorLut,
+        outputDither,
+      );
+      if (!fused.ok) return fused;
+      postInput = finalPresent;
+    } else {
+      const lutOutput = target(context, 'standard-color-lut', {
+        format: 'rgba16float',
+        size: 'surface',
+        domain: 'linear-ldr',
+      });
+      if (!lutOutput.ok) return lutOutput;
+      const lutPass = addStandardColorLutPass(context.graph, postInput, lutOutput.value, colorLut);
+      if (!lutPass.ok) return lutPass;
+      postInput = lutOutput.value;
+    }
   }
 
   if (outputPlan.features.outline) {
@@ -952,7 +979,7 @@ export function addStandardPost(
     postInput = lensOutput.value;
   }
 
-  if (splitOutput) {
+  if (splitOutput && !fusedToneLut) {
     const encodedOutput = rawOnlyPostInput?.value ?? finalPresent;
     const outputTransform = addTypedOutputTransformPass(context.graph, postInput, encodedOutput, {
       dither: outputDither,

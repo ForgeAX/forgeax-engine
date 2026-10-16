@@ -88,6 +88,20 @@ export type RendererPipelineCacheState = {
     FirstEntryMap<number | string, PerShaderMaterialLayoutCacheEntry>
   >;
 };
+/** Initial construction and recovery start from the same empty generation caches. */
+export function createRendererPipelineCacheState(): RendererPipelineCacheState {
+  return {
+    materialShaderPipelineCache: new Map(),
+    materialShaderVariantResolutionCache: new WeakMap(),
+    group0MaterialLayout: null,
+    viewOnlyMaterialPipelineLayout: null,
+    viewAndSceneDepthMaterialPipelineLayout: null,
+    group0ResourceLayouts: new Map(),
+    preparedMaterialPipelineLayoutCache: new Map(),
+    perShaderMaterialLayoutCache: new Map(),
+  };
+}
+
 export type RendererCandidateState = {
   gpuPassTimingSession?: GpuPassTimingSession | undefined;
   gpuPassTimingUnavailable?: GpuPassTimingObservation | undefined;
@@ -137,7 +151,6 @@ export interface RendererRecoveryDependencies {
   readonly getActiveDeviceScope: () => DeviceScope;
   readonly getActiveShaderState: () => RendererShaderState;
   readonly getMaterialShaderUvSetCounts: () => Map<string, number>;
-  readonly createRendererPipelineCacheState: () => RendererPipelineCacheState;
   readonly getCandidateBuildState: () => RendererCandidateState | undefined;
   readonly setCandidateBuildState: (state: RendererCandidateState | undefined) => void;
   readonly getCandidateShaderState: () => RendererShaderState | undefined;
@@ -164,6 +177,12 @@ export interface RendererRecoveryDependencies {
   >;
   readonly getMaterialShaderPipelineEntry: NonNullable<
     RenderSystemInternals['getMaterialShaderPipelineEntry']
+  >;
+  readonly prepareMaterialShaderPipeline: NonNullable<
+    RenderSystemInternals['prepareMaterialShaderPipeline']
+  >;
+  readonly prepareMaterialShaderPipelineEntry: NonNullable<
+    RenderSystemInternals['prepareMaterialShaderPipelineEntry']
   >;
   readonly getMaterialShaderArtifact: NonNullable<
     RenderSystemInternals['getMaterialShaderArtifact']
@@ -212,7 +231,6 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     getActiveDeviceScope,
     getActiveShaderState,
     getMaterialShaderUvSetCounts,
-    createRendererPipelineCacheState,
     getCandidateBuildState,
     setCandidateBuildState,
     getCandidateShaderState,
@@ -230,6 +248,8 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     buildPipeline,
     getMaterialShaderPipeline,
     getMaterialShaderPipelineEntry,
+    prepareMaterialShaderPipeline,
+    prepareMaterialShaderPipelineEntry,
     getMaterialShaderArtifact,
     getMaterialShaderBindingContract,
     getParamSchema,
@@ -657,6 +677,8 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
       dynamicTextureStore: { value: candidateState.dynamicTextureStore },
       getMaterialShaderPipeline: { value: getMaterialShaderPipeline },
       getMaterialShaderPipelineEntry: { value: getMaterialShaderPipelineEntry },
+      prepareMaterialShaderPipeline: { value: prepareMaterialShaderPipeline },
+      prepareMaterialShaderPipelineEntry: { value: prepareMaterialShaderPipelineEntry },
       getMaterialShaderArtifact: { value: getMaterialShaderArtifact },
       getMaterialShaderBindingContract: { value: getMaterialShaderBindingContract },
       getParamSchema: { value: getParamSchema },

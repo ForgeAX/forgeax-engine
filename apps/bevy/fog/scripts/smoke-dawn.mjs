@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { driveReadyAppFrames } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 
 import { createHash } from 'node:crypto';
@@ -482,26 +483,13 @@ async function readbackCenter() {
 }
 
 async function advanceSettlingFrame() {
-  const due = rafQueue.shift();
-  if (due === undefined) return false;
-  now += 16.67;
-  due.callback(now);
-  await delay(0);
-  await sharedDevice.queue.onSubmittedWorkDone();
+  await driveReadyAppFrames(app.renderer, () => {
+    const due = rafQueue.shift();
+    if (due === undefined) return false;
+    now += 16.67;
+    due.callback(now);
+  });
   return true;
-}
-
-async function readbackRenderableFrame() {
-  let sample = await readbackCenter();
-  // Dawn can expose the first cleared target before the renderer's first
-  // submitted scene frame has reached the readback queue. Advance only the
-  // already-scheduled frame, with a strict bound; persistent black output
-  // still reaches the real oracle and fails.
-  for (let attempt = 0; attempt < 3 && Math.max(...sample.rgba.slice(0, 3)) <= 0.01; attempt += 1) {
-    if (!(await advanceSettlingFrame())) break;
-    sample = await readbackCenter();
-  }
-  return sample;
 }
 
 const phaseReferences = new Map();
@@ -552,25 +540,14 @@ if (!started.ok) {
   console.error('[smoke-dawn] unavailable: app start failed: ' + started.error.code);
   process.exit(1);
 }
-const warmupFrame = rafQueue.shift();
-if (warmupFrame !== undefined) {
-  now += 16.67;
-  warmupFrame.callback(now);
-  await delay(0);
-  await sharedDevice.queue.onSubmittedWorkDone();
-}
+await advanceSettlingFrame();
 
 const trace = await runFogLifecycle({
   backend: 'dawn',
   frameCount: targetFrames,
   advanceFrame: async ({ frame, phase, phaseChanged }) => {
     const phaseState = applyPhase(phase);
-    if (rafQueue.length === 0) await delay(1);
-    const due = rafQueue.shift();
-    if (!due) throw new Error('Dawn frame ' + frame + ' was not scheduled');
-    now += 16.67;
-    due.callback(now);
-    await delay(0);
+    await advanceSettlingFrame();
     let recovery;
     if (phase === 'recovery' && phaseChanged) {
       recoveryExpected = true;
@@ -596,17 +573,8 @@ const trace = await runFogLifecycle({
             }),
       };
       if (recovered) {
-        const recoveredFrame = rafQueue.shift();
-        if (recoveredFrame === undefined) throw new Error('Dawn recovery frame was not scheduled');
-        now += 16.67;
-        recoveredFrame.callback(now);
-        await delay(0);
-        const settledFrame = rafQueue.shift();
-        if (settledFrame !== undefined) {
-          now += 16.67;
-          settledFrame.callback(now);
-          await delay(0);
-        }
+        await advanceSettlingFrame();
+        await advanceSettlingFrame();
       }
     }
     return { phaseState, recovery };
@@ -615,7 +583,7 @@ const trace = await runFogLifecycle({
     for (let settle = 0; settle < TEMPORAL_SETTLE_FRAMES; settle += 1) {
       if (!(await advanceSettlingFrame())) break;
     }
-    const sample = await readbackRenderableFrame();
+    const sample = await readbackCenter();
     const observed = sample.rgba;
     const roi = sampleFogRois(sample.pixels, sample.width, sample.height);
     const oracleResult = renderedCenterOracle(phase, sample);

@@ -23,7 +23,7 @@ function required<T>(value: T | undefined): T {
 const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 it.each([
-  1, 9, 256, 257,
+  1, 3, 9, 16, 256, 257,
 ])('preserves canonical particle state across ticks and replay at capacity %i', async (capacity) => {
   const cooked = (
     await cookParticleCodeProgram(
@@ -138,7 +138,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
     const pass = planPasses(plan).find((pass) => pass.name.endsWith('.simulate'));
     if (pass?.kind !== 'compute') throw new Error('Missing planned simulation');
     expect(pass.dispatches.map((dispatch) => dispatch.entryPoint)).toEqual(
-      groups === 1 ? entries.filter((_, index) => index !== 3 && index !== 4) : entries,
+      groups === 1 ? ['forgeax_vfx_spawn_main', 'forgeax_vfx_update_compact_main'] : entries,
     );
     return pass.dispatches;
   };
@@ -162,7 +162,12 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
     const module = device.createShaderModule({ code: emitter.wgsl });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
     const pipelines = new Map(
-      entries.map((entryPoint) => [
+      [
+        ...entries,
+        ...(groups === 1
+          ? ['forgeax_vfx_scan_compact_main', 'forgeax_vfx_update_compact_main']
+          : []),
+      ].map((entryPoint) => [
         entryPoint,
         device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } }),
       ]),

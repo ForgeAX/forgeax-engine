@@ -42,6 +42,8 @@
       "billboard-inputs.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass" },
       "mesh.wgsl": { "bindings": "render-material" },
       "mesh-inputs.wgsl": { "bindings": "render-material" },
+      "mesh-unlit.wgsl": { "bindings": "render-material" },
+      "mesh-inputs-unlit.wgsl": { "bindings": "render-material" },
       "mesh-shadow.wgsl": { "bindings": "view-only" },
       "ribbon.wgsl": { "bindings": "view-only" },
       "ribbon-inputs.wgsl": { "bindings": "view-only" },

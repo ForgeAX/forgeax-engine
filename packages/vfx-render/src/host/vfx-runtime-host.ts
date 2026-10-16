@@ -1,4 +1,8 @@
-import type { AssetRegistryResolver, RuntimeAssetRegistry } from '@forgeax/engine-assets-runtime';
+import type {
+  AssetRegistryResolver,
+  MaterialRenderProjection,
+  RuntimeAssetRegistry,
+} from '@forgeax/engine-assets-runtime';
 import {
   getAssetRegistryResolver,
   AssetRegistry as LegacyAssetRegistry,
@@ -321,21 +325,49 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
     dataInterfaces,
     material: {
       read: (world, guid) => readRenderAsset(world, guid, 'material'),
+      captureFrame: (world) => {
+        const assets = worlds.get(world)?.assets;
+        if (assets === undefined) return false;
+        // Do not invoke a custom accessor merely to discover capture support.
+        const own = Object.getOwnPropertyDescriptor(assets, 'getMaterialProjectionForPayload');
+        if (own !== undefined) return own.value === stockMaterialProjection;
+        return (
+          Object.getPrototypeOf(assets) === LegacyAssetRegistry.prototype &&
+          Object.getOwnPropertyDescriptor(
+            LegacyAssetRegistry.prototype,
+            'getMaterialProjectionForPayload',
+          )?.value === stockMaterialProjection
+        );
+      },
       projection: (world, material) => {
         const assets = worlds.get(world)?.assets;
         if (assets === undefined || !('getMaterialProjectionForPayload' in assets))
           return undefined;
         const readProjection = assets.getMaterialProjectionForPayload;
         const projection = readProjection.call(assets, material);
-        // The stock registry owns plain cooked pass records. Ordinary raster
-        // variants are never consumed by particleMaterialPass's fallback.
-        // Keep custom providers and every non-raster pass unchanged.
-        return readProjection === stockMaterialProjection &&
-          projection?.passes.every(
-            (pass) =>
-              pass.name === 'forward' || pass.name === 'deferred' || pass.name === 'shadow-caster',
-          )
-          ? undefined
+        if (readProjection !== stockMaterialProjection || projection === undefined)
+          return projection;
+        // Ordinary raster variants are never selected by particleMaterialPass.
+        const passes = projection.passes.filter(
+          (pass) =>
+            pass.name !== 'forward' && pass.name !== 'deferred' && pass.name !== 'shadow-caster',
+        );
+        if (passes.length === 0) return undefined;
+        if (passes.length === projection.passes.length) return projection;
+        // Selection's legacy/modern address policy is derived across all passes.
+        // Preserve mixed legacy inputs when removing raster rows could change it.
+        const modern = (rows: MaterialRenderProjection['passes']) =>
+          rows.some((pass) =>
+            pass.programs.some(
+              (program) =>
+                program.context.pipeline !== 'ray' &&
+                (program.address !== undefined ||
+                  program.entry !== undefined ||
+                  program.abi !== undefined),
+            ),
+          );
+        return modern(passes) === modern(projection.passes)
+          ? { ...projection, passes }
           : projection;
       },
     },

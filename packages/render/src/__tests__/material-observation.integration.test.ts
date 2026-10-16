@@ -71,6 +71,52 @@ describe('resident MeshMaterialBindingObservation', () => {
     worlds[1].sharedRefs.release(handles[1]).unwrap();
   });
 
+  it('reads cooked child readiness from the accepted program owner', () => {
+    const world = new World();
+    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const root = '019f0000-0000-7000-8000-000000000201';
+    const child = '019f0000-0000-7000-8000-000000000202';
+    const payload = { kind: 'material' as const, parent: assets.parseGuid(root), values: {} };
+    assets.catalog(child, payload).unwrap();
+    const missing = {
+      status: 'Error' as const,
+      error: {
+        code: 'material-specialization-not-cooked' as const,
+        expected: 'the selected material program is cooked',
+        hint: 'cook the selected program',
+        retryable: false,
+        recoveryActions: [],
+        detail: { guid: child, specializationKey: '' },
+      },
+    };
+    assets.recordMaterialReadiness(child, missing);
+    const material = {
+      ...defaultMaterialSnapshot(),
+      materialHandle: world.allocSharedRef('MaterialAsset', payload),
+    };
+    const internals = { assets } as RenderSystemInternals;
+    const accepted = {
+      ...material,
+      materialPublication: {
+        identity: {
+          materialGuid: root,
+          publicationGeneration: 1,
+          specializationKey: 'root/1',
+          artifactHash: 'sha256:accepted-root',
+        },
+        programs: [],
+      },
+    };
+    expect(observeMaterialResidency(world, accepted, internals).readiness).toBe('ready');
+    // An uncooked child and a failed actual program owner remain failures.
+    expect(observeMaterialResidency(world, material, internals).readiness).toBe('failed');
+    assets.recordMaterialReadiness(root, {
+      ...missing,
+      error: { ...missing.error, detail: { ...missing.error.detail, guid: root } },
+    });
+    expect(observeMaterialResidency(world, accepted, internals).readiness).toBe('failed');
+  });
+
   it('keeps texture, sampler and video overrides separate from the same value-only material', () => {
     const world = new World();
     const materialHandle = world.allocSharedRef('MaterialAsset', { kind: 'material' });

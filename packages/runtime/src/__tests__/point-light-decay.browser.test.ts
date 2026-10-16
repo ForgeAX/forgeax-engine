@@ -17,6 +17,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { collectWebGpuValidationErrors } from './webgpu-validation.fixture';
@@ -152,103 +153,102 @@ it.each([
     const draw = async (observe: boolean) => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      if (observe || mode === 'volume') value(renderer.requestObservation?.(['linear-hdr']));
       const pending = observe ? recorder.captureFrame() : undefined;
       if (pending) (await recorder.frameBoundary()).unwrap();
-      const prepared = publisher?.prepare((frames + 1) / 60).unwrap();
-      const packet =
-        prepared === undefined
-          ? undefined
-          : structuredClone(prepared.packet, {
-              transfer: renderPublicationTransfers(prepared.packet),
-            });
-      prepared?.accept();
-      try {
-        const receipt = value(
-          renderer.draw(
-            packet
-              ? { publication: packet }
-              : {
-                  leases: [required(lease)],
-                  camera: { lease: required(lease) },
-                  environment: { lease: required(lease) },
-                },
-          ),
-        );
-        value(await receipt.completed);
-        frames++;
-        if (!pending) {
-          if (mode === 'volume')
-            value(await renderer.observe(receipt, { include: ['linear-hdr'] }));
-          return undefined;
-        }
-        (await recorder.frameBoundary()).unwrap();
-        const tape = (await pending).unwrap();
-        const decoded = decodeTape(tape.bytes).unwrap();
-        const model = buildFrameModel(decoded);
-        let history: number | undefined;
-        if (mode === 'volume') {
-          const work = required(
-            model.works.find((work) =>
-              work.pipeline.shaders.some((shader) => shader.entryPoint === 'volume_temporal'),
+      const receipt = await completeReadyFrame(async () => {
+        if (observe || mode === 'volume') value(renderer.requestObservation?.(['linear-hdr']));
+        const prepared = publisher?.prepare((frames + 1) / 60).unwrap();
+        const packet =
+          prepared === undefined
+            ? undefined
+            : structuredClone(prepared.packet, {
+                transfer: renderPublicationTransfers(prepared.packet),
+              });
+        prepared?.accept();
+        try {
+          const receipt = value(
+            renderer.draw(
+              packet
+                ? { publication: packet }
+                : {
+                    leases: [required(lease)],
+                    camera: { lease: required(lease) },
+                    environment: { lease: required(lease) },
+                  },
             ),
           );
-          const binding = required(
-            work.bindings.find((binding) => binding.groupIndex === 0 && binding.binding === 3),
-          );
-          const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0) + 31 * 4;
-          const scalar = (hash: string, start: number, size: number) => {
-            if (start <= offset && start + size >= offset + 4) {
-              const bytes = required(decoded.blobs.find((blob) => blob.hash === hash)).bytes;
-              history = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(
-                offset - start,
-                true,
-              );
-            }
-          };
-          for (const slice of decoded.bootstrap.find(
-            (resource) => resource.handleId === binding.resourceId,
-          )?.initialData ?? [])
-            scalar(slice.hash, slice.byteOffset, slice.byteLength);
-          for (const event of decoded.events.slice(0, work.eventIndex)) {
-            if (event.kind === 'writeBuffer' && event.handleId === binding.resourceId)
-              scalar(event.dataHash, event.bufferOffset, event.size);
-          }
+          value(await receipt.completed);
+          return receipt;
+        } finally {
+          if (packet)
+            required(publisher)
+              .recycle(packet.revision, renderPublicationTransfers(packet))
+              .unwrap();
         }
-        const observation = required(
-          value(await renderer.observe(receipt, { include: ['linear-hdr'] })).observations?.find(
-            (row) => row.domain === 'linear-hdr',
+      });
+      frames++;
+      if (!pending) {
+        if (mode === 'volume') value(await renderer.observe(receipt, { include: ['linear-hdr'] }));
+        return undefined;
+      }
+      (await recorder.frameBoundary()).unwrap();
+      const tape = (await pending).unwrap();
+      const decoded = decodeTape(tape.bytes).unwrap();
+      const model = buildFrameModel(decoded);
+      let history: number | undefined;
+      if (mode === 'volume') {
+        const work = required(
+          model.works.find((work) =>
+            work.pipeline.shaders.some((shader) => shader.entryPoint === 'volume_temporal'),
           ),
         );
-        const pixels = luminanceRgba16f(
-          observation.bytes,
-          64,
-          64,
-          observation.metadata.bytesPerRow,
+        const binding = required(
+          work.bindings.find((binding) => binding.groupIndex === 0 && binding.binding === 3),
         );
-        const luminance =
-          ((pixels[31 * 64 + 31] ?? 0) +
-            (pixels[31 * 64 + 32] ?? 0) +
-            (pixels[32 * 64 + 31] ?? 0) +
-            (pixels[32 * 64 + 32] ?? 0)) /
-          4;
-        await save(`${mode}-${renderPath}-${frames}.rhitape`, tape.bytes);
-        return {
-          luminance,
-          history,
-          frames,
-          digest: tape.digest,
-          works: model.works.map((work) => ({
-            workIndex: work.workIndex,
-            shaders: work.pipeline.shaders.map((shader) => shader.entryPoint),
-            bindings: work.bindings,
-          })),
-          unseededResources: model.unseededResources,
+        const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0) + 31 * 4;
+        const scalar = (hash: string, start: number, size: number) => {
+          if (start <= offset && start + size >= offset + 4) {
+            const bytes = required(decoded.blobs.find((blob) => blob.hash === hash)).bytes;
+            history = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(
+              offset - start,
+              true,
+            );
+          }
         };
-      } finally {
-        if (packet)
-          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        for (const slice of decoded.bootstrap.find(
+          (resource) => resource.handleId === binding.resourceId,
+        )?.initialData ?? [])
+          scalar(slice.hash, slice.byteOffset, slice.byteLength);
+        for (const event of decoded.events.slice(0, work.eventIndex)) {
+          if (event.kind === 'writeBuffer' && event.handleId === binding.resourceId)
+            scalar(event.dataHash, event.bufferOffset, event.size);
+        }
       }
+      const observation = required(
+        value(await renderer.observe(receipt, { include: ['linear-hdr'] })).observations?.find(
+          (row) => row.domain === 'linear-hdr',
+        ),
+      );
+      const pixels = luminanceRgba16f(observation.bytes, 64, 64, observation.metadata.bytesPerRow);
+      const luminance =
+        ((pixels[31 * 64 + 31] ?? 0) +
+          (pixels[31 * 64 + 32] ?? 0) +
+          (pixels[32 * 64 + 31] ?? 0) +
+          (pixels[32 * 64 + 32] ?? 0)) /
+        4;
+      await save(`${mode}-${renderPath}-${frames}.rhitape`, tape.bytes);
+      return {
+        luminance,
+        history,
+        frames,
+        digest: tape.digest,
+        works: model.works.map((work) => ({
+          workIndex: work.workIndex,
+          shaders: work.pipeline.shaders.map((shader) => shader.entryPoint),
+          bindings: work.bindings,
+        })),
+        unseededResources: model.unseededResources,
+      };
     };
     try {
       const samples = [];

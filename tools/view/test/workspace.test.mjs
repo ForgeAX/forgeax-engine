@@ -3,7 +3,7 @@ import { ViewWorkspaceBroker as RawViewWorkspaceBroker } from '../packages/view-
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { WebSocket as NodeWebSocket } from 'ws';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -324,10 +324,11 @@ describe('View workspace API', () => {
   it('routes Pack reveal to one exact page and accepts only its matching visible receipt', async () => {
     const root = await mkdtemp(join(tmpdir(), 'view-reveal-'));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
-    await writeFile(join(root, 'zero.pack.json'), JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [] }));
-    const project = { id: 'project:reveal', root, name: 'Reveal' };
+    await mkdir(join(root, 'assets'), { recursive: true });
+    await writeFile(join(root, 'assets/zero.pack.json'), JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [] }));
+    const project = { id: 'project:reveal', root, name: 'Reveal', assetRoots: ['assets'] };
     const transport = createHostTransport();
-    const broker = new RawViewWorkspaceBroker({ engine: { project: { project } }, packSources: listPackSources });
+    const broker = new RawViewWorkspaceBroker({ engine: { project: { project } }, packSources: (root, assetRoots) => listPackSources(root, 200, assetRoots) });
     const unregister = broker.registerTransport(transport);
     cleanup.push(async () => { unregister(); transport.close(); await broker.dispose(); });
     const a = transport.connect({ kind: 'frontend', sourceId: 'view-frontend' });
@@ -338,7 +339,7 @@ describe('View workspace API', () => {
     a.subscribe(VIEW_PACK_REVEAL_TOPIC, event => eventsA.push(event));
     b.subscribe(VIEW_PACK_REVEAL_TOPIC, event => eventsB.push(event));
     const revision = (await listPackSources(root)).sources[0].revision;
-    const input = { projectId: project.id, sourcePath: 'zero.pack.json', revision };
+    const input = { projectId: project.id, sourcePath: 'assets/zero.pack.json', revision };
     const call = (operation, args) => broker.call(createWorkspaceRequest(operation, args, { clientId: 'cli', token: broker.accessToken }));
     assert.equal((await call('pages.list', {})).pages.length, 2);
     assert.equal((await call('pack.reveal', input)).code, 'view-page-ambiguous');
@@ -368,7 +369,7 @@ describe('View workspace API', () => {
     assert.equal(eventsA.length, eventCount, 'an already cancelled request cannot be delivered');
     const stale = broker.revealPack({ ...input, connectionId: a.caller.connectionId });
     for (let attempt = 0; attempt < 100 && eventsA.length < 4; attempt++) await new Promise(done => setTimeout(done, 10));
-    await writeFile(join(root, 'zero.pack.json'), JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [], changed: true }));
+    await writeFile(join(root, 'assets/zero.pack.json'), JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [], changed: true }));
     assert.equal((await a.request(VIEW_PACK_REVEAL_ACK_SERVICE, { ...eventsA[3], shown: true })).code, 'view-reveal-stale');
     assert.equal((await stale).code, 'view-reveal-stale');
     assert.equal((await broker.revealPack({ ...input, revision: 'sha256:stale', connectionId: a.caller.connectionId })).code, 'view-pack-stale');

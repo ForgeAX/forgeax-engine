@@ -8,10 +8,8 @@ import type {
 } from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import {
-  type ComputeState,
   computeBindGroup,
   computePipelineError,
-  createComputeState,
   resolvedGraphBuffer,
   resolvedGraphView,
 } from '../compute-graph-state';
@@ -24,6 +22,7 @@ import {
   type DepthPyramidExtent,
   type DepthPyramidPlan,
 } from './plan';
+import { createDepthPyramidProgramResolver } from './programs';
 
 /**
  * Which depth bound each texel keeps. `closest` feeds screen-space tracers
@@ -203,8 +202,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const { depth, view } = input;
   const mip0 = pyramid.levels[0] as GraphTextureView;
   const passNames: string[] = [];
-  let seedState: ComputeState | undefined;
-  let reduceState: ComputeState | undefined;
+  const program = createDepthPyramidProgramResolver();
 
   const seeded = graph.addComputePass(seedPass, {
     accesses: [
@@ -219,12 +217,14 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
       // projection range; keep the structural path encode-free instead of
       // manufacturing a second near/far source.
       if (source === undefined || view === undefined) return;
-      seedState ??= createComputeState(
+      const seedState = program(
         frame,
         source,
-        'depth_pyramid_seed',
         multisampled ? SEED_MULTISAMPLED_ENTRIES : SEED_ENTRIES,
-        `depth_pyramid_seed${names.entry}${multisampled ? '_multisampled' : ''}`,
+        `seed${names.entry}${multisampled ? '_multisampled' : ''}` as
+          | 'seed'
+          | 'seed_furthest'
+          | 'seed_furthest_multisampled',
       );
       pass.setPipeline(seedState.pipeline);
       pass.setBindGroup(
@@ -272,12 +272,11 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
       encode: ({ pass, frame, resources }) => {
         const source = shaderSource(frame, 'reduce');
         if (source === undefined) return;
-        reduceState ??= createComputeState(
+        const reduceState = program(
           frame,
           source,
-          'depth_pyramid_reduce',
           REDUCE_ENTRIES,
-          `depth_pyramid_reduce${names.entry}`,
+          `reduce${names.entry}` as 'reduce' | 'reduce_furthest',
         );
         pass.setPipeline(reduceState.pipeline);
         // Compute dispatches are ordered usage scopes. Each dispatch reads

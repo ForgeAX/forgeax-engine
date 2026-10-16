@@ -5,6 +5,7 @@ import { type FrameReceipt, LightProbe, type Renderer } from '@forgeax/engine-re
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
   assertMaterialPayload,
@@ -517,26 +518,22 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
         frameTime,
       });
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
+      const receipt = await drawReadyFrame(renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
         ...(frame < 10 || (frame >= 20 && frame < 30) ? { geometryLane: 'direct' as const } : {}),
       });
-      expect(drawn.ok).toBe(true);
-      if (!drawn.ok) throw drawn.error;
-      finalReceipt = drawn.value;
-      const completion = await drawn.value.completed;
-      expect(completion.ok).toBe(true);
-      if (!completion.ok) throw completion.error;
+      finalReceipt = receipt;
       completedFrames += 1;
       if ([9, 19, 29, 39, 49].includes(frame)) {
-        const laneObservation = await renderer.observe(drawn.value, { include: ['draws'] });
+        const laneObservation = await renderer.observe(receipt, { include: ['draws'] });
         expect(laneObservation.ok).toBe(true);
         if (!laneObservation.ok) throw laneObservation.error;
-        const receipt = renderer.inspect().renderScene.submission;
-        if (receipt === undefined) throw new Error('surface-standard: lane receipt unavailable');
-        laneReceipts.set(frame, receipt);
+        const submission = renderer.inspect().renderScene.submission;
+        if (submission === undefined) throw new Error('surface-standard: lane receipt unavailable');
+        expect(submission.frameId).toBe(receipt.frameId);
+        laneReceipts.set(frame, submission);
         const laneReadback = await readScreenshotPixels(canvas);
         laneRois.set(
           frame,
@@ -638,11 +635,13 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
           }),
       ),
     ).toBe(true);
-    expect([9, 19, 29].map((frame) => laneReceipts.get(frame)?.frameId)).toEqual([
-      msaaEdgeEvidence.resized.fourX.receipt.frameId + 10,
-      msaaEdgeEvidence.resized.fourX.receipt.frameId + 20,
-      msaaEdgeEvidence.resized.fourX.receipt.frameId + 30,
-    ]);
+    // Preparation barriers have their own receipt identities. Scene receipts
+    // must match their actual draw and retain order, not fixed numeric offsets.
+    expect(laneReceipts.get(9)?.frameId).toBeGreaterThan(
+      msaaEdgeEvidence.resized.fourX.receipt.frameId,
+    );
+    expect(laneReceipts.get(19)?.frameId).toBeGreaterThan(laneReceipts.get(9)?.frameId);
+    expect(laneReceipts.get(29)?.frameId).toBeGreaterThan(laneReceipts.get(19)?.frameId);
     const directCold = laneRois.get(9);
     const gpu = laneRois.get(19);
     const directRestored = laneRois.get(29);

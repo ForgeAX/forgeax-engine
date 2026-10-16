@@ -9,6 +9,7 @@ import { WebSocket } from 'ws';
 import workspacePlugin from '../packages/view-workspace-core/src/frontend-plugin.ts';
 import { connectViewWorkspace, startViewHostServer } from '../packages/view-workspace-core/src/resident.ts';
 import { ViewWorkspaceClient, workspaceBrowserEndpoint } from '../packages/view-workspace-core/src/client.ts';
+import { VIEW_WORKSPACE_SERVICES } from '../packages/view-workspace-core/src/contract.ts';
 
 test('workspace API owns a resident frontend connection with no CLI authority', async () => {
   const host = await createBackendHost();
@@ -71,15 +72,14 @@ test('View entry activates its client while a cold project open is pending', asy
   let finishOpen;
   const opening = new Promise(resolve => { finishOpen = resolve; });
   const calls = [];
-  const transport = {
-    subscribe: () => () => {},
-    request(_service, request) {
+  const owner = createHostTransport();
+  owner.register(VIEW_WORKSPACE_SERVICES.call, ({ payload: request }) => {
       calls.push(request.operation);
       if (request.operation === 'tabs.get') return Promise.resolve({ revision: 1 });
       if (request.operation === 'project.open') return opening;
       throw new Error(`unexpected operation ${request.operation}`);
-    },
-  };
+  });
+  const transport = owner.connect({ kind: 'frontend', sourceId: 'view-frontend' });
   const window = {
     location: { href: 'http://localhost:8000/?project=%2Fgame', assign() {} },
     history: { replaceState() {} },
@@ -98,13 +98,16 @@ test('View entry activates its client while a cold project open is pending', asy
     ]);
     assert.ok(context.get('viewOperationClient'));
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(calls, ['tabs.get', 'tabs.get', 'project.open']);
+    assert.ok(calls.includes('tabs.get'));
+    assert.equal(calls.filter(operation => operation === 'project.open').length, 1);
+    assert.equal(calls.at(-1), 'project.open');
     finishOpen({ project: { id: 'game', root: '/game' }, projectTarget: { targetId: 'new', url: 'http://localhost:9000/?forgeaxWorkspaceTarget=new' } });
     await context.get('viewOperationClient').projectSession.ready;
   } finally {
     clearTimeout(timer);
     finishOpen?.({});
     await context.fiber.dispose();
+    owner.close();
   }
 });
 

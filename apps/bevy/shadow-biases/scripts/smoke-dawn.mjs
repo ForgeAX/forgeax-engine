@@ -70,7 +70,7 @@ async function renderPhase(name) {
   for (let i = 0; i < FRAMES_PER_PHASE; i++) {
     world.update().unwrap();
     propagateTransforms(world).unwrap();
-    const drawn = drawSmokeFrame(renderer, world);
+    const drawn = await drawSmokeFrame(renderer, world);
     if (!drawn.ok) errors.push(drawn.error.code);
     framesObserved++;
   }

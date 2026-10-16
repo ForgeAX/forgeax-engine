@@ -23,7 +23,7 @@ const emitter = {
   renderers: [{ kind: 'billboard', material: 'material-first' }],
 };
 afterEach(() => vi.restoreAllMocks());
-it('shares real SDF composition across distinct emitter identities while keeping fresh metadata and rejection', async () => {
+it('reuses capacity-specific SDF composition while keeping fresh emitter metadata and rejection', async () => {
   const compose = vi.spyOn(naga, 'composeShader');
   const first = await cookParticleCodeEffect(
     { schemaVersion: 3, emitters: [emitter] },
@@ -44,7 +44,13 @@ it('shares real SDF composition across distinct emitter identities while keeping
   );
   expect(second.ok).toBe(true);
   if (!second.ok) return;
-  expect(compose).toHaveBeenCalledTimes(1);
+  expect(compose).toHaveBeenCalledTimes(2);
+  const repeated = await cookParticleCodeEffect(
+    { schemaVersion: 3, emitters: [emitter, secondEmitter] },
+    { 'collision.vfx.wgsl': { entry } },
+  );
+  expect(repeated.ok).toBe(true);
+  expect(compose).toHaveBeenCalledTimes(2);
   expect(second.value.asset.program.emitters.map((e) => [e.id, e.capacity])).toEqual([
     ['sdf-reuse-a', 100],
     ['sdf-reuse-b', 200],
@@ -53,7 +59,9 @@ it('shares real SDF composition across distinct emitter identities while keeping
   expect(first.value.refs).toEqual(['material-first']);
   expect(second.value.artifact.fingerprint).not.toBe(first.value.artifact.fingerprint);
   for (const cooked of second.value.asset.program.emitters) {
-    expect(cooked.wgsl).toBe(first.value.asset.program.emitters[0]?.wgsl);
+    expect(cooked.wgsl === first.value.asset.program.emitters[0]?.wgsl).toBe(
+      cooked.capacity === emitter.capacity,
+    );
     expect(cooked.reflection).toHaveProperty('dataInterfaces', [
       {
         token: 'vfx:scene-sdf',
@@ -75,12 +83,12 @@ it('shares real SDF composition across distinct emitter identities while keeping
     expect(rejected.ok).toBe(false);
     if (!rejected.ok) expect(rejected.error.code).toBe('vfx-shader-invalid');
   }
-  expect(compose).toHaveBeenCalledTimes(3);
+  expect(compose).toHaveBeenCalledTimes(4);
   const recovered = await cookParticleCodeEffect(
     { schemaVersion: 3, emitters: [emitter] },
     { 'collision.vfx.wgsl': { entry } },
   );
   expect(recovered.ok).toBe(true);
   if (recovered.ok) expect(recovered.value.artifact.bytes).toEqual(first.value.artifact.bytes);
-  expect(compose).toHaveBeenCalledTimes(3);
+  expect(compose).toHaveBeenCalledTimes(4);
 }, 30_000);

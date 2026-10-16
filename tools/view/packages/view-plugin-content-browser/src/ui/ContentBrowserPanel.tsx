@@ -1,5 +1,6 @@
 import { useClipboardAction } from '@forgeax/view-components';
 import type { WorkspaceState, WorkspaceThumbnail } from '@forgeax/view-workspace-core/contract';
+import type { AssetReferenceService } from '@forgeax/view-workspace-core/asset-references';
 import {
   ArrowDownWideNarrow,
   ArrowUpDown,
@@ -43,12 +44,13 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type MouseEvent,
   type ReactNode,
 } from 'react';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
-import type { PageHost } from '@forgeax/view-workspace-core/frontend-contract';
+import type { AssetBrowserReveal, PageHost } from '@forgeax/view-workspace-core/frontend-contract';
 import { VIEW_FILE_GET_SERVICE, VIEW_HTML_FILES_SERVICE, VIEW_PACK_SOURCES_SERVICE, VIEW_PACK_REVEAL_TOPIC, VIEW_PACK_REVEAL_ACK_SERVICE, VIEW_WORKSPACE_TAB_ID, workspaceUiFingerprint } from '@forgeax/view-workspace-core/contract';
 import { useTranslation } from '../i18n/useTranslation';
 import { CONTENT_BROWSER_ACTIONS } from '../schema.ts';
@@ -66,9 +68,9 @@ import {
   setSortDir,
   toggleFilterId,
 } from './derived-view';
-import { normalizePathInput, viewItemKey } from './format';
+import { dirOfPath, normalizePathInput, viewItemKey } from './format';
 import { familyIcon, itemIcon, kindIcon } from './icons';
-import { projectCatalog, visibleCatalogFolders, type CatalogAsset, type PackSourceRow } from './workspace-catalog';
+import { assetSourcePath, projectCatalog, visibleCatalogFolders, type CatalogAsset, type PackSourceRow } from './workspace-catalog';
 import { ResizeHandle, useLocalSize } from './resize-handle';
 import type {
   CBFilterFamily,
@@ -96,13 +98,6 @@ type BrowserMenuItem =
       action: () => void;
     };
 type ContextMenuState = { anchor: AnchorRect; items: BrowserMenuItem[] } | null;
-
-const DEFAULT_CONTENT_FOLDER = 'assets';
-
-function hasContentFolder(folders: readonly { path: string }[], folder: string) {
-  const prefix = `${folder}/`;
-  return folders.some((entry) => entry.path === folder || entry.path.startsWith(prefix));
-}
 
 const LAYOUT_OPTIONS: readonly { mode: CBViewMode; icon: ReactNode; labelKey: string }[] = [
   { mode: 'grid', icon: <Grid2X2 size={14} />, labelKey: 'contentBrowser.layoutGrid' },
@@ -151,15 +146,21 @@ export function ContentBrowserPanel({
   pageHost,
   revealPanel,
   addConversationReference,
+  registerAssetReveal,
+  assetReferences,
 }: {
   client?: ViewWorkspaceClient;
   pageHost?: PageHost;
   revealPanel?: () => Promise<boolean>;
   addConversationReference?: (reference: { title: string; text: string }) => Promise<void>;
+  registerAssetReveal?: (handler: (input: AssetBrowserReveal) => Promise<boolean>) => () => void;
+  assetReferences?: AssetReferenceService;
 }) {
   const writeClipboard = useClipboardAction();
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<WorkspaceState>({});
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
   const [loadFailed, setLoadFailed] = useState(false);
   const [actionError, setActionError] = useState('');
   const [runtimeOpen, setRuntimeOpen] = useState(false);
@@ -174,7 +175,8 @@ export function ContentBrowserPanel({
   const projectLabel = project?.name ?? project?.root ?? 'No project';
   const htmlFiles = htmlListing && htmlListing.projectId === project?.id ? htmlListing.files : EMPTY_HTML_FILES;
   const htmlListingIssue = htmlListing && htmlListing.projectId === project?.id ? htmlListing.issue : '';
-  const catalog = useMemo(() => projectCatalog(project?.root ?? '', snapshot.assets ?? [], packSources, htmlFiles), [project?.root, snapshot.assets, packSources, htmlFiles]);
+  const tooling = useSyncExternalStore(assetReferences?.subscribe ?? (() => () => {}), assetReferences?.getState ?? (() => undefined), () => undefined);
+  const catalog = useMemo(() => projectCatalog({ root: project?.root ?? '', assetRoots: project?.assetRoots ?? EMPTY_HTML_FILES, assets: (snapshot.assets ?? []).filter(asset => !tooling?.packageId || asset.packageId !== tooling.packageId), sources: packSources, htmlFiles }), [project?.root, project?.assetRoots, snapshot.assets, packSources, htmlFiles, tooling?.packageId]);
   const files = catalog.files;
   const folders = catalog.folders;
   const clientRef = useRef(client);
@@ -233,7 +235,7 @@ export function ContentBrowserPanel({
   }, [connected, refresh, snapshot.projectPhase, snapshot.browserGeneration]);
   const [layout, setLayout] = useState<CBViewMode>('grid');
   const [thumbnailSize, setThumbnailSize] = useState(80);
-  const [detailPanelOpen, setDetailPanelOpen] = useState(true);
+  const [detailPanelOpen, setDetailPanelOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [revealFocus, setRevealFocus] = useState<string | null>(null);
   const revealEpoch = useRef(0);
@@ -294,10 +296,11 @@ export function ContentBrowserPanel({
     const catalogReady = Array.isArray(snapshot.assets);
     if (!catalogReady) return;
     landedForEpoch.current = epoch;
-    if (!hasContentFolder(folders, DEFAULT_CONTENT_FOLDER)) return;
-    setHistory(['', DEFAULT_CONTENT_FOLDER]);
+    const firstRoot = project.assetRoots?.[0];
+    if (!firstRoot) return;
+    setHistory(['', firstRoot]);
     setHistoryIndex(1);
-  }, [folders, project?.id, snapshot.assets]);
+  }, [project, snapshot.assets]);
   const folder = history[historyIndex] ?? '';
   const familyFilters = useMemo(() => buildFamilyFilters(activeFamilies, t), [activeFamilies, t]);
   const kindFilters = useMemo(() => buildKindFilters(activeKinds, t), [activeKinds, t]);
@@ -386,6 +389,54 @@ export function ContentBrowserPanel({
   }, [thumbnailRows, project?.id, targetKey, assetFacts]);
   const selectedThumbnail = detailGuid ? thumbnails.get(detailGuid) : undefined;
 
+  const revealAsset = useCallback(async ({ projectId, guid, targetId, targetGeneration }: AssetBrowserReveal) => {
+    const matchingTarget = (state: WorkspaceState) => state.project?.id === projectId
+      && state.preview?.target?.targetId === targetId
+      && state.preview?.target?.generation === targetGeneration;
+    if (!client || !revealPanel || !matchingTarget(snapshotRef.current) || !guid) return false;
+    const file = files.find(entry => entry.assets.some(asset => asset.guid === guid));
+    if (!file) return false;
+    const epoch = ++revealEpoch.current;
+    const current = () => epoch === revealEpoch.current && matchingTarget(snapshotRef.current);
+    try {
+      await client.selectTab(VIEW_WORKSPACE_TAB_ID);
+      if (!current() || !await revealPanel() || !current()) return false;
+      const history = historyRef.current;
+      const directory = dirOfPath(file.path);
+      if (history.history[history.historyIndex] !== directory) {
+        const nextHistory = [...history.history.slice(0, history.historyIndex + 1), directory];
+        setHistory(nextHistory);
+        setHistoryIndex(nextHistory.length - 1);
+      }
+      setQuery('');
+      setActiveFamilies(new Set());
+      setActiveKinds(new Set());
+      setExpandedPacks(previous => new Set(previous).add(file.path));
+      setRevealFocus(file.path);
+      setSelectedIds(new Set([guid]));
+      setSelectionAnchor(guid);
+      setPreviewKey(guid);
+      void client.inspectAsset(guid, { projectId, tabId: VIEW_WORKSPACE_TAB_ID, targetId, targetGeneration }).catch(() => {});
+      for (let attempt = 0; attempt < 40 && current(); attempt++) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const panel = document.querySelector<HTMLElement>('[data-testid="panel-content-browser"]');
+        const card = [...(panel?.querySelectorAll<HTMLElement>('[data-cb-guid]') ?? [])]
+          .find(element => element.dataset.cbGuid === guid);
+        if (card) card.scrollIntoView({ block: 'nearest' });
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const panelRect = panel?.getBoundingClientRect();
+        const cardRect = card?.getBoundingClientRect();
+        if (current() && card?.getAttribute('aria-selected') === 'true'
+          && document.documentElement.dataset.forgeaxViewActivePage === 'editor'
+          && panelRect && cardRect && panelRect.width > 0 && panelRect.height > 0
+          && cardRect.bottom > panelRect.top && cardRect.top < panelRect.bottom
+          && cardRect.right > panelRect.left && cardRect.left < panelRect.right) return true;
+      }
+    } catch { /* A missing page or project is a failed reveal, not a selection change. */ }
+    return false;
+  }, [client, files, project?.id, revealPanel]);
+  useEffect(() => registerAssetReveal?.(revealAsset), [registerAssetReveal, revealAsset]);
+
   useEffect(() => {
     const transport = client?.transport;
     if (!client || !transport?.subscribe || !transport.request || !project?.id) return;
@@ -414,7 +465,7 @@ export function ContentBrowserPanel({
       try {
         const inventory = await transport.request<{ projectId: string }, { sources: PackSourceRow[] }>(VIEW_PACK_SOURCES_SERVICE, { projectId: project.id });
         const source = inventory.sources.find(row => row.sourcePath === intent.sourcePath);
-        if (!source || source.revision !== intent.revision) { await acknowledge(false, 'source-revision-changed'); return; }
+        if (!source || !assetSourcePath(project.root, project.assetRoots ?? EMPTY_HTML_FILES, source.sourcePath) || source.revision !== intent.revision) { await acknowledge(false, 'source-revision-changed'); return; }
         if (!current()) { await acknowledge(false, 'user-navigation-cancelled'); return; }
         setPackSources(inventory.sources);
         await workspaceClient.selectTab(VIEW_WORKSPACE_TAB_ID);
@@ -455,7 +506,7 @@ export function ContentBrowserPanel({
     cancelReveal();
     userMovedEpoch.current = openEpoch.current;
     const normalized = normalizePathInput(path);
-    if (normalized === folder) return;
+    if (normalized === folder || (normalized !== '' && !folders.some(entry => entry.path === normalized))) return;
     const next = history.slice(0, historyIndex + 1);
     next.push(normalized);
     setHistory(next);
@@ -519,7 +570,7 @@ export function ContentBrowserPanel({
     const key = viewItemKey(item);
     if (openingKeys.has(key)) return;
     setOpeningKeys((current) => new Set(current).add(key));
-    void client.openAsset(guid, { projectId: project.id, tabId: VIEW_WORKSPACE_TAB_ID })
+    void (assetReferences?.getState().scope ? assetReferences.open(guid) : client.openAsset(guid, { projectId: project.id, tabId: VIEW_WORKSPACE_TAB_ID }))
       .catch((error: unknown) => setActionError(error instanceof Error ? error.message : String(error)))
       .finally(() => {
         setOpeningKeys((current) => {
@@ -726,10 +777,7 @@ export function ContentBrowserPanel({
 
   return (
     <div className="cb-root" data-testid="panel-content-browser">
-      {client && project ? <>
-        <Toolbar><Button size="compact" aria-expanded={runtimeOpen} onClick={() => setRuntimeOpen(!runtimeOpen)}>Runtime content</Button></Toolbar>
-        {runtimeOpen ? <RuntimePacksPanel client={client} /> : null}
-      </> : null}
+      {client && project && runtimeOpen ? <RuntimePacksPanel client={client} assetReferences={assetReferences} /> : null}
       <div
         className="cb-split"
         ref={splitRef}
@@ -993,6 +1041,11 @@ export function ContentBrowserPanel({
             data-action={CONTENT_BROWSER_ACTIONS.toggleDetailPanel}
             onCheckedChange={setDetailPanelOpen}
           />
+          {client && project ? <Button variant="quiet" size="compact" aria-expanded={runtimeOpen} onClick={() => {
+            setRuntimeOpen(!runtimeOpen);
+            setMenu(null);
+            if (!runtimeOpen) void revealPanel?.().catch((error: unknown) => setActionError(error instanceof Error ? error.message : String(error)));
+          }}>{t('contentBrowser.runtimeTools')}</Button> : null}
         </div>
       </FloatingMenu>
 

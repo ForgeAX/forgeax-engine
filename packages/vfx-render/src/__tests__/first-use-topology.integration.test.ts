@@ -187,6 +187,10 @@ function createFixture(
     intent,
     entry,
     program,
+    dispatchEntries: () =>
+      planPasses(plan()).flatMap((pass) =>
+        pass.kind === 'compute' ? pass.dispatches.map((dispatch) => dispatch.entryPoint) : [],
+      ),
     rasterCount: () => firstRasterDrawCount,
   };
 }
@@ -299,4 +303,52 @@ it.each([
     owner.dispose().unwrap();
     pipelines.mockRestore();
   }
+});
+
+it.each([
+  { capacity: 4, stages: false, events: false },
+  { capacity: 256, stages: false, events: true },
+  { capacity: 4, stages: true, events: true },
+  { capacity: 257, stages: false, events: false },
+])('uses complete single-block chains without skipping stages/events: $capacity/$stages/$events', ({
+  capacity,
+  stages,
+  events,
+}) => {
+  const fixture = createFixture(['billboard'], capacity, true);
+  fixture.emitter.reflection.entryPoints = [
+    ...fixture.emitter.reflection.entryPoints.filter(
+      (entry) => events || entry !== 'forgeax_vfx_event_main',
+    ),
+    'forgeax_vfx_scan_compact_main',
+    'forgeax_vfx_update_compact_main',
+  ];
+  if (!stages) fixture.emitter.reflection.stages = [];
+  fixture.program();
+  const actual = fixture.dispatchEntries();
+  if (capacity > 256) {
+    expect(actual).not.toContain('forgeax_vfx_update_compact_main');
+    expect(actual).not.toContain('forgeax_vfx_scan_compact_main');
+    expect(actual).toContain('forgeax_vfx_update_main');
+    expect(actual).toContain('forgeax_vfx_add_offsets_main');
+  } else if (stages) {
+    expect(actual).toContain('forgeax_vfx_update_main');
+    expect(actual).toContain('forgeax_vfx_stage_swirl_main');
+    expect(actual).toContain('forgeax_vfx_scan_compact_main');
+    expect(actual).not.toContain('forgeax_vfx_update_compact_main');
+  } else {
+    expect(actual).toContain('forgeax_vfx_update_compact_main');
+    expect(actual).not.toContain('forgeax_vfx_update_main');
+    expect(actual).not.toContain('forgeax_vfx_scan_blocks_main');
+    expect(actual).not.toContain('forgeax_vfx_compact_main');
+    if (events) expect(actual).toContain('forgeax_vfx_scan_compact_main');
+  }
+  if (events) expect(actual).toContain('forgeax_vfx_event_main');
+  // Mutable provider declarations lose the capability immediately.
+  fixture.emitter.reflection.entryPoints = fixture.emitter.reflection.entryPoints.filter(
+    (entry) => !entry.endsWith('_compact_main') || entry === 'forgeax_vfx_compact_main',
+  );
+  const fallback = fixture.dispatchEntries();
+  expect(fallback).toContain('forgeax_vfx_update_main');
+  expect(fallback).toContain('forgeax_vfx_scan_blocks_main');
 });

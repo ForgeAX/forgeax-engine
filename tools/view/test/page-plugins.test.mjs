@@ -96,7 +96,7 @@ it('gives every installed View role a distinct native Plugin name', async () => 
       assert.equal(module.default.name, component.id);
     }
   }
-  assert.equal([...ids].filter((id) => id.startsWith('forgeax.view.page.')).length, 8);
+  assert.equal([...ids].filter((id) => id.startsWith('forgeax.view.page.')).length, 9);
 });
 
 it('shows observed backend Fibers and keeps missing frontend activation unknown', async () => {

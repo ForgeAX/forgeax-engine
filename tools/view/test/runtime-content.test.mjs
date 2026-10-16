@@ -4,7 +4,23 @@ import { createToolApi, defineTool, toolJsonSchema } from '@forgeax/engine-tool-
 import { ViewWorkspaceBroker } from '@forgeax/view-workspace-core/broker';
 import { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import { VIEW_WORKSPACE_OPERATIONS, VIEW_WORKSPACE_SERVICES } from '@forgeax/view-workspace-core/contract';
-import { parameterDrafts, parameterValues, runtimePackTarget } from '../packages/view-plugin-content-browser/src/ui/runtime-packs.ts';
+import { parameterDrafts, parameterValues, runtimePackTarget, runtimeToolingOwnership, userRuntimePacks } from '../packages/view-plugin-content-browser/src/ui/runtime-packs.ts';
+
+test('runtime content excludes only the owned tooling package on its exact target', () => {
+  const target = { projectId: 'p', targetId: 't', worldId: 'w' };
+  const service = { phase: 'ready', scope: target, packageId: 'tooling', pluginUid: 0 };
+  const packs = [{ source: { packageId: 'tooling' }, programs: { query: 'native' } },
+    { source: { packageId: 'user' }, programs: { query: 'user plugin with the same name' } }];
+  assert.equal(runtimeToolingOwnership(service, target), service);
+  for (const key of ['projectId', 'targetId', 'worldId']) {
+    assert.equal(runtimeToolingOwnership(service, { ...target, [key]: 'replacement' }), undefined);
+  }
+  const kept = userRuntimePacks(packs, runtimeToolingOwnership(service, target).packageId);
+  assert.deepEqual(kept, [packs[1]]);
+  assert.equal(kept[0], packs[1], 'User source and prepared programs remain byte-for-byte intact');
+  assert.equal(packs.length, 2, 'The Engine inspection is not mutated');
+  assert.deepEqual(userRuntimePacks(packs), packs, 'No service means no filtering');
+});
 
 test('runtime content uses the project target independently of selected previews and runs', () => {
   const workspace = {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -188,9 +189,7 @@ try {
   const drawCompletedFrame = async () => {
     const drawPhase = phaseToken;
     world.update().unwrap();
-    const drawn = renderer.draw(frameRequest);
-    if (!drawn.ok) throw new Error(`renderer draw failed: ${drawn.error.code}`);
-    const receipt = drawn.value;
+    const receipt = await drawReadyFrame(renderer, frameRequest);
     const result = await observeCompletedReceipt(
       receipt,
       (exactReceipt) => renderer.observe(exactReceipt, { include: ['lod-occlusion', 'draws'] }),

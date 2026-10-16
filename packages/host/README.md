@@ -64,9 +64,9 @@ the same policy instead of starting a second shorter timer.
 ## Frontend platform
 
 The `@forgeax/engine-host/platform` subpath owns realm capabilities: Window,
-Document, fetch, public Host transport, document frames, navigation, clipboard and observable host
+Document, fetch, public Host transport, document frames, optional navigation, clipboard and observable host
 appearance. `createFrontendPlatformPlugin` projects a borrowed platform through a
-native Cordis Fiber. The browser factory supplies normal document behavior;
+native Cordis Fiber. The browser factory supplies ordinary runtime behavior;
 an explicitly selected host may provide an embedded implementation before
 FrontendHost connects. Platform adapters do not own project, asset or Engine state.
 
@@ -77,6 +77,18 @@ their admitted transport. Transport readiness is not Renderer readiness.
 The consumer owns disposal; removing or hiding a panel only changes placement.
 An embedded owner acknowledges child teardown before retiring the bridge and frame,
 and cancellation during preparation releases the unfinished document.
+
+Document navigation is an optional host capability. The ordinary
+`createBrowserFrontendPlatform()` does not install `navigate`, so a standalone
+game does not retain `location.assign` / `location.replace` through its default
+platform. The consuming View workspace owns `navigateBrowserDocument` in
+`@forgeax/view/workspace/document-navigation`, or supplies its embedding host's
+`navigate` implementation. That workspace helper retains
+cancellation and page-departure completion. This changes capability assembly,
+not iframe ownership: `createFrame(url)` still loads the supplied URL directly.
+The platform module exports no navigation implementation, including when native
+program delivery retains its complete module namespace. Games need no workspace
+detection or View adapter.
 
 The optional `addConversationReference({title, text})` capability appends a titled
 reference to a host conversation draft without submitting it. A host without this

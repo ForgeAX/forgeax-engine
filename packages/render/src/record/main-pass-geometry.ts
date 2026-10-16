@@ -7,6 +7,7 @@ import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { FirstEntryMap } from './first-entry-map';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
+import { variantSetFromDefines } from './helpers';
 import { resolveSpriteInstancesBuffer } from './sprite-instance-buffer';
 // @forgeax/engine-runtime - RenderSystem record stage: main-pass geometry draws.
 // feat-20260704 M5/w31: further-split from main-pass.ts (AC-05 <=1500 lines/file).
@@ -74,7 +75,7 @@ import type { RenderRecordPhase } from '../render-contract';
 import type { DispatchEntry, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { PROBE_BLEND_RECORD_BYTE_SIZE, probeBlendRecordOffset } from '../scene/probe-blend-record';
 import type { SurfacePassName } from '../surface/submission-observation';
-import { resolveFoldInstanceBuffer } from './fold-instance-buffer';
+import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
 import {
   getOpaqueResourceIdentity,
   instanceCollectionCacheKey,
@@ -546,19 +547,21 @@ export function resolveGeometryMaterialVariantSet(
  */
 export function recordGeometryDraws(
   c: _InternalRenderPipelineContext,
-  pass: RhiRenderPassEncoder,
+  pass: RhiRenderPassEncoder | undefined,
   matchedMaterials: ReadonlyMap<number, ReadonlySet<number>> | null,
   materialSlotIndices: readonly (readonly number[])[],
   sampleCount: number,
   meshGroup2: BindGroup | null,
   meshBindGroup: BindGroup | null,
-  resolveMaterialBindGroup: (
-    materialSlot: number,
-    submeshMaterial: MaterialSnapshot,
-    entityKey: number,
-    materialWorld: RenderResourceScope,
-    materialShaderId?: string,
-  ) => BindGroup,
+  resolveMaterialBindGroup:
+    | ((
+        materialSlot: number,
+        submeshMaterial: MaterialSnapshot,
+        entityKey: number,
+        materialWorld: RenderResourceScope,
+        materialShaderId?: string,
+      ) => BindGroup)
+    | undefined,
   passKind: PassKind = 'forward',
   selectedDispatch?: readonly DispatchEntry[],
   colorFormats: readonly GPUTextureFormat[] = [],
@@ -567,7 +570,12 @@ export function recordGeometryDraws(
   surfacePass?: SurfacePassName,
   transparentDepthWrite = false,
   oit?: 'accumulate' | 'residual',
+  preparationPassMatches?: (
+    pass: Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>,
+    material: MaterialSnapshot,
+  ) => boolean,
 ): void {
+  const recordPresented = createFoldedDrawRecorder(c);
   const {
     runtime,
     pipelineState,
@@ -674,6 +682,7 @@ export function recordGeometryDraws(
     fragmentEntry?: string,
     textureMask?: number,
     layoutKind?: DirectSurfaceLayoutKind,
+    pipelinePreparation = false,
   ): MaterialShaderPipelineEntry | null => {
     const baseVariantSet = withCoverageVariant(variantSet);
     // Skinned Standard has no visible-surface variant: deformed draws publish no
@@ -771,7 +780,9 @@ export function recordGeometryDraws(
           ? ''
           : `${resolvedVariantSet === undefined || resolvedVariantSet === '' ? '' : `${resolvedVariantSet}+`}REFLECTION_FALLBACK_AVAILABLE=${c.reflectionFallbackColorFormat !== undefined}`;
     const resolvePipeline = () =>
-      runtime.getMaterialShaderPipelineEntry?.(
+      (pipelinePreparation
+        ? (runtime.prepareMaterialShaderPipelineEntry ?? runtime.getMaterialShaderPipelineEntry)
+        : runtime.getMaterialShaderPipelineEntry)?.(
         materialShaderId,
         isHdrTarget,
         renderState,
@@ -838,6 +849,302 @@ export function recordGeometryDraws(
     }
     return handle;
   };
+
+  const pipelineSelection: {
+    pipeline: RenderPipeline | null;
+    material: MaterialShaderPipelineEntry | null;
+    probeBlend: boolean;
+    viewOffset: number;
+    shader: string | undefined;
+  } = { pipeline: null, material: null, probeBlend: false, viewOffset: 0, shader: undefined };
+  const resolveDrawPipeline = (
+    entry: import('./frame-snapshot').ValidatedRenderable,
+    smTopology: PrimitiveTopology,
+    submeshMaterial: MaterialSnapshot,
+    selectedPass: Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'> | undefined,
+    selectedShaderId: string | undefined,
+    selectedRenderState: MaterialSnapshot['renderState'],
+    vertexEntry: string | undefined,
+    fragmentEntry: string | undefined,
+    oitAccumulateDraw: boolean,
+    authoredVariantSet: string | undefined,
+    pipelinePreparation = false,
+  ): boolean => {
+    const isSkinEntry = entry.source.skin !== undefined;
+    const probeBlendRecordAvailable =
+      runtime.device.caps.storageBuffer && entry.source.probeBlendRecord !== undefined;
+    const smMaterialShaderId =
+      selectedPass !== undefined
+        ? selectedShaderId
+        : entry.source.skin !== undefined
+          ? isStandardPbrSkinMaterialShader(submeshMaterial.materialShaderId)
+            ? submeshMaterial.materialShaderId
+            : SKIN_MATERIAL_SHADER_ID
+          : submeshMaterial.materialShaderId;
+    const shaderArtifact =
+      smMaterialShaderId === undefined
+        ? undefined
+        : runtime.getMaterialShaderArtifact?.(smMaterialShaderId, {
+            deformation: isSkinEntry ? 'skin' : 'rigid',
+            address: 'direct',
+            clustered: clusteredLighting,
+            vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
+              (attribute) => attribute.key === 'color',
+            ),
+          });
+    const cookedProbeBlend =
+      shaderArtifact !== undefined && requiresProbeBlendRecord(shaderArtifact);
+    const probeBlendAvailable =
+      runtime.device.caps.storageBuffer &&
+      (cookedProbeBlend ||
+        (probeBlendRecordAvailable &&
+          (isStandardPbrMaterialShader(smMaterialShaderId) ||
+            submeshMaterial.surfaceModel === 'single-layer-medium')));
+    const isSpriteShader =
+      smMaterialShaderId === 'forgeax::sprite' || smMaterialShaderId === 'forgeax::sprite-lit';
+    // Preserve the dedicated sprite-pass state when the linear-LDR graph
+    // routes a sprite through this generic geometry path. Negative scale
+    // flips winding, so back-face culling would erase the quad.
+    const basePipelineRenderState = isSpriteShader
+      ? {
+          ...selectedRenderState,
+          depthWriteEnabled: false,
+          depthCompare: 'less-equal' as const,
+          cullMode: 'none' as const,
+          blend: selectedRenderState?.blend ?? SPRITE_PREMULTIPLIED_ALPHA_BLEND,
+        }
+      : geometryRenderStateForTopology(smTopology, selectedRenderState);
+    let pipelineRenderState = geometryRenderStateForPass(
+      basePipelineRenderState,
+      passKind,
+      coverageOnly,
+    );
+    if (
+      transparentDepthWrite &&
+      passKind === 'forward' &&
+      (submeshMaterial.transparent === true || selectedRenderState?.blend !== undefined)
+    ) {
+      pipelineRenderState = {
+        ...pipelineRenderState,
+        depthWriteEnabled: authoredTransparentDepthWrite(
+          submeshMaterial.transparent,
+          selectedRenderState,
+        ),
+        depthCompare: 'less-equal',
+      };
+    }
+    // Fog composition follows the authored blend, before OIT replaces it.
+    const viewOffset = viewOffsetForBlend(pipelineRenderState?.blend);
+    if (oitAccumulateDraw) pipelineRenderState = oitAccumulateRenderState(pipelineRenderState);
+    let smPipelineHandle: typeof pipelineState.unlitPipeline;
+    let materialPipelineEntry: MaterialShaderPipelineEntry | null = null;
+    if (smMaterialShaderId === undefined || smMaterialShaderId === 'forgeax::default-unlit') {
+      const unlitShaderId = smMaterialShaderId ?? 'forgeax::default-unlit';
+      const unlitProjectionVariantResult = variantSetFromVertexLayoutProjection(
+        entry.mesh.layoutProjection,
+        undefined,
+      );
+      if (!unlitProjectionVariantResult.ok) {
+        runtime.errorRegistry.fire(unlitProjectionVariantResult.error);
+        return false;
+      }
+      const unlitHasColor = unlitProjectionVariantResult.value === 'VERTEX_COLOR_AVAILABLE=true';
+      const unlitVariantSet = standardStorageVariantSet(
+        runtime.device.caps.storageBuffer,
+        unlitHasColor,
+      );
+      const unlitRsp = resolveMaterialPipeline(
+        unlitShaderId,
+        pipelineRenderState,
+        smTopology,
+        entry.mesh.indexFormat,
+        unlitVariantSet,
+        colorFormatOverride,
+        entry.mesh.layoutProjection,
+        vertexEntry,
+        fragmentEntry,
+        submeshMaterial.standardTextureMask,
+        undefined,
+        pipelinePreparation,
+      );
+      materialPipelineEntry = unlitRsp;
+      smPipelineHandle =
+        unlitRsp?.pipeline ??
+        (colorFormatOverride === undefined
+          ? selectGeometryPipeline(pipelineState, isHdrTarget, msaaActive)
+          : null);
+    } else if (smMaterialShaderId !== undefined) {
+      // feat-20260609 M4.5 / w38 (D-11): the variantSet handed to
+      // getMaterialShaderPipeline MUST mirror the boot-time
+      // `definesKey` rule at createRenderer.ts:2483-2485 (sortedEntries
+      // .every(v=>v===true) ? '' : 'A=v+...'). manifest variant.definesKey
+      // is `''` for the all-true variant, so HDRP (both axes true) must
+      // pass the canonical empty key to hit that variant via
+      // findVariantByKey. Passing the expanded form would produce a
+      // miss and silently fall back to the registered default WGSL,
+      // creating a layout/binding mismatch under HDRP.
+      //
+      // URP path passes the explicit expanded form because the URP
+      // variant's manifest definesKey IS that exact non-empty string
+      // (CLUSTER_FORWARD_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true)
+      // -- the canonical-empty rule only applies to the all-true case.
+      const hasVertexColor = entry.mesh.layoutProjection.attributes.some(
+        (attribute) => attribute.key === 'color',
+      );
+      // The all-true HDRP variant uses the canonical empty key only when
+      // every variant axis is true. A plain mesh adds the geometry-owned
+      // VERTEX_COLOR_AVAILABLE=false axis, so retain the two capability
+      // axes explicitly or the selector would silently choose the URP
+      // group(2) layout for an HDRP cluster bind group.
+      const capabilityVariantSet = standardTopologyVariantSet(
+        c.standardLighting,
+        runtime.device.caps.storageBuffer,
+        hasVertexColor,
+        probeBlendAvailable,
+      );
+      const transmissionAdmission = standardTransmissionAdmission(
+        submeshMaterial,
+        runtime.device.limits.maxSampledTexturesPerShaderStage,
+      );
+      if (transmissionAdmission?.kind === 'exceeded')
+        reportSampledTextureBudgetExceeded(
+          runtime,
+          submeshMaterial,
+          transmissionAdmission.conflicts,
+        );
+      const transmissionAvailable =
+        transmissionAdmission !== undefined && transmissionAdmission.kind !== 'exceeded';
+      const materialCapabilityVariantSet =
+        transmissionAvailable && !capabilityVariantSet.includes('TRANSMISSION_AVAILABLE=')
+          ? `${capabilityVariantSet}+TRANSMISSION_AVAILABLE=true`
+          : capabilityVariantSet;
+      // Regular sprite keeps the boot-selected artifact; SpriteInstances
+      // uses the explicit empty key for PER_INSTANCE_REGION=true. Sprite-lit
+      // is different: the typed Standard transparent lane records it here,
+      // so its shader must follow the frame-owned cluster topology or local
+      // lights disappear while the ordinary sprite path remains direct.
+      const variantSet = isSpriteShader
+        ? smMaterialShaderId === 'forgeax::sprite-lit'
+          ? `${materialCapabilityVariantSet}+PER_INSTANCE_REGION=${entry.source.spriteInstances !== undefined}`
+          : entry.source.spriteInstances !== undefined
+            ? ''
+            : undefined
+        : authoredVariantSet === undefined
+          ? materialCapabilityVariantSet
+          : `${materialCapabilityVariantSet}+${authoredVariantSet}`;
+      // Draws on the unfogged View slot skip the translucent fog chain.
+      const forwardFragmentEntry = selectForwardFragmentEntry({
+        passKind,
+        fragmentEntry,
+        oitAccumulate: oitAccumulateDraw,
+        viewOffset,
+        atmosphereCapture: c.capturedAtmosphere !== undefined,
+      });
+      const cachedPipeline = resolveMaterialPipeline(
+        smMaterialShaderId,
+        pipelineRenderState,
+        smTopology,
+        entry.mesh.indexFormat,
+        variantSet,
+        colorFormatOverride,
+        entry.mesh.layoutProjection,
+        vertexEntry,
+        forwardFragmentEntry,
+        submeshMaterial.standardTextureMask,
+        submeshMaterial.surfaceModel === 'single-layer-medium' && passKind === 'forward'
+          ? capabilityVariantSet.includes('CLUSTER_FORWARD_AVAILABLE=true')
+            ? 'surface-direct-cluster-pbr'
+            : 'surface-direct-pbr'
+          : undefined,
+        pipelinePreparation,
+      );
+      // feat-20260615-pipeline-spec-ssot M6-T1: cache miss resolves to
+      // null uniformly across URP / HDRP / skin shaders. Charter P3
+      // explicit failure: the pre-M6 URP-path silent fallback to the
+      // boot-time `pipelineState.standardPipeline*` (M4.5-followup w43)
+      // masked real PipelineSpecError build failures behind a
+      // layout-compatible-but-wrong PSO. The per-submesh
+      // `if (smPipelineHandle === null) continue` skip-draw (which
+      // already covered HDRP-active and skin miss paths) is now the
+      // single uniform recovery shape -- one frame of skip-draw on
+      // first-touch, then the cached PSO flows in once the async
+      // build resolves. The pre-loop skin-PSO probe still skips the
+      // entire entry on first-submesh probe miss; this site only
+      // fires on per-submesh topology variance miss.
+      materialPipelineEntry = cachedPipeline;
+      smPipelineHandle = cachedPipeline?.pipeline ?? null;
+    } else {
+      smPipelineHandle = selectGeometryPipeline(pipelineState, isHdrTarget, msaaActive);
+    }
+    pipelineSelection.pipeline = smPipelineHandle;
+    pipelineSelection.material = materialPipelineEntry;
+    pipelineSelection.probeBlend = probeBlendAvailable;
+    pipelineSelection.viewOffset = viewOffset;
+    pipelineSelection.shader = smMaterialShaderId;
+    return true;
+  };
+
+  if (preparationPassMatches !== undefined) {
+    for (const entry of c.pipelinePreparationEntries ?? []) {
+      const passes = entry.source.pipelinePreparation ?? [];
+      const authoredVariantSet = variantSetFromDefines(passes.at(-1)?.defines);
+      for (const sm of entry.mesh.submeshes) {
+        const material = entry.source.materials[sm.materialSlot] ?? entry.source.material;
+        for (const preparedPass of entry.source.pipelinePreparation ?? []) {
+          const selectedPass = preparedPass;
+          if (
+            selectedPass.materialHandle !== (material.materialHandle ?? 0) ||
+            !preparationPassMatches(selectedPass, material)
+          )
+            continue;
+          let fragmentEntry =
+            passKind === 'temporal'
+              ? undefined
+              : (fragmentEntryPoint ?? selectedPass.fragmentEntry);
+          let accumulate = false;
+          if (oit !== undefined) {
+            const eligibility = classifyOitDraw({
+              materialShaderId: selectedPass.materialShaderId,
+              skinned: entry.source.skin !== undefined,
+              renderState: selectedPass.renderState,
+              fragmentEntry,
+            });
+            if (eligibility.eligible !== (oit === 'accumulate')) continue;
+            accumulate = eligibility.eligible;
+            if (eligibility.eligible)
+              fragmentEntry = eligibility.premultiplied
+                ? OIT_PREMULTIPLIED_FRAGMENT_ENTRY
+                : OIT_FRAGMENT_ENTRY;
+          }
+          const resolved = resolveDrawPipeline(
+            entry,
+            sm.topology,
+            material,
+            selectedPass,
+            selectedPass.materialShaderId,
+            selectedPass.renderState,
+            passKind === 'temporal' ? undefined : selectedPass.vertexEntry,
+            fragmentEntry,
+            accumulate,
+            authoredVariantSet,
+            true,
+          );
+          // A fallback visible pipeline does not qualify an explicitly requested authored PSO.
+          if (!resolved || pipelineSelection.material === null)
+            frameState.pipelinePreparationPending = true;
+        }
+      }
+    }
+  }
+
+  // Preparation shares the exact resolver but never opens or binds a raster pass.
+  if (pass === undefined) return;
+  if (resolveMaterialBindGroup === undefined)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'geometry drawing has material bindings',
+      hint: 'use preparation-only mode without a render pass or supply the draw material resolver',
+    });
 
   entries: for (let i = 0; i < validatedOrdered.length; i++) {
     const entry = validatedOrdered[i];
@@ -1038,8 +1345,6 @@ export function recordGeometryDraws(
     meshGroup2DynamicOffsets[0] = meshBinding.byteOffset;
     let group2DynamicOffsets: readonly number[] = meshGroup2DynamicOffsets;
     const isSkinEntry = entry.source.skin !== undefined;
-    const probeBlendRecordAvailable =
-      runtime.device.caps.storageBuffer && entry.source.probeBlendRecord !== undefined;
     // feat-20260612-skin-palette-per-frame-upload M1 / m1-3 + M6: the
     // record stage reads the GPU buffer reference through
     // `entry.source.skin.buffer` (per-slice carrier set at extract time
@@ -1377,210 +1682,29 @@ export function recordGeometryDraws(
         ).byteOffset;
         pass.setBindGroup(1, perSubmeshBg, materialGroup1DynamicOffsets, 0, 1);
         const smTopology = sm.topology;
-        const smMaterialShaderId =
-          selectedPass !== undefined
-            ? selectedShaderId
-            : entry.source.skin !== undefined
-              ? isStandardPbrSkinMaterialShader(submeshMaterial.materialShaderId)
-                ? submeshMaterial.materialShaderId
-                : SKIN_MATERIAL_SHADER_ID
-              : submeshMaterial.materialShaderId;
-        const shaderArtifact =
-          smMaterialShaderId === undefined
-            ? undefined
-            : runtime.getMaterialShaderArtifact?.(smMaterialShaderId, {
-                deformation: isSkinEntry ? 'skin' : 'rigid',
-                address: 'direct',
-                clustered: clusteredLighting,
-                vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
-                  (attribute) => attribute.key === 'color',
-                ),
-              });
-        const cookedProbeBlend =
-          shaderArtifact !== undefined && requiresProbeBlendRecord(shaderArtifact);
-        const probeBlendAvailable =
-          runtime.device.caps.storageBuffer &&
-          (cookedProbeBlend ||
-            (probeBlendRecordAvailable &&
-              (isStandardPbrMaterialShader(smMaterialShaderId) ||
-                submeshMaterial.surfaceModel === 'single-layer-medium')));
-        const isSpriteShader =
-          smMaterialShaderId === 'forgeax::sprite' || smMaterialShaderId === 'forgeax::sprite-lit';
-        // Preserve the dedicated sprite-pass state when the linear-LDR graph
-        // routes a sprite through this generic geometry path. Negative scale
-        // flips winding, so back-face culling would erase the quad.
-        const basePipelineRenderState = isSpriteShader
-          ? {
-              ...selectedRenderState,
-              depthWriteEnabled: false,
-              depthCompare: 'less-equal' as const,
-              cullMode: 'none' as const,
-              blend: selectedRenderState?.blend ?? SPRITE_PREMULTIPLIED_ALPHA_BLEND,
-            }
-          : geometryRenderStateForTopology(smTopology, selectedRenderState);
-        let pipelineRenderState = geometryRenderStateForPass(
-          basePipelineRenderState,
-          passKind,
-          coverageOnly,
+        const resolvedPipeline = resolveDrawPipeline(
+          entry,
+          smTopology,
+          submeshMaterial,
+          selectedPass,
+          selectedShaderId,
+          selectedRenderState,
+          vertexEntry,
+          fragmentEntry,
+          oitAccumulateDraw,
+          entry.variantSet,
         );
-        if (
-          transparentDepthWrite &&
-          passKind === 'forward' &&
-          (submeshMaterial.transparent === true || selectedRenderState?.blend !== undefined)
-        ) {
-          pipelineRenderState = {
-            ...pipelineRenderState,
-            depthWriteEnabled: authoredTransparentDepthWrite(
-              submeshMaterial.transparent,
-              selectedRenderState,
-            ),
-            depthCompare: 'less-equal',
-          };
-        }
-        // Fog composition follows the authored blend, before OIT replaces it.
-        const viewOffset = viewOffsetForBlend(pipelineRenderState?.blend);
+        if (!resolvedPipeline) continue;
+        const {
+          pipeline: smPipelineHandle,
+          material: materialPipelineEntry,
+          probeBlend: probeBlendAvailable,
+          viewOffset,
+          shader: smMaterialShaderId,
+        } = pipelineSelection;
         if (viewOffset !== lastViewOffset) {
           pass.setBindGroup(0, viewBindGroup as BindGroup, [viewOffset, 0]);
           lastViewOffset = viewOffset;
-        }
-        if (oitAccumulateDraw) pipelineRenderState = oitAccumulateRenderState(pipelineRenderState);
-        let smPipelineHandle: typeof pipelineState.unlitPipeline;
-        let materialPipelineEntry: MaterialShaderPipelineEntry | null = null;
-        if (smMaterialShaderId === undefined || smMaterialShaderId === 'forgeax::default-unlit') {
-          const unlitShaderId = smMaterialShaderId ?? 'forgeax::default-unlit';
-          const unlitProjectionVariantResult = variantSetFromVertexLayoutProjection(
-            entry.mesh.layoutProjection,
-            undefined,
-          );
-          if (!unlitProjectionVariantResult.ok) {
-            runtime.errorRegistry.fire(unlitProjectionVariantResult.error);
-            continue;
-          }
-          const unlitHasColor =
-            unlitProjectionVariantResult.value === 'VERTEX_COLOR_AVAILABLE=true';
-          const unlitVariantSet = standardStorageVariantSet(
-            runtime.device.caps.storageBuffer,
-            unlitHasColor,
-          );
-          const unlitRsp = resolveMaterialPipeline(
-            unlitShaderId,
-            pipelineRenderState,
-            smTopology,
-            entry.mesh.indexFormat,
-            unlitVariantSet,
-            colorFormatOverride,
-            entry.mesh.layoutProjection,
-            vertexEntry,
-            fragmentEntry,
-            submeshMaterial.standardTextureMask,
-          );
-          materialPipelineEntry = unlitRsp;
-          smPipelineHandle =
-            unlitRsp?.pipeline ??
-            (colorFormatOverride === undefined
-              ? selectGeometryPipeline(pipelineState, isHdrTarget, msaaActive)
-              : null);
-        } else if (smMaterialShaderId !== undefined) {
-          // feat-20260609 M4.5 / w38 (D-11): the variantSet handed to
-          // getMaterialShaderPipeline MUST mirror the boot-time
-          // `definesKey` rule at createRenderer.ts:2483-2485 (sortedEntries
-          // .every(v=>v===true) ? '' : 'A=v+...'). manifest variant.definesKey
-          // is `''` for the all-true variant, so HDRP (both axes true) must
-          // pass the canonical empty key to hit that variant via
-          // findVariantByKey. Passing the expanded form would produce a
-          // miss and silently fall back to the registered default WGSL,
-          // creating a layout/binding mismatch under HDRP.
-          //
-          // URP path passes the explicit expanded form because the URP
-          // variant's manifest definesKey IS that exact non-empty string
-          // (CLUSTER_FORWARD_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true)
-          // -- the canonical-empty rule only applies to the all-true case.
-          const hasVertexColor = entry.mesh.layoutProjection.attributes.some(
-            (attribute) => attribute.key === 'color',
-          );
-          // The all-true HDRP variant uses the canonical empty key only when
-          // every variant axis is true. A plain mesh adds the geometry-owned
-          // VERTEX_COLOR_AVAILABLE=false axis, so retain the two capability
-          // axes explicitly or the selector would silently choose the URP
-          // group(2) layout for an HDRP cluster bind group.
-          const capabilityVariantSet = standardTopologyVariantSet(
-            c.standardLighting,
-            runtime.device.caps.storageBuffer,
-            hasVertexColor,
-            probeBlendAvailable,
-          );
-          const transmissionAdmission = standardTransmissionAdmission(
-            submeshMaterial,
-            runtime.device.limits.maxSampledTexturesPerShaderStage,
-          );
-          if (transmissionAdmission?.kind === 'exceeded')
-            reportSampledTextureBudgetExceeded(
-              runtime,
-              submeshMaterial,
-              transmissionAdmission.conflicts,
-            );
-          const transmissionAvailable =
-            transmissionAdmission !== undefined && transmissionAdmission.kind !== 'exceeded';
-          const materialCapabilityVariantSet =
-            transmissionAvailable && !capabilityVariantSet.includes('TRANSMISSION_AVAILABLE=')
-              ? `${capabilityVariantSet}+TRANSMISSION_AVAILABLE=true`
-              : capabilityVariantSet;
-          // Regular sprite keeps the boot-selected artifact; SpriteInstances
-          // uses the explicit empty key for PER_INSTANCE_REGION=true. Sprite-lit
-          // is different: the typed Standard transparent lane records it here,
-          // so its shader must follow the frame-owned cluster topology or local
-          // lights disappear while the ordinary sprite path remains direct.
-          const variantSet = isSpriteShader
-            ? smMaterialShaderId === 'forgeax::sprite-lit'
-              ? `${materialCapabilityVariantSet}+PER_INSTANCE_REGION=${entry.source.spriteInstances !== undefined}`
-              : entry.source.spriteInstances !== undefined
-                ? ''
-                : undefined
-            : entry.variantSet === undefined
-              ? materialCapabilityVariantSet
-              : `${materialCapabilityVariantSet}+${entry.variantSet}`;
-          // Draws on the unfogged View slot skip the translucent fog chain.
-          const forwardFragmentEntry = selectForwardFragmentEntry({
-            passKind,
-            fragmentEntry,
-            oitAccumulate: oitAccumulateDraw,
-            viewOffset,
-            atmosphereCapture: c.capturedAtmosphere !== undefined,
-          });
-          const cachedPipeline = resolveMaterialPipeline(
-            smMaterialShaderId,
-            pipelineRenderState,
-            smTopology,
-            entry.mesh.indexFormat,
-            variantSet,
-            colorFormatOverride,
-            entry.mesh.layoutProjection,
-            vertexEntry,
-            forwardFragmentEntry,
-            submeshMaterial.standardTextureMask,
-            submeshMaterial.surfaceModel === 'single-layer-medium' && passKind === 'forward'
-              ? capabilityVariantSet.includes('CLUSTER_FORWARD_AVAILABLE=true')
-                ? 'surface-direct-cluster-pbr'
-                : 'surface-direct-pbr'
-              : undefined,
-          );
-          // feat-20260615-pipeline-spec-ssot M6-T1: cache miss resolves to
-          // null uniformly across URP / HDRP / skin shaders. Charter P3
-          // explicit failure: the pre-M6 URP-path silent fallback to the
-          // boot-time `pipelineState.standardPipeline*` (M4.5-followup w43)
-          // masked real PipelineSpecError build failures behind a
-          // layout-compatible-but-wrong PSO. The per-submesh
-          // `if (smPipelineHandle === null) continue` skip-draw (which
-          // already covered HDRP-active and skin miss paths) is now the
-          // single uniform recovery shape -- one frame of skip-draw on
-          // first-touch, then the cached PSO flows in once the async
-          // build resolves. The pre-loop skin-PSO probe still skips the
-          // entire entry on first-submesh probe miss; this site only
-          // fires on per-submesh topology variance miss.
-          materialPipelineEntry = cachedPipeline;
-          smPipelineHandle = cachedPipeline?.pipeline ?? null;
-        } else {
-          smPipelineHandle = selectGeometryPipeline(pipelineState, isHdrTarget, msaaActive);
         }
 
         if (smPipelineHandle === null) {
@@ -1686,20 +1810,25 @@ export function recordGeometryDraws(
               indexOffset,
               baseVertex,
               (draw, command) => {
-                c.onRenderableDraw?.(entry, smIdx, {
-                  lane: 'cpu',
-                  ready: true,
-                  pipeline: smPipelineHandle,
-                  materialSlot: matSlotIdx,
-                  ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
-                  unsupportedLineage:
-                    passKind !== 'forward' ||
-                    fold !== undefined ||
-                    entry.source.instances !== undefined ||
-                    entry.source.skin !== undefined ||
-                    draw.instanceCount !== 1,
-                  ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
-                });
+                recordPresented(
+                  entry,
+                  smIdx,
+                  {
+                    lane: 'cpu',
+                    ready: true,
+                    pipeline: smPipelineHandle,
+                    materialSlot: matSlotIdx,
+                    ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
+                    unsupportedLineage:
+                      passKind !== 'forward' ||
+                      fold !== undefined ||
+                      entry.source.instances !== undefined ||
+                      entry.source.skin !== undefined ||
+                      draw.instanceCount !== 1,
+                    ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
+                  },
+                  fold,
+                );
                 if (surfacePass === undefined || draw.surfaceFrameBase === undefined) return;
                 c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
                   kind: command,
@@ -1734,20 +1863,27 @@ export function recordGeometryDraws(
                 indexOffset,
                 baseVertex,
                 (draw, command) => {
-                  c.onRenderableDraw?.(entry, smIdx, {
-                    lane: 'cpu',
-                    ready: true,
-                    pipeline: smPipelineHandle,
-                    materialSlot: matSlotIdx,
-                    ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
-                    unsupportedLineage:
-                      passKind !== 'forward' ||
-                      fold !== undefined ||
-                      entry.source.instances !== undefined ||
-                      entry.source.skin !== undefined ||
-                      draw.instanceCount !== 1,
-                    ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
-                  });
+                  recordPresented(
+                    entry,
+                    smIdx,
+                    {
+                      lane: 'cpu',
+                      ready: true,
+                      pipeline: smPipelineHandle,
+                      materialSlot: matSlotIdx,
+                      ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
+                      unsupportedLineage:
+                        passKind !== 'forward' ||
+                        fold !== undefined ||
+                        entry.source.instances !== undefined ||
+                        entry.source.skin !== undefined ||
+                        draw.instanceCount !== 1,
+                      ...(smMaterialShaderId === undefined
+                        ? {}
+                        : { programKey: smMaterialShaderId }),
+                    },
+                    fold,
+                  );
                   if (surfacePass === undefined || draw.surfaceFrameBase === undefined) return;
                   c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
                     kind: command,

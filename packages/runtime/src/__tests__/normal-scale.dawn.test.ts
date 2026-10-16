@@ -10,6 +10,7 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import {
   createBarrelRendererFixture,
@@ -71,10 +72,11 @@ it('renders two-axis normalScale zero as a flat normal and one as the authored p
       world.set(receiver, MeshRenderer, { materials: [material(scale)] }).unwrap();
       for (let frame = 0; frame < testQuality.staticFrames; frame += 1) {
         world.update().unwrap();
-        const receipt = fixture.renderer
-          .draw({ leases: [lease], camera: { lease }, environment: { lease } })
-          .unwrap();
-        await receipt.completed;
+        await drawReadyFrame(fixture.renderer, {
+          leases: [lease],
+          camera: { lease },
+          environment: { lease },
+        });
       }
       const pixels = await readBarrelPixels(fixture.device, fixture.renderTarget, 64, 64);
       const offset = pixelOffset(32, 32, 64);

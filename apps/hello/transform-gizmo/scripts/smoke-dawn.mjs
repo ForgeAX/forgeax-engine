@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import assert from 'node:assert/strict';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { readFileSync } from 'node:fs';
@@ -128,13 +129,11 @@ let framesObserved = 0;
 async function draw() {
   world.update().unwrap();
   scene.sync();
-  const receipt = renderer
-    .draw({
+  const receipt = await drawReadyFrame(renderer, {
       leases: [attachment],
       camera: { lease: attachment },
       environment: { lease: attachment },
-    })
-    .unwrap();
+    });
   const observed = await renderer.observe(receipt, { include: ['draws'] });
   assert(observed.ok, JSON.stringify(observed.error));
   await sharedDevice.queue.onSubmittedWorkDone();

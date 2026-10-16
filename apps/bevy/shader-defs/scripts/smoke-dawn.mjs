@@ -184,7 +184,7 @@ world.spawn({
 
 for (let frame = 0; frame < SMOKE_MIN_FRAMES; frame += 1) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) console.error(`[smoke] draw frame ${frame} error: ${result.error.code}`);
   await delay(0);
 }

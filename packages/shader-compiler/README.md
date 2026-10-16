@@ -263,26 +263,30 @@ The plugin builds a `reverseDeps: Map<moduleId, Set<rootEntryId>>` during `trans
 
 The build-only `createShaderProgramCompiler()` serves material and VFX cooking.
 Explicit compiler instances retain their caller-owned lifetime. Node Material Pack
-cookers share a lazy bounded Worker pool per loaded compiler module. Independent
-texture-topology and vertex-color contexts run concurrently; publication retains
-the original context order and reports the first authored failure after work drains.
+cookers share one lazy pool per loaded compiler module. A complete material is
+the parallel unit: source collection, Surface lowering, hashing, variant compilation
+and ray cooking run together off the host thread. Each material Worker uses the
+serial program compiler; Pack concurrency does not create nested shader pools.
 
-| `FORGEAX_SHADER_COMPILE_WORKERS` | Execution | Aggregate program-cache budget |
-| --- | --- | --- |
-| Unset | Two workers, or serial on one core | 96 MiB, or 48 MiB on one core |
-| `1` | Original serial compiler | 48 MiB |
-| `2` through `4` | Requested bounded Worker pool | 48 MiB per worker |
+| `FORGEAX_SHADER_COMPILE_WORKERS` | Material execution |
+| --- | --- |
+| Unset | Up to four workers, bounded by available CPU and memory |
+| `1` | Original serial material cooker |
+| `2` through `4` | Requested pool, clamped to CPU and memory admission |
 
-> [!NOTE]
-> Each worker also owns its Naga/WASM heap. Idle workers are unreferenced and do
-> not hold Node open. These are compilation resources, not player resources.
+Admission keeps 2 GiB of host headroom and budgets 2 GiB per material lane.
+Each Worker has a 1 GiB old-generation heap limit; native/WASM memory is separate.
+Idle workers are unreferenced and do not hold Node open. A failed job rejects its
+caller; a failed Worker is replaced for later jobs without retrying failed work.
+Caller inputs and returned artifacts remain independently owned.
 
-Exact source and selected ABI facts still validate through
-`createShaderProgramCompiler()`. No World, material values or project source
-snapshot is retained. Shader plugins and VFX keep their existing lifecycle-owned
-instances. Every material cook
-collects current source files in parallel, preserving their deterministic order;
-changed source or selected entries still enter the real validation path.
+Exact source and selected ABI facts validate on every cook. A bounded Surface
+lowering cache reuses only the pure string rewrite after validation: 128 entries,
+16 MiB retained UTF-16 payload, and at most 1 MiB per entry. Its key includes every
+lowering input, including generated parameters, ABI and inlined helpers. Source
+collection and diagnostic ownership are not cached. No World, material values or
+project source snapshot is retained between jobs. Shader plugins and VFX keep
+their existing lifecycle-owned compiler instances.
 
 `createShaderProgramCompiler()` shares pending composition and validation and retains successful
 compilation stages with independent retained-payload budgets: 16 MiB for composition

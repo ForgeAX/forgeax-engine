@@ -34,6 +34,43 @@ function producers() {
 }
 
 describe('ScriptablePack import bridge with optional parameters', () => {
+  it('refills an idle lane before a slow earlier subject completes, with bounded lookahead', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered: string[] = [];
+    const subjects = ['a', 'b', 'c', 'd', 'e'].map((name, index) => ({
+      sourcePath: `assets/${name}.pack.ts`,
+      definition: definePack({
+        schemaVersion: '2.0.0',
+        packageId: definePackageId(`01900000-0000-7000-8000-00000000012${index}`),
+        async build() {
+          entered.push(name);
+          if (name === 'a') await gate;
+          return ok({ [`scene/${name}`]: scene() });
+        },
+      }),
+    }));
+    const pending = buildScriptablePackWorklist({
+      subjects,
+      outputs: producers(),
+      maxConcurrency: 2,
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect([...entered]).toEqual(['a', 'b', 'c', 'd']);
+    } finally {
+      release();
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      if (result.ok)
+        expect(result.value.stagedOutputs.map((output) => output.sourceKey)).toEqual(
+          ['a', 'b', 'c', 'd', 'e'].map((name) => `scene/${name}`),
+        );
+    }
+  });
+
   it('bounds concurrent subjects and publishes them in source order', async () => {
     let active = 0,
       peak = 0;
@@ -395,6 +432,93 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       outputs: producers(),
     });
     expect(result).toMatchObject({ ok: false, error: { code: 'pack-content-dependency-stalled' } });
+  });
+
+  it('publishes serial dependencies before admitting the next subject', async () => {
+    const producerId = id('01900000-0000-7000-8000-000000000132');
+    const dependency = AssetGuid.derive(producerId, 'scene/main');
+    const producer = definePack({
+      schemaVersion: '2.0.0',
+      packageId: producerId,
+      build: () => ok({ 'scene/main': scene() }),
+    });
+    const consumer = definePack({
+      schemaVersion: '2.0.0',
+      packageId: id('01900000-0000-7000-8000-000000000133'),
+      async build({ readByGuid }) {
+        const result = await readByGuid(dependency);
+        return result.ok ? ok({ 'scene/copy': scene() }) : err(result.error);
+      },
+    });
+    const result = await buildScriptablePackWorklist({
+      subjects: [
+        { sourcePath: 'a-producer.pack.ts', definition: producer },
+        { sourcePath: 'b-consumer.pack.ts', definition: consumer },
+      ],
+      outputs: producers(),
+      maxConcurrency: 1,
+      maxPasses: 1,
+    });
+    expect(result).toMatchObject({ ok: true, value: { iterations: 1 } });
+  });
+
+  it('retries a speculative fallback read replaced by an earlier producer', async () => {
+    const producerId = id('01900000-0000-7000-8000-000000000130');
+    const dependency = AssetGuid.derive(producerId, 'scene/main');
+    let reads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const producer = definePack({
+      schemaVersion: '2.0.0',
+      packageId: producerId,
+      async build() {
+        await gate;
+        return ok({ 'scene/main': scene() });
+      },
+    });
+    const consumer = definePack({
+      schemaVersion: '2.0.0',
+      packageId: id('01900000-0000-7000-8000-000000000131'),
+      async build({ readByGuid }) {
+        const result = await readByGuid(dependency);
+        if (!result.ok) return err(result.error);
+        reads++;
+        release();
+        return ok({ 'scene/copy': scene() });
+      },
+    });
+    const writes: string[] = [];
+    const result = await buildScriptablePackWorklist({
+      subjects: [
+        { sourcePath: 'a-producer.pack.ts', definition: producer },
+        { sourcePath: 'b-consumer.pack.ts', definition: consumer },
+      ],
+      outputs: producers(),
+      maxConcurrency: 2,
+      assetSource: {
+        async readByGuid() {
+          return ok({ asset: scene(), generation: 7, digest: 'sha256:old' });
+        },
+      },
+      cache: {
+        async read() {
+          return undefined;
+        },
+        async write(subject) {
+          writes.push(subject.sourcePath);
+        },
+      },
+    });
+    expect(result).toMatchObject({ ok: true, value: { iterations: 2 } });
+    expect(reads).toBe(2);
+    if (result.ok) {
+      const evidence = result.value.buildProducts.flatMap((product) => product.externalEvidence);
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]?.digest).not.toBe('sha256:old');
+    }
+    expect(writes).toEqual(['a-producer.pack.ts', 'b-consumer.pack.ts']);
   });
 
   it('uses the published asset source when a dynamic build reads a non-staged dependency', async () => {

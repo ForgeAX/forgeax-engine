@@ -1,0 +1,46 @@
+{
+  "name": "@forgeax/view-plugin-history",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Engine command history and persisted preview artifacts.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./frontend": "./src/frontend.ts",
+    "./identity": "./src/identity.ts",
+    "./ui": "./src/ui/index.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/view-workspace-core": "workspace:*",
+    "@forgeax/view-components": "workspace:*",
+    "@forgeax/engine": "workspace:*"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Product build and interaction evidence is collected by Engine test:view."
+      }
+    }
+  }
+}

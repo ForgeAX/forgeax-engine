@@ -100,6 +100,7 @@ export interface RenderFeaturePlanExecutionPass {
   readonly resolvedGraphics?: PreparedGraphicsResolvedSnapshot;
   readonly resolvedGpuCompute?: import('./prepared-gpu-work').RenderFeatureResolvedGpuComputePass;
   readonly resolvedGpuCopies?: readonly {
+    readonly enabled?: boolean | undefined;
     readonly source: import('./prepared-gpu-work').RenderFeatureResolvedGpuBuffer;
     readonly destination: import('./prepared-gpu-work').RenderFeatureResolvedGpuBuffer;
     readonly size: number;
@@ -195,6 +196,8 @@ export interface RenderFeaturePreparedGraphicsResolverInput {
 }
 
 export interface RenderFeatureFrameResult {
+  /** Explicit GPU preparation has not produced every requested pipeline/resource yet. */
+  readonly preparationPending?: boolean;
   readonly stageEvents: readonly RenderFeatureStageEvent[];
   readonly errors: readonly RenderError[];
   readonly plans: readonly RenderFeaturePlannedFrame[];
@@ -652,7 +655,11 @@ function preparePlanResources(
     return err(planFailure(slot));
   }
   for (const resource of byKind('compute-program')) {
-    const prepared = gpu?.prepareProgram(resource.name, resource.program);
+    const prepared = gpu?.prepareProgram(
+      resource.name,
+      resource.program,
+      resource.preparePipelines,
+    );
     if (prepared === undefined) return err(planFailure(slot));
     if (!prepared.ok) return prepared;
     computePrograms.set(resource.name, prepared.value);
@@ -961,7 +968,14 @@ function projectPlanPasses(
           copy.size > destination.size - destinationOffset
         )
           return err(planFailure(slot));
-        copies.push({ source, destination, size: copy.size, sourceOffset, destinationOffset });
+        copies.push({
+          enabled: copy.enabled,
+          source,
+          destination,
+          size: copy.size,
+          sourceOffset,
+          destinationOffset,
+        });
       }
       projected.push({
         enabled: pass.enabled,
@@ -976,27 +990,33 @@ function projectPlanPasses(
       const program = prepared.computePrograms.get(pass.program);
       const bindings = prepared.computeBindings.get(pass.bindings);
       if (program === undefined || bindings === undefined) return err(planFailure(slot));
+      let missingBindings = false;
       const descriptor: RenderFeatureGpuComputePassDescriptor = {
         program,
         bindings,
-        dispatches: pass.dispatches.map((dispatch) =>
-          dispatch.kind === 'direct'
+        dispatches: pass.dispatches.map((dispatch) => {
+          const name = dispatch.bindings;
+          const dispatchBindings =
+            name === undefined ? bindings : prepared.computeBindings.get(name);
+          if (dispatchBindings === undefined) missingBindings = true;
+          return dispatch.kind === 'direct'
             ? {
                 entryPoint: dispatch.entryPoint,
-                bindings,
+                bindings: dispatchBindings ?? bindings,
                 workgroups: dispatch.workgroups,
               }
             : {
                 entryPoint: dispatch.entryPoint,
-                bindings,
+                bindings: dispatchBindings ?? bindings,
                 indirect: {
                   buffer: prepared.buffers.get(dispatch.resource) as RenderFeatureGpuBufferRef,
                   offset: dispatch.offset,
                 },
-              },
-        ),
+              };
+        }),
       };
       if (
+        missingBindings ||
         descriptor.dispatches.some(
           (dispatch) => dispatch.indirect !== undefined && dispatch.indirect.buffer === undefined,
         )
@@ -1516,6 +1536,7 @@ export function runRenderFeatureFrame(
 ): RenderFeatureFrameBatch {
   const input = inputs[0];
   if (input === undefined) throw new Error('a Feature frame requires its complete view roster');
+  let preparationPending = false;
   const stageEvents: RenderFeatureStageEvent[] = [];
   const errors: RenderError[] = [];
   const preparedResourceBatches: RenderFeaturePreparedResourceBatch[] = [];
@@ -1667,6 +1688,24 @@ export function runRenderFeatureFrame(
           rgba16floatRenderable: input.caps.rgba16floatRenderable === true,
         }),
     }));
+    let sourceRequiresPreparation = false;
+    try {
+      sourceRequiresPreparation = feature.requiresPreparation?.(extracted.value) === true;
+    } catch (cause) {
+      // A declared readiness guard cannot fail open before plan resources exist.
+      preparationPending = true;
+      recordFailure(slot, 'plan', cause, errors);
+      cleanupPreparation(
+        [
+          () => input.sceneResources?.abortFeature(identity),
+          abortResources,
+          () => feature.onFrameAborted?.(extracted.value),
+        ],
+        'plan',
+      );
+      host.setStatus(identity, 'failed', slot.latestError);
+      continue;
+    }
     const declared = invokeStage(
       slot,
       'plan',
@@ -1702,7 +1741,19 @@ export function runRenderFeatureFrame(
       effects: Map<string, PostProcessShaderEntry>;
       requiresGraphRebuild: boolean;
     }[] = [];
+    const requiresPreparation =
+      sourceRequiresPreparation ||
+      (declared.ok &&
+        declared.value.work.some((work) =>
+          work.resources.some(
+            (resource) =>
+              (resource.kind === 'graphics-program' &&
+                resource.program.preparePipelines === true) ||
+              (resource.kind === 'compute-program' && resource.preparePipelines === true),
+          ),
+        ));
     const fail = (error?: unknown) => {
+      if (requiresPreparation) preparationPending = true;
       if (error !== undefined) recordFailure(slot, 'plan', error, errors);
       cleanupPreparation(
         [
@@ -1752,6 +1803,7 @@ export function runRenderFeatureFrame(
       }
       const missing = missingCapability(feature, input.caps);
       if (missing !== undefined && workResources.some((row) => hasActivePlan(row.closure))) {
+        if (requiresPreparation) preparationPending = true;
         const failure = new RenderFeatureCapabilityMissingError(identity, order, missing);
         errors.push(failure);
         cleanupPreparation(
@@ -1818,6 +1870,8 @@ export function runRenderFeatureFrame(
                 }),
         );
         if (!projected.ok) throw projected.error;
+        if (requiresPreparation && projected.value.passes.length !== row.closure.passes.length)
+          preparationPending = true;
         if (scope === 'frame' && projected.value.passes.length !== row.work.passes.length)
           throw new RenderFeaturePreparationFailedError(
             identity,
@@ -1969,6 +2023,7 @@ export function runRenderFeatureFrame(
   }
   for (const result of results.values())
     Object.assign(result, {
+      ...(preparationPending ? { preparationPending: true } : {}),
       postProcessIdentities: Object.freeze([...postProcessIdentities]),
       hiddenEntityReports: mergeHiddenEntityReports([
         ...result.hiddenEntityReports,

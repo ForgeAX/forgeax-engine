@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // transform-hierarchy-pixel-diff.dawn.test.ts -
@@ -239,24 +240,22 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
 
     // Frame A: parent at rest. world.update(1 / 60).unwrap() runs propagateTransforms.
     world.update(1 / 60).unwrap();
-    const drawA = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    expect(drawA.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
     const pixelsA = await doReadPixels(device, renderTarget);
 
     // Stability: a second render of the rest scene must be pixel-stable.
     world.update(1 / 60).unwrap();
-    const drawAA = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    expect(drawAA.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     const pixelsAA = await doReadPixels(device, renderTarget);
     expect(diffCountOf(pixelsA, pixelsAA)).toBe(0);
@@ -265,12 +264,11 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
     const setRes = world.set(parent, Transform, { pos: [PARENT_X_MOVED, 0, 0] });
     expect(setRes.ok).toBe(true);
     world.update(1 / 60).unwrap();
-    const drawB = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    expect(drawB.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
     const pixelsB = await doReadPixels(device, renderTarget);
 

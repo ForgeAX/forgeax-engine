@@ -1,5 +1,36 @@
 # `@forgeax/engine-render`
 
+## Preparing hidden loadout pipelines
+
+Set `MeshRenderer.preparePipelines: true` on the finite mesh roster that this
+session can select, including meshes with hidden `Visibility`. The renderer
+requests their authored color and active ShadowCaster PSOs through the same
+selection used for visible draws. Preparation neither changes visibility nor
+encodes a draw. CPU asset loading and shader-program registration remain
+separate prerequisites.
+
+| Receipt | Meaning |
+| --- | --- |
+| `FrameReceipt.presentation === 'pending'` | At least one requested pipeline is still being prepared |
+| `FrameReceipt.presentation === 'ready'` | The current frame's required pipeline requests and existing presentation checks succeeded |
+
+When the backend exposes `RhiDevice.createRenderPipelineAsync`, explicit
+preparation waits for native pipeline compilation completion. WebGPU forwards
+`GPUDevice.createRenderPipelineAsync`; a pending or failed result never becomes
+a ready PSO, and the visible draw reuses the completed handle. Ordinary pipelines
+without preparation intent retain their existing creation path. Backends without
+this optional operation retain synchronous creation semantics; they do not provide
+the stronger compilation-completion guarantee. Device retirement and source or
+layout replacement reject stale completions.
+
+Readiness follows the actual view, attachment formats, authored state and device
+cache; it is not a fixed frame delay. Keep the intent while these inputs may
+change, or clear it after a matching ready receipt when the application owns
+that transition. This flag does not provide a Source Worker acknowledgment for
+switching a new mid-session loadout; retaining the previous selection until
+such acknowledgment is a separate game transition responsibility. It does not
+prepare an asset library that has not been requested.
+
 ## Explicit material resources and depth versions
 
 Cooked material ABI receipts select the declared binding interface. Render never
@@ -44,6 +75,12 @@ publishing the replacement generation; its deadline remains 20 seconds.
 The separate generic Standard bootstrap matrix and unused
 `PipelineState.standardPipeline` handle are removed.
 
+Deferred lighting keeps immutable pipeline/layout variants in their live device
+scope across graph replacement. Device, view layout, complete cooked shader,
+cluster/LUT contract, fragment entry and ordered target formats determine reuse.
+Graph texture views and bind groups remain local to each graph. Scope retirement
+clears the program references; failed creation stays retryable.
+
 ## Presentation transform authority
 
 All render extraction reads Scene's `readPresentationWorldMatrix`: meshes,
@@ -51,6 +88,10 @@ skin joints, cameras, light/probe captures and terrain share one sampled
 hierarchy. Skin palettes still multiply each sampled joint world by its
 inverse bind matrix. Native publications copy those same matrices and publish
 half-fixed-frame changes even when the exact simulation root did not change.
+Accepted joint-to-skin subscriptions survive pose-only upserts. Full joint handles
+and their order determine rebinding; removing Skin or an entity releases its
+subscriptions. The publisher owns a private binding copy, independent of packet
+metadata.
 Physics keeps GlobalTransform.world; Render owns no interpolation history.
 
 ## Managed simulation scene SDF
@@ -250,6 +291,9 @@ the owners again, so recovery and newly resident resources remain observable.
 Snapshots without texture, sampler or video dependencies share the observation
 by MaterialAsset handle within that scope; their numeric and color values do not
 change resource readiness. Resource overrides retain snapshot-specific observations.
+Cooked values-only children observe their accepted publication program owner;
+the child GUID does not become a second program owner. Uncooked payloads and
+actual program-owner failures retain their structured diagnostics.
 Cloned snapshots sharing a texture payload validate its mip layout once within
 that synchronous projection. The next projection validates live author data again;
 GPU admission, material failures and video readiness retain their owner reads.
@@ -661,6 +705,10 @@ mutating the caller object cannot change an accepted profile. Invalid fields
 fail with `frame-input-invalid` before resource admission. Tile size and depth
 are budget choices; inspect the accepted volume extents and bytes after a
 submitted frame rather than inferring them from the quality label.
+Low quality reconstructs the center plus four axial neighbors (five taps);
+high quality keeps the center plus eight neighbors (nine taps). The optional
+two-neighbor shader specialization remains available internally but is not the
+low-profile default after visible artifact feedback.
 
 | Author field | Contract |
 |:--|:--|
@@ -815,7 +863,12 @@ nonempty local Feature, or dynamic-resolution dependencies retains its
 existing picture only after a successful display submission, while an authored image is pending, instead of queueing fallback
 scene/shadow/post work behind IBL stages. The queue still accepts real submissions;
 these do not commit scene transforms, temporal history, post-processing submissions, or
-a recovery frame seed. First display still records the complete fallback graph; an offscreen capture does not qualify as a prior display. Once the image is resident, the complete graph resumes.
+a recovery frame seed. Graph-admitted post-process parameter buffers remain
+owned by that graph when native pipeline preparation defers presentation; rejecting
+the frame releases only buffers which were never admitted. Scene-depth Feature
+consumers abort their batch while that input is pending, retaining queue completion
+without publishing an unwritten capture or acknowledging source feedback.
+First display still records the complete fallback graph; an offscreen capture does not qualify as a prior display. Once the image is resident, the complete graph resumes.
 This path permits manual exposure without a LUT and excludes retained automatic
 exposure or LUT state; those configurations keep their complete recording path.
 Picture retention requires an accepted output whose extent matches the current canvas,
@@ -2183,8 +2236,8 @@ Shadow views stay cached under ordinary motion:
   over half of the map, an unproven box, a new matrix or a graph recompile
   fall back to a full clear-and-redraw.
 - Orthographic (directional) views skip casters whose world extent across the
-  shadow map is below one texel on the static layer or two texels on the final
-  layer. The view row reports `minCasterDiameter` in the pool inspection and the
+  shadow map is below one texel in every layer. Static/dynamic classification
+  changes caching, never this visibility threshold. The view row reports `minCasterDiameter` in the pool inspection and the
   raster row reports `texelCulled`, read back after each submit that re-culled
   the view (palette-only re-culls reuse the last count), so a retained layer
   keeps the count of the cull that produced it. Perspective views never
@@ -3511,9 +3564,10 @@ arriving during a cycle coalesce into the next cycle rather than starving
 publication. Video and time-driven shader changes require continuous mode or
 explicit invalidation when their producer does not update scene change evidence.
 
-A complete candidate swaps atomically after successful GPU completion. Failed
-submissions retry the same step, and stale device-generation completions cannot
-publish. A moving probe uses Skylight fallback until a capture at its new center
+A complete candidate swaps atomically after successful GPU completion. Each
+recording attempt settles its probe tickets, including early native preparation
+barriers before submission. Failed submissions retry the same step, and stale
+device-generation completions cannot publish. A moving probe uses Skylight fallback until a capture at its new center
 is ready. Each face sees the retained authored scene, including objects outside
 the display camera; authored hidden objects stay excluded. Probe specular keeps
 the global Skylight diffuse color, intensity, and rotation. Shared materials
@@ -6016,6 +6070,10 @@ import {
 consumer that composes sprites with an existing 3D game can call
 `TransparentSort.configure(world, { mode: TransparentSort.layerY, yzAlpha: 1 })`;
 it should not reach into `/internal`.
+
+A submitted sprite fold attributes draw evidence to every validated source member,
+so instancing does not leave non-head entities permanently pending. Rejected heads
+publish no member evidence.
 
 Eligible sprite buckets share one fold instance buffer across the typed transparent
 geometry pass and the legacy sprite pass. Both consume the same head/skip plan;

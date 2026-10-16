@@ -222,7 +222,9 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
   let ao = response.a * screenAo;
   let viewZ = sceneViewZ(view.worldViewProj * vec4<f32>(position, 1.0), view.temporalProjection);
   var shadow = 1.0;
-  if (receiveShadows) {
+  // Deferred surfaces have no diffuse transmission. A back-facing BRDF has
+  // zero directional radiance, so its CSM/contact/capsule factor is unused.
+  if (receiveShadows && dot(normal, normalize(-view.lightDir)) > 0.0) {
     // Geometry owns this exact raster plane; BRDF and decals retain their
     // independent shading normal. No depth-neighborhood inference is needed.
     let receiverNormal = decodeStandardReceiverNormal(receiver.x);

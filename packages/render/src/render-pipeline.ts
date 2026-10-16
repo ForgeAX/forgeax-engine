@@ -488,6 +488,18 @@ export interface RenderPipelineFeatureTarget {
 
 export interface RenderPipelineGpuDrivenProjection {
   readonly accesses: readonly GraphAccess[];
+  /** @internal Register actual graph pass facts without drawing or changing visibility. */
+  readonly registerPipelinePreparation?: (
+    formats: readonly TextureFormat[],
+    filter?: RenderPipelineGpuDrivenFilter,
+    fragmentEntryPoint?: string,
+    coverageOnly?: boolean,
+  ) => void;
+  /** @internal Poll the registered real PSOs before any graph pass is encoded. */
+  readonly preparePipelines?: (
+    entries?: readonly import('./record/frame-snapshot').ValidatedRenderable[],
+    artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
+  ) => boolean;
   /** Live CPU eligibility, before material/view culling; false proves no indirect work. */
   hasWork(filter?: RenderPipelineGpuDrivenFilter, fragmentEntryPoint?: string): boolean;
   encode(

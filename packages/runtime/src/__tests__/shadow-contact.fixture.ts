@@ -13,6 +13,7 @@ import {
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -110,15 +111,12 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
       for (let frame = 0; frame < 3; frame++) {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        const receipt = renderValue(
-          renderer.draw({
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            fixedStep: world.getResource(FixedTime).tick,
-          }),
-        );
-        renderValue(await receipt.completed);
+        await drawReadyFrame(renderer, {
+          leases: [lease],
+          camera: { lease },
+          environment: { lease },
+          fixedStep: world.getResource(FixedTime).tick,
+        });
       }
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const dataUrl = canvas.toDataURL('image/png');

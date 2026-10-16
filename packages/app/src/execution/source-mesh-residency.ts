@@ -73,12 +73,43 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
   private readonly byEntity = new Map<number | undefined, Map<number, Request>>();
   private completion = 0;
   private fixedStep: number | undefined;
+  private currentnessRevision: object = Object.freeze({});
+  private currentness:
+    | {
+        source: Session['source'];
+        epoch: number;
+        generation: number;
+        revision: object;
+        token: object;
+      }
+    | undefined;
   constructor(
     private readonly world: World,
     private readonly session: () => Session | undefined,
   ) {}
   get hasUnreleasedMeshes(): boolean {
     return this.requests.size > 0;
+  }
+  currentnessToken(): object | undefined {
+    const session = this.session();
+    if (session === undefined) return undefined;
+    const previous = this.currentness;
+    if (
+      previous?.source === session.source &&
+      previous.epoch === session.epoch &&
+      previous.generation === session.generation &&
+      previous.revision === this.currentnessRevision
+    )
+      return previous.token;
+    const token = Object.freeze({});
+    this.currentness = {
+      source: session.source,
+      epoch: session.epoch,
+      generation: session.generation,
+      revision: this.currentnessRevision,
+      token,
+    };
+    return token;
   }
 
   prepare: DynamicGeometryResidencyPort['prepare'] = async (input, options) => {
@@ -256,6 +287,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       return;
     }
     request.ready = true;
+    this.currentnessRevision = Object.freeze({});
     if (request.entity !== undefined) this.credits.delete(request);
     request.finish(
       ok({
@@ -300,6 +332,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     }
     if (request.ended !== undefined) return Promise.reject(request.ended);
     request.ready = false;
+    this.currentnessRevision = Object.freeze({});
     this.credits.add(request);
     this.forgetConsumption(requestId, request);
     let resolve!: () => void, reject!: (cause: unknown) => void;
@@ -400,6 +433,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     return lane;
   }
   clear(cause: unknown): void {
+    this.currentnessRevision = Object.freeze({});
     const error = unavailable(cause);
     for (const request of this.requests.values()) {
       request.ready = false;

@@ -1,0 +1,21 @@
+{
+  "history": {
+    "title": "操作历史",
+    "latest": "最新记录",
+    "older": "更早的记录",
+    "noProject": "打开项目后可查看它的 Engine 操作历史。",
+    "loading": "正在读取操作历史…",
+    "empty": "此项目还没有 Engine 命令记录。未打开 View 时执行的命令也会记录。",
+    "select": "选择一条操作，查看结果和捕获的图片。",
+    "running": "已开始 · 尚无结束记录",
+    "succeeded": "成功",
+    "failed": "失败",
+    "arguments": "参数（内容较长时截断）",
+    "result": "结果（内容较长时截断）",
+    "failure": "错误详情",
+    "artifacts": "捕获的图片",
+    "artifactRefs": "全部产物引用",
+    "image": "此次 Engine 操作产生的图片",
+    "loadingImage": "正在读取已保存的图片…"
+  }
+}

@@ -23,6 +23,49 @@ their aggregate.
 > Rejected, timed-out, partial and contended captures remain evidence of their
 > failure; they are not silently discarded observations of a successful run.
 
+### Inherit the product profile before adding test controls
+
+Build the diagnostic configuration from the complete selected product profile,
+then apply the explicitly requested health, duration or input controls. Record
+requested and applied features, including cosmetic effects and environment.
+A test preset that silently drops smoke, gunfire or sky is a different workload,
+even when its resolution, ground and shadow fields match. After a content update,
+reconcile the collector's effect roster, preparation and workload assertions with
+the actual weapons, abilities and environment; an old muzzle-only assertion
+cannot qualify newly restored full effects.
+
+For fresh-player-default acceptance, resolve the application's real defaults and
+enter a fresh browser context without writing quality storage or selecting a
+render profile/stage in the URL. Validate the applied HUD settings and actual FX
+owner as usual. An explicitly selected performance profile is a separate entry,
+even when its current settings happen to equal the default. The
+[Frontline default-entry case](cases/full-scene-resources-20261016.md#fresh-default-entry-and-smoke-preparation)
+retains the concrete factory and driver correction.
+
+| Control | Required boundary |
+| --- | --- |
+| Invulnerability or fixed-duration combat | Explicit diagnostic option and receipt; ordinary performance mode keeps normal damage and finite ammunition |
+| Reduced rendering or omitted effects | Separately named diagnostic profile; retain the full product profile for final acceptance |
+| Ready/first-shot/first-wall and smoke-appearance observation | Passive existing completed-frame/HUD evidence; no rehearsal shot, added LIVE wait or post-window event used to fill a missing boundary |
+| Native factory/queue observation | Separate bounded diagnostic; preserve exact build, program, descriptor, device and clock joins |
+
+### Qualify the readiness owner
+
+| Evidence | Readiness established |
+| --- | --- |
+| Asset residency or program publication | CPU resource/metadata admission only |
+| Synchronous native module factory return | A returned module handle; compilation readiness remains unobserved |
+| Settled async native PSO request | That device's exact requested shader/layout/state/target variant |
+| Completed presentation marked ready | The owners actually admitted for that frame/view; verify explicit hidden requests also enter the real preparation path |
+| Observed queue completion | Coverage through its matching submission identity; an unsettled disposal tail stays right-censored |
+
+Keep cold-boundary warnings in the ordinary CLI/report by default, while
+intrusive Native/CPU/GPU collection stays separately requested. A missing,
+truncated or post-window observation cannot qualify a boundary. Native device
+handles and public device generations need an observed mapping, not a guessed
+numeric alias. The [full-scene cold-readiness case](cases/full-scene-resources-20261016.md#full-profile-cold-readiness-and-passive-warnings)
+retains the actual transparent-lane counterexample and collector revisions.
+
 ### Replay compatibility before a long capture
 
 Check publication schema, cooked material ABI, receipt/layout identities and
@@ -60,6 +103,11 @@ codec is not evidence that production Worker transport compresses each frame.
 | First-to-last timestamp envelope | Measured timeline span including gaps | Exclusive active GPU work |
 | Ordinary Renderer completion receipts | CPU-observed completion throughput/intervals | Browser callback FPS, display scanout or native GPU duration |
 | Hit rate | Hits divided by its explicitly named lookup population | Commands avoided, setup cost avoided or final frame improvement |
+
+Shared begin ticks or enclosing GPU scopes can make several pass durations
+cover the same interval. Inspect their raw boundaries before treating a large
+sum as costly execution. Interval union and envelope are diagnostic timestamp
+coverage, not device utilization, total GPU busy time or completed-frame latency.
 
 Inclusive CPU symbols overlap. A recursive function contributes once per sample
 in the generic analyzer, while different ancestors still share that sample.
@@ -154,6 +202,32 @@ $100(t_{before}-t_{after})/t_{before}$. A faster isolated stage is not the same
 as whole-frame gain: CPU/GPU overlap, pacing and another bottleneck can limit
 throughput. Use uninstrumented ordinary completion measurements to make that
 claim. Descriptive percentiles alone do not establish statistical significance.
+
+## Validate an optimization batch
+
+Preserve the user's scene, features and stopping criteria. Choose the smallest
+owner regression and complete producer A/B that can falsify the change; include
+preparation, maintenance, transfer, receiving and retirement where affected.
+Verify that Before and After actually load different implementations. Retain
+invalid comparisons and rejected candidates, including work counts that improve
+while net CPU or retained memory regresses. Do not repeat a rejected mechanism
+without new evidence that changes its cost boundary. A small or inconsistent
+saving can be withdrawn immediately; do not expand the matrix to obtain a green
+number. Keep timed owner comparisons clear of official cooks, typechecks and
+other CPU/memory runners. If overlap is discovered afterward, retain it as an
+unqualified timing observation rather than rerunning a rejected candidate.
+
+| Boundary | Next validation |
+| --- | --- |
+| Several verified changes address the same measured workload | Freeze their integrated source/build once, then run one representative ordinary window; separate probes and profiling |
+| User reports first wall-hit stalls and sustained combat | Include the real cold shot/wall event and subsequent visible combat/tail in that window; do not pre-fire to erase the cold boundary |
+| New map, asset library, shader ABI or quality configuration | Re-inventory actual loaded objects/materials, cooked bytes and feature policy; establish a new baseline rather than inheriting an older scene's result |
+| User changes task scope or permits disabling a feature | Record the new profile and validate the requested outcome; retain earlier failures under their original scope |
+
+Actor counts, resolution, shadow taps and window lengths in the
+[full-scene case](cases/full-scene-resources-20261016.md) are its workload,
+not Engine-wide gates. A component gain can ship with honest target acceptance
+pending; it does not authorize claiming the integrated game's FPS.
 
 ## Capture and ownership
 

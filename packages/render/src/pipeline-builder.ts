@@ -105,6 +105,8 @@ export interface PipelineBuilderShaderModuleFactory {
 export interface PipelineBuilderContext {
   /** RHI device that owns the pipeline allocation. */
   readonly device: RhiDevice;
+  /** Generation-owned async requests expose a synchronous pending/ready Result here. */
+  readonly createRenderPipeline?: RhiDevice['createRenderPipeline'] | undefined;
   /**
    * Sync shader-module factory (see {@link PipelineBuilderShaderModuleFactory}).
    * In production the engine wires the same `makeShaderDeviceAdapter` it
@@ -350,7 +352,9 @@ export function buildPipelineForMaterialShader(
     // Depth-only passes still run fragment coverage: alpha masks and public
     // clipping must discard the same fragments as the visible surface.
     const hasFragmentStage = fragmentEntry !== null && source.includes('@fragment');
-    const shadowPipelineResult = ctx.device.createRenderPipeline({
+    const shadowPipelineResult = (
+      ctx.createRenderPipeline ?? ctx.device.createRenderPipeline.bind(ctx.device)
+    )({
       label,
       layout: ctx.pipelineLayout,
       vertex: {
@@ -386,7 +390,10 @@ export function buildPipelineForMaterialShader(
       multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
     });
     if (!shadowPipelineResult.ok) {
-      if (shadowPipelineResult.error.code === 'shader-compile-failed') {
+      if (
+        shadowPipelineResult.error.code === 'shader-compile-failed' ||
+        shadowPipelineResult.error.code === 'rhi-not-available'
+      ) {
         return shadowPipelineResult;
       }
       return err(
@@ -458,14 +465,19 @@ export function buildPipelineForMaterialShader(
       ...(renderState?.alphaToCoverageEnabled === true ? { alphaToCoverageEnabled: true } : {}),
     };
   }
-  const pipelineResult = ctx.device.createRenderPipeline(descriptor);
+  const pipelineResult = (
+    ctx.createRenderPipeline ?? ctx.device.createRenderPipeline.bind(ctx.device)
+  )(descriptor);
 
   if (!pipelineResult.ok) {
     // Wrap the underlying RhiError with a `shader-compile-failed` envelope
     // when the originating code is not already canonical -- this preserves
     // the canonical error code consumers expect at the standard-pipeline
     // build site (createRenderer.ts standardPipelineResult).
-    if (pipelineResult.error.code === 'shader-compile-failed') {
+    if (
+      pipelineResult.error.code === 'shader-compile-failed' ||
+      pipelineResult.error.code === 'rhi-not-available'
+    ) {
       return pipelineResult;
     }
     return err(

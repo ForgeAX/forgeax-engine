@@ -87,6 +87,7 @@ export function CBDetailsList({
               key={key}
               data-action={CONTENT_BROWSER_ACTIONS.select}
               data-cb-path={item.type === 'file' ? item.path : undefined}
+              data-cb-guid={item.type === 'asset' ? item.guid : undefined}
               aria-selected={selected}
               aria-busy={opening || undefined}
               onClick={(event) => onSelect(item, event)}

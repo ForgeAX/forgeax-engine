@@ -5,6 +5,7 @@ setLocale('en');
 
 const parent = '01900000-0000-7000-8000-000000000101';
 let revision = 1;
+let revealCount = 0;
 let target = { targetId: 'project-target', worldId: 'project-world' };
 let executions: any[] = [];
 let plugins: any[] = [];
@@ -20,8 +21,8 @@ const pack = { source: { packageId: parent, source: 'Box generator', kind: 'scri
   { name: 'width', type: 'f32', default: 1, minimum: 1, maximum: 5 },
   { name: 'enabled', type: 'bool', default: true },
 ] } };
-const asset = { guid: 'plugin-guid', kind: 'plugin', name: 'Counter behavior', sourcePath: 'runtime/behavior' };
-const state = () => ({ revision, project: { id: 'project', root: '/fixture', name: 'Runtime content fixture' }, projectTarget: target, assets: [asset, ...outputs] });
+const asset = { guid: 'plugin-guid', kind: 'plugin', name: 'Counter behavior', sourcePath: 'content/behavior.pack.ts' };
+const state = () => ({ revision, project: { id: 'project', root: '/fixture', assetRoots: ['content'], name: 'Runtime content fixture' }, projectTarget: target, assets: [asset, ...outputs] });
 const changed = () => { revision++; for (const listener of listeners) listener(state()); };
 const client = {
   transport: { connected: true, async request() { return null; } },
@@ -49,7 +50,7 @@ const client = {
       executions = executions.filter(item => item.instance.packageId !== args.instance.packageId).concat(execution);
       if (execution.status === 'failed') throw new Error('Width must be at most 5');
       execution.lastKnownGood = { generation: (old?.lastKnownGood?.generation ?? 0) + 1 };
-      outputs = [{ guid: 'mesh-guid', kind: 'mesh', name: `Box ${args.instance.values.width}`, sourcePath: 'runtime/generated' }];
+      outputs = [{ guid: 'mesh-guid', kind: 'mesh', name: `Box ${args.instance.values.width}`, sourcePath: 'content/generated.pack.ts' }];
       changed(); return { status: 'admitted' };
     }
     if (operation === 'runtime-pack.plugin-install') { plugins.push({ uid: 21, state: 'active' }); return { uid: 21, state: 'active' }; }
@@ -63,5 +64,5 @@ const client = {
     throw new Error(`Unexpected fixture operation ${operation}`);
   },
 };
-Object.assign(globalThis, { runtimeContentFixture: { calls, completeInspection() { deferInspection = false; completeInspection?.(); }, completeGeneration() { completeGeneration?.(); }, failSave() { failSave = true; }, deferGeneration() { deferGeneration = true; }, replaceTarget() { target = { targetId: 'replacement', worldId: 'replacement-world' }; executions = []; outputs = []; changed(); } } });
-await mountContentBrowserPanel({ client, mountElement: document.getElementById('app')! });
+Object.assign(globalThis, { runtimeContentFixture: { calls, revealed() { return revealCount; }, completeInspection() { deferInspection = false; completeInspection?.(); }, completeGeneration() { completeGeneration?.(); }, failSave() { failSave = true; }, deferGeneration() { deferGeneration = true; }, replaceTarget() { target = { targetId: 'replacement', worldId: 'replacement-world' }; executions = []; outputs = []; changed(); } } });
+await mountContentBrowserPanel({ client, mountElement: document.getElementById('app')!, revealPanel: async () => { revealCount++; return true; } });

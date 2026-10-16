@@ -36,6 +36,8 @@ function endSubmissionPhase(session: RecorderSession | undefined): void {
 
 /** One prepared view pauses at the shared Renderer submission barrier. */
 export interface RecordedView {
+  /** A preparation barrier completes GPU work without publishing a scene picture. */
+  readonly presentation?: import('../render-contract').FramePresentation;
   readonly encoder: RhiCommandEncoder;
   readonly device: RhiDevice;
   readonly beforeSubmit?: ((device: RhiDevice) => RhiError | undefined) | undefined;
@@ -119,6 +121,7 @@ export function submitFrameRecordings(
   const pending: FrameRecording[] = [];
   const featureRequests: { recording: FrameRecording; request: FeatureFrameRequest }[] = [];
   let batch: RenderFeatureFrameBatch | undefined;
+  let sceneInputsReady = true;
   let sharedGraph: ReturnType<typeof recordSharedFeatureGraph>;
   let work: RecordedView | undefined;
   const currentChecks: (() => boolean)[] = [];
@@ -203,11 +206,20 @@ export function submitFrameRecordings(
       if (sceneInputs.length > 0) {
         if (captureView === undefined) throw new Error('Scene inputs require one scene recorder');
         const ready = captureView.recording.next({ ok: true, value: undefined });
-        if (ready.done || !('kind' in ready.value) || ready.value.kind !== 'scene-inputs')
+        if (!ready.done && !('kind' in ready.value) && ready.value.presentation === 'pending') {
+          // Native scene/shadow PSOs can still be preparing. This view already
+          // reached its completion barrier, so submit that work and abort the
+          // dependent Feature batch without publishing an unwritten scene input.
+          sceneInputsReady = false;
+          if (!admitWork(captureView.recording, ready)) return false;
+        } else if (ready.done || !('kind' in ready.value) || ready.value.kind !== 'scene-inputs') {
           throw new Error('Scene input capture did not reach the shared Feature barrier');
+        }
       }
-      sharedGraph = recordSharedFeatureGraph(first.internals, first.encoder, batch.frame);
+      if (sceneInputsReady)
+        sharedGraph = recordSharedFeatureGraph(first.internals, first.encoder, batch.frame);
       for (const { recording } of featureRequests) {
+        if (pending.includes(recording)) continue;
         if (!admitWork(recording, recording.next({ ok: true, value: undefined }))) return false;
       }
     }
@@ -279,7 +291,7 @@ export function submitFrameRecordings(
       const observationOwner = rendererInternals ?? first?.internals;
       if (observationOwner !== undefined)
         observationOwner.submittedPassNames = Object.freeze([...framePassNames]);
-      batch?.frame.onSubmitted();
+      if (sceneInputsReady) batch?.frame.onSubmitted();
       return true;
     } finally {
       if (submitPhase) endSubmissionPhase(profileSession);
@@ -314,9 +326,13 @@ export function submitFrameRecordings(
         failures.push(cause);
       }
     };
-    finalize(() => first.internals.featureSceneInputs?.complete(result.ok, completion));
-    finalize(() => first.internals.rendererCaptureOwner?.complete(result.ok, completion));
-    if (result.ok) {
+    finalize(() =>
+      first.internals.featureSceneInputs?.complete(result.ok && sceneInputsReady, completion),
+    );
+    finalize(() =>
+      first.internals.rendererCaptureOwner?.complete(result.ok && sceneInputsReady, completion),
+    );
+    if (result.ok && sceneInputsReady) {
       finalize(() => batch?.onSubmitted());
       // Queue acceptance survives producer callback failures. Newly retired GPU
       // resources must still be marked submitted before any cleanup can see them.
@@ -325,7 +341,7 @@ export function submitFrameRecordings(
         finalize(() => first.host.markPreparedGraphicsSubmitted(accepted.preparedResourceBatches));
       }
     } else {
-      const stage = result.stage;
+      const stage = result.ok ? 'scene-input-pending' : result.stage;
       finalize(() => first.internals.gpuPassTimingCapture?.abort({ code: stage }));
       finalize(() => batch?.onAborted());
       for (const resources of batch?.preparedResourceBatches ?? []) {
@@ -335,7 +351,7 @@ export function submitFrameRecordings(
         });
       }
     }
-    if (result.ok && batch !== undefined) {
+    if (result.ok && sceneInputsReady && batch !== undefined) {
       const resources = batch.preparedResourceBatches;
       const retire = () => {
         const retired = first.host.retirePreparedGraphics(resources);

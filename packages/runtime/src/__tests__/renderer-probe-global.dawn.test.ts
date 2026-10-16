@@ -24,6 +24,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import {
   createProbeGlobalMesh,
   probeGlobalProfile,
@@ -308,9 +309,13 @@ it.each([
     return result.value;
   };
   const hdr = async () => {
-    assert(renderer.requestObservation);
-    renderValue(renderer.requestObservation(['linear-hdr']));
-    const receipt = await draw();
+    world.update(1 / 60).unwrap();
+    propagateTransforms(world).unwrap();
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease }, geometryLane },
+      ['linear-hdr'],
+    );
     const item = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');

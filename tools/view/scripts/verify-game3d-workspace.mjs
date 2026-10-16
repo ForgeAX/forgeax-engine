@@ -195,6 +195,18 @@ try {
   await page.getByText('Player Body', { exact: true }).first().waitFor();
   const inspected = await workspace.call('entity.inspect', { ...args, entityId: body.entityId });
   assert.ok(inspected.components.some(component => component.name === 'Transform'));
+  const details = page.getByTestId('insp-entity-body');
+  await details.getByTestId('insp-component-list').waitFor();
+  assert.equal(await details.getByTestId('insp-component-list').locator('button').count(), inspected.components.length);
+  assert.equal(await details.getByTestId('insp-group-common').getAttribute('aria-checked'), 'true');
+  const sceneSelection = await workspace.getState().then(state => state.sceneSelection);
+  await details.getByTestId('insp-comprow-MeshFilter').click();
+  assert.equal(await details.getAttribute('data-group'), 'all');
+  assert.equal(await details.getByTestId('insp-field-Transform-pos').count(), 1);
+  for (const component of inspected.components) await details.getByTestId(`insp-section-${component.name}`).waitFor();
+  assert.deepEqual((await workspace.getState()).sceneSelection, sceneSelection);
+  await details.getByTestId('insp-group-common').click();
+  await details.getByTestId('insp-field-Transform-pos').waitFor();
   console.error('PR 3281: real game-3d hierarchy, parent relation, components and View inspection passed');
   // Keep the real Play gesture, including outside-click drawer dismissal. Arm
   // Stop in that browser task, after the client's request microtask but before

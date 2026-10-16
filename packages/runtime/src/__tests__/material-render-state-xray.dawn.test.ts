@@ -19,8 +19,8 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
-import { drawPublished } from './draw-published';
 
 const WIDTH = 64;
 const HEIGHT = 64;
@@ -148,10 +148,12 @@ async function renderCenter(xray: boolean): Promise<{ rgb: number[]; errors: unk
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     for (let frame = 0; frame < 3; frame += 1) {
-      const receipt = drawPublished(renderer, world);
-      if (!receipt.ok) throw receipt.error;
-      const completed = await receipt.value.completed;
-      if (!completed.ok) throw completed.error;
+      world.update(1 / 60).unwrap();
+      await drawReadyFrame(renderer, {
+        leases: [attached.value],
+        camera: { lease: attached.value },
+        environment: { lease: attached.value },
+      });
     }
     if (device === undefined || target === undefined) throw new Error('Dawn target missing');
     const buffer = device.createBuffer({

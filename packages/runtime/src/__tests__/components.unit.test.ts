@@ -176,13 +176,14 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(MeshFilter).assetHandle).toBe('shared<MeshAsset>');
     });
 
-    it('MeshRenderer has materials, lossless lightingChannels and conservativeSkinBounds fields', () => {
+    it('MeshRenderer has materials, lighting channels, skin bounds and pipeline preparation', () => {
       expect(MeshRenderer.name).toBe('MeshRenderer');
-      expect(Object.keys(componentSchema(MeshRenderer)).length).toBe(3);
-      const schemaRecord = componentSchema(MeshRenderer) as Record<string, string>;
-      expect(schemaRecord.materials).toBe('array<shared<MaterialAsset>>');
-      expect(schemaRecord.lightingChannels).toBe('f64');
-      expect(schemaRecord.conservativeSkinBounds).toBe('bool');
+      expect(componentSchema(MeshRenderer)).toEqual({
+        materials: 'array<shared<MaterialAsset>>',
+        lightingChannels: 'f64',
+        conservativeSkinBounds: 'bool',
+        preparePipelines: 'bool',
+      });
     });
 
     it('Camera has 32 fields including target, targetLayer, exposure, and color grading columns', () => {
@@ -1899,7 +1900,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // array added.
   //
   //   (a) `componentDefinition(MeshRenderer).defaults` is a frozen map asserting
-  //       `{ materials: [], lightingChannels: 0xffffffff }` (empty array routes to D-Q7 case B default
+  //       `{ materials: [], lightingChannels: 0xffffffff, conservativeSkinBounds: false, preparePipelines: false }` (empty array routes to D-Q7 case B default
   //       material path).
   //
   //   (b) `world.spawn({ component: MeshRenderer, data: {} })` produces a row
@@ -1912,11 +1913,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //       compile-time error (verified via test-d.ts).
 
   describe('componentDefinition(MeshRenderer).defaults — frozen map assertion (w8)', () => {
-    it('componentDefinition(MeshRenderer).defaults retains empty materials, all light channels and exact skin bounds', () => {
+    it('componentDefinition(MeshRenderer).defaults retains material, lighting, bounds and preparation defaults', () => {
       expect(componentDefinition(MeshRenderer).defaults).toEqual({
         materials: [],
         lightingChannels: 0xffffffff,
         conservativeSkinBounds: false,
+        preparePipelines: false,
       });
     });
 

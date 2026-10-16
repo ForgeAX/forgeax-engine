@@ -65,3 +65,26 @@ it('bounds the source page and never follows a linked Pack source', async () => 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('limits discovery to configured directories before applying the source-page bound', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pack-source-directories-'));
+  try {
+    for (const directory of ['content/art', 'shared', 'src']) {
+      await mkdir(join(root, directory), { recursive: true });
+      await writeFile(
+        join(root, directory, 'item.pack.ts'),
+        'throw new Error("must not execute");',
+      );
+    }
+    const page = await listPackSources(root, 2, ['content', 'content/art', 'shared', 'missing']);
+    expect(page.sources.map((row) => row.sourcePath)).toEqual([
+      'content/art/item.pack.ts',
+      'shared/item.pack.ts',
+    ]);
+    expect(page.hasMore).toBe(false);
+    expect((await listPackSources(root, 2, [])).sources).toEqual([]);
+    await expect(listPackSources(root, 2, ['../outside'])).rejects.toThrow(RangeError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

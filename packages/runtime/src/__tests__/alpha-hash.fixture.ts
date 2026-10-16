@@ -15,6 +15,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialValue, TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 
 export const ALPHA_HASH_SIZE = testQuality.squareSize;
@@ -181,14 +182,14 @@ export async function verifyAlphaHash(
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     const domain = final ? 'linear-ldr' : 'linear-hdr';
-    unwrap(renderer.requestObservation?.([domain]));
     const pending = capture ? options.recorder?.captureFrame() : undefined;
     if (pending !== undefined && options.recorder !== undefined)
       (await options.recorder.frameBoundary()).unwrap();
-    const frame = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const frame = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      [domain],
     );
-    unwrap(await frame.completed);
     completedFrames++;
     if (pending !== undefined && options.recorder !== undefined)
       (await options.recorder.frameBoundary()).unwrap();

@@ -39,6 +39,7 @@ export type InspectorFormGroup = {
   fields: readonly InspectorFormField[];
   groups?: readonly InspectorFormGroup[];
 };
+export type InspectorAssetActionResolver = (value: unknown) => { onOpen?: () => void; onBrowse?: () => void } | undefined;
 
 const READ_ONLY = { readOnly: true, tabIndex: -1 as const };
 
@@ -108,7 +109,7 @@ function VectorField({
   );
 }
 
-export function InspectorFieldControl({ field, assetLabels }: { field: InspectorFormField; assetLabels?: Partial<AssetReferenceLabels> }) {
+export function InspectorFieldControl({ field, assetLabels, assetActions }: { field: InspectorFormField; assetLabels?: Partial<AssetReferenceLabels>; assetActions?: InspectorAssetActionResolver }) {
   if (field.kind === 'angle3' && typeof field.value === 'object' && field.value !== null) {
     const vector = field.value as Record<'x' | 'y' | 'z', number>;
     return <VectorField axes={['x', 'y', 'z']} vector={{ ...vector, w: 0 }} degrees />;
@@ -150,7 +151,7 @@ export function InspectorFieldControl({ field, assetLabels }: { field: Inspector
     return <ColorField value={field.value} />;
   }
   if (field.kind === 'asset') {
-    return <AssetReferenceField value={field.value} {...(assetLabels ? { labels: assetLabels } : {})} />;
+    return <AssetReferenceField value={field.value} {...(assetLabels ? { labels: assetLabels } : {})} {...assetActions?.(field.value)} />;
   }
   return (
     <span className={field.kind === 'number' ? 'fx-inspector-form__numfield fx-inspector-form__numfield--solo' : undefined}>
@@ -167,9 +168,11 @@ export function InspectorFieldControl({ field, assetLabels }: { field: Inspector
 function FormGroup({
   group,
   nested = false,
+  assetActions,
 }: {
   group: InspectorFormGroup;
   nested?: boolean;
+  assetActions?: InspectorAssetActionResolver;
 }) {
   const [open, setOpen] = useState(true);
   const category = group.category === 'all' ? 'all' : group.category === 'capability' ? 'cap' : 'type';
@@ -189,12 +192,12 @@ function FormGroup({
           {group.fields.map((field) => (
             <div className={`fx-inspector-form__row${field.kind === 'angle3' ? ' fx-inspector-form__row--angle' : ''}`} key={field.key} data-testid={`inspector-form-field-${group.key}-${field.key}`}>
               <PropertyRow className={`fx-inspector-form__property${field.kind === 'angle3' ? ' fx-inspector-form__property--angle' : ''}`} label={<span title={field.key}>{field.label}</span>}>
-                <InspectorFieldControl field={field} />
+                <InspectorFieldControl field={field} {...(assetActions ? { assetActions } : {})} />
               </PropertyRow>
             </div>
           ))}
           {(group.groups ?? []).map((child) => (
-            <FormGroup group={child} key={child.key} nested />
+            <FormGroup group={child} key={child.key} nested {...(assetActions ? { assetActions } : {})} />
           ))}
         </div>
       </CollapsibleSection>
@@ -208,12 +211,14 @@ export function InspectorForm({
   identityTitle,
   className,
   empty,
+  assetActions,
 }: {
   groups?: readonly InspectorFormGroup[];
   inspection?: unknown;
   identityTitle?: string;
   className?: string;
   empty?: ReactNode;
+  assetActions?: InspectorAssetActionResolver;
 }) {
   const resolved = groups ?? inspectorFormGroupsFromInspection(
     inspection,
@@ -223,7 +228,7 @@ export function InspectorForm({
   return (
     <div className={['fx-inspector-form', className].filter(Boolean).join(' ')} data-view-readonly="true">
       {resolved.map((group) => (
-        <FormGroup group={group} key={group.key} />
+        <FormGroup group={group} key={group.key} {...(assetActions ? { assetActions } : {})} />
       ))}
     </div>
   );

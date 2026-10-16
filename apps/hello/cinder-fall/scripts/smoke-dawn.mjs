@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 
@@ -196,11 +197,9 @@ let lastReceipt;
 phase('frame-loop');
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update(1 / 60).unwrap();
-  const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!draw.ok) throw new Error(`cinder-fall: Engine draw failed at frame ${frame}: ${draw.error.hint}`);
-  (await draw.value.completed).unwrap();
+  const receipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   drawCount += 1;
-  lastReceipt = draw.value;
+  lastReceipt = receipt;
   if (frame % 10 === 0) console.log(`[cinder-fall-dawn] frame=${frame + 1}/${FRAMES}`);
   await new Promise((resolvePromise) => setImmediate(resolvePromise));
 }

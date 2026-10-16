@@ -1417,6 +1417,15 @@ async function handleRequest(
         await writeFile(reportPath, reportBytes, 'utf8');
         jsonResponse(response, 200, {
           ok: true,
+          artifacts: [
+            { kind: 'png', uri: record.output, mediaType: 'image/png', digest: record.digest },
+            {
+              kind: 'tool-result',
+              uri: reportPath,
+              mediaType: 'application/json',
+              digest: `sha256:${createHash('sha256').update(reportBytes).digest('hex')}`,
+            },
+          ],
           value: {
             revision: after.revision,
             ...(state.snapshot ? { runId: after.runId, inputVersion: after.inputVersion } : {}),

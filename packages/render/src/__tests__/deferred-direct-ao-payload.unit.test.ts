@@ -1,5 +1,6 @@
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { DeviceScope } from '../device/device-scope';
 import {
   addStandardDeferredLighting,
   DEFERRED_LIGHTING_PARAMS_BYTES,
@@ -77,25 +78,32 @@ describe('actual deferred direct AO uniform owners', () => {
   });
   it('gives the actual uniform binding the same minimum byte size as its allocation', () => {
     const f = fixture(true, 0.5);
+    const scope = DeviceScope.create(1, 'deferred-direct-ao-payload');
     const stop = new Error('binding layout observed');
     const createBindGroupLayout = vi.fn((_descriptor: unknown) => {
       throw stop;
     });
-    expect(() =>
-      f.raster.encode({
-        frame: {
-          runtime: {
-            device: { createBindGroupLayout },
-            standardDeferredShaders: { unclustered: 'fixture' },
-            shaderModuleFactory: { createShaderModule: () => ok({}) },
+    try {
+      expect(() =>
+        f.raster.encode({
+          frame: {
+            runtime: {
+              device: { createBindGroupLayout },
+              deviceScope: scope,
+              standardDeferredShaders: { unclustered: 'fixture' },
+              shaderModuleFactory: { createShaderModule: () => ok({}) },
+            },
+            pipelineState: { viewBindGroupLayout: {} },
           },
-        },
-      } as never),
-    ).toThrow(stop);
-    expect(createBindGroupLayout.mock.calls[0]?.[0]).toMatchObject({
-      entries: expect.arrayContaining([
-        { binding: 7, visibility: 2, buffer: { type: 'uniform', minBindingSize: 32 } },
-      ]),
-    });
+        } as never),
+      ).toThrow(stop);
+      expect(createBindGroupLayout.mock.calls[0]?.[0]).toMatchObject({
+        entries: expect.arrayContaining([
+          { binding: 7, visibility: 2, buffer: { type: 'uniform', minBindingSize: 32 } },
+        ]),
+      });
+    } finally {
+      scope.dispose();
+    }
   });
 });

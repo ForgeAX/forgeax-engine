@@ -25,6 +25,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -131,8 +132,9 @@ async function verifyTemporalReplay(
   const model = buildFrameModel(tape);
   const resource = model.resources.find(
     (resource) =>
+      resource.lifecycle.state === 'live' &&
       (resource.descriptor as { desc?: { label?: string } } | null)?.desc?.label ===
-      'standard-scene-temporal',
+        'standard-scene-temporal',
   );
   const work = model.works.at(-1);
   if (resource === undefined || work === undefined)
@@ -362,12 +364,19 @@ export async function verifyVisibleSurfaceReplay(
       environment: { lease },
       geometryLane: activeLane,
     });
-  const draw = async () => {
+  const draw = async (observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(submit());
-    renderValue(await receipt.completed);
-    return receipt;
+    return drawReadyFrame(
+      renderer,
+      {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+        geometryLane: activeLane,
+      },
+      observe ? ['visible-surface'] : undefined,
+    );
   };
   const readTemporal = async (name: string) => {
     if (native === undefined || temporal === undefined) throw new Error('missing temporal target');
@@ -411,7 +420,7 @@ export async function verifyVisibleSurfaceReplay(
       renderValue(requestObservation(['visible-surface']));
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      const capturedReceipt = await draw();
+      const capturedReceipt = await draw(true);
       const temporalLive = await readTemporal(lane);
       (await recorder.frameBoundary()).unwrap();
       const captured = (await pending).unwrap();
@@ -441,7 +450,7 @@ export async function verifyVisibleSurfaceReplay(
         renderValue(requestObservation(['visible-surface']));
         const maskPending = recorder.captureFrame();
         (await recorder.frameBoundary()).unwrap();
-        const maskReceipt = await draw();
+        const maskReceipt = await draw(true);
         (await recorder.frameBoundary()).unwrap();
         await save(`${lane}-masked.rhitape`, (await maskPending).unwrap().bytes);
         const maskResult = renderValue(
@@ -573,8 +582,9 @@ export async function verifyVisibleSurfaceReplay(
           }
           const temporalResource = model.resources.find(
             (resource) =>
+              resource.lifecycle.state === 'live' &&
               (resource.descriptor as { desc?: { label?: string } } | null)?.desc?.label ===
-              'standard-scene-temporal',
+                'standard-scene-temporal',
           );
           if (temporalResource === undefined) throw new Error('missing captured temporal resource');
           const lastWork = model.works.at(-1);
@@ -605,8 +615,7 @@ export async function verifyVisibleSurfaceReplay(
       }
     }
     const snapshot = async (name: string) => {
-      renderValue(requestObservation(['visible-surface']));
-      const receipt = await draw();
+      const receipt = await draw(true);
       const result = renderValue(await renderer.observe(receipt, { include: ['visible-surface'] }));
       const surface = result.observations?.find((item) => item.domain === 'visible-surface');
       if (surface?.domain !== 'visible-surface') throw new Error('missing surface snapshot');

@@ -128,14 +128,23 @@ export function projectRenderFeatureShadows<FrameCtx extends RenderGraphFrame>(
       }
       const work = pass.resolvedGpuCompute;
       if (work === undefined) continue;
-      const canRunEarly = (candidate: RenderFeaturePlanExecutionPass): boolean =>
-        candidate.resolvedGpuCompute !== undefined &&
-        (candidate.resolvedGpuCompute.sampledTargets?.length ?? 0) === 0 &&
-        (candidate.resolvedGpuCompute.storageTargets?.length ?? 0) === 0 &&
-        candidate.resolvedGpuCompute.buffers.every(
-          ({ buffer, access }) =>
-            !deferredWrites.has(buffer) && (!writesBuffer(access) || !deferredAccesses.has(buffer)),
+      const canRunEarly = (candidate: RenderFeaturePlanExecutionPass): boolean => {
+        if (candidate.resolvedGpuCopies !== undefined)
+          return candidate.resolvedGpuCopies.every(
+            ({ source, destination }) =>
+              !deferredWrites.has(source.buffer) && !deferredAccesses.has(destination.buffer),
+          );
+        return (
+          candidate.resolvedGpuCompute !== undefined &&
+          (candidate.resolvedGpuCompute.sampledTargets?.length ?? 0) === 0 &&
+          (candidate.resolvedGpuCompute.storageTargets?.length ?? 0) === 0 &&
+          candidate.resolvedGpuCompute.buffers.every(
+            ({ buffer, access }) =>
+              !deferredWrites.has(buffer) &&
+              (!writesBuffer(access) || !deferredAccesses.has(buffer)),
+          )
         );
+      };
       if (canRunEarly(pass)) {
         let end = index + 1;
         while (end < execution.passes.length) {
@@ -144,7 +153,6 @@ export function projectRenderFeatureShadows<FrameCtx extends RenderGraphFrame>(
             next === undefined ||
             next.shadowCaster ||
             next.graphics !== undefined ||
-            next.resolvedGpuCopies !== undefined ||
             !canRunEarly(next)
           )
             break;
@@ -239,8 +247,7 @@ export function projectRenderFeaturePlans<FrameCtx extends RenderGraphFrame>(
             next === undefined ||
             next.shadowCaster ||
             next.graphics !== undefined ||
-            next.resolvedGpuCopies !== undefined ||
-            next.resolvedGpuCompute === undefined ||
+            (next.resolvedGpuCompute === undefined && next.resolvedGpuCopies === undefined) ||
             state.projected.has(next) ||
             (options.passNames !== undefined && !options.passNames.has(next.name))
           )

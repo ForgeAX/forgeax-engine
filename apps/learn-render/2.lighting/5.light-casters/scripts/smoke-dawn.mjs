@@ -41,6 +41,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -459,17 +460,11 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
   framesObserved++;
 }
 const device = sharedDevice;

@@ -102,6 +102,13 @@ function resourceOpenEntry(snapshot: WorkspaceState | null | undefined, kind: st
   return opens instanceof Map ? opens.get(kind) : opens[kind];
 }
 
+export function selectWorkspaceFallbackSubject(snapshot: WorkspaceState | null | undefined) {
+  if (snapshot?.openRequest?.detailsOnly) return snapshot.openRequest.asset;
+  const opens = snapshot?.resourceOpens;
+  return (opens instanceof Map ? [...opens.values()] : Object.values(opens ?? {}))
+    .filter(entry => entry.detailsOnly).sort((a, b) => (b.sequence ?? 0) - (a.sequence ?? 0))[0]?.asset;
+}
+
 /**
  * Each asset editor page keeps the last matching asset after later opens.
  * `openRequest` is only the most recent open, so material/mesh tabs must
@@ -110,7 +117,7 @@ function resourceOpenEntry(snapshot: WorkspaceState | null | undefined, kind: st
 export function selectWorkspaceResourceSubject(snapshot: WorkspaceState | null | undefined, kinds: readonly string[]) {
   const accepted = Array.isArray(kinds) ? kinds : [];
   if (accepted.length === 0) {
-    const asset = snapshot?.openRequest?.asset;
+    const asset = selectWorkspaceFallbackSubject(snapshot) ?? snapshot?.openRequest?.asset;
     return typeof asset?.guid === 'string' && asset.guid !== '' ? asset : undefined;
   }
   const extras = extraPreviewEntries(snapshot);

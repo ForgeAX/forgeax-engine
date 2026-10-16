@@ -271,15 +271,33 @@ try {
   const meshInspector = page.getByTestId('insp-entity-body');
   await meshInspector.waitFor();
   const meshInspection = await live.workspaceCore.invoke('entity.inspect', { targetId, targetGeneration, entityId: meshEntity.entityId });
+  await meshInspector.getByTestId('insp-component-list').waitFor();
+  assert.equal(await meshInspector.getByTestId('insp-component-list').locator('button').count(), meshInspection.components.length);
+  assert.equal(await meshInspector.getByTestId('insp-group-common').getAttribute('aria-checked'), 'true');
+  assert.deepEqual(await meshInspector.locator('.insp-detail-section').evaluateAll(sections =>
+    sections.map(section => section.getAttribute('data-testid'))), ['insp-section-Transform', 'insp-section-mesh', 'insp-section-materials']);
+  const sceneSelection = pageWorkspace().snapshot().sceneSelection;
+  await meshInspector.getByTestId('insp-comprow-MeshFilter').click();
+  assert.equal(await meshInspector.getAttribute('data-group'), 'all');
+  assert.equal(await meshInspector.getByTestId('insp-comprow-MeshFilter').getAttribute('aria-current'), 'location');
+  assert.deepEqual(pageWorkspace().snapshot().sceneSelection, sceneSelection);
   for (const component of meshInspection.components) {
     await meshInspector.getByTestId(`insp-comprow-${component.name}`).waitFor();
     await meshInspector.getByTestId(`insp-section-${component.name}`).waitFor();
   }
+  await meshInspector.getByTestId('insp-group-common').click();
   const filterValues = meshInspection.components.find(component => component.name === 'MeshFilter').values;
   assert.equal(typeof filterValues.assetHandle, 'number');
-  await meshInspector.getByText(`Handle ${filterValues.assetHandle}`, { exact: true }).waitFor();
-  await meshInspector.getByTestId('insp-field-MeshFilter-assetHandle').waitFor();
+  const meshReference = meshInspector.getByTestId('insp-section-mesh');
+  const meshAsset = assets.assets.find(asset => asset.kind === 'mesh' && asset.sourceKey === 'mesh/box');
+  assert.ok(meshAsset, 'The fixture mesh has a registered asset identity');
+  await meshReference.getByText(meshAsset.sourceKey, { exact: true }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('[data-testid="insp-section-mesh"] [data-testid="asset-reference-open"]')?.disabled);
   await page.screenshot({ path: join(evidence, 'mesh-inspector.png') });
+  await meshInspector.getByTestId('insp-group-all').click();
+  for (const component of meshInspection.components) await meshInspector.getByTestId(`insp-section-${component.name}`).waitFor();
+  await meshInspector.getByTestId('insp-field-MeshFilter-assetHandle').waitFor();
+  await meshInspector.getByTestId('insp-group-common').click();
   assert.equal(pageWorkspace().snapshot().editorPreview.target.targetId, targetId);
   await sameRun();
   console.error('real read-only mesh references and component Inspector passed without Engine changes');
@@ -478,6 +496,7 @@ try {
     await page.locator('#continuous-editor-input').evaluate(input => input.remove());
     await verifyRuntimeCapture({ page, root, runId: startedRun.runId, sameRun,
       updateImage: () => updateUi(2),
+      bindExact: args => live.pageWorkspace.invoke('display.bind', args),
     });
     const observer = await call('engine.run.observe', { root });
     assert.equal(observer.status.runId, startedRun.runId);

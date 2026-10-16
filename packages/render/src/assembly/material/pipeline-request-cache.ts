@@ -94,7 +94,10 @@ type RequestArgs<T extends unknown[]> = {
 
 /** Immutable layout/state owners and scalar specialization values determine one request. */
 export function materialPipelineRequestFacts(
-  args: RequestArgs<Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>>,
+  args: [
+    ...RequestArgs<Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>>,
+    pipelinePreparation?: boolean | undefined,
+  ],
 ): Fact[] {
   const facts: Fact[] = args.slice();
   facts.length = 22;

@@ -3,7 +3,7 @@ import type { EngineWorkspaceAsset } from '@forgeax/engine/app';
 type FixtureAsset = EngineWorkspaceAsset & { sourcePath: string; sourceKey?: string };
 
 export const PROJECT_ROOT = '/fixture/project';
-export const PROJECT = Object.freeze({ id: 'fixture-project', root: PROJECT_ROOT, name: 'Game 3D' });
+export const PROJECT = Object.freeze({ id: 'fixture-project', root: PROJECT_ROOT, assetRoots: ['assets'], name: 'Game 3D' });
 export const EDITOR_TARGET_ID = 'fixture-editor-target';
 export const SCENE_ASSET_ID = 'fixture-scene';
 

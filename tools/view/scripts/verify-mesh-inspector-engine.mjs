@@ -85,12 +85,12 @@ try {
   await body.getByText('Material slot inspection unavailable', { exact: true }).waitFor();
   await body.getByTestId('insp-group-all').click();
   await body.getByTestId('insp-field-GlobalTransform-world').waitFor();
-  await body.getByTestId('insp-component-node-mesh').click();
-  assert.equal(await body.getAttribute('data-group'), 'common');
+  await body.getByTestId('insp-comprow-MeshFilter').click();
+  assert.equal(await body.getAttribute('data-group'), 'all');
   assert.equal(workspace.snapshot().sceneSelection.primary.entityId, mesh.entityId);
-  assert.deepEqual(await body.locator('.insp-detail-section').evaluateAll(elements => elements.map(element => element.getAttribute('data-testid'))), ['insp-section-mesh', 'insp-section-materials']);
-  assert.equal(await body.getByTestId('insp-field-Transform-pos').count(), 0);
-  await body.getByTestId('insp-root-node').click();
+  assert.equal(await body.locator('.insp-detail-section').count(), inspection.components.length);
+  assert.equal(await body.getByTestId('insp-field-Transform-pos').count(), 1);
+  await body.getByTestId('insp-group-common').click();
   assert.equal(await body.locator('.insp-detail-section').count(), 3);
   await workspace.selectSceneEntity({ ...binding, entityId: child.entityId });
   await page.waitForFunction(id => document.querySelector('[data-testid="panel-inspector"]')?.dataset.entityId === id, child.entityId);
@@ -119,7 +119,7 @@ try {
   assert.equal(await body.locator('.insp-detail-section').count(), 2);
   assert.equal(await body.getByTestId('insp-section-mesh').count(), 0);
   assert.equal(await body.getByRole('treeitem', { name: 'Inspector proof mesh', exact: true }).count(), 0);
-  assert.equal(await body.getByTestId('insp-component-node-SceneInstance').count(), 1);
+  assert.equal(await body.getByTestId('insp-comprow-SceneInstance').count(), 1);
   checkedKinds.push('sceneInstance');
   await page.screenshot({ path: join(output, 'scene-instance.png') });
   await workspace.selectSceneEntity({ ...binding, entityId: mesh.entityId });

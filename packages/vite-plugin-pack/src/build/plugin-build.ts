@@ -67,11 +67,10 @@ async function scanBuildInventory(
 
 async function buildProduction(
   plugin: MinimalPluginContext,
-  roots: readonly string[],
   context: PluginBuildContext,
+  sourceSnapshot: ScriptablePackSourceSnapshot,
+  inventory: Awaited<ReturnType<typeof buildCatalogResult>>,
 ): Promise<void> {
-  const sourceSnapshot = createScriptablePackSourceSnapshot();
-  const inventory = await scanBuildInventory(roots, context, sourceSnapshot);
   if (inventory.authority !== 'authoritative') {
     throw structuredPluginError({
       code: 'catalog-degraded',
@@ -144,6 +143,17 @@ async function buildProduction(
 export function createPluginBuild(context: PluginBuildContext) {
   let buildTask: Promise<void> | undefined;
   let command: 'build' | 'serve' | undefined;
+  let startupSnapshot = context.opts.takeInitialSourceSnapshot;
+  let preparation: ReturnType<typeof prepare> | undefined;
+
+  async function prepare(roots: readonly string[]) {
+    const sourceSnapshot = startupSnapshot?.() ?? createScriptablePackSourceSnapshot();
+    startupSnapshot = undefined;
+    const inventory = await scanBuildInventory(roots, context, sourceSnapshot);
+    const verified = await sourceSnapshot.verify();
+    if (!verified.ok) throw structuredPluginError(verified.error);
+    return { sourceSnapshot, inventory };
+  }
 
   async function generateBundle(this: MinimalPluginContext): Promise<void> {
     const { roots } = resolvePackBuildInputs({
@@ -152,7 +162,9 @@ export function createPluginBuild(context: PluginBuildContext) {
     });
     await assertBuildRoots(roots);
     if (buildTask === undefined) {
-      buildTask = buildProduction(this, roots, context);
+      preparation ??= prepare(roots);
+      const { sourceSnapshot, inventory } = await preparation;
+      buildTask = buildProduction(this, context, sourceSnapshot, inventory);
     }
     await buildTask;
   }
@@ -171,16 +183,18 @@ export function createPluginBuild(context: PluginBuildContext) {
         base: context.transportBase,
       });
       await assertBuildRoots(roots);
-      const inventory = await scanBuildInventory(roots, context);
+      preparation ??= prepare(roots);
+      const { sourceSnapshot, inventory } = await preparation;
       await context.onInventory?.(inventory);
       if (command === 'build') {
-        buildTask = buildProduction(this, roots, context);
+        buildTask ??= buildProduction(this, context, sourceSnapshot, inventory);
         await buildTask;
       }
     },
     generateBundle,
     async closeBundle(): Promise<void> {
       buildTask = undefined;
+      preparation = undefined;
     },
   };
 }

@@ -3,6 +3,9 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { type TextureAsset, toShared } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { createFoldedDrawRecorder } from '../record/fold-instance-buffer';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { FoldBucket } from '../record/mesh-ssbo';
 import type { RenderSystemInternals } from '../record/render-context';
 import {
   type DispatchEntry,
@@ -325,4 +328,25 @@ it('keeps failed material bindings pending after submission', () => {
       internals: {} as RenderSystemInternals,
     }),
   ).toBe('pending');
+});
+
+it('attributes one submitted sprite fold to every validated source member', () => {
+  const head = { renderableIndex: 8 } as ValidatedRenderable;
+  const tail = { renderableIndex: 3 } as ValidatedRenderable;
+  const unrelated = { renderableIndex: 12 } as ValidatedRenderable;
+  const record = vi.fn();
+  const submitted = createFoldedDrawRecorder({
+    validatedOrdered: [tail, unrelated, head],
+    onRenderableDraw: record,
+  });
+  const bucket = {
+    entries: [{ renderableIndex: 8 }, { renderableIndex: 3 }, { renderableIndex: 99 }],
+  } as unknown as FoldBucket;
+  expect(record).not.toHaveBeenCalled();
+  submitted(head, 0, undefined, bucket);
+  expect(record.mock.calls.map(([entry]) => entry)).toEqual([head, tail]);
+  expect(record.mock.calls.every(([, submesh]) => submesh === 0)).toBe(true);
+  record.mockClear();
+  submitted(unrelated, 2);
+  expect(record).toHaveBeenCalledExactlyOnceWith(unrelated, 2, undefined);
 });

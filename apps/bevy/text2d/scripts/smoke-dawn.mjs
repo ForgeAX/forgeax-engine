@@ -157,7 +157,7 @@ for (let i = 0; i < framesTarget; i++) {
     console.error(`[smoke] FAIL - world.update frame=${i}: ${updated.error.code}`);
     process.exit(1);
   }
-  const drawn = drawSmokeFrame(app.renderer, app.world);
+  const drawn = await drawSmokeFrame(app.renderer, app.world);
   if (!drawn.ok) console.error(`[smoke] draw frame=${i}: ${drawn.error.code}`);
   frames++;
   await delay(0);
@@ -257,9 +257,9 @@ async function runM34Recovery(app, font, errors, outputDir, providedScene) {
     async () => {
       const updated = app.world.update(1 / 60);
       if (!updated.ok) throw new Error(`M34 world.update failed: ${updated.error.code}`);
-      const drawn = drawSmokeFrame(app.renderer, app.world);
+      const drawn = await drawSmokeFrame(app.renderer, app.world);
       if (!drawn.ok) throw new Error(`M34 renderer.draw failed: ${drawn.error.code}`);
-      const repeated = drawSmokeFrame(app.renderer, app.world);
+      const repeated = await drawSmokeFrame(app.renderer, app.world);
       if (!repeated.ok) throw new Error(`M34 repeated renderer.draw failed: ${repeated.error.code}`);
       await delay(0);
     },

@@ -1,5 +1,6 @@
 import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools } from '@forgeax/engine/app';
 import { createWorkspaceId } from './id.ts';
+export type { PresentationSnapshot, WorkspacePresentation } from './presentation.ts';
 import { serializeWorkspaceSceneSelection } from './scene-selection.ts';
 
 export type WorkspaceTarget = Partial<EngineWorkspaceTarget> & Pick<EngineWorkspaceTarget, 'targetId'>;
@@ -22,7 +23,7 @@ export type WorkspaceSceneSelection = {
   targetId?: string; targetGeneration?: number; primary: { entityId: string; label?: string };
   entityIds?: readonly string[];
 };
-export type WorkspaceResourceOpen = { asset: WorkspaceAsset; preview?: WorkspacePreview };
+export type WorkspaceResourceOpen = { asset: WorkspaceAsset; preview?: WorkspacePreview; detailsOnly?: boolean; sequence?: number };
 export type WorkspaceTab = { tabId: string; kind: string; selected: boolean; state?: string; width?: number; height?: number; target?: WorkspaceTarget | null; targetId?: string; run?: unknown };
 export type WorkspaceRequest = { apiVersion: string; operation: string; clientId: string; requestId: string; args: Record<string, unknown>; token?: string };
 export type WorkspacePreview = {
@@ -32,6 +33,7 @@ export type WorkspacePreview = {
 export type WorkspaceOpenRequest = {
   requestId: string; sequence: number; asset: WorkspaceAsset; preview?: WorkspacePreview;
   target?: WorkspaceTarget; inspection?: WorkspaceInspection;
+  detailsOnly?: boolean;
 };
 export type WorkspaceState = {
   apiVersion?: string; revision?: number; selectedTabId?: string | null; tabs?: readonly WorkspaceTab[];
@@ -82,6 +84,7 @@ export const VIEW_PACK_REVEAL_ACK_SERVICE = 'forgeax.view.pack.reveal.ack';
 export const VIEW_WORKSPACE_STATE_TOPIC = 'forgeax.view.workspace.state';
 
 export const VIEW_PAGE_TYPES = Object.freeze({
+  history: 'history',
   editor: 'editor',
   display: 'display',
   plugins: 'plugins',
@@ -96,6 +99,11 @@ export const VIEW_WORKSPACE_COOK_MODES = Object.freeze(['rebuild', 'cold-cook'])
 
 /** Operation effects are the request-sharing authority; commands always retain independent execution. */
 export const VIEW_WORKSPACE_CORE_OPERATION_EFFECTS = Object.freeze({
+  'presentation.get': 'query',
+  'presentation.page.open': 'command',
+  'presentation.page.select': 'command',
+  'presentation.page.close': 'command',
+  'presentation.panel.reveal': 'command',
   'summary.get': 'query',
   'pages.list': 'query',
   'pack.reveal': 'command',
@@ -110,6 +118,9 @@ export const VIEW_WORKSPACE_CORE_OPERATION_EFFECTS = Object.freeze({
 } as const);
 export const VIEW_WORKSPACE_DOMAIN_OPERATION_EFFECTS = Object.freeze({
   ...VIEW_WORKSPACE_CORE_OPERATION_EFFECTS,
+  'history.list': 'query',
+  'history.get': 'query',
+  'history.artifact.read': 'query',
   'display.bind': 'command',
   'display.status': 'query',
   'assets.list': 'query',
@@ -394,6 +405,7 @@ export function serializeWorkspaceProject(project: WorkspaceProject | null | und
   return {
     id: project.id,
     root: project.root,
+    ...(project.assetRoots === undefined ? {} : { assetRoots: [...project.assetRoots] }),
     ...(project.name === undefined ? {} : { name: String(project.name) }),
     ...(project.revision === undefined ? {} : { revision: String(project.revision) }),
   };
@@ -448,6 +460,7 @@ export function serializeWorkspaceOpenRequest(request: WorkspaceOpenRequest | nu
     requestId: request.requestId,
     sequence: request.sequence,
     asset,
+    ...(request.detailsOnly ? { detailsOnly: true } : {}),
     ...(previewTarget
       ? {
           preview: {
@@ -465,13 +478,15 @@ export function serializeWorkspaceOpenRequest(request: WorkspaceOpenRequest | nu
 export function serializeWorkspaceResourceOpens(opens: WorkspaceState['resourceOpens']) {
   if (!opens || typeof opens !== 'object') return undefined;
   const entries = opens instanceof Map ? [...opens.entries()] : Object.entries(opens);
-  const serialized: Record<string, { asset: WorkspaceAsset; preview?: WorkspacePreview }> = {};
+  const serialized: Record<string, WorkspaceResourceOpen> = {};
   for (const [kind, entry] of entries) {
     if (typeof kind !== 'string' || !entry?.asset) continue;
     const asset = serializeWorkspaceAsset(entry.asset);
     const previewTarget = entry.preview?.target;
     serialized[kind] = {
       asset,
+      ...(entry.detailsOnly ? { detailsOnly: true } : {}),
+      ...(entry.sequence === undefined ? {} : { sequence: entry.sequence }),
       ...(previewTarget
         ? {
             preview: {

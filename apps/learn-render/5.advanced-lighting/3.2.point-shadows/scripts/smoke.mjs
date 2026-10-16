@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/5.advanced-lighting/3.2.point-shadows/scripts/smoke.mjs
@@ -318,17 +319,7 @@ let totalFrames = 0;
 const lease = app.renderer.attach(world).unwrap();
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const drawResult = app.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!drawResult.ok) {
-    app.dispose();
-    throw drawResult.error;
-  } else {
-    const completed = await drawResult.value.completed;
-    if (!completed.ok) {
-      app.dispose();
-      throw completed.error;
-    }
-  }
+  await drawReadyFrame(app.renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   totalFrames++;
   if (i % 8 === 7 || i === SMOKE_MIN_FRAMES - 1) {
     console.log(`[smoke] progress frame=${totalFrames} elapsedMs=${Date.now() - frameStart}`);

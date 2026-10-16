@@ -11,7 +11,7 @@
 // a forbidden term is not a false positive. The baseline is already all-zero
 // (plan-strategy R4) -- the gate keeps it there.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -20,7 +20,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..', '..');
 const packagesDir = join(repoRoot, 'packages');
 
-const SKIP_DIRS = new Set(['dist', 'node_modules', '.turbo', 'coverage', '.git']);
+const SKIP_DIRS = new Set(['dist', 'node_modules', '.turbo', 'coverage', '.git', '__tests__']);
 const SELF = fileURLToPath(import.meta.url);
 
 // Exact identifiers the engine must not contain (A0 / A0').
@@ -32,16 +32,16 @@ const FORBIDDEN_SYMBOLS = [
 ] as const;
 
 function listSrcSources(dir: string, out: string[]): void {
-  let entries: string[];
+  let entries: Dirent[];
   try {
-    entries = readdirSync(dir);
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return;
   }
   for (const e of entries) {
-    if (SKIP_DIRS.has(e)) continue;
-    const p = join(dir, e);
-    const st = statSync(p);
+    if (SKIP_DIRS.has(e.name)) continue;
+    const p = join(dir, e.name);
+    const st = e.isSymbolicLink() ? statSync(p) : e;
     if (st.isDirectory()) listSrcSources(p, out);
     else if (/\.(ts|mjs)$/.test(p) && !p.endsWith('.d.ts') && p !== SELF) out.push(p);
   }
@@ -93,8 +93,9 @@ function findForbidden(files: string[]): Hit[] {
 describe('negative-grep.test.ts (AC-12)', () => {
   const files = listEngineSource();
 
-  it('scans a non-trivial engine source tree (gate is wired)', () => {
+  it('scans a non-trivial engine source tree without test fixtures', () => {
     expect(files.length).toBeGreaterThan(100);
+    expect(files.some((file) => relative(packagesDir, file).split(/[\\/]/).includes('__tests__'))).toBe(false);
   });
 
   it('AC-12: forbidden editor/scan/undefine symbols are absent from engine source', () => {

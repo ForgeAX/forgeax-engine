@@ -199,8 +199,12 @@ regression, and `packages/animation/bench/blending.mjs` for effect and scaling c
 
 Direct slots and `AnimationGraph` output both flow through `AnimationPlayer` and
 the default animation schedule. Translation, rotation, and scale are blended
-before one final local `Transform` write; normal scene propagation then computes
-world transforms.
+before at most one final local `Transform` write. Only vectors whose values differ
+from the current destination after Float32 rounding are submitted; signed zero
+is preserved and NaN samples retain explicit writes. Player clocks, timeline
+events, and pose sampling still advance normally. Comparing the current columns
+also restores external author edits without a second pose cache. Normal scene
+propagation then computes world transforms.
 
 Development diagnostics are structured objects with `code`, `hint`, and
 `detail`. They skip only the malformed channel or target and let valid sibling

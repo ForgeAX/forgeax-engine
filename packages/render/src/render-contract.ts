@@ -458,6 +458,10 @@ export interface AtmosphereShaderSources {
  * and never reach into AssetRegistry or World.
  */
 export interface VolumetricFogFrameContext {
+  /** Per-frame accepted-owner footprint; omitted for near-plane/unknown projections. */
+  readonly compositeProjectedBounds?:
+    | import('./volume/composite-scissor').VolumeProjectedBounds
+    | undefined;
   readonly additional?: readonly {
     readonly densityTexture: Texture;
     readonly densityView: TextureView;

@@ -236,10 +236,8 @@
   border-radius: var(--fx-ref-radius-4);
   background: var(--fx-color-surface-canvas);
   color: var(--fx-color-text-primary);
-  cursor: pointer;
+  cursor: default;
 }
-.fx-asset-ref .asset-ref-combo:disabled { cursor: default; }
-.fx-asset-ref .asset-ref-combo:hover:not(:disabled) { border-color: var(--fx-color-border-strong); }
 .fx-asset-ref .asset-ref-combo-label {
   flex: 1;
   min-width: 0;

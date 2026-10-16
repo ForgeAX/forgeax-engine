@@ -1,3 +1,5 @@
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { ok } from '@forgeax/engine-types';
 import { createForgeaxAdapter, projectForgeaxSurfaceEvidence } from './adapters/forgeax-adapter';
 import { buildFallbackSurfaceContract } from './fallback-surface-contract';
 import { createThreeAdapter, threeToneMappingId } from './adapters/three-adapter';
@@ -259,16 +261,7 @@ async function drawSubmittedFrames(
   let lastReceipt: FrameReceipt | undefined;
   for (let frame = 0; frame < target; frame += 1) {
     world.update().unwrap();
-    const drawResult = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
-    if (!drawResult.ok) throw new Error(`${label} failed: ${drawResult.error.code}`);
-    if (drawResult.value === undefined) throw new Error(`${label} did not return a frame receipt`);
-    lastReceipt = drawResult.value;
-    const completed = await lastReceipt.completed;
-    if (!completed.ok) throw new Error(`${label} completion failed: ${completed.error.code}`);
+    lastReceipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   }
   if (lastReceipt === undefined) throw new Error(`${label} submitted no frames`);
   return lastReceipt;
@@ -334,7 +327,7 @@ function assertM2AlphaReadback(fixture: M2AlphaFixture, pixels: Uint8Array): voi
   });
   if (m2AlphaVisible(fixture) === isClear) {
     const state = m2AlphaVisible(fixture) ? 'visible' : 'discarded';
-    throw new Error(`M2 alpha ${fixture.caseId} expected ${state} first draw, got clear=${isClear}`);
+    throw new Error(`M2 alpha ${fixture.caseId} expected ${state} first ready picture, got clear=${isClear}`);
   }
 }
 
@@ -790,7 +783,9 @@ async function captureForgeaxInContext(
       environment: { lease },
     });
     world.update().unwrap();
-    const drawResult = drawFrame();
+    const drawResult = rendererKind === 'webgpu'
+      ? ok(await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } }))
+      : drawFrame();
     if (diagnostics !== undefined) {
       diagnostics.draw = {
         ok: drawResult.ok,

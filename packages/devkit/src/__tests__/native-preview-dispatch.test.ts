@@ -11,8 +11,10 @@ vi.mock('../tools/native-preview.js', async (importOriginal) => ({
   runNativePreviewTool,
 }));
 
+import { createToolRuntime } from '@forgeax/engine-tool-runtime';
 import { createToolClient } from '../tools/client.js';
 import { nativePreviewTools } from '../tools/preview-catalog.js';
+import { createUnifiedCommandContributions } from '../tools/unified-contributions.js';
 
 const roots: string[] = [];
 
@@ -22,6 +24,47 @@ afterEach(async () => {
 });
 
 describe('native resource preview dispatch', () => {
+  it('forwards cancellation from the public asset.preview command to its browser owner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-public-preview-cancel-'));
+    roots.push(root);
+    const caller = new AbortController();
+    let retired = false;
+    runNativePreviewTool.mockImplementation(async (_tool, _args, options) => {
+      if (!options.signal)
+        return { outcome: 'failed', failure: { code: 'missing-owner-signal' }, artifacts: [] };
+      await new Promise<void>((resolve) =>
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            retired = true;
+            resolve();
+          },
+          { once: true },
+        ),
+      );
+      return { outcome: 'failed', failure: { code: 'tool-run-cancelled' }, artifacts: [] };
+    });
+    const contribution = createUnifiedCommandContributions(root).find(
+      (tool) => tool.descriptor.id === 'asset.preview',
+    );
+    if (!contribution) throw new Error('Missing public preview');
+    const runtime = createToolRuntime([]);
+    const run = runtime.run(
+      contribution,
+      { kind: 'mesh', guid: 'asset-guid' },
+      { signal: caller.signal },
+    );
+    try {
+      await vi.waitFor(() => expect(runNativePreviewTool).toHaveBeenCalled(), { timeout: 5000 });
+      caller.abort('cancel preview');
+      expect((await run.terminal).outcome).toBe('failed');
+      await run.executorExited;
+      expect(retired).toBe(true);
+    } finally {
+      caller.abort();
+    }
+  });
+
   it('routes a GUID request through the native preview owner', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-native-preview-dispatch-'));
     roots.push(root);

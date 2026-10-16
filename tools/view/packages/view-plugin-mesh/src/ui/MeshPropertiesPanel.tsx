@@ -1,18 +1,22 @@
-import { EmptyState, InspectorForm, PanelHeader, PropertyRow } from '@forgeax/view-components';
+import { EmptyState, InspectorForm, PanelHeader } from '@forgeax/view-components';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
+import type { ResourceAssetActionResolver } from '@forgeax/view-workspace-core/frontend-contract';
 import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspection-presentation';
 import { selectWorkspaceResourcePreview, selectWorkspaceResourceSubject } from '@forgeax/view-workspace-core/resource-open';
 import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { resourceAssetName } from '@forgeax/view-workspace-core/page-title';
 import { RESOURCE_KINDS } from '../identity.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import './mesh.css';
 
 export function MeshPropertiesPanel({
   client,
+  assetActions,
 }: {
   client?: ViewWorkspaceClient;
+  assetActions?: ResourceAssetActionResolver;
 }) {
   const { t } = useTranslation();
   if (!client) {
@@ -22,10 +26,10 @@ export function MeshPropertiesPanel({
       </div>
     );
   }
-  return <LiveProperties client={client} />;
+  return <LiveProperties client={client} assetActions={assetActions} />;
 }
 
-function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
+function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(
@@ -80,14 +84,15 @@ function LiveProperties({ client }: { client: ViewWorkspaceClient }) {
     );
   }
   const displayed = binding ? { guid: subject.guid, asset: subject, ...binding } : inspection;
+  const name = resourceAssetName(subject) ?? resourceAssetName(workspace?.assets?.find(asset => asset.guid === subject.guid)) ?? subject.guid;
   return (
     <div className="fx-asset-editor fx-ui" data-testid="panel-mesh-properties" data-view-readonly="true">
-      <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
-      {binding?.publication && <>
-        <PropertyRow label="Bound generation">{binding.publication.generation}</PropertyRow>
-        <PropertyRow label="Bound digest"><span style={{ overflowWrap: 'anywhere' }}>{binding.publication.digest}</span></PropertyRow>
-      </>}
-      <InspectorForm inspection={displayed ?? { guid: subject.guid, asset: subject }} identityTitle={t('mesh.facts')} />
+      <PanelHeader start={<span className="mesh-properties-name" title={name}><strong>{name}</strong></span>} />
+      {binding?.publication && <dl className="mesh-bound-identity">
+        <div><dt>Bound generation</dt><dd>{binding.publication.generation}</dd></div>
+        <div><dt>Bound digest</dt><dd title={binding.publication.digest}>{binding.publication.digest}</dd></div>
+      </dl>}
+      <InspectorForm assetActions={assetActions} inspection={displayed ?? { guid: subject.guid, asset: subject }} identityTitle={t('mesh.facts')} />
     </div>
   );
 }

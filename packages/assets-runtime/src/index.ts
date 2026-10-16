@@ -194,7 +194,7 @@ export {
   type SkinJointResolver,
   scenePublicationFenceFromRegistry,
 } from './registry/instantiate.js';
-export { loadMaterialReadyByGuid } from './registry/load-by-guid.js';
+export { loadMaterialReadyByGuid, type MeshGeometrySource } from './registry/load-by-guid.js';
 export {
   compareScenePublicationFences,
   createScenePublicationFence,

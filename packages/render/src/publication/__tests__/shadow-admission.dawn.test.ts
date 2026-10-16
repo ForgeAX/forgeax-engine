@@ -8,7 +8,6 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
-  type RenderPublication,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
@@ -19,6 +18,7 @@ import {
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, expect, it } from 'vitest';
+import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../../../../runtime/src/createRenderer';
 
 function required<T>(
@@ -63,84 +63,64 @@ it.each([
   cascades,
   gpuEnabled,
 }) => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const identity = { source: 'late-shadow-native', epoch: 1 };
-  const camera = world
-    .spawn(
-      {
-        component: Transform,
-        data: { pos: [0, 2, 6], quat: [Math.sin(-0.16), 0, 0, Math.cos(-0.16)] },
-      },
-      {
-        component: Camera,
-        data: {
-          aspect: 1,
-          fov: Math.PI / 3,
-          near: 0.1,
-          far: 60,
-          antialias: 0,
-          bloom: 0,
-          tonemap: 7,
-        },
-      },
-    )
-    .unwrap();
-  const sun = world
-    .spawn({
-      component: DirectionalLight,
-      data: {
-        direction: [-0.5, -0.8, -1],
-        intensity: 3,
-        castShadow: true,
-        mapSize: 64,
-        cascadeCount: 3,
-        shadowDistance: 30,
-      },
-    })
-    .unwrap();
-  const red = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1], roughness: 0.8 }),
-  );
-  const blue = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.05, 0.1, 0.8, 1], roughness: 0.8 }),
-  );
-  const spawn = (material = red) =>
-    world
+  const run = async (cpu: boolean) => {
+    const world = new World();
+    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const identity = { source: 'late-shadow-native', epoch: 1 };
+    const camera = world
       .spawn(
-        { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-        { component: MeshRenderer, data: { materials: [material] } },
+        {
+          component: Transform,
+          data: { pos: [0, 2, 6], quat: [Math.sin(-0.16), 0, 0, Math.cos(-0.16)] },
+        },
+        {
+          component: Camera,
+          data: {
+            aspect: 1,
+            fov: Math.PI / 3,
+            near: 0.1,
+            far: 60,
+            antialias: 0,
+            bloom: 0,
+            tonemap: 7,
+          },
+        },
       )
       .unwrap();
-  const floor = spawn(blue);
-  world.set(floor, Transform, { pos: [0, -1, 0], scale: [5, 0.2, 5] }).unwrap();
-  const caster = spawn();
-  const publisher = createRenderPublisher(world, assets, identity);
-  const packets: RenderPublication[] = [];
-  let added = caster;
-  try {
-    for (let frame = 0; frame < 6; frame++) {
-      world.set(sun, DirectionalLight, { cascadeCount: cascades[frame] as 1 | 2 | 3 | 4 }).unwrap();
-      world.set(camera, Transform, { pos: [frame * 0.06, 2, 6] }).unwrap();
-      world.set(caster, Transform, { pos: [(frame - 2) * 0.16, 0, 0] }).unwrap();
-      if (frame === 1) added = spawn();
-      if (frame === 2) world.set(caster, MeshRenderer, { materials: [blue] }).unwrap();
-      if (frame === 3) world.despawn(added).unwrap();
-      if (frame === 4) added = spawn(blue);
-      world.update(1 / 60).unwrap();
-      const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
-      const packet = structuredClone(candidate.packet);
-      candidate.accept();
-      packets.push(packet);
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-    }
-  } finally {
-    publisher.dispose();
-  }
-  const run = async (cpu: boolean) => {
+    const sun = world
+      .spawn({
+        component: DirectionalLight,
+        data: {
+          direction: [-0.5, -0.8, -1],
+          intensity: 3,
+          castShadow: true,
+          mapSize: 64,
+          cascadeCount: 3,
+          shadowDistance: 30,
+        },
+      })
+      .unwrap();
+    const red = world.allocSharedRef(
+      'MaterialAsset',
+      Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1], roughness: 0.8 }),
+    );
+    const blue = world.allocSharedRef(
+      'MaterialAsset',
+      Materials.standard({ baseColor: [0.05, 0.1, 0.8, 1], roughness: 0.8 }),
+    );
+    const spawn = (material = red) =>
+      world
+        .spawn(
+          { component: Transform, data: {} },
+          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshRenderer, data: { materials: [material] } },
+        )
+        .unwrap();
+    const floor = spawn(blue);
+    world.set(floor, Transform, { pos: [0, -1, 0], scale: [5, 0.2, 5] }).unwrap();
+    const caster = spawn();
+    const publisher = createRenderPublisher(world, assets, identity);
+    let added = caster;
     let device: GPUDevice | undefined, texture: GPUTexture | undefined;
     const errors: unknown[] = [];
     const canvas = {
@@ -175,23 +155,43 @@ it.each([
     let shadowClaims = 0;
     let mixedResidualFrames = 0;
     try {
-      for (const [frameIndex, original] of packets.entries()) {
-        const packet = structuredClone(original);
-        const gpuShadow = !cpu && gpuEnabled[frameIndex] === true;
-        if (!gpuShadow) {
-          for (const template of packet.templates) {
-            const row = template.snapshot;
-            if (row.shadowCasterPasses !== undefined)
-              Object.assign(row, {
-                shadowCasterPasses: row.shadowCasterPasses.map((pass) => ({
-                  ...pass,
-                  gpuDrivenEligible: false,
-                })),
-              });
+      for (let frameIndex = 0; frameIndex < 6; frameIndex++) {
+        world
+          .set(sun, DirectionalLight, { cascadeCount: cascades[frameIndex] as 1 | 2 | 3 | 4 })
+          .unwrap();
+        world.set(camera, Transform, { pos: [frameIndex * 0.06, 2, 6] }).unwrap();
+        world.set(caster, Transform, { pos: [(frameIndex - 2) * 0.16, 0, 0] }).unwrap();
+        if (frameIndex === 1) added = spawn();
+        if (frameIndex === 2) world.set(caster, MeshRenderer, { materials: [blue] }).unwrap();
+        if (frameIndex === 3) world.despawn(added).unwrap();
+        if (frameIndex === 4) added = spawn(blue);
+        world.update(1 / 60).unwrap();
+        const receipt = await completeReadyFrame(async () => {
+          const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+          const packet = structuredClone(candidate.packet);
+          candidate.accept();
+          try {
+            const gpuShadow = !cpu && gpuEnabled[frameIndex] === true;
+            if (!gpuShadow) {
+              for (const template of packet.templates) {
+                const row = template.snapshot;
+                if (row.shadowCasterPasses !== undefined)
+                  Object.assign(row, {
+                    shadowCasterPasses: row.shadowCasterPasses.map((pass) => ({
+                      ...pass,
+                      gpuDrivenEligible: false,
+                    })),
+                  });
+              }
+            }
+            const receipt = required(renderer.draw({ publication: packet }));
+            required(await receipt.completed);
+            return receipt;
+          } finally {
+            publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
           }
-        }
-        const receipt = required(renderer.draw({ publication: packet }));
-        required(await receipt.completed);
+        });
+        const gpuShadow = !cpu && gpuEnabled[frameIndex] === true;
         expect(receipt.presentation).toBe('ready');
         const inspection = renderer.inspect();
         const channels = inspection.renderScene.gpuDriven.channels.filter(
@@ -217,7 +217,7 @@ it.each([
             ),
             JSON.stringify(inspection.renderScene.gpuDriven.channels),
           ).toBe(true);
-          if (packet.revision === 1) {
+          if (frameIndex === 0) {
             for (const channel of channels.filter((value) => value.viewIndex < 3)) {
               expect(channel).toMatchObject({
                 drawCount: 2,
@@ -256,6 +256,7 @@ it.each([
       return images;
     } finally {
       required(await renderer.dispose());
+      publisher.dispose();
       texture?.destroy();
     }
   };

@@ -140,7 +140,7 @@ let frames = 0;
 for (; frames < minFrames; frames += 1) {
   stepUpdateGltfScene(world, frames / 60);
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) errors.push(result.error);
 }
 const luma = await meanLuma();

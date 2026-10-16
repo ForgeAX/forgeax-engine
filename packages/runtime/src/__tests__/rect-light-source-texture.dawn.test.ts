@@ -18,6 +18,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -218,13 +219,13 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
     const capture = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      renderValue(renderer.requestObservation?.(['linear-hdr']));
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      const receipt = renderValue(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      const receipt = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        ['linear-hdr'],
       );
-      renderValue(await receipt.completed);
       const live = renderValue(
         await renderer.observe(receipt, { include: ['linear-hdr'] }),
       ).observations?.find((item) => item.domain === 'linear-hdr');
@@ -266,11 +267,11 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
     for (let i = 0; i < 4; i++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      renderValue(
-        await renderValue(
-          renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-        ).completed,
-      );
+      await drawReadyFrame(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
     }
 
     // Bind the source inside the captured frame so its upload is part of the tape.

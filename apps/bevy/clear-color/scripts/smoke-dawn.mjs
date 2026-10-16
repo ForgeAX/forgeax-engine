@@ -145,7 +145,7 @@ function spaceSnapshot() {
 for (let f = 0; f < 5; f++) {
   stepClearColor(world, noInputSnapshot());
   world.update().unwrap();
-  const r = drawSmokeFrame(renderer, world);
+  const r = await drawSmokeFrame(renderer, world);
   if (!r.ok) { console.error(`[smoke] FAIL - draw error: ${r.error.code}`); process.exit(1); }
 }
 await delay(100);
@@ -180,14 +180,14 @@ if (initB > 120 && initG < initB) {
 // --- inject Space rising edge (toggle to purple) ---
 stepClearColor(world, spaceSnapshot());
 world.update().unwrap();
-drawSmokeFrame(renderer, world);
+await drawSmokeFrame(renderer, world);
 stepClearColor(world, noInputSnapshot());
 
 // render a few more frames
 for (let f = 0; f < 5; f++) {
   stepClearColor(world, noInputSnapshot());
   world.update().unwrap();
-  drawSmokeFrame(renderer, world);
+  await drawSmokeFrame(renderer, world);
 }
 await delay(100);
 

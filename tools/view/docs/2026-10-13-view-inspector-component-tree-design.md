@@ -1,68 +1,54 @@
-# UE-Style Entity/Component Details
+# Entity Details and Component Overview
 
 This design supersedes the Inspector-local parent/child tree described in
 [All Scene Entity Details](2026-10-12-view-entity-inspector-design.md). It keeps
 that design's all-entity coverage, grouped fields, schema rules and read-only
 Engine boundary. Only View product code and View-owned design documentation are
-changed; Engine and independent asset pages stay unchanged.
+changed; Engine and independent asset pages stay unchanged. The 2026-10-15
+component-overview revision below supersedes this document's original functional
+component tree and component-filtering interaction.
 
-## Reference and View model
+## Current component overview (2026-10-15)
 
-UE's Details component area lets a user select an Actor or a component and see
-the selected item's details. Scene components can also have attachment
-relationships, so some UE trees express a real component hierarchy.
+The top card retains its existing width, bounded height, object header, primary
+type, multi-selection count, focus and copy-JSON actions. Its contents are the
+original complete ECS component overview, with an independently scrolling list.
+There is no entity-root tree row or component hierarchy. Scene Tree continues
+to own actual entity parent/child navigation based on Engine `parentId` data.
 
-View presents a similar selection affordance using the facts already returned
-for the selected ECS entity by `entity.inspect`. It does not claim to reproduce
-UE's object model: ECS components in this result have no component-to-component
-attachment data. The top card therefore shows the selected entity root and
-one-level functional component rows, with no fabricated attachment edges,
-component instance IDs or instance labels. Actual child entities remain in
-Scene Tree, whose parent/child projection is based on Engine `parentId` data.
+## Component rows
 
-The card retains the entity name, primary type, multi-selection count, focus
-and copy-JSON actions. It has a bounded height with an independently scrolling
-component list. The entity root is selected by default. The disclosure control
-collapses the component list without hiding details.
-
-## Component projection
-
-The Inspector builds rows only from components in the current inspection:
+The Inspector renders one row per component in the current `entity.inspect`
+result, preserving returned order and the existing translated display names:
 
 | Returned data | Top-card presentation |
 |:--|:--|
-| `MeshFilter`, `MeshRenderer` | One Static Mesh row combining the returned mesh and renderer components |
-| `Skin` with mesh data | One Skinned Mesh row, including whichever mesh components were returned |
-| `Instances` with mesh data | One Instanced Mesh row, including whichever mesh components were returned |
-| `PointLight` and `PointLightShadow` | One Point Light row combining both returned components |
-| Other functional ECS component | One row named from its component identity |
-| `Entity`, `Name`, `ChildOf`, `Children`, `GlobalTransform`, `Transform`, and entity-level settings | No row; values remain in their existing functional groups and All |
+| `MeshFilter`, `MeshRenderer` | Separate Mesh Binding and Mesh Rendering rows |
+| `Entity`, `Name`, `ChildOf`, `GlobalTransform`, `Transform` | Separate rows, including entity-level data |
+| `TransformInterpolation` | A returned transient marker row, including its empty-field state |
+| Other returned ECS component | One row; unknown/custom names remain unchanged |
 
-Composite rows link back to their original component names. Partial composites
-show only returned data. Unknown and custom components retain their original
-names. A result with no functional component shows only the entity root.
-
-The projection is a pure Inspector presentation helper. The dependency-free
-component-name classifier lives in workspace-core, which Scene Tree and
-Inspector already consume. This supersedes the Scene-owned export in the
+No raw components are merged or omitted in this overview. The dependency-free
+primary-type classifier remains in workspace-core, which Scene Tree and
+Inspector already consume. This retains the supersession of the Scene-owned export in the
 [all-entity design](2026-10-12-view-entity-inspector-design.md), keeps sibling
 feature imports forbidden, and requires no new workspace package dependency
 in the paired Engine lockfile.
 
-## Selection and detail filtering
+## Navigation and grouped details
 
-Selecting the entity root restores the full group set for that entity. Selecting
-a component changes only the Inspector's local detail scope: its non-empty
-functional groups are filtered to the raw components represented by that row,
-and All contains all returned fields from those components. The default is
-Common when it contains matching detail, otherwise the first populated group.
-Entity Transform belongs to the root and never appears as a component's relative
-transform.
+Search and populated functional groups remain fixed below the card. Common
+remains the default when available; ordinary meshes show Transform / Static
+Mesh / Materials. All always contains every returned component and field.
+Clicking an overview row clears search, switches to All, expands that component
+and scrolls only the independent Details region to its section. It highlights
+the clicked overview row without filtering out any other component. Choosing
+a category clears this navigation highlight and shows that category's complete
+entity-level details.
 
-Changing the selected top-card row clears search and resets the default group.
-Changing scene entity, project or target remounts the detail state at the entity
-root. If a selected component disappears from a later inspection result, the
-Inspector returns to the root. Top-card component actions do not call
+Changing scene entity, project or target resets local detail state. If the
+navigated component disappears, the Inspector clears its navigation/search and
+returns to the default category. Top-card component actions do not call
 `scene.select`, so the Scene Tree selection, viewport highlight and primary
 entity remain unchanged.
 
@@ -70,6 +56,14 @@ All other interaction remains read-only: field and JSON copying, search,
 functional groups, collapse/expand and focus use existing View behavior. Resource
 opens still require explicit returned GUIDs and use the existing independent
 asset pages. No workspace operation, Engine API or write capability is added.
+Component-heading copy buttons keep their layout space but are hidden until
+that heading is hovered or the copy button receives visible keyboard focus.
+Hovering a field does not reveal the component-heading action. Copying retains
+the original returned component JSON, including unmodified XYZW quaternions.
+Local Transform Position, Rotation and Scale retain one horizontal row each:
+the label and all three XYZ values stay together when the Inspector resizes.
+Narrow panels reduce column spacing and use compact numeric typography rather
+than moving the label above the values or wrapping Z onto another row.
 
 The unified projection retains the merged PR #161
 rotation behavior: local `Transform.quat` appears as three intrinsic XYZ degree
@@ -77,7 +71,122 @@ values in Common and All. The original Engine XYZW remains available in the
 tooltip and copy actions. Other components' quaternion-shaped fields follow
 their returned schema.
 
-## Verification
+## Current frontend adaptation (2026-10-15)
+
+The current production entity panel uses this grouped Details layout by default.
+It retains the current platform clipboard provider, panel visibility leases,
+target-scoped cancellation, shared field controls and AssetReferenceField.
+Material slots keep current empty, unavailable and truncated states in both the
+semantic Materials section and the raw MeshRenderer field in All. Color display
+mode is a local presentation choice and submits no Engine write.
+
+The bounded component area and separate Details scroll region retain their
+layout. The complete component overview replaces the earlier root/function
+tree within the same card geometry. GlobalTransform.presentation and the
+TransformInterpolation marker are visible through both overview navigation
+and All.
+
+The existing production-mount Chromium proof reproduced the flat-panel
+regression by failing to find Common before the change. The adapted proof
+checks both themes, widths 220/280/300/320/480/640, overview completeness,
+component navigation, fixed-card geometry, component removal, project/target
+replacement and injected clipboard writes.
+The full Node suite passes 501/501 with the current Engine declarations.
+The paired Engine browser probes assert grouped Common details, complete raw
+component rows, navigation into All and unchanged scene selection.
+
+### Complete-overview acceptance
+
+The component-heading hover-copy follow-up is rebased onto remote main
+`78d97e8`. The isolated PR source, with unrelated local asset-navigation work
+temporarily removed, passes all 496 Node tests, strict package types and the
+architecture gate (16 packages, 333 source files, zero violations). The
+production-mount browser proof verifies default-hidden heading actions, reveal
+only on the hovered heading, unchanged button geometry, visible keyboard focus
+and copying the original Transform quaternion through the clipboard provider.
+The earlier 501-test counts below describe the local workspace with its
+additional asset-navigation tests, rather than the isolated PR scope.
+
+The revised frontend reports code revision
+`823df903a2c76151562da571ef98e5c650dad803cd1d34e7e306a4e64a52731d`.
+After rebuilding and restarting the task-owned preview, the real Game 3D
+Inspector shows all ten returned Astral Bloom components, including Entity,
+GlobalTransform, Transform, ChildOf, Name, TransformInterpolation and separate
+MeshFilter / MeshRenderer rows. The list scrolls inside the same bounded card.
+
+Clicking MeshRenderer switches to All, keeps all ten Details sections and
+scrolls its section to the Details region's top. Before/after measurements
+retain the same card position and dimensions (429.578125px wide, 260px high in
+the acceptance viewport). Authoritative scene-selection snapshots are equal.
+The live renderer completed more than 4,000 frames. The final browser keeps
+Astral Bloom selected, the complete overview visible and All open.
+
+Strict types, the complete 501-test Node suite, architecture checks and the
+production build pass for this revision. The updated production-mount browser
+proof passes both themes, widths 220/280/300/320/480/640, complete raw rows,
+navigation, unchanged card geometry, component disappearance, project/target
+resets, clipboard injection and the existing schema/read-only cases. Package
+scripts were executed directly after pnpm's dependency preflight failed before
+launching the checks. The earlier full Engine-shard limitations below remain;
+this narrow UI revision does not claim a passing four-shard gate.
+
+Current evidence is in `artifacts/details-current-20261015/`:
+`details-overview-live-final-20261015.jpg`,
+`details-overview-live-navigation-20261015.jpg`,
+`details-overview-live-ui-20261015.json`,
+`details-overview-live-selection-20261015.json` and
+`details-component-browser-*-20261015.log`.
+
+### Earlier functional-tree candidate acceptance (superseded)
+
+The rebuilt worktree frontend was admitted into a fresh browser environment
+against the local Engine `9d3f882c4` and the original `templates/game-3d` project.
+Its panel graph reports code revision
+`c19e3e2c470b098cd35384fdf1f924cc8484db4af2769ab379274275ed819f7b`.
+The visible Astral Bloom Inspector has the entity root, Static Mesh, Rigid Body
+and Collider nodes, with Common showing Transform / Static Mesh / Materials.
+Selecting Static Mesh reduces Details to Static Mesh / Materials; the workspace
+scene-selection snapshots remain identical. Selecting the root restores all
+three Common sections. A live rendered frame counter was also observed.
+
+Main Camera shows Transform / Camera in Common. Its local rotation displays
+XYZ degrees without a W control. The final browser was returned to Astral Bloom
+with the root selected and the Inspector visible.
+
+Evidence from this local acceptance is saved under `artifacts/details-current-20261015/`:
+`details-live-astral-bloom-20261015.jpg`, `details-live-component-20261015.jpg`,
+`details-live-camera-20261015.jpg`, `details-live-ui-20261015.json` and
+`details-live-selection-20261015.json`. These are browser/GPU observations,
+separate from the deterministic UI fixture and Node tests.
+
+### Earlier candidate regression results and qualification limits
+
+Strict package types, all 501 Node tests, the architecture scanner (16 packages,
+334 source files, zero violations), the production build and `git diff --check`
+pass. The production-mount Inspector fixture passes its theme/width matrix,
+state resets, current fields, clipboard injection and read-only checks.
+
+The four existing Engine browser shards were attempted against a temporary
+overlay of this candidate. The plugin probe passes the new grouped Details,
+component filtering, complete All and unchanged-selection assertions on a real
+Engine entity. It later fails during a resource `openPreview` timeout. The
+lifecycle group passes after selecting the installed macOS browser; the
+Engine-without-View cold build also passes after restoring the exact cached FBX
+artifact. The contracts checks reached before MCP Game 3D pass, but MCP Game 3D
+fails during startup/Play admission. The diagnostic shard fails at `view start`
+with `plugin-startup-failed`, before creating its browser. A direct retry of the
+updated Game 3D probe reaches automatic project opening, then times out at a
+resource click; its renderer diagnostics report `device-operation-failed`.
+Downstream runtime-content stages were not reached. Consequently this local run
+does not qualify the complete four-shard bootstrap gate or claim passing CI.
+
+Harness verification cannot pass because this worktree has no Harness install
+manifest. KB lint passes with zero errors/warnings and unchanged Mermaid checks
+excluded. Test logs are retained alongside the live evidence. The temporary
+Engine embedded-View overlay is restored after validation; the running preview
+uses the rebuilt View worktree directly.
+
+## Original verification (2026-10-13)
 
 The implementation's 25 focused Inspector tests pass, including projection and
 All-field preservation for all 28 configurations, partial mesh data, point-light

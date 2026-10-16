@@ -207,7 +207,17 @@ export function collectGpuDrivenMaterialArtifacts({
           rowPrograms === undefined
             ? undefined
             : materialProgramsFor(rowPrograms, material.materialHandle ?? -1);
-        const shadowProgramEntry = programs?.shadow;
+        // Explicit hidden requests have no display/shadow dispatch membership.
+        // Their preparation roster still owns the identical authored program.
+        const preparationPasses =
+          row.source.authorVisible === false ? row.source.pipelinePreparation : undefined;
+        const shadowProgramEntry =
+          programs?.shadow ??
+          preparationPasses?.find(
+            (entry) =>
+              entry.materialHandle === (material.materialHandle ?? -1) &&
+              entry.tags.LightMode === 'ShadowCaster',
+          );
         // A modern publication may expose a scene-index pair for its
         // forward Pass but omit ShadowCaster. Keep that material on its
         // explicit CPU shadow lane; do not reinterpret its direct WGSL
@@ -222,7 +232,15 @@ export function collectGpuDrivenMaterialArtifacts({
         if (selectedProgram === undefined) continue;
         const { logicalMaterialShaderId, sceneIndexProgramKey, materialShaderId } = selectedProgram;
         const sceneIndex = sceneIndexProgramKey !== undefined;
-        const programEntry = pass === 'shadow' ? shadowProgramEntry : programs?.forward;
+        const programEntry =
+          pass === 'shadow'
+            ? shadowProgramEntry
+            : (programs?.forward ??
+              preparationPasses?.find(
+                (entry) =>
+                  entry.materialHandle === (material.materialHandle ?? -1) &&
+                  entry.tags.LightMode === 'Forward',
+              ));
         const deformation = prepared.identity.deformation;
         const vertexEntry = programEntry?.vertexEntry;
         const fragmentEntry = programEntry?.fragmentEntry;

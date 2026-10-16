@@ -13,6 +13,7 @@ import {
   type ShadowDirtyRect,
   type ShadowViewIdentity,
   type ShadowViewProjection,
+  shadowViewIdentityKey,
   shadowViewRasterAccesses,
 } from './gpu-driven/shadow-views';
 import {
@@ -73,7 +74,47 @@ function shadowViewCacheMiss(
     : context.directionalShadowCacheMiss;
 }
 
+type ShadowPreparationDemand = (frame: RenderPipelineFrame) => boolean;
+const shadowPreparationByGraph = new WeakMap<
+  RenderGraphBuilder<RenderPipelineFrame>,
+  Map<string, ShadowPreparationDemand> | null
+>();
+
+/** Private compiled-graph demand; unknown/custom views retain ordinary preparation. */
+export function shadowPipelinePreparationDemand(graph: RenderGraphBuilder<RenderPipelineFrame>) {
+  const views = shadowPreparationByGraph.get(graph);
+  return views == null
+    ? undefined
+    : (frame: RenderPipelineFrame, identity: ShadowViewIdentity): boolean =>
+        views.get(shadowViewIdentityKey(identity))?.(frame) ?? true;
+}
+
+function registerShadowPreparation(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  identity: ShadowViewIdentity,
+  demand: ShadowPreparationDemand,
+): void {
+  let views = shadowPreparationByGraph.get(graph);
+  if (views === null) return;
+  // Terrain family targets can re-record the logical GPU view independently.
+  // Keep full preparation until those extra target dependencies share demand.
+  if (identity.terrainReceiver !== undefined) {
+    shadowPreparationByGraph.set(graph, null);
+    return;
+  }
+  if (views === undefined) {
+    views = new Map();
+    shadowPreparationByGraph.set(graph, views);
+  }
+  views.set(shadowViewIdentityKey(identity), demand);
+}
+
 interface ShadowViewRaster {
+  /** Observe the same raster reason without committing graph/target state. */
+  readonly reasonFor: (
+    frame: RenderPipelineFrame,
+    follow?: ShadowViewInvalidationReason,
+  ) => ShadowViewInvalidationReason | undefined;
   /**
    * Decides this frame's raster. `follow` names the reason a view that would
    * otherwise hit still rasters because the layer it composes was rebuilt.
@@ -114,6 +155,7 @@ interface RetainedShadowTarget {
  * which is no view.
  */
 function shadowViewRaster(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
   identity: ShadowViewIdentity | undefined,
   shadowFeatures: RenderFeatureShadowDraws<RenderPipelineFrame> | undefined,
   target?: RetainedShadowTarget,
@@ -122,18 +164,27 @@ function shadowViewRaster(
   let slot = -1;
   let decided: ShadowViewInvalidationReason | undefined;
   let dirtyRects: readonly ShadowDirtyRect[] | undefined;
+  const reasonFor = (
+    frame: RenderPipelineFrame,
+    follow?: ShadowViewInvalidationReason,
+  ): ShadowViewInvalidationReason | undefined => {
+    const empty = target === undefined ? graphCompiled : !target.retained();
+    return empty
+      ? 'graph-compiled'
+      : identity === undefined
+        ? undefined
+        : shadowFeatures !== undefined
+          ? 'feature-draws'
+          : (shadowViewCacheMiss(frame, identity) ?? follow);
+  };
+  if (identity !== undefined)
+    registerShadowPreparation(graph, identity, (frame) => reasonFor(frame) !== undefined);
   return {
+    reasonFor,
     dirtyRects: () => dirtyRects,
     reason: () => decided,
     executeIf: (frame, follow) => {
-      const empty = target === undefined ? graphCompiled : !target.retained();
-      const reason: ShadowViewInvalidationReason | undefined = empty
-        ? 'graph-compiled'
-        : identity === undefined
-          ? undefined
-          : shadowFeatures !== undefined
-            ? 'feature-draws'
-            : (shadowViewCacheMiss(frame, identity) ?? follow);
+      const reason = reasonFor(frame, follow);
       graphCompiled = false;
       decided = reason;
       if (reason !== undefined) target?.rastered();
@@ -313,6 +364,7 @@ function recordStaticLayeredShadowPass(
   const staticLayer = shadowLayerTarget(graph, staticArray, `${name}-static-layer`, layer);
   if (!staticLayer.ok) return staticLayer;
   const staticRaster = shadowViewRaster(
+    graph,
     staticIdentity,
     undefined,
     staticLayers === undefined
@@ -321,6 +373,15 @@ function recordStaticLayeredShadowPass(
           retained: () => staticLayers.retained(staticLabel, layer),
           rastered: () => staticLayers.rastered(staticLabel, layer),
         },
+  );
+  registerShadowPreparation(
+    graph,
+    identity,
+    (frame) =>
+      raster.reasonFor(
+        frame,
+        staticRaster.reasonFor(frame) === 'graph-compiled' ? 'static-layer-changed' : undefined,
+      ) !== undefined,
   );
   // A pool-proven content miss re-rasters only its dirty regions over the
   // retained layer; any other miss clears it.
@@ -460,7 +521,7 @@ export function addTypedShadowPasses(
         cascade,
       );
       if (!layer.ok) return layer;
-      const raster = shadowViewRaster(identity, shadowFeatures);
+      const raster = shadowViewRaster(graph, identity, shadowFeatures);
       const encode = (
         pass: RhiRenderPassEncoder,
         frame: RenderPipelineFrame,
@@ -520,7 +581,7 @@ export function addTypedShadowPasses(
           index: cascade,
           terrainReceiver: receiver,
         });
-        const raster = shadowViewRaster(identity, shadowFeatures);
+        const raster = shadowViewRaster(graph, identity, shadowFeatures);
         const encode = (
           pass: RhiRenderPassEncoder,
           frame: RenderPipelineFrame,
@@ -675,7 +736,7 @@ export function addTypedShadowPasses(
           format: 'depth32float',
           sampleCount: 1,
         };
-        const raster = shadowViewRaster(identity, shadowFeatures);
+        const raster = shadowViewRaster(graph, identity, shadowFeatures);
         const encode = (
           pass: RhiRenderPassEncoder,
           frame: RenderPipelineFrame,
@@ -751,6 +812,7 @@ export function addTypedShadowPasses(
     // The one-texel empty target only supplies the initialized no-shadow binding.
     // A light-count change rebuilds this graph and initializes a new one.
     const raster = shadowViewRaster(
+      graph,
       topology.shadow.spotCount > 0 ? identity : undefined,
       shadowFeatures,
     );

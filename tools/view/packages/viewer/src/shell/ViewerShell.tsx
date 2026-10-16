@@ -1,8 +1,9 @@
-import type { PanelClaim as SlotClaim, SlotRegistry, PageType, PageHost } from '@forgeax/view-workspace-core/frontend-contract';
+import type { PanelClaim as SlotClaim, SlotRegistry, PageType, PageHost, PresentationOwner, PresentationSnapshot } from '@forgeax/view-workspace-core/frontend-contract';
 import type { PageResourceOpenRequest as ResourceOpenRequest } from '@forgeax/view-workspace-core/frontend-contract';
 import type { createViewPageTypeRegistry } from '../host/page-registry.ts';
 import type { createViewPanelHost } from '../host/panel-bridge.ts';
 type PageRegistry = ReturnType<typeof createViewPageTypeRegistry>;
+type PanelPresentation = { pageType: string; reveal(slot: string): boolean; read(): PresentationSnapshot['panels'] };
 import {
   DockviewReact,
   themeAbyss,
@@ -12,6 +13,7 @@ import {
   type IDockviewDefaultTabProps,
   type IDockviewPanelProps,
 } from 'dockview';
+import { flushSync } from 'react-dom';
 import { Box, Pin, X } from 'lucide-react';
 import {
   IconButton,
@@ -30,6 +32,7 @@ import { SUPPORTED_LOCALES, useTranslation } from '../i18n';
 import {
   listOpenablePageTypes,
   readPageTypeTitleRevision,
+  resolvePageTypeLabel,
   resolvePageTypeTitle,
   resolveResourcePageType,
   planResourcePageActivation,
@@ -57,7 +60,6 @@ import {
 import { useWorkbenchSidebar } from './workbench-layout/use-workbench-sidebar';
 import { installUeDockDrag, isUeDragging } from './ue-drag/controller';
 import type { HostConnection } from './HostConnectionIndicator';
-import { ViewTraceExportButton } from './ViewTraceExportButton';
 import {
   HeaderConnectionStatus,
   WorkspaceProjectRecovery,
@@ -364,7 +366,7 @@ function DockPageWorkbench({
   layoutHostId,
   hideWhenInactive,
   responsiveAutoTuck,
-  registerPanelRevealer,
+  registerPanelPresentation,
 }: {
   pageId: string;
   pageTypeId: string;
@@ -375,7 +377,7 @@ function DockPageWorkbench({
   layoutHostId?: string;
   hideWhenInactive: boolean;
   responsiveAutoTuck: boolean;
-  registerPanelRevealer?: (pageType: string, reveal: (slot: string) => boolean) => () => void;
+  registerPanelPresentation?: (pageId: string, presentation: PanelPresentation) => () => void;
 }) {
   const { t } = useTranslation();
   const apiRef = useRef<DockviewApi | null>(null);
@@ -390,13 +392,24 @@ function DockPageWorkbench({
   const pinScopeRef = useRef<EdgePinScope | null>(null);
   pinScopeRef.current = edgePinScope;
   const [layoutReady, setLayoutReady] = useState(false);
-  useEffect(() => registerPanelRevealer?.(pageTypeId, slot => {
-    const panel = apiRef.current?.getPanel(slot);
-    if (!panel) return false;
-    panel.api.setActive();
-    if (panel.api.location.type === 'edge') edgeDrawerRef.current?.revealPanel(slot);
-    return true;
-  }), [pageTypeId, registerPanelRevealer]);
+  useLayoutEffect(() => registerPanelPresentation?.(pageId, {
+    pageType: pageTypeId,
+    reveal(slot) {
+      const panel = apiRef.current?.getPanel(slot);
+      if (!panel) return false;
+      panel.api.setActive();
+      if (panel.api.location.type === 'edge') edgeDrawerRef.current?.revealPanel(slot);
+      return true;
+    },
+    read: () => claims.map(claim => {
+      const panel = apiRef.current?.getPanel(claim.id);
+      const visible = panel?.api.location.type === 'edge'
+        ? edgeDrawerRef.current?.getOpenPanelId() === claim.id : panel?.api.isVisible === true;
+      return { id: claim.id, title: titleForClaim(claim), mounted: !!panel,
+        visible: active && visible, active: active && panel?.api.isActive === true,
+        placement: panel?.api.location.type ?? 'unmounted' };
+    }),
+  }), [active, claims, pageId, pageTypeId, registerPanelPresentation, titleForClaim]);
   const [dockReadyRevision, setDockReadyRevision] = useState(0);
   const [presentationReady, setPresentationReady] = useState(0);
   const [dockExtent, setDockExtent] = useState({ width: 0, height: 0 });
@@ -624,11 +637,11 @@ export function ViewerShell({
   hostConnection?: HostConnection;
   workspaceClient?: WorkspaceRecoveryClient;
   selectedPageType?: string;
-  onSelectPageType?: (typeId: string) => void;
+  onSelectPageType?: (typeId: string, signal?: AbortSignal) => void | Promise<unknown>;
   responsiveAutoTuck?: boolean;
 }) {
   const { t, i18n } = useTranslation();
-  const { preference, setTheme } = useTheme();
+  const { theme, preference, setTheme } = useTheme();
   const projectSession = useProjectSessionState(workspaceClient);
   const claims = useSyncExternalStore(
     (listener) => subscribeRegistry(slotRegistry, listener),
@@ -666,24 +679,30 @@ export function ViewerShell({
   } = useViewPages(pageTypes, titleForPageType);
   const openPageRef = useRef(openPage);
   openPageRef.current = openPage;
-  const panelRevealers = useRef(new Map<string, (slot: string) => boolean>());
-  const registerPanelRevealer = useCallback((pageType: string, reveal: (slot: string) => boolean) => {
-    panelRevealers.current.set(pageType, reveal);
-    return () => { if (panelRevealers.current.get(pageType) === reveal) panelRevealers.current.delete(pageType); };
+  const panelPresentations = useRef(new Map<string, PanelPresentation>());
+  const registerPanelPresentation = useCallback((pageId: string, presentation: PanelPresentation) => {
+    panelPresentations.current.set(pageId, presentation);
+    return () => { if (panelPresentations.current.get(pageId) === presentation) panelPresentations.current.delete(pageId); };
   }, []);
-  useEffect(() => panelHost?.setRevealer(async slot => {
+  useEffect(() => panelHost?.setRevealer(async (slot, signal) => {
+    if (signal?.aborted) return false;
     const claim = claims.find(item => item.id === slot);
     if (!claim) return false;
-    openPageRef.current(claim.pageType);
-    onSelectPageType?.(claim.pageType);
+    const existing = pages.find(page => page.id === activePageId && page.typeId === claim.pageType) ?? pages.find(page => page.typeId === claim.pageType);
+    if (existing) selectLocalPage(existing.id);
+    else openPageRef.current(claim.pageType);
+    await onSelectPageType?.(claim.pageType, signal);
     // The Editor page and Dock are registered after its frontend modules mount.
     // A reveal from another initial page must wait for that real registration.
     for (let attempt = 0; attempt < 80; attempt++) {
-      if (panelRevealers.current.get(claim.pageType)?.(slot)) return true;
+      if (signal?.aborted) return false;
+      const presentation = existing ? panelPresentations.current.get(existing.id)
+        : [...panelPresentations.current.values()].find(owner => owner.pageType === claim.pageType);
+      if (presentation?.reveal(slot)) return true;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     return false;
-  }), [claims, onSelectPageType, panelHost]);
+  }), [activePageId, claims, onSelectPageType, pages, panelHost, selectLocalPage]);
   const pageTypesRef = useRef(pageTypes);
   pageTypesRef.current = pageTypes;
   const handledOpenRequest = useRef<{ requestId: string; sequence: number; ok: boolean } | null>(null);
@@ -744,11 +763,57 @@ export function ViewerShell({
   useEffect(() => {
     if (requestedPageId) selectLocalPage(requestedPageId);
   }, [requestedPageId, selectLocalPage]);
-  const selectPage = (pageId: string) => {
+  const selectPage = (pageId: string, signal?: AbortSignal) => {
     selectLocalPage(pageId);
     const page = pages.find(page => page.id === pageId);
-    if (page) onSelectPageType?.(page.typeId);
+    if (page) return onSelectPageType?.(page.typeId, signal);
   };
+  // This lease reads committed Shell/Dock owners; it stores no second UI model.
+  const presentationOwner = useRef<PresentationOwner | undefined>(undefined);
+  useLayoutEffect(() => {
+    const read = (): PresentationSnapshot => ({
+      shellState: requiresProject && projectSession.restoring ? 'project-restoring' : 'mounted',
+      activePageId,
+      pages: pages.map(page => {
+        const resource = pageTypes.find(type => type.typeId === page.typeId)?.controller?.getResource?.();
+        return { id: page.id, typeId: page.typeId, title: page.title, closable: page.closable !== false, ...(resource ? { resource } : {}) };
+      }),
+      pageTypes: pageTypes.map(type => ({ typeId: type.typeId, title: resolvePageTypeLabel(type, t), openable: type.openable })),
+      panels: activePage ? panelPresentations.current.get(activePage.id)?.read() ?? [] : [],
+      hasMorePages: false, hasMorePageTypes: false, hasMorePanels: false,
+      appearance: { theme, preference, language: i18n.language },
+    });
+    presentationOwner.current = async (operation, args, signal) => {
+      if (signal.aborted) throw workspaceError('view-presentation-cancelled', 'an active presentation request', 'Read presentation.get before retrying.');
+      if (operation === 'presentation.get') return read();
+      if (operation === 'presentation.panel.reveal') {
+        const id = typeof args.panelId === 'string' ? args.panelId : '';
+        const claim = claims.find(row => row.id === id);
+        if (!claim || !panelHost?.reveal) throw workspaceError('view-presentation-panel-missing', 'a registered panel ID', 'Read presentation.get.');
+        if (signal.aborted) throw workspaceError('view-presentation-cancelled', 'an active presentation request', 'Read presentation.get before retrying.');
+        if (!await panelHost.reveal(id, { signal })) throw workspaceError('view-presentation-panel-unavailable', 'a mounted native panel', 'Wait for the panel to mount and read presentation.get.');
+      } else {
+        const page = pages.find(row => row.id === args.pageId);
+        const type = pageTypes.find(row => row.typeId === args.typeId);
+        if (operation === 'presentation.page.open') {
+          if (!type?.openable)
+            throw workspaceError('view-presentation-page-unavailable', 'an openable page type', 'Read presentation.get and choose a returned page type.');
+        } else if (!page) throw workspaceError('view-presentation-page-missing', 'an existing page ID', 'Read presentation.get.');
+        if (operation === 'presentation.page.close' && page?.closable === false)
+          throw workspaceError('view-presentation-page-required', 'a closable page', 'Keep required workspace pages open.');
+        let activation: unknown;
+        flushSync(() => {
+          if (operation === 'presentation.page.open') { openPage(type!.typeId); activation = onSelectPageType?.(type!.typeId, signal); }
+          else if (operation === 'presentation.page.select') activation = selectPage(page!.id, signal);
+          else if (operation === 'presentation.page.close') closePage(page!.id);
+        });
+        await activation;
+        flushSync(() => {});
+      }
+      return presentationOwner.current!('presentation.get', {}, signal);
+    };
+  });
+  useEffect(() => pageHost?.attachPresentation?.((operation, args, signal) => presentationOwner.current!(operation, args, signal)), [pageHost]);
   const openDockPages = useMemo(
     () => pages.filter((page) => pageTypes.find((pageType) => pageType.typeId === page.typeId)?.layout === 'dock'),
     [pageTypes, pages],
@@ -764,8 +829,8 @@ export function ViewerShell({
   );
   const openablePageTypes = useMemo(
     () => (listOpenablePageTypes(pageTypes, pages) as PageType[])
-      .map((pageType) => ({ typeId: pageType.typeId, title: titleForPageType(pageType) })),
-    [pageTypes, pages, titleForPageType],
+      .map((pageType) => ({ typeId: pageType.typeId, title: resolvePageTypeLabel(pageType, t) })),
+    [pageTypes, pages, t],
   );
   const titleForClaim = useCallback(
     (claim: SlotClaim) => (claim.titleKey ? t(claim.titleKey) : claim.id),
@@ -807,7 +872,6 @@ export function ViewerShell({
           <Text as="strong" variant="caption" tone="primary">ForgeaX View</Text>
         </div>)}
         trailing={(<div className="fx-view-header__prefs">
-          <ViewTraceExportButton />
           <HeaderConnectionStatus connection={hostConnection} workspaceClient={workspaceClient} />
           <MenuDropdown
             label={t('view.theme')}
@@ -852,7 +916,7 @@ export function ViewerShell({
         </div>)}
         pages={pages}
         activePageId={activePageId}
-        onSelect={selectPage}
+        onSelect={id => { void Promise.resolve(selectPage(id)).catch(() => {}); }}
         onClose={closePage}
         onCloseOthers={closeOthers}
         onCloseToRight={closeToRight}
@@ -875,7 +939,7 @@ export function ViewerShell({
             key={page.id}
             pageId={page.id}
             pageTypeId={page.typeId}
-            registerPanelRevealer={registerPanelRevealer}
+            registerPanelPresentation={registerPanelPresentation}
             claims={claimsForPage(claims, page.typeId)}
             slotRegistry={slotRegistry}
             titleForClaim={titleForClaim}

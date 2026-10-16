@@ -3,6 +3,30 @@ import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
 
 describe('registry-owned material programs', () => {
+  it.each([
+    ['line masks block opener', '// /* @group(2) @binding(3)\n', 'skin'],
+    ['block masks line opener', '/* // @group(2) @binding(3)\n */', 'skin'],
+    ['nested markers', '/* /* @group(2) @binding(3) */ // */', 'skin'],
+    ['line ends before declaration', '// @group(2) @binding(3)', 'skin'],
+    ['unterminated block', '/* @group(2) @binding(3)', 'mesh'],
+    ['unterminated nested block', '/* /* */ @group(2) @binding(3)', 'mesh'],
+  ] as const)('preserves comment termination and nesting: %s', (_name, prefix, expected) => {
+    const source = `${prefix}\n@group(2) @binding(1) var<uniform> skin: mat4x4f;`;
+    expect(programs.createMaterialShaderProgram(source).group2).toBe(expected);
+  });
+
+  it('keeps token boundaries and deeply nested comments without exposing their declarations', () => {
+    const nested = `${'/*'.repeat(2048)} @group(2) @binding(9) ${'*/'.repeat(2048)}`;
+    const program = programs.createMaterialShaderProgram(`${nested}
+      struct/**/Input { @location(0) pos: vec3f, @location(1) uv1: vec2f }
+      @vertex/**/fn vs_main(input: Input) -> @builtin(position) vec4f { return vec4f(input.pos, 1); }
+      @group/**/(2) @binding/**/(1) var<uniform> skin: mat4x4f;
+    `);
+    expect(program.group2).toBe('skin');
+    expect(program.uvSetCount).toBe(2);
+    expect(programs.createMaterialShaderProgram('// @group(2) @binding(1)').group2).toBe('mesh');
+  });
+
   it('admits vertex UV count once, including a known absence for opaque shadow programs', () => {
     const registry = new ShaderRegistry({ manifestUrl: undefined });
     const source = `struct Input { @location(0) position: vec3f, @location(2) uv: vec2f, @location(9) uv7_: vec2f }

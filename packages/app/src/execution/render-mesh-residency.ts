@@ -189,6 +189,10 @@ export class RenderMeshResidency {
         request.entity === undefined
       )
         return;
+      // Retired physical leases have no evidence. Do not manufacture the
+      // record-stage API's structured stale-receipt error on every frame;
+      // recheck the lease each time so a current owner can contribute again.
+      if (!request.lease.isCurrent()) return;
       const lane = request.lease.recordStageLane(receipt, request.entity);
       if (lane.ok && lane.value !== undefined) {
         if (used + 2 > this.consumedBindings.length) {

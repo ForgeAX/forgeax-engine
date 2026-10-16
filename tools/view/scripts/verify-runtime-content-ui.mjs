@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { importRuntimeContent } from './runtime-content-import.mjs';
+import { importRuntimeContent, openRuntimeContent } from './runtime-content-import.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const output = resolve(process.env.FORGEAX_EVIDENCE_DIR ?? '/tmp/runtime-content-ui');
@@ -31,7 +31,8 @@ try {
   page.on('pageerror', error => { errors.push(error.message); console.error(error); });
   page.on('console', message => { if (message.type() === 'error') console.error(message.text()); });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.getByRole('button', { name: 'Runtime content', exact: true }).click();
+  await openRuntimeContent(page);
+  assert.equal(await page.evaluate(() => globalThis.runtimeContentFixture.revealed()), 1);
   await page.getByLabel('Generator', { exact: true }).selectOption({ label: 'Box generator' });
   await page.getByLabel('width', { exact: true }).fill('8');
   await page.getByRole('button', { name: 'Generate', exact: true }).click();
@@ -44,7 +45,7 @@ try {
   assert.equal(await page.getByLabel('Instance', { exact: true }).inputValue(), failedId);
   await page.getByRole('button', { name: 'Install', exact: true }).click();
   await page.getByText('#21 · active', { exact: true }).waitFor();
-  await page.locator('.cb-source-name').filter({ hasText: /^runtime$/ }).click();
+  await page.locator('.cb-source-name').filter({ hasText: /^content$/ }).click();
   await page.screenshot({ path: resolve(output, 'generated.png') });
   const downloadEvent = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save content', exact: true }).click();
@@ -82,7 +83,7 @@ try {
   // A fresh panel deliberately holds its initial Engine inspection. Import
   // must use the same enabled button as a user before delivering saved bytes.
   await page.goto(`http://127.0.0.1:${server.address().port}/?defer-inspection=1`);
-  await page.getByRole('button', { name: 'Runtime content', exact: true }).click();
+  await openRuntimeContent(page);
   const coldPanel = page.getByTestId('runtime-content');
   await coldPanel.getByRole('status').filter({ hasText: 'Waiting for Engine...' }).waitFor();
   assert.equal(await coldPanel.getByRole('button', { name: 'Import content', exact: true }).isDisabled(), true);

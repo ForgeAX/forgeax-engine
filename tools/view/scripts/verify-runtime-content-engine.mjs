@@ -20,7 +20,7 @@ import { AssetGuid, definePackageId, projectScriptablePackSceneComponents } from
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Name, Transform } from '@forgeax/engine/scene';
 import { connectViewWorkspace } from '@forgeax/view/workspace/resident';
-import { importRuntimeContent } from './runtime-content-import.mjs';
+import { importRuntimeContent, openRuntimeContent } from './runtime-content-import.mjs';
 import { savePreviewRhiEvidence } from './preview-rhi-evidence.mjs';
 
 const viewRoot = resolve(dirname(fileURLToPath(import.meta.resolve('@forgeax/view'))), '../..');
@@ -241,6 +241,18 @@ try {
   assert.ok(state.projectTarget.worldId && !state.projectTarget.worldId.startsWith('pending:'));
   const target = { projectId: state.project.id, targetId: state.projectTarget.targetId, worldId: state.projectTarget.worldId };
   const runtime = (operation, args = {}) => client.call(`runtime-pack.${operation}`, { ...args, ...target });
+  const inspectUserContent = async () => {
+    const inspection = await runtime('inspect');
+    const tooling = inspection.packs.filter(pack => {
+      const query = pack.source.assets?.query;
+      const config = query?.payload?.config;
+      return query?.kind === 'plugin' && query.payload.module?.specifier === './query.js'
+        && config?.projectId === target.projectId && config.targetId === target.targetId
+        && config.worldId === target.worldId && config.providerId?.startsWith('view-asset-references:');
+    });
+    assert.equal(tooling.length, 1, 'The Editor must retain exactly one known resident query definition');
+    return { ...inspection, packs: inspection.packs.filter(pack => pack.source.packageId !== tooling[0].source.packageId) };
+  };
   const capturePreview = async (subject) => {
     const deadline = Date.now() + 15000;
     let wait = 50;
@@ -258,7 +270,12 @@ try {
       }
     }
   };
-  assert.equal((await runtime('inspect')).packs.length, 0);
+  const residentDeadline = Date.now() + 30000;
+  while ((await runtime('inspect')).packs.length === 0) {
+    assert.ok(Date.now() < residentDeadline, 'The resident query definition must be admitted');
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal((await inspectUserContent()).packs.length, 0);
   const initialUrl = page.url();
   const sceneTab = page.getByRole('tab').filter({ hasText: /^Scene/ });
   const captureTarget = async (subject, name) => {
@@ -401,12 +418,12 @@ try {
       assert.equal(content.programs, undefined);
       bytes = Buffer.from(JSON.stringify(content));
     }
-    await page.getByRole('button', { name: 'Runtime content', exact: true }).click();
+    await openRuntimeContent(page);
     const panel = page.getByTestId('runtime-content');
     await importRuntimeContent(page, panel, { name: 'direct-content.json', mimeType: 'application/json', buffer: bytes });
     await panel.locator('summary').filter({ hasText: 'Admitted packs' }).click();
     await panel.getByText(packageId, { exact: true }).waitFor();
-    const admitted = await runtime('inspect');
+    const admitted = await inspectUserContent();
     assert.equal(admitted.packs.length, 1);
     assert.deepEqual(admitted.executions, []);
     const rows = await client.listAssets(state.project.id, { targetId: state.projectTarget.targetId });
@@ -451,7 +468,7 @@ try {
     assert.equal(snapshot.instances.length, 1);
     const instance = snapshot.instances[0];
     const guid = key => AssetGuid.format(AssetGuid.derive(definePackageId(instance.packageId), key));
-    await page.getByRole('button', { name: 'Runtime content', exact: true }).click();
+    await openRuntimeContent(page);
     const panel = page.getByTestId('runtime-content');
     await importRuntimeContent(page, panel, { name: 'cold-content.json', mimeType: 'application/json', buffer: bytes });
     await panel.getByLabel('Generator', { exact: true }).selectOption(instance.parent);
@@ -505,7 +522,7 @@ try {
       programs: { build: prepare(`build.${language}`, 'build'), behavior: prepare(`behavior.${language}`, 'default') },
     };
     phase = 'admit';
-    await page.getByRole('button', { name: 'Runtime content', exact: true }).click();
+    await openRuntimeContent(page);
     const panel = page.getByTestId('runtime-content');
     await importRuntimeContent(page, panel, { name: 'runtime-content.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(content)) });
     await panel.getByLabel('Generator', { exact: true }).selectOption(parent);
@@ -560,7 +577,7 @@ try {
     assert.deepEqual(inspected.inspection.meta.aabb, [-2, -1, -1, 2, 1, 1]);
     const oldBinding = await captureTarget(previewTarget, 'previous-consumer');
     assert.deepEqual(await readBinding(previewTarget), initialBinding);
-    await page.getByRole('tab').filter({ hasText: /^Mesh/ }).click();
+    await page.locator('[role="tab"][data-page-id="page-mesh"]').click();
     await page.getByTestId('panel-mesh-properties').getByText(initialBinding.publication.digest, { exact: true }).waitFor();
     await page.getByTestId('panel-mesh-properties').locator('input[readonly][value="[-1,-1,-1,1,1,1]"]').waitFor();
     await page.screenshot({ path: join(evidence, 'previous-consumer-ui.png') });
@@ -595,7 +612,7 @@ try {
     await panel.getByRole('button', { name: 'Withdraw instance', exact: true }).click();
     await panel.locator('summary').filter({ hasText: 'Admitted packs' }).click();
     await panel.getByRole('button', { name: 'Withdraw pack', exact: true }).click();
-    assert.equal((await runtime('inspect')).packs.length, 0);
+    assert.equal((await inspectUserContent()).packs.length, 0);
     assert.equal((await client.listAssets(state.project.id, { targetId: state.projectTarget.targetId })).assets.some(asset => asset.guid === guid('box')), false);
     await importRuntimeContent(page, panel, { name: 'saved-content.json', mimeType: 'application/json', buffer: persistedBytes });
     await panel.getByLabel('Generator', { exact: true }).selectOption(parent);

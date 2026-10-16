@@ -50,6 +50,8 @@ export class EngineWorkspaceError extends Error {
 export interface EngineWorkspaceProject {
   readonly id: string;
   readonly root: string;
+  /** Authored source directories, when this workspace has a filesystem project. */
+  readonly assetRoots?: readonly string[];
   readonly name?: string;
   readonly revision?: string;
 }

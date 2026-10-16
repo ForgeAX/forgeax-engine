@@ -149,7 +149,7 @@ let frame;
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const result = drawSmokeFrame(renderer, world);
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) console.error(`[smoke] draw frame ${i} error: ${result.error.code}`);
   framesObserved++;
   if (i === 5) frame = await capture(sharedDevice);

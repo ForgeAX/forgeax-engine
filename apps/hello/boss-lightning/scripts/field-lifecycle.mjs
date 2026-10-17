@@ -99,7 +99,7 @@ export async function runFieldLifecycle(context) {
     writeFileSync(resolve(output, 'replacement-121.rhitape'), bytes);
     const tape = unwrap(decodeTape(bytes));
     const model = buildFrameModel(tape);
-    const update = model.works.find(work => work.pipeline?.shaders?.some(shader => shader.entryPoint === 'forgeax_vfx_update_main'));
+    const update = model.works.find(work => work.pipeline?.shaders?.some(shader => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')));
     assert(update);
     const core = update.bindings.find(binding => binding.binding === 0);
     const field = update.bindings.find(binding => binding.binding === 17);

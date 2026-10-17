@@ -682,7 +682,7 @@ async function run(collision, depthOnly = false) {
       const ticks = [10, 11].map((frame) => {
         const model = buildFrameModel(unwrap(decodeTape(captures.get(frame))));
         const updates = model.works.filter((work) =>
-          work.pipeline?.shaders?.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+          work.pipeline?.shaders?.some((shader) => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')),
         );
         assert.equal(updates.length, frame === 10 ? 0 : 2);
         return {
@@ -699,7 +699,7 @@ async function run(collision, depthOnly = false) {
       assert.equal(renderer.inspect().views.length, 2);
       const evidence = [...captures].map(([frame, bytes]) => {
         const updates = buildFrameModel(unwrap(decodeTape(bytes))).works.filter((work) =>
-          work.pipeline?.shaders?.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+          work.pipeline?.shaders?.some((shader) => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')),
         );
         assert.equal(updates.length, 1, 'Two views must share one fixed simulation dispatch');
         return {
@@ -846,7 +846,7 @@ async function run(collision, depthOnly = false) {
         lifecycleTape = unwrap(await capture).bytes;
         writeFileSync(resolve(output, `${lifecycle}.rhitape`), lifecycleTape);
         const updates = buildFrameModel(unwrap(decodeTape(lifecycleTape))).works.filter((work) =>
-          work.pipeline?.shaders?.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+          work.pipeline?.shaders?.some((shader) => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')),
         );
         assert.equal(updates.length, lifecycle === 'player-destroy' ? 0 : 1);
         assert(updates.every((work) => work.bindings.every((binding) => binding.binding !== 15)));
@@ -895,7 +895,7 @@ async function run(collision, depthOnly = false) {
       const initialTape = unwrap(decodeTape(bytes));
       const initialModel = buildFrameModel(initialTape);
       const initialUpdate = initialModel.works.find((work) =>
-        work.pipeline?.shaders?.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+        work.pipeline?.shaders?.some((shader) => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')),
       );
       assert(initialUpdate);
       const initialParticle = initialUpdate.bindings.find(
@@ -1051,7 +1051,7 @@ async function run(collision, depthOnly = false) {
   const tape = unwrap(decodeTape(tapeBytes));
   const model = buildFrameModel(tape);
   const update = model.works.find((work) =>
-    work.pipeline?.shaders?.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+    work.pipeline?.shaders?.some((shader) => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')),
   );
   assert(update, 'ordinary VFX update must be captured');
   const particle = update.bindings.find((binding) => binding.binding === 0)?.resourceId;
@@ -1061,7 +1061,7 @@ async function run(collision, depthOnly = false) {
   if (depthOnly) assert(update.bindings.some((binding) => binding.binding === 13));
   const changedModel = buildFrameModel(unwrap(decodeTape(captures.get(24))));
   const changedUpdate = changedModel.works.find((work) =>
-    work.pipeline?.shaders?.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+    work.pipeline?.shaders?.some((shader) => /^forgeax_vfx_update(?:_compact)?_main$/.test(shader.entryPoint ?? '')),
   );
   assert(changedUpdate);
   const changedSdf = changedUpdate.bindings.find((binding) => binding.binding === 15)?.resourceId;

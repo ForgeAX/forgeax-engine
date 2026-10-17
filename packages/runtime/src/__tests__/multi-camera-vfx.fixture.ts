@@ -315,7 +315,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
           ).length;
         stages.push({
           name,
-          updates: workCount('forgeax_vfx_update_main'),
+          updates: workCount('forgeax_vfx_update_compact_main'),
           projections: workCount('forgeax_vfx_billboard_main'),
           graphGeneration: required(completed.graphGeneration),
           deviceGeneration: completed.deviceGeneration,
@@ -323,7 +323,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         await options.save(`vfx-${name}.rgba`, pixels.bytes);
         return {
           pixels,
-          updates: workCount('forgeax_vfx_update_main'),
+          updates: workCount('forgeax_vfx_update_compact_main'),
           projections: workCount('forgeax_vfx_billboard_main'),
         };
       };
@@ -398,9 +398,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       model.works.filter((work) =>
         work.pipeline.shaders.some((shader) => shader.entryPoint === entryPoint),
       );
-    expect(entries('forgeax_vfx_update_main')).toHaveLength(1);
+    expect(entries('forgeax_vfx_update_compact_main')).toHaveLength(1);
     expect(entries('forgeax_vfx_sort_main')).toHaveLength(2);
-    const simulation = required(entries('forgeax_vfx_update_main')[0]);
+    const simulation = required(entries('forgeax_vfx_update_compact_main')[0]);
     const depthWriters = model.works.filter(
       (work) =>
         work.workIndex < simulation.workIndex && work.attachments?.depthStencilViewHandleId != null,

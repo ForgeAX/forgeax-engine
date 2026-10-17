@@ -179,6 +179,7 @@ it('freezes mesh consumption on each real draw and delivers it only after ordere
     ok: true,
     value: {
       deviceGeneration: 7,
+      isCurrent: () => true,
       recordStageLane: lane,
       release: vi.fn(() => Promise.resolve()),
     },

@@ -1125,7 +1125,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
     ).toEqual(depthShadow);
     expect(phase()).toBe(1);
     const depthUpdate = depthModel.works.find((work) =>
-      work.pipeline?.shaders.some((shader) => shader.entryPoint === 'forgeax_vfx_update_main'),
+      work.pipeline?.shaders.some(
+        (shader) => shader.entryPoint === 'forgeax_vfx_update_compact_main',
+      ),
     );
     const shadowWork = depthModel.works.find((work) => work.kind === 'drawIndexedIndirect');
     expect(depthUpdate).toBeDefined();

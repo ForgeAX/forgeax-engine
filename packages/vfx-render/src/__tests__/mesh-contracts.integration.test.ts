@@ -70,7 +70,11 @@ function mesh(indices = new Uint16Array([0, 1, 2]) as Uint16Array | Uint32Array)
     materialSlots: [{ slotName: 'Default' }],
   };
 }
-async function fixture(emitters: ReturnType<typeof emitter>[], geometry = mesh()) {
+async function fixture(
+  emitters: ReturnType<typeof emitter>[],
+  geometry = mesh(),
+  isConsumed = () => true,
+) {
   const cooked = (
     await cookParticleCodeProgram({ schemaVersion: 3, emitters }, modules, { material: inputs })
   ).unwrap();
@@ -92,6 +96,7 @@ async function fixture(emitters: ReturnType<typeof emitter>[], geometry = mesh()
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
   const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const feature = gpuParticleRenderFeature({
+    playerConsumption: { isEnabled: isConsumed },
     mesh: { read: () => geometry },
     material: { read: () => ({ kind: 'material', particleInputs: inputs }) },
     camera: {
@@ -105,7 +110,7 @@ async function fixture(emitters: ReturnType<typeof emitter>[], geometry = mesh()
   });
   const targets = [{ name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 }] as const;
   let frameNumber = 0;
-  const frame = (leadingWorld?: World) => {
+  const frame = (leadingWorld?: World, generation = 0) => {
     const extracted = feature
       .extract({
         worlds: leadingWorld === undefined ? [world] : [leadingWorld, world],
@@ -121,7 +126,7 @@ async function fixture(emitters: ReturnType<typeof emitter>[], geometry = mesh()
           targets,
           caps: {} as never,
           frame: { frameNumber },
-          generation: 0,
+          generation,
           sceneData: {} as never,
           ...(leadingWorld === undefined
             ? {}
@@ -339,6 +344,120 @@ it.each([
     expect(indirect.data[0]).toBe(indices.length);
     expect(geometry.indices).toBe(indices);
     frame.submit();
+  } finally {
+    await f.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('masks retained mesh shadows per session with active preparation %s', async (preparePipelines) => {
+  let consumed = true;
+  const renderer = { kind: 'mesh', mesh: 'mesh', material: 'material', castShadows: true };
+  const f = await fixture(
+    [emitter('a', 4, renderer), emitter('b', 4, renderer)],
+    mesh(),
+    () => consumed,
+  );
+  const frame = (count: number, generation = 0) => {
+    const result = f.frame(undefined, generation);
+    const passes = planPasses(result.plan);
+    for (const suffix of ['.copy', '.project', '.shadow']) {
+      expect(passes.filter((pass) => pass.name.endsWith(suffix))).toHaveLength(count);
+    }
+    expect(
+      passes
+        .flatMap((pass) => (pass.kind === 'raster' ? pass.draws : []))
+        .filter((draw) => draw.enabled !== false),
+    ).toHaveLength(count);
+    result.submit();
+    return result.plan;
+  };
+  const storage = (plan: ReturnType<typeof frame>) =>
+    planResources(plan)
+      .filter((resource) => resource.kind === 'buffer')
+      .map((resource) => resource.name);
+  try {
+    frame(2);
+    f.world.set(f.player, ParticleEffectPlayer, { playing: false }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    const paused = frame(2);
+    f.runtime.setEmitterSessionEnabled(f.player, 'a', false);
+    const masked = frame(1);
+    expect(storage(masked)).toEqual(storage(paused));
+    expect(planPasses(masked).filter((pass) => pass.kind === 'shadow-caster')).toEqual(
+      planPasses(paused)
+        .filter((pass) => pass.kind === 'shadow-caster')
+        .slice(1),
+    );
+    f.runtime.setEmitterSessionEnabled(f.player, 'a', true);
+    expect(storage(frame(2))).toEqual(storage(paused));
+    consumed = false;
+    expect(storage(frame(0))).toEqual(storage(paused));
+    consumed = true;
+    frame(2);
+
+    f.world.set(f.player, ParticleEffectPlayer, { playing: true, preparePipelines }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    frame(2);
+    f.runtime.setEmitterSessionEnabled(f.player, 'a', false);
+    frame(1);
+    const pausedTick = f.runtime.inspectPlayer(f.player)?.emitters[0]?.phaseTick ?? -1;
+    expect(pausedTick).toBeGreaterThanOrEqual(0);
+    for (let tick = 0; tick < 3; tick++) {
+      f.world.update(1 / 60).unwrap();
+      const active = frame(1);
+      expect(planPasses(active).filter((pass) => pass.name.endsWith('.simulate'))).toHaveLength(1);
+      expect(f.runtime.inspectPlayer(f.player)?.emitters[0]?.phaseTick).toBe(pausedTick);
+      expect(f.runtime.inspectPlayer(f.player)?.emitters[1]?.phaseTick).toBe(pausedTick + tick + 1);
+      expect(f.runtime.snapshot()).toHaveLength(0);
+    }
+    f.runtime.setEmitterSessionEnabled(f.player, 'a', true);
+    frame(2);
+    f.world.update(1 / 60).unwrap();
+    frame(2);
+
+    f.world.update(1 / 60).unwrap();
+    expect(f.runtime.snapshot().length).toBeGreaterThan(0);
+    f.world
+      .set(f.player, ParticleEffectPlayer, { playing: false, preparePipelines: true })
+      .unwrap();
+    expect(planPasses(frame(0))).toEqual([]);
+    expect(f.runtime.snapshot()).toHaveLength(0);
+    expect(planPasses(frame(0, 1))).toEqual([]);
+    f.world.set(f.player, ParticleEffectPlayer, { playing: true }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    frame(2, 1);
+    f.world.removeComponent(f.player, ParticleEffectPlayer).unwrap();
+    expect(planResources(frame(0, 1))).toEqual([]);
+  } finally {
+    await f.dispose();
+  }
+});
+
+it('keeps offscreen mesh shadows until the emitter session is disabled', async () => {
+  const source = emitter('offscreen', 4, {
+    kind: 'mesh',
+    mesh: 'mesh',
+    material: 'material',
+    castShadows: true,
+  });
+  source.bounds.center = [1000, 0, 0];
+  const offscreen = { ...source, simulationWhenCulled: 'continue' };
+  const f = await fixture([offscreen]);
+  try {
+    const active = f.frame();
+    expect(planPasses(active.plan).filter((pass) => pass.kind === 'shadow-caster')).toHaveLength(1);
+    expect(planPasses(active.plan).filter((pass) => pass.kind === 'raster')).toHaveLength(0);
+    active.submit();
+    f.runtime.setEmitterSessionEnabled(f.player, source.id, false);
+    expect(planPasses(f.frame().plan)).toEqual([]);
+    f.runtime.setEmitterSessionEnabled(f.player, source.id, true);
+    const restored = planPasses(f.frame().plan);
+    expect(restored.filter((pass) => pass.name.endsWith('.project'))).toHaveLength(1);
+    expect(restored.filter((pass) => pass.kind === 'shadow-caster')).toHaveLength(1);
+    expect(restored.filter((pass) => pass.kind === 'raster')).toHaveLength(0);
   } finally {
     await f.dispose();
   }

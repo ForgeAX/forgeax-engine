@@ -18,6 +18,16 @@ export interface RenderPublicationIdentity {
 export interface PublishedMeshPreparation extends RenderPublicationIdentity {
   readonly meshHandle: Handle<'MeshAsset', 'shared'>;
   readonly mesh: MeshAsset;
+  /** Actual candidate draw facts; absent for standalone mesh-buffer residency. */
+  readonly pipelinePreparation?: MeshPipelinePreparation;
+}
+
+/** Same producer snapshot/program vocabulary as a scene publication, without scene admission. */
+export interface MeshPipelinePreparation {
+  readonly entity: number;
+  readonly transform: RenderableSnapshot['transform'];
+  readonly template: RenderPublicationTemplate;
+  readonly programs: RenderPublication['programs'];
 }
 
 /** GPU residency only; source World and geometry candidate admission stay with the source. */
@@ -97,6 +107,10 @@ export interface RenderPublication extends RenderPublicationIdentity {
 
 export interface PublishedRenderFrameInput {
   readonly publication: RenderPublication;
+  readonly geometryObservation?: true;
+  /** Diagnostic identity of the World that produced this publication. The
+   * transport's publication namespace is not an ECS World identity. */
+  readonly geometryObservationSourceWorldIdentity?: string;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Realm-local adapter invoked only after the feature's graph is submitted. */
   readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;

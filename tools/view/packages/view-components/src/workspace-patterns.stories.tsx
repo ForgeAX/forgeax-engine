@@ -21,7 +21,7 @@ import { AssetReferenceField } from './AssetReferenceField';
 import { ClipboardProvider } from './clipboard';
 
 const meta = {
-  title: 'Editor Patterns/Panel and Layout',
+  title: 'Workspace Patterns/Panel and Layout',
   component: PanelHeader,
   parameters: {
     docs: {

@@ -65,7 +65,7 @@ export function createViewService(
       entry
         ? new URL(entry, input.url).href
         : new URL('./__mcp_document_entry.mjs', input.url).href,
-      'editor',
+      'document',
       entry ? undefined : inline,
     );
     html = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (text, attrs) =>

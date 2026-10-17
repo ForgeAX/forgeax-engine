@@ -2,13 +2,34 @@ import {
   type MaterialShaderArtifactReceipt,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
-import { derive, type ParamSchemaEntry, type UboFieldLayout } from '@forgeax/engine-types';
+import {
+  derive,
+  getAdmittedParamSchemaInterface,
+  type ParamSchemaEntry,
+  type UboFieldLayout,
+} from '@forgeax/engine-types';
 import { GPU_SCENE_LAYOUTS } from './gpu-scene-schema';
 import { writeMaterialTextureCoordinateRecord } from './material-texture-coordinates';
 import type { MaterialSnapshot } from './render-system-extract';
 
 const ROW = GPU_SCENE_LAYOUTS.material;
 const STANDARD_PIPELINE_DERIVED = derive(STANDARD_PIPELINE_PARAM_SCHEMA);
+const schemaDefaults = new WeakMap<readonly ParamSchemaEntry[], ReadonlyMap<string, unknown>>();
+
+function admittedDefaults(
+  schema: readonly ParamSchemaEntry[],
+): ReadonlyMap<string, unknown> | undefined {
+  // Layout derivation alone does not own raw defaults or their getters.
+  if (getAdmittedParamSchemaInterface(schema) === undefined) return undefined;
+  let defaults = schemaDefaults.get(schema);
+  if (defaults === undefined) {
+    defaults = new Map(schema.map((entry) => [entry.name, entry.default]));
+    schemaDefaults.set(schema, defaults);
+  }
+  return defaults;
+}
+
+const STANDARD_PIPELINE_DEFAULTS = admittedDefaults(STANDARD_PIPELINE_PARAM_SCHEMA);
 
 function isNumericValue(value: unknown): value is number | readonly number[] {
   return typeof value === 'number' || Array.isArray(value);
@@ -50,6 +71,7 @@ function numericValue(
   material: MaterialSnapshot,
   schema: readonly ParamSchemaEntry[],
   allowStandardFallback = false,
+  defaults?: ReadonlyMap<string, unknown>,
 ): number | readonly number[] | undefined {
   const snapshotValue = material.paramSnapshot?.[name];
   if (isNumericValue(snapshotValue)) return snapshotValue;
@@ -57,7 +79,10 @@ function numericValue(
     const materialValue = numericFallback(name, material);
     if (materialValue !== undefined) return materialValue;
   }
-  const defaultValue = schema.find((entry) => entry.name === name)?.default;
+  const defaultValue =
+    defaults === undefined
+      ? schema.find((entry) => entry.name === name)?.default
+      : defaults.get(name);
   if (isNumericValue(defaultValue)) return defaultValue;
   return undefined;
 }
@@ -128,7 +153,13 @@ export function packStandardPbrMaterialRow(
     writeNumeric(
       view,
       member,
-      numericValue(member.name, material, STANDARD_PIPELINE_PARAM_SCHEMA, true),
+      numericValue(
+        member.name,
+        material,
+        STANDARD_PIPELINE_PARAM_SCHEMA,
+        true,
+        STANDARD_PIPELINE_DEFAULTS,
+      ),
     );
   }
   for (const record of STANDARD_PIPELINE_DERIVED.coordinateRecords) {
@@ -159,8 +190,9 @@ export function packMaterialProgramRow(
   const payload = new Uint8Array(rowStride);
   const view = new DataView(payload.buffer);
   const f32 = new Float32Array(payload.buffer);
+  const defaults = admittedDefaults(schema);
   for (const member of derived.numericMembers) {
-    writeNumeric(view, member, numericValue(member.name, material, schema));
+    writeNumeric(view, member, numericValue(member.name, material, schema, false, defaults));
   }
   for (const record of derived.coordinateRecords) {
     writeMaterialTextureCoordinateRecord(

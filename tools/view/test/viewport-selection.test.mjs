@@ -3,10 +3,10 @@ import { it } from 'node:test';
 import { ViewWorkspaceBroker } from '@forgeax/view-workspace-core/broker';
 import { isViewportWorkspaceInputEvent, ViewWorkspaceInputController } from '../packages/view-plugin-viewport/src/workspace-shell.ts';
 
-const identity = { targetId: 'editor', targetGeneration: 1 };
+const identity = { targetId: 'scene', targetGeneration: 1 };
 function fixture(query) {
   const calls = [];
-  const engine = { preview: { asset: { guid: 'scene', kind: 'scene' }, target: { targetId: 'editor', generation: 1 } } };
+  const engine = { preview: { asset: { guid: 'scene', kind: 'scene' }, target: { targetId: 'scene', generation: 1 } } };
   const toolApi = {
     describe: () => [{ callable: true, owner: { providerId: 'engine', generation: 1 } }],
     run(id, args) {

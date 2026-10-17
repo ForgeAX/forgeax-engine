@@ -47,6 +47,10 @@ it('prepares an empty transparent lane, waits for its exact PSO, and opens no ra
     lookup.mockReturnValueOnce(null);
     f.prepare();
     expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+    expect(f.c.frameState.pipelinePreparationPendingReason).toMatchObject({
+      code: 'material-pipeline-preparation',
+      entity: 1,
+    });
     f.c.frameState.pipelinePreparationPending = false;
     f.prepare();
     expect(f.c.frameState.pipelinePreparationPending).toBe(false);

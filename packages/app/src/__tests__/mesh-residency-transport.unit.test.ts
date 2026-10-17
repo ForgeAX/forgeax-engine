@@ -3,7 +3,9 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   type DynamicGeometryCandidate,
   type FrameReceipt,
+  MeshResidencyError,
   type PreparedPublishedMeshResidency,
+  type PublishedMeshPreparation,
   type Renderer,
   RenderPublicationError,
 } from '@forgeax/engine-render';
@@ -311,7 +313,7 @@ it('preserves receiver refusal details and escalates unknown throws without a re
   );
   const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh };
   await receiver.receive({ kind: 'mesh-prepare', requestId: 1, input });
-  expect(prepare).toHaveBeenCalledWith(input, 'received');
+  expect(prepare).toHaveBeenCalledWith(input, 'received', { signal: expect.any(AbortSignal) });
   expect(post).toHaveBeenCalledWith(
     expect.objectContaining({
       kind: 'mesh-ready',
@@ -331,6 +333,94 @@ it('preserves receiver refusal details and escalates unknown throws without a re
     'uncertain physical ownership',
   );
   expect(post).not.toHaveBeenCalled();
+  await receiver.dispose();
+});
+
+it.each([
+  undefined,
+  41,
+])('rejects candidate pipeline facts bound to a different entity: %s', async (entity) => {
+  const f = sourceFixture();
+  const prepare = vi.fn();
+  const post = vi.fn();
+  const receiver = new RenderMeshResidency(
+    { preparePublishedMeshResidency: prepare } as unknown as Renderer,
+    identity,
+    post,
+  );
+  // Malformed wire data must fail before creating a physical preparation lease.
+  const input = {
+    ...identity,
+    meshHandle: f.meshHandle,
+    mesh: f.mesh,
+    pipelinePreparation: { entity: 42 },
+  } as PublishedMeshPreparation;
+  await receiver.receive({
+    kind: 'mesh-prepare',
+    requestId: 1,
+    input,
+    ...(entity === undefined ? {} : { entity }),
+  });
+  expect(prepare).not.toHaveBeenCalled();
+  expect(post).toHaveBeenCalledWith(
+    expect.objectContaining({
+      kind: 'mesh-ready',
+      result: expect.objectContaining({
+        ok: false,
+        error: expect.objectContaining({ code: 'dynamic-geometry-invalid' }),
+      }),
+    }),
+  );
+  await receiver.dispose();
+});
+
+it('aborts an unfinished receiver preparation before waiting for its physical release', async () => {
+  const f = sourceFixture();
+  const aborted = deferred<void>();
+  const releaseFence = deferred<void>();
+  const prepare = vi.fn(async (_input, _ownership, options: { signal: AbortSignal }) => {
+    await new Promise<void>((resolve) =>
+      options.signal.addEventListener(
+        'abort',
+        () => {
+          aborted.resolve();
+          resolve();
+        },
+        { once: true },
+      ),
+    );
+    await releaseFence.promise;
+    return err(
+      new MeshResidencyError(
+        'mesh-residency-gpu-not-ready',
+        'preparation remains current',
+        'discard cancelled preparation',
+      ),
+    );
+  });
+  const post = vi.fn();
+  const receiver = new RenderMeshResidency(
+    {
+      preparePublishedMeshResidency: prepare,
+      currentDeviceGeneration: () => 7,
+    } as unknown as Renderer,
+    identity,
+    post,
+  );
+  const preparing = receiver.receive({
+    kind: 'mesh-prepare',
+    requestId: 1,
+    entity: 42,
+    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+  });
+  const releasing = receiver.receive({ kind: 'mesh-release', requestId: 1, identity, evict: true });
+  await aborted.promise;
+  expect(post).not.toHaveBeenCalled();
+  releaseFence.resolve();
+  await Promise.all([preparing, releasing]);
+  expect(post.mock.calls.filter(([message]) => message.kind === 'mesh-released')).toEqual([
+    [{ kind: 'mesh-released', requestId: 1, identity, result: { ok: true, deviceGeneration: 7 } }],
+  ]);
   await receiver.dispose();
 });
 

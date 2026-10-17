@@ -95,6 +95,12 @@ const level: SceneAsset = {
 
 Authored primitive fields are checked before storage conversion: scalar types, finite floating-point values, integer ranges and fixed-array lengths must match the declared schema. Typed numeric author arrays project their values instead of reinterpreting bytes. Malformed values return `asset-package-invalid` before any scene entity is spawned. Omitted fields still use schema defaults.
 
+`buffer` and `buffer<N>` store raw bytes. Native buffers and views preserve their
+exact byte window, including wider TypedArrays and DataViews; externalization
+projects those bytes to JSON arrays, and binding checks byte values and the fixed
+byte count. All fixed arrays, including entity and shared-handle arrays, enforce
+their schema length. Shape annotations do not change the underlying storage type.
+
 Schema-declared scalar and array entity references bind after all owned entities and mount carriers exist. Forward and cyclic references therefore resolve to the current instance; hierarchy still follows its parent-first ordering. This does not make hierarchy cycles valid.
 
 ### Publication fence for loaded scenes
@@ -155,10 +161,12 @@ subtree is exposed as contiguous spans without a parallel event journal.
 world-space authority.
 
 Visibility and other hierarchy consumers share one World-local parent-edge
-projection. A structural or `ChildOf` change rebuilds it from actual parent
-edges, without enumerating unrelated roots. Parent validation checks the live
-Entity generation; root lookup stays empty and malformed edges retain the same
-sorted diagnostics. Previously returned snapshots remain unchanged.
+projection. Its invalidation comes from the existing ECS relationship revision
+and `ChildOf` write evidence. Unrelated structural changes recheck edge order
+and parent generations through the retained read Query before reusing the
+snapshot. Changed edges, iteration order, or existing diagnostics rebuild the
+projection. Root lookup stays empty, malformed edges keep sorted diagnostics,
+and previously returned snapshots remain unchanged.
 
 The first propagation, and the next one after any hierarchy error, validates
 the full hierarchy through ECS-maintained `Children` lists. After that, work is

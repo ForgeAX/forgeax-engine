@@ -150,7 +150,7 @@ export const componentTokens = {
   controlIconHitAreaMin: '--fx-component-control-icon-hit-area-min',
   fieldHeightDefault: '--fx-component-field-height-default',
   navigationRowHeight: '--fx-component-navigation-row-height',
-  editorRowHeight: '--fx-component-editor-row-height',
+  controlRowHeight: '--fx-component-control-row-height',
   panelHeaderHeight: '--fx-component-panel-header-height',
   navigationRailWidth: '--fx-component-navigation-rail-width',
   panelConfigMinWidth: '--fx-component-panel-config-min-width',

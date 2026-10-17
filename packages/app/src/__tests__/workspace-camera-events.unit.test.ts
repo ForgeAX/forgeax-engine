@@ -40,7 +40,7 @@ it('captures observer gestures over game UI only inside the canvas and retires d
   try {
     // A document event can originate from a game UI overlay, not the canvas.
     expect(win.dispatchEvent(pointer())).toBe(true);
-    owner = 'editor';
+    owner = 'preview';
     expect(win.dispatchEvent(pointer('pointerdown', 120))).toBe(true);
     expect(begin).not.toHaveBeenCalled();
     expect(win.dispatchEvent(pointer())).toBe(false);

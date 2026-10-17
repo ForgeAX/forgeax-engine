@@ -60,7 +60,7 @@ export function MaterialPreviewPanel({
 
 function PreviewEmpty({ title, description }: { title: string; description: string }) {
   return (
-    <div className="fx-asset-editor fx-asset-preview fx-ui" data-testid="panel-material-preview">
+    <div className="fx-asset-viewer fx-asset-preview fx-ui" data-testid="panel-material-preview">
       <EmptyState title={title} description={description} />
     </div>
   );
@@ -104,7 +104,7 @@ function LivePreview({
       container,
       owner,
       api: client,
-      editorTargetId: workspace?.editorPreview?.target?.targetId,
+      sceneTargetId: workspace?.scenePreview?.target?.targetId,
     });
     if (!bound.ok) {
       setFailure(bound.error);
@@ -165,7 +165,7 @@ function LivePreview({
     targetGeneration,
     preview?.target,
     preview?.target?.surfaceId,
-    workspace?.editorPreview?.target?.targetId,
+    workspace?.scenePreview?.target?.targetId,
     client,
     inputControllerFactory,
   ]);
@@ -195,7 +195,7 @@ function LivePreview({
     );
   }
   return (
-    <div className="fx-asset-editor fx-asset-preview fx-material-preview fx-ui" data-testid="panel-material-preview">
+    <div className="fx-asset-viewer fx-asset-preview fx-material-preview fx-ui" data-testid="panel-material-preview">
       <div className="fx-material-preview-toolbar">
         <Button
           size="compact"

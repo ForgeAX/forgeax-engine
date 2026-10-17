@@ -1,3 +1,4 @@
+import { teardownDawnInstance } from '../../../scripts/lib/dawn-teardown.mjs';
 // @forgeax/apps-shared/scripts/rhi-debug-verify -- reusable RHI-debug capture
 // verification harness for learn-render / hello-* demos.
 //
@@ -333,29 +334,6 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
     const readback = await pendingLive;
     live = readback.live;
     dims = readback.dims;
-    if (browserReplayHook !== undefined || injected?.replay !== undefined) {
-      const replay = injected?.replay ?? (async (bytes) => {
-        const fn = globalThis[browserReplayHook];
-        if (typeof fn !== 'function') {
-          throw new Error(`browser replay hook window.${browserReplayHook} is not a function`);
-        }
-        return fn(bytes);
-      });
-      const replayed = await replay(captured.bytes);
-      const replayPixels = replayed.pixels instanceof Uint8Array
-        ? replayed.pixels
-        : new Uint8Array(replayed.pixels);
-      let binary = '';
-      const CHUNK = 0x2000;
-      for (let i = 0; i < replayPixels.length; i += CHUNK) {
-        binary += String.fromCharCode(...replayPixels.subarray(i, i + CHUNK));
-      }
-      browserReplay = {
-        pixels: btoa(binary),
-        dims: { width: replayed.width, height: replayed.height },
-        workIndex: replayed.workIndex,
-      };
-    }
   }
 
   const runId = `verify-${Date.now()}-${crypto.randomUUID().replaceAll('-', '')}`;
@@ -382,6 +360,32 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
     ? undefined
     : globalThis[reportHook] ?? null;
   const uploaded = await upload(captured.bytes);
+  // Persist the canonical bytes before fresh-backend replay can fail.
+  if (mode === 'pixel') {
+    if (browserReplayHook !== undefined || injected?.replay !== undefined) {
+      const replay = injected?.replay ?? (async (bytes) => {
+        const fn = globalThis[browserReplayHook];
+        if (typeof fn !== 'function') {
+          throw new Error(`browser replay hook window.${browserReplayHook} is not a function`);
+        }
+        return fn(bytes);
+      });
+      const replayed = await replay(captured.bytes);
+      const replayPixels = replayed.pixels instanceof Uint8Array
+        ? replayed.pixels
+        : new Uint8Array(replayed.pixels);
+      let binary = '';
+      const CHUNK = 0x2000;
+      for (let i = 0; i < replayPixels.length; i += CHUNK) {
+        binary += String.fromCharCode(...replayPixels.subarray(i, i + CHUNK));
+      }
+      browserReplay = {
+        pixels: btoa(binary),
+        dims: { width: replayed.width, height: replayed.height },
+        workIndex: replayed.workIndex,
+      };
+    }
+  }
   const artifact = uploaded?.artifact ?? {};
   const transmissionInspection = injected?.transmissionInspection === undefined
     ? (globalThis.__transmissionInspection ?? null)
@@ -1074,34 +1078,47 @@ export async function verifyDemoCapture(opts) {
     }
   }
   const dawnSelection = process.platform === 'darwin' ? { backend: 'metal' } : {};
-  const { freshDevice, rhiWebgpu, backend: dawnBackend } = await bootstrapDawn(
+  const { freshDevice, rhiWebgpu, backend: dawnBackend, dispose } = await bootstrapDawn(
     label,
     tape,
     dawnSelection,
   );
   console.log(`[${label}] tape: ${tape.events.length} events, ${tape.blobs.length} blobs`);
 
-  const { openReplay } = await import('@forgeax/engine-rhi-debug');
-  const replayRes = await openReplay(tape, {
-    device: freshDevice,
-    createShaderModule: rhiWebgpu.createShaderModule,
-  });
-  if (!replayRes.ok) {
-    freshDevice.destroy?.();
-    fail(1, `[${label}] RED -- openReplay failed: ${replayRes.error.code} hint=${JSON.stringify(replayRes.error.hint)}`);
+  let replay;
+  let work;
+  try {
+    const { openReplay } = await import('@forgeax/engine-rhi-debug');
+    const replayRes = await openReplay(tape, {
+      device: freshDevice,
+      createShaderModule: rhiWebgpu.createShaderModule,
+    });
+    if (!replayRes.ok) {
+      fail(1, `[${label}] RED -- openReplay failed: ${replayRes.error.code} hint=${JSON.stringify(replayRes.error.hint)}`);
+    }
+    replay = replayRes.value;
+    const workRes = await replay.inspectWork(selectedWorkIndex, ['pixels']);
+    if (!workRes.ok) {
+      fail(1, `[${label}] RED -- inspectWork(${selectedWorkIndex}) failed: ${workRes.error.code} hint=${JSON.stringify(workRes.error.hint)}`);
+    }
+    work = workRes.value;
+  } finally {
+    try {
+      if (replay !== undefined) {
+        const disposed = await replay.dispose();
+        if (!disposed.ok) {
+          fail(1, `[${label}] RED -- replay disposal failed: ${disposed.error.code} hint=${JSON.stringify(disposed.error.hint)}`);
+        }
+      }
+    } finally {
+      // RhiDevice has no destroy(): its adapter owns the native device and
+      // pipeline-library lifetime, including Dawn's device-lost callback.
+      await dispose();
+    }
   }
-  const replay = replayRes.value;
-  const workRes = await replay.inspectWork(selectedWorkIndex, ['pixels']);
-  if (!workRes.ok) {
-    freshDevice.destroy?.();
-    fail(1, `[${label}] RED -- inspectWork(${selectedWorkIndex}) failed: ${workRes.error.code} hint=${JSON.stringify(workRes.error.hint)}`);
-  }
-  const work = workRes.value;
 
   if (mode === 'structural') {
     await assertStructural({ label, tape, work });
-    await replay.dispose();
-    freshDevice.destroy?.();
     green(label, `structural -- capture+replay+inspect workIndex=${work.workIndex} (runId=${captured.runId})`);
     return {
       runId: captured.runId,
@@ -1119,14 +1136,11 @@ export async function verifyDemoCapture(opts) {
   // --- 6. pixel comparison (static demos) -------------------------------------
   const rtRes = work.attachment;
   if (rtRes === undefined || rtRes.kind !== 'texture' || rtRes.width === undefined || rtRes.height === undefined) {
-    freshDevice.destroy?.();
     fail(1, `[${label}] RED -- replayed work attachment readback is unavailable`);
   }
   const replayPixels = rtRes.bytes;
   const rw = rtRes.width;
   const rh = rtRes.height;
-  await replay.dispose();
-  freshDevice.destroy?.();
 
   const livePixels = Uint8Array.from(Buffer.from(livePixelsB64, 'base64'));
   if (livePixels.length !== replayPixels.length) {
@@ -1429,7 +1443,14 @@ export async function bootstrapDawn(label, tape, options = {}) {
     },
   };
   console.log(`[${label}] Node Dawn backend: ${JSON.stringify(backend)}`);
-  return { freshDevice: devRes.value, rhiWebgpu, backend };
+  const freshDevice = devRes.value;
+  const dispose = () => teardownDawnInstance([
+    { destroy: () => rhiWebgpu.disposeDevice(freshDevice), queue: freshDevice.queue },
+  ], () => {
+    if (globalThis.navigator.gpu === gpu) delete globalThis.navigator.gpu;
+    gpu = undefined;
+  });
+  return { freshDevice, rhiWebgpu, backend, dispose };
 }
 
 /** @param {{ features: ReadonlySet<string>, limits: Readonly<Record<string, number>>, requestDevice: (descriptor: object) => Promise<unknown> }} adapter @param {object} tape */

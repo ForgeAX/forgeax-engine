@@ -52,7 +52,12 @@ import type {
   ShaderModule,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError as RhiErrorClass, validateRayQueryShader } from '@forgeax/engine-rhi';
-import { _internal_getRawDevice, makeCanvasContext, makeRhiDevice } from './device';
+import {
+  _internal_getRawDevice,
+  makeCanvasContext,
+  makeRhiDevice,
+  pipelineLibraryFor,
+} from './device';
 import {
   adapterUnavailable,
   featureNotEnabled,
@@ -275,7 +280,9 @@ function createRawShaderModule(
   const mirrored: { label?: string; code: string } = { code: desc.code };
   if ('label' in desc && desc.label !== undefined) mirrored.label = desc.label;
   try {
-    return ok(rawDevice.createShaderModule(mirrored as GPUShaderModuleDescriptor));
+    const library = pipelineLibraryFor(device);
+    if (library === undefined) throw new Error('WebGPU device pipeline library is unavailable');
+    return ok(library.createShaderModule(mirrored as GPUShaderModuleDescriptor));
   } catch (e) {
     // The synchronous part of a real-device createShaderModule rarely throws
     // (spec: errors are surfaced asynchronously through getCompilationInfo);
@@ -339,7 +346,9 @@ export async function createShaderModule(
   }
   let info: GPUCompilationInfo;
   try {
-    info = await handleWithInfo.getCompilationInfo();
+    const library = pipelineLibraryFor(device);
+    if (library === undefined) throw new Error('WebGPU device pipeline library is unavailable');
+    info = await library.getCompilationInfo(handle);
   } catch {
     // getCompilationInfo() rejects when the underlying GPU instance is dropped
     // mid-await — the device was destroyed (or the page is tearing down) while

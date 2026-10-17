@@ -1,14 +1,17 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import {
+  drainFramePreparation,
+  type FramePreparation,
   type FrameRecording,
+  prepareFrameSubmission,
   profileFrameRecording,
-  submitFrameRecordings,
 } from './assembly/frame-recording';
 import type { CapsuleShadowInspection } from './capsule-shadow/inspection';
 import { projectCaptureScene } from './capture/scene-projection';
 import { releaseAtmosphere } from './environment/storage';
 import { renderMaterialContext } from './extract/material-context';
+import type { GeometryObservation } from './geometry-observation';
 import { RenderPublicationError, type RenderPublicationIdentity } from './publication/contract';
 import { preparePublicationGeometry } from './publication/prepare-geometry';
 import type { PreparedRenderPublication } from './publication/receiver';
@@ -188,6 +191,11 @@ import {
   type PreparedGraphicsResolver,
 } from './prepare/prepared-graphics-resolver';
 import { inspectBarrelDistortionState } from './record/barrel-distortion-frame';
+import {
+  type CandidatePipelineInput,
+  CandidatePipelinePreparationOwner,
+  type PreparedCandidatePipelines,
+} from './record/candidate-pipeline-preparation';
 import { cpuLodLevel, lodLevelHistogram } from './record/cpu-lod';
 import { createDrawObservation, unavailableDrawObservation } from './record/draw-observation';
 import {
@@ -221,6 +229,7 @@ import type { GpuTimingCapture } from './record/gpu-timing';
 import { resolveMaterialSkylight } from './record/main-pass-material';
 import {
   createPreparedResolverCaches,
+  type PreparedMaterialBindingsScope,
   type PreparedResolverCaches,
   preparedMaterialBindings,
 } from './record/prepared-material-bindings';
@@ -240,6 +249,7 @@ import {
   type CameraSnapshot,
   type DrawOwnerOptions,
   type FramePresentation,
+  type FramePresentationPendingReason,
   RENDER_PHASE_CATALOG,
   type RenderPhase,
   type RenderPhaseSkipReason,
@@ -249,6 +259,7 @@ import type { ExtractedLights, RenderableSnapshot } from './render-system-extrac
 import { extractFrames } from './render-system-extract-tail';
 import {
   createPresentationDraws,
+  markPipelinePreparationPending,
   projectDisplayRenderables,
   projectFramePresentation,
 } from './render-system-presentation';
@@ -373,6 +384,19 @@ export interface RecoveryProductionEvidence {
  * whose shader identity is `forgeax::default-standard-pbr`).
  */
 export interface RenderSystem {
+  prepareCandidatePipelines(
+    input: CandidatePipelineInput,
+    signal?: AbortSignal,
+  ): Promise<
+    import('@forgeax/engine-types').Result<
+      PreparedCandidatePipelines,
+      import('./dynamic-geometry').DynamicGeometryError
+    >
+  >;
+  observeGeometry(receipt: {
+    frameId: number;
+    deviceGeneration: number;
+  }): Promise<GeometryObservation>;
   readonly featureGpuWork: RenderFeatureGpuWorkOwner;
   readonly submittedTerrain: readonly SubmittedTerrainSection[];
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
@@ -388,6 +412,14 @@ export interface RenderSystem {
     timingCapture?: GpuTimingCapture,
     publication?: PreparedRenderPublication,
   ): boolean;
+  prepareSubmission(
+    worlds: readonly World[],
+    opts: DrawOwnerOptions,
+    renderReadLeases?: readonly RenderReadLease[],
+    timingCapture?: GpuTimingCapture,
+    publication?: PreparedRenderPublication,
+    isCurrent?: () => boolean,
+  ): FramePreparation;
   record(
     worlds: readonly World[],
     opts: DrawOwnerOptions,
@@ -472,6 +504,7 @@ export interface RenderSystem {
   readonly reflectionFallbackCompletion: Promise<void> | undefined;
   /** Presentation readiness derived from the producer facts used by draw(). */
   readonly presentation: FramePresentation;
+  readonly presentationPendingReason: FramePresentationPendingReason | undefined;
   /** True while a progressive CubeCamera candidate still owns unfinished faces. */
   isCubeCapturePending(target: RenderTarget): boolean;
   readonly environment: EnvironmentInspection;
@@ -1339,6 +1372,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
   let lastMeshMaterialBindings: readonly MeshMaterialBindingObservation[] = [];
   let lastMeshMaterialBindingRenderables: readonly RenderableSnapshot[] | undefined;
   let lastPresentation: FramePresentation = 'pending';
+  let lastPresentationPendingReason: FramePresentationPendingReason | undefined;
   let materialDraws: import('./render-contract').DrawObservation =
     unavailableDrawObservation('not-captured');
   const createPreparedResolverFactory =
@@ -1349,6 +1383,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       caches: PreparedResolverCaches,
     ) =>
     (input: RenderFeaturePreparedGraphicsResolverInput): PreparedGraphicsResolver => {
+      const materialBindings: PreparedMaterialBindingsScope = [];
       const {
         preparedPipelineIds,
         preparedMaterialPipelineShaders,
@@ -1579,6 +1614,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               material.guid,
               layout,
               preparedFeatureSkylightResources,
+              materialBindings,
+              'assetHandle' in material ? material.assetHandle : undefined,
             );
           }
           return layout === undefined
@@ -1769,6 +1806,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     },
     get presentation(): FramePresentation {
       return lastPresentation;
+    },
+    get presentationPendingReason() {
+      return lastPresentationPendingReason;
     },
     isCubeCapturePending(target: RenderTarget): boolean {
       return internals.rendererCaptureOwner?.isPending(target) ?? false;
@@ -1994,7 +2034,15 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       ssrFormatReceipts.set(device, receipt);
     },
     draw(...args) {
-      return submitFrameRecordings([this.record(...args)], undefined, internals);
+      return drainFramePreparation(this.prepareSubmission(...args));
+    },
+    *prepareSubmission(worlds, opts, leases, timing, publication, isCurrent) {
+      return yield* prepareFrameSubmission(
+        [this.record(worlds, opts, leases, timing, publication)],
+        undefined,
+        internals,
+        isCurrent,
+      );
     },
     *record(
       worlds: readonly World[],
@@ -2013,13 +2061,42 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         publication === undefined ? sourceWorlds : [publication.resources];
       const compositionLeases = composition.leases;
       preparedWorlds = compositionWorlds;
+      gpuDrivenProduction.beginGeometryObservation(
+        opts.geometryObservation === true && render
+          ? (slot) => {
+              const scope = compositionWorlds[slot.snapshot.worldId];
+              const worldIdentity =
+                publication === undefined
+                  ? (compositionLeases?.[slot.snapshot.worldId]?.worldIdentity ??
+                    sourceWorlds[slot.snapshot.worldId]?.identity)
+                  : opts.geometryObservationSourceWorldIdentity;
+              if (!worldIdentity || scope === undefined) throw Error('geometry-source-unavailable');
+              const handle = toShared<'MeshAsset'>(slot.snapshot.assetHandle);
+              const source = 'sourceForAsset' in scope ? scope.sourceForAsset(handle) : undefined;
+              return {
+                worldIdentity,
+                sourceRevision: publication?.packet.revision ?? slot.generation,
+                ...(source === undefined
+                  ? {}
+                  : {
+                      meshGuid: source.guid,
+                      ...(source.sourceKey === undefined ? {} : { sourceKey: source.sourceKey }),
+                    }),
+              };
+            }
+          : undefined,
+      );
+
       const profileSession = internals.profiler?.activeSession();
       let ownsProfileFrame = false;
       let submitted = false;
       // A failed draw cannot publish a startup completion fact. Reset the
       // projection before extraction so a later receipt never reuses an old
       // scene's readiness.
-      if (render) lastPresentation = 'pending';
+      if (render) {
+        lastPresentation = 'pending';
+        lastPresentationPendingReason = undefined;
+      }
       // A prior failed record/submit may have staged a temporal capture. A
       // capture belongs only to the draw call that created it; discard it
       // before this call can prepare or commit a new candidate.
@@ -2338,10 +2415,13 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           compositionWorlds,
         );
         frameState.pipelinePreparationPending = false;
+        delete frameState.pipelinePreparationPendingReason;
         let framePresentation: FramePresentation =
           cameras.length > 0 && (!environmentReady || environment === undefined)
             ? 'pending'
             : 'ready';
+        let framePendingReason: FramePresentationPendingReason | undefined =
+          framePresentation === 'pending' ? { code: 'environment-not-ready' } : undefined;
         const inspectionCamera = latestCamera;
         // The public frame receipt is allocated by WebGPURenderer immediately
         // before this draw (`observationFrameId`). RenderSystem's private
@@ -2722,6 +2802,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               generation: internals.featureHost?.preparedGeneration ?? 0,
               getFeatureShaderSource: internals.getFeatureShaderSource,
               caps: internals.device.caps,
+              featureReadOnlyDepthBatchDiagnostic:
+                (internals.standardProfile?.featureReadOnlyDepthBatchDiagnostic ??
+                  internals.standardProfile?.featureReadOnlyDepthBatching) === true,
               limits: internals.device.limits,
               frame: createCloudFeatureFrameContext(cloudLayer, featureView),
               ...(internals.getMaterialShaderBindingContract === undefined
@@ -2764,7 +2847,18 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
           const featureFrame = preparedFeatureFrame;
           if (featureFrame === undefined) return [];
 
-          if (featureFrame.preparationPending) frameState.pipelinePreparationPending = true;
+          if (featureFrame.preparationPending)
+            markPipelinePreparationPending(
+              frameState,
+              featureFrame.preparationPendingReason ?? {
+                code: 'feature-preparation',
+                ...(featureFrame.preparationPendingFeatureIdentity === undefined
+                  ? {}
+                  : {
+                      featureIdentity: featureFrame.preparationPendingFeatureIdentity.slice(0, 256),
+                    }),
+              },
+            );
           lastVisibilityStats.explicitlyHidden = featureFrame.hiddenEntityReports.length;
           reportPendingRenderFeatureErrors(
             featureFrame.errors,
@@ -3051,7 +3145,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         if (!submitted) surfaceSubmissionCandidate.abort();
         frameState.surfaceSubmissionObservation = undefined;
         if (!sceneSubmitted) discardStandardOutputStates(frameState);
-        if (frameState.pipelinePreparationPending) framePresentation = 'pending';
+        if (frameState.pipelinePreparationPending) {
+          framePresentation = 'pending';
+          framePendingReason ??= frameState.pipelinePreparationPendingReason ?? {
+            code: 'pipeline-preparation',
+          };
+        }
         const directionalQuality = lights.directionalShadowQuality;
         const directionalShadowReady =
           directionalQuality === undefined ||
@@ -3079,10 +3178,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             )
           ) {
             framePresentation = 'pending';
+            framePendingReason ??= { code: 'sky-cubemap' };
           }
           const pipelineState = internals.getPipelineState();
           if (pipelineState === null || frameState.compiledFrameGraph === null) {
             framePresentation = 'pending';
+            framePendingReason ??= { code: 'compiled-graph-unavailable' };
           }
           for (const renderable of presentationRenderables) {
             if (framePresentation === 'pending') break;
@@ -3092,6 +3193,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             );
             if (!presentedDraws.hasEntity(entityKey)) {
               framePresentation = 'pending';
+              framePendingReason ??= {
+                code: 'draw-entity-missing',
+                worldId: renderable.worldId,
+                entity: renderable.entityKey,
+              };
               break;
             }
             const renderableWorld = preparedWorlds[renderable.worldId];
@@ -3104,6 +3210,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                   ) ?? pipelineState?.meshes.get(renderable.assetHandle));
             if (meshHandles === undefined) {
               framePresentation = 'pending';
+              framePendingReason ??= {
+                code: 'mesh-residency',
+                worldId: renderable.worldId,
+                entity: renderable.entityKey,
+              };
               break;
             }
             if (
@@ -3111,12 +3222,24 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               !presentedDraws.hasTerrain(entityKey, renderable.terrainSection.index)
             ) {
               framePresentation = 'pending';
+              framePendingReason ??= {
+                code: 'draw-terrain-missing',
+                worldId: renderable.worldId,
+                entity: renderable.entityKey,
+                section: renderable.terrainSection.index,
+              };
               break;
             }
             if (renderable.pointsLines === undefined) {
               for (const [submeshIndex] of meshHandles.submeshes.entries()) {
                 if (!presentedDraws.hasSubmesh(entityKey, submeshIndex)) {
                   framePresentation = 'pending';
+                  framePendingReason ??= {
+                    code: 'draw-submesh-missing',
+                    worldId: renderable.worldId,
+                    entity: renderable.entityKey,
+                    submesh: submeshIndex,
+                  };
                   break;
                 }
               }
@@ -3128,12 +3251,16 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               renderables: presentationRenderables,
               preparedWorlds,
               internals,
+              onPending: (reason) => {
+                framePendingReason ??= reason;
+              },
             });
           }
           // The receiver-bound view proves fresh or retained GPU shadow depth.
           // The legacy CPU cache is not the GPU shadow view pool's authority.
           if (framePresentation === 'ready' && !directionalShadowReady) {
             framePresentation = 'pending';
+            framePendingReason ??= { code: 'directional-shadow' };
           }
           if (
             framePresentation === 'ready' &&
@@ -3145,15 +3272,19 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             )
           ) {
             framePresentation = 'pending';
+            framePendingReason ??= { code: 'point-shadow' };
           }
           if (
             framePresentation === 'ready' &&
             lights.spot.some(
               (spot) =>
-                spot.castShadow && (spot.lightViewProj === undefined || spot.shadowAtlasTile < 0),
+                // Atlas overflow is admitted as direct lighting without a shadow.
+                // Only allocated tiles participate in shadow readiness.
+                spot.castShadow && spot.shadowAtlasTile >= 0 && spot.lightViewProj === undefined,
             )
           ) {
             framePresentation = 'pending';
+            framePendingReason ??= { code: 'spot-shadow' };
           }
         }
         if (sceneSubmitted && directionalShadowReady) {
@@ -3182,6 +3313,10 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             );
           if (featureGraphAccepted) featureGraphCandidate?.onSubmitted?.();
           lastPresentation = framePresentation;
+          lastPresentationPendingReason =
+            framePresentation === 'pending' && framePendingReason !== undefined
+              ? Object.freeze(framePendingReason)
+              : undefined;
           materialDraws = drawObservation.commit(framePresentation === 'ready');
           if (sceneSubmitted) {
             recoveryOwner.setLastSuccessfulFrameSeed({
@@ -3308,6 +3443,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       }
       return submitted;
     },
+    prepareCandidatePipelines(input, signal) {
+      frameState.candidatePipelinePreparations ??= new CandidatePipelinePreparationOwner(
+        () => frameState.compiledFrameGraph,
+      );
+      return frameState.candidatePipelinePreparations.prepare(input, signal);
+    },
     get submittedTerrain() {
       return submittedTerrain;
     },
@@ -3316,6 +3457,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     dynamicGeometryRecordStageLane: (world, entity, meshHandle) =>
       dynamicGeometryFrames.recordStageLane(world, entity, meshHandle),
     pipelineDispatchCounts: dispatchCounts,
+    observeGeometry(receipt: { frameId: number; deviceGeneration: number }) {
+      return gpuDrivenProduction.observeGeometry(receipt);
+    },
     observeCurrentFrame(options: FrameObservationOptions) {
       const currentFrameId = frameState.frameNumber - 1;
       return observeCurrentFrame(
@@ -3532,6 +3676,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     publishRecoveryGraphCandidate: recoveryOwner.publishRecoveryGraphCandidate,
     discardRecoveryGraphCandidate: recoveryOwner.discardRecoveryGraphCandidate,
     disposeFrameState(): void {
+      frameState.candidatePipelinePreparations?.dispose();
       if (ownsSceneInputs) internals.featureSceneInputs?.dispose();
       disposeTargetCaptures(cubeCaptureState);
       frameState.dynamicResolution?.reset();

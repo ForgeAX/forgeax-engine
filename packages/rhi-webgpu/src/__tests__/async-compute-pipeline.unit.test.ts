@@ -23,7 +23,7 @@ it('exposes real native compute completion and mirrors the call descriptor', asy
   if (create === undefined) throw Error('missing capability');
   const result = create(desc),
     observed = vi.fn();
-  void result.then(observed);
+  void Promise.resolve(result).then(observed);
   await Promise.resolve();
   expect(observed).not.toHaveBeenCalled();
   expect(native.mock.calls[0]).toEqual([desc]);

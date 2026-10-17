@@ -368,7 +368,13 @@ export interface EntityRecord {
  * and recyclable free-list.
  */
 export class World {
-  readonly [worldRead]: WorldRead;
+  readonly [worldRead]: WorldRead = {
+    getRelationshipEpoch: (component) =>
+      this.relationshipIndexes.get(componentId(component))?.epoch ?? 0,
+    getFieldValue: this.internalgetFieldValue.bind(this),
+    getArrayLength: this.internalgetArrayLength.bind(this),
+    getArrayElement: this.internalgetArrayElement.bind(this),
+  };
   // ── Internal state ──
 
   /** World-local state is kept together so one owner closes each mutation. */
@@ -434,8 +440,7 @@ export class World {
       getQueryRow: (entity, component) =>
         this.get(entity, component) as Result<Record<string, unknown>, EcsError>,
       getRecords: () => this.records,
-      getRelationshipEpoch: (component) =>
-        this.relationshipIndexes.get(componentId(component))?.epoch ?? 0,
+      getRelationshipEpoch: this[worldRead].getRelationshipEpoch,
       getRelationshipTargetEntities: this.relationshipTargetEntries.bind(this),
       getResources: () => this.resources,
       getSchedule: (token) => this.schedules.get(token),
@@ -459,11 +464,6 @@ export class World {
         this.fixedAccumulator = value;
       },
       setQueryRow: this.internalsetQueryRow.bind(this),
-    };
-    this[worldRead] = {
-      getFieldValue: this.internalgetFieldValue.bind(this),
-      getArrayLength: this.internalgetArrayLength.bind(this),
-      getArrayElement: this.internalgetArrayElement.bind(this),
     };
   }
 

@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import type {
   ColorValueDomain,
   GraphAccess,
@@ -47,22 +48,13 @@ export interface StandardColorLutData {
   readonly data: ArrayLike<number>;
 }
 
-function halfToFloat(value: number): number {
-  const sign = (value & 0x8000) === 0 ? 1 : -1;
-  const exponent = (value >>> 10) & 0x1f;
-  const mantissa = value & 0x3ff;
-  if (exponent === 0) return sign * 2 ** -14 * (mantissa / 1024);
-  if (exponent === 0x1f) return mantissa === 0 ? sign * Infinity : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + mantissa / 1024);
-}
-
 function lutValue(data: ArrayLike<number>, index: number): number {
   const value = data[index] ?? 0;
   if (data instanceof Uint8Array) {
     const byte = index * 2;
-    return halfToFloat((data[byte] ?? 0) | ((data[byte + 1] ?? 0) << 8));
+    return halfFloat.f16ToF32((data[byte] ?? 0) | ((data[byte + 1] ?? 0) << 8));
   }
-  return data instanceof Uint16Array ? halfToFloat(value) : value;
+  return data instanceof Uint16Array ? halfFloat.f16ToF32(value) : value;
 }
 
 function sampleNearest(data: StandardColorLutData, x: number, y: number, z: number): StandardRgba {

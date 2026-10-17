@@ -31,5 +31,6 @@ export interface AssetEnvelope<P = Asset> {
   readonly kind: string;
   readonly name?: string;
   readonly payload: P;
-  readonly refs: readonly AssetRef[];
+  /** Absent for native payloads; present (including []) for an indexed wire reference table. */
+  readonly refs?: readonly AssetRef[];
 }

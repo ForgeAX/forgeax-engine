@@ -11,7 +11,7 @@ import {
   type TerrainMaterialEncoding,
   type TerrainSource,
 } from '@forgeax/engine-types';
-import { cookTerrain } from './cook.js';
+import { cookTerrain } from './cook-terrain.js';
 import { terrainDerivedGeometryValid } from './height-packing.js';
 import { createTerrainLayerPlan, terrainLayerModes } from './layer-plan.js';
 import { terrainTextureGuid } from './texture-binding.js';

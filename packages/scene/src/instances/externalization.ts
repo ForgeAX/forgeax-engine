@@ -1,3 +1,4 @@
+import { parseManagedArraySchema } from '@forgeax/engine-ecs/internal';
 import type { AssetRef, SceneAsset, SceneInstanceOverride } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { migrateLegacySceneComponentFields, normalizeLegacySceneAsset } from './legacy.js';
@@ -14,12 +15,6 @@ export interface SceneExternalizationError {
 export interface ExternalizedSceneAsset {
   readonly payload: Record<string, unknown>;
   readonly refs: readonly AssetRef[];
-}
-
-function sharedKind(type: string | undefined): 'one' | 'many' | undefined {
-  if (type?.startsWith('shared<')) return 'one';
-  if (type?.startsWith('array<shared<')) return 'many';
-  return undefined;
 }
 
 interface RefContext {
@@ -58,14 +53,31 @@ function externalizeFields(
     migrateLegacySceneComponentFields(componentName, source),
   )) {
     if (value === undefined) continue;
-    const kind = sharedKind(schema?.[fieldName]);
-    if (kind === 'one' && value === 0) {
+    const type = schema?.[fieldName];
+    if (type === 'buffer' || type?.startsWith('buffer<')) {
+      // Buffer storage is bytes, even when authored through a wider TypedArray.
+      const bytes = ArrayBuffer.isView(value)
+        ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+        : value instanceof ArrayBuffer ||
+            (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
+          ? new Uint8Array(value)
+          : undefined;
+      fields[fieldName] = bytes === undefined ? value : Array.from(bytes);
+      continue;
+    }
+    const shared = type?.startsWith('shared<');
+    const array = type === undefined ? null : parseManagedArraySchema(type);
+    const elements =
+      array && ArrayBuffer.isView(value) && 'length' in value
+        ? Array.from(value as unknown as ArrayLike<unknown>)
+        : value;
+    if (shared && value === 0) {
       // Null distinguishes an empty shared handle from refs[0] on the wire.
       fields[fieldName] = null;
-    } else if (kind === 'one' && typeof value === 'string') {
+    } else if (shared && typeof value === 'string') {
       fields[fieldName] = addRef(context, value, { componentName, fieldName }, sceneEntityKey);
-    } else if (kind === 'many' && Array.isArray(value)) {
-      fields[fieldName] = value.map((item, arrayIndex) =>
+    } else if (array?.elementType.startsWith('shared<') && Array.isArray(elements)) {
+      fields[fieldName] = elements.map((item, arrayIndex) =>
         typeof item === 'string'
           ? addRef(context, item, { componentName, fieldName, arrayIndex }, sceneEntityKey)
           : item === 0
@@ -73,7 +85,7 @@ function externalizeFields(
             : item,
       );
     } else {
-      fields[fieldName] = value;
+      fields[fieldName] = elements;
     }
   }
   return fields;

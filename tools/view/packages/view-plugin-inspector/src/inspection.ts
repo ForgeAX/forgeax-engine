@@ -386,7 +386,7 @@ export function compactInspectorDisplay(field: InspectorField): InspectorField {
 
 export function inspectorWorkspaceTarget(workspace: WorkspaceState | null) {
   const selection = workspace?.sceneSelection;
-  const targets = [workspace?.editorPreview?.target, workspace?.preview?.target, workspace?.projectTarget];
+  const targets = [workspace?.scenePreview?.target, workspace?.preview?.target, workspace?.projectTarget];
   if (!selection?.targetId) return targets.find(target => target !== undefined && target !== null);
   return targets.find(target => target?.targetId === selection.targetId
     && target?.generation === selection.targetGeneration);

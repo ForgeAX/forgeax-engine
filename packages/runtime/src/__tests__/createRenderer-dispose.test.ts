@@ -24,7 +24,9 @@ describe('createRenderer disposal contract', () => {
       });
     const residency = vi.spyOn(GpuResidencyCache.prototype, 'destroyAll');
     try {
-      expect(await renderer.dispose()).toMatchObject({
+      const firstDisposal = renderer.dispose();
+      expect(renderer.dispose()).toBe(firstDisposal);
+      expect(await firstDisposal).toMatchObject({
         ok: false,
         error: {
           code: 'cleanup-failed',
@@ -41,6 +43,8 @@ describe('createRenderer disposal contract', () => {
       expect(residency).toHaveBeenCalledOnce();
       expect(residency).toHaveBeenCalledAfter(dynamic);
       expect((await renderer.dispose()).ok).toBe(true);
+      expect(dynamic).toHaveBeenCalledOnce();
+      expect(residency).toHaveBeenCalledOnce();
     } finally {
       dynamic.mockRestore();
       residency.mockRestore();

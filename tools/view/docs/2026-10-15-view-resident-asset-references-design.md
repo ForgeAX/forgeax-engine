@@ -3,7 +3,7 @@
 ## Decision
 
 View supplies one optional native read-only query PluginAsset to each ordinary
-Editor App through the existing Runtime Pack and Cordis lifecycle. Its frontend
+Scene App through the existing Runtime Pack and Cordis lifecycle. Its frontend
 coordinator lives with the View root, independently of Scene Tree, Inspector,
 selection, panel visibility and resource tabs. App readiness starts installation;
 there is no frame callback, continuous query, extra socket, or scene/asset registry.
@@ -28,7 +28,7 @@ the query itself writes no ECS field, component, resource binding or game state.
 `@forgeax/view-plugin-asset-references` owns the coordinator and native query.
 Workspace-core exports serializable scope/result types and the frontend service
 contract, without Engine domain runtime imports. Existing native ToolApi carries
-`view.asset-references.get` in the same-document Editor root. Discovery and calls
+`view.asset-references.get` in the same-document Scene root. Discovery and calls
 select the exact provider ID and owner generation, not an arbitrary matching
 operation. No workspace API or independent-run eval operation is added.
 
@@ -63,7 +63,7 @@ The TypeScript query is the sole program source. A shared Vite/esbuild transform
 compiles it into the frontend's Runtime Pack source snapshot; admitted native
 imports retain their Engine identities. No project-relative source import or
 hand-maintained string copy is used. The source-only entry fails explicitly if
-used without the build transform, but is evaluated only for an actual Editor
+used without the build transform, but is evaluated only for an actual Scene
 installation and cannot block an otherwise independent Shell.
 
 ## UI policy
@@ -122,7 +122,7 @@ opens rather than adopting a Scene or dedicated preview's name.
   counts, source roundtrips and public-seam checks remain in force.
 - Local real Engine probes pass runtime generation/replacement, user-only
   save/restore, Scene references and preview GPU resource cycles, plus the
-  plugin-boundary Editor/asset/Inspector path and one Play lifecycle including
+  plugin-boundary Scene/asset/Inspector path and one Play lifecycle including
   failure cleanup. Evidence: `/private/tmp/pr183-runtime-content` and
   `/private/tmp/pr183-plugin-boundary`. The full Node suite, strict types,
   architecture and production build pass; remote CI is tracked separately.
@@ -139,7 +139,7 @@ opens rather than adopting a Scene or dedicated preview's name.
   320/480/640 widths in both themes. Strict source/component types, the full
   Node suite at concurrency 4, architecture, production build and Storybook
   build pass for this revision. Full CI shards remain a separate gate.
-- Real Editor: resident before the first scene; numeric mesh handle resolved to
+- Real Scene: resident before the first scene; numeric mesh handle resolved to
   a GUID; held-mesh default material slots; context Browse/Edit and Details
   Browse; named independent preview with captured pixels; provider removed and
   restored; resource-tab switching retains the same tooling package.
@@ -155,7 +155,7 @@ opens rather than adopting a Scene or dedicated preview's name.
   capability recovery and synchronous cancellation. These are not media or
   physics simulation acceptance.
 - Brotato's installed 0.4.2 project and a disposable source copy bound to the
-  current local Engine both fail before Editor readiness with producer
+  current local Engine both fail before Scene readiness with producer
   `produce-failed` for the project's assets. No Brotato UI success is claimed;
   its source and original dependency binding remain unchanged.
 

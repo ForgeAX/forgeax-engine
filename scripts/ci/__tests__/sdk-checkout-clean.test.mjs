@@ -55,6 +55,7 @@ test('SDK source preparation clears retained submodule changes and preserves the
       git(temporary, 'init', '--initial-branch=main', vendor);
       git(vendor, 'config', 'user.name', 'SDK fixture');
       git(vendor, 'config', 'user.email', 'fixture@example.invalid');
+      writeFileSync(join(vendor, '.gitattributes'), 'native.txt text eol=lf\n');
       writeFileSync(join(vendor, 'native.txt'), 'pinned native source\n');
       git(vendor, 'add', '.');
       git(vendor, 'commit', '-m', 'native source');

@@ -181,6 +181,8 @@ function exhaustivePass(kind: GraphPassKind): string {
       return kind;
     case 'copy':
       return kind;
+    case 'subgraph':
+      return kind;
   }
   return assertNever(kind);
 }

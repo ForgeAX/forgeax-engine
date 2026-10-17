@@ -1,5 +1,6 @@
 import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import {
   DEFAULT_SPRITE_PARAM_SCHEMA,
@@ -12,9 +13,16 @@ import {
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { ownReceivedPublicationMaterials } from '../../../../app/src/execution/received-publication-materials';
 import { createRenderTargetHost } from '../../assembly/render-target-host';
 import { MeshFilter, MeshRenderer } from '../../components';
+import type { RenderFrameState } from '../../record/frame-snapshot';
 import { buildPbrMaterialUboPayload } from '../../record/main-pass-material';
+import { uploadMaterialUniforms } from '../../record/material-uniforms';
+import {
+  type _InternalRenderPipelineContext,
+  MATERIAL_PER_ENTITY_STRIDE,
+} from '../../record/render-context';
 import { type RenderPublication, renderPublicationTransfers } from '../contract';
 import { installPublicationPrograms } from '../programs';
 import { createRenderPublisher } from '../publisher';
@@ -99,6 +107,155 @@ it('rebinds a Worker clone to the selected program owner before retaining accept
   expect(new DataView(secondPayload.buffer).getFloat32(0, true)).toBe(0.5);
   expect(f.copied).not.toBe(owned);
   expect(getAdmittedParamSchemaInterface(f.copied)).toBeUndefined();
+  f.receiver.dispose();
+  f.publisher.dispose();
+});
+
+it('finishes exclusive native material values without changing public receiver ownership', async () => {
+  const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
+  const sourceMaterial = f.packet.templates[0]?.snapshot.material;
+  if (sourceMaterial === undefined) throw new Error('Missing published material');
+  const received = ownReceivedPublicationMaterials(f.packet);
+  const owned = received.templates[0]?.snapshot.material;
+  expect(owned).not.toBe(sourceMaterial);
+  expect(owned?.immutableValues).toBe(true);
+  expect(Object.isFrozen(owned)).toBe(true);
+  expect(owned?.paramSnapshot).not.toBe(sourceMaterial.paramSnapshot);
+  expect(owned?.paramSnapshot).toEqual(sourceMaterial.paramSnapshot);
+  expect(owned?.materialParamSchema).not.toBe(sourceMaterial.materialParamSchema);
+  expect(owned?.baseColor).not.toBe(sourceMaterial.baseColor);
+  expect(owned?.baseColor).toEqual(sourceMaterial.baseColor);
+  expect(received.templates[0]?.snapshot.materials[0]).toBe(owned);
+  expect(sourceMaterial.immutableValues).toBeUndefined();
+  expect(received.transforms).toBe(f.packet.transforms);
+  expect(received.assets).toBe(f.packet.assets);
+  expect(received.targets).toBe(f.packet.targets);
+  // A Feature/asset consumer can retain an alias in the original native clone.
+  // Only the detached numeric subtree belongs to the material packer.
+  const aliased = sourceMaterial.paramSnapshot;
+  if (aliased === undefined) throw new Error('Missing source values');
+  (aliased as Record<string, number>).factor = 0.9;
+  expect(owned?.paramSnapshot?.factor).toBe(0.25);
+
+  const accepted = f.receiver.accept(received, f.assets).unwrap();
+  const material = accepted.frame.renderables[0]?.material;
+  if (material === undefined) throw new Error('Missing received material');
+  expect(material.immutableValues).toBe(true);
+  expect(material.materialParamSchema).toBe(
+    f.assets.shaderRegistry.findMaterialArtifact('game::forward').unwrap().paramSchema,
+  );
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const buffer = device.createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 0x48 }).unwrap();
+  const frameState = {} as RenderFrameState;
+  const context = (value = material) =>
+    ({
+      runtime: { device },
+      frameState,
+      materialSlotCount: 1,
+      materialSlots: [value],
+      materialSlotOwners: [{ renderableIndex: 0 }],
+      validatedOrdered: [],
+      pipelineState: { materialUniformBuffer: { buffer } },
+    }) as unknown as _InternalRenderPipelineContext;
+  try {
+    for (let frame = 0; frame < 3; frame++) uploadMaterialUniforms(context());
+    expect(frameState.materialUboCounters).toMatchObject({
+      packHits: 1,
+      packMisses: 2,
+      packMissMutable: 0,
+      packMissCold: 1,
+      skippedUploads: 2,
+    });
+    const previousBytes = frameState.materialUboPayloadCache?.payload.slice();
+    const next = structuredClone({
+      ...f.packet,
+      base: 1,
+      revision: 2,
+      baseline: false,
+      programs: [],
+    });
+    for (const template of next.templates) template.snapshot.material.paramSnapshot.factor = 0.5;
+    const changed = f.receiver.accept(ownReceivedPublicationMaterials(next), f.assets).unwrap();
+    const updated = changed.frame.renderables[0]?.material;
+    if (updated === undefined) throw new Error('Missing updated material');
+    expect(updated).not.toBe(material);
+    expect(updated.paramSnapshot?.factor).toBe(0.5);
+    expect(material.paramSnapshot?.factor).toBe(0.25);
+    uploadMaterialUniforms(context(updated));
+    expect(frameState.materialUboPayloadCache?.payload).not.toEqual(previousBytes);
+    expect(
+      new DataView(
+        frameState.materialUboPayloadCache?.payload.buffer ?? new ArrayBuffer(0),
+      ).getFloat32(0, true),
+    ).toBe(0.5);
+    const moved = {
+      ...next,
+      base: 2,
+      revision: 3,
+      templates: [],
+      upserts: new Uint32Array(),
+    };
+    expect(ownReceivedPublicationMaterials(moved)).toBe(moved);
+    const transformed = f.receiver.accept(moved, f.assets).unwrap();
+    expect(f.receiver.snapshot(transformed).frame.renderables[0]?.material).toBe(updated);
+  } finally {
+    device.destroyBuffer(buffer).unwrap();
+    f.receiver.dispose();
+    f.publisher.dispose();
+  }
+});
+
+it('detaches numeric and ABI aliases while preserving dynamic resource identities', () => {
+  const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
+  const template = f.packet.templates[0];
+  if (template === undefined) throw new Error('Missing published template');
+  const values = { factor: -0, vector: [NaN, -0, Infinity, 1] };
+  const coordinates = new Map([['albedo', { transform: { offset: [0, 0] as [number, number] } }]]);
+  const baseColor = new Float32Array(new SharedArrayBuffer(12));
+  baseColor.set([0.25, 0.5, 0.75]);
+  const material = {
+    ...template.snapshot.material,
+    baseColor: baseColor as typeof template.snapshot.material.baseColor,
+    paramSnapshot: values,
+    textureCoordinates: coordinates,
+    textureHandles: new Map(),
+    samplerHandles: new Map(),
+    textureSources: new Map(),
+  };
+  const sibling = { ...material, roughness: 0.125 };
+  const packet = {
+    ...f.packet,
+    templates: [
+      { ...template, snapshot: { ...template.snapshot, material, materials: [material, sibling] } },
+    ],
+  };
+  const received = ownReceivedPublicationMaterials(packet);
+  const owned = received.templates[0]?.snapshot.material;
+  const second = received.templates[0]?.snapshot.materials[1];
+  if (owned === undefined || second === undefined) throw new Error('Missing owned values');
+  expect(owned.materialParamSchema).toBe(second.materialParamSchema);
+  expect(owned.materialParamSchema).not.toBe(material.materialParamSchema);
+  expect(owned.paramSnapshot).toBe(second.paramSnapshot);
+  expect(owned.paramSnapshot).not.toBe(values);
+  expect(owned.baseColor.buffer).toBeInstanceOf(ArrayBuffer);
+  expect(Object.is(owned.paramSnapshot?.factor, -0)).toBe(true);
+  expect(owned.paramSnapshot?.vector).toEqual([NaN, -0, Infinity, 1]);
+  if (material.materialParamSchema?.[0] !== undefined)
+    Reflect.set(material.materialParamSchema[0], 'default', 0.125);
+  expect(owned.materialParamSchema?.[0]?.default).toBe(0.75);
+  for (const field of [
+    'textureCoordinates',
+    'textureHandles',
+    'samplerHandles',
+    'textureSources',
+  ] as const)
+    expect(owned[field]).toBe(material[field]);
+  baseColor[0] = 1;
+  values.vector[0] = 1;
+  expect(owned.baseColor[0]).toBe(0.25);
+  expect((owned.paramSnapshot?.vector as number[])[0]).toBeNaN();
+  coordinates.get('albedo')?.transform.offset.splice(0, 1, 0.5);
+  expect(owned.textureCoordinates?.get('albedo')?.transform?.offset?.[0]).toBe(0.5);
   f.receiver.dispose();
   f.publisher.dispose();
 });

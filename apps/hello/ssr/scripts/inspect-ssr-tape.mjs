@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { decodeTape, buildFrameModel, openReplay, halfToFloat } from '@forgeax/engine-rhi-debug';
+import { decodeTape, buildFrameModel, openReplay, halfToFloat, bindingReadRequest } from '@forgeax/engine-rhi-debug';
 import { bootstrapDawn } from '../../../shared/scripts/rhi-debug-verify.mjs';
 import { writeReferencePng } from '../../../shared/png-codec.mjs';
 import { auditTileReflection, auditTileSeams, mirrorSegmentDistance } from './audit-tile-reflection.mjs';
@@ -33,6 +33,49 @@ export function reflectionTexelCoordinate(pixel, fullSize, mipSize, f32Reciproca
   if (!f32Reciprocal) return (pixel + 1) / fullSize * mipSize - 0.5;
   const f = Math.fround;
   return f(f(f(pixel + 1) * f(1 / fullSize)) * f(mipSize)) - 0.5;
+}
+
+export function decodeSsrReadback(r, uint32Words = []) {
+  const data = new DataView(r.bytes.buffer, r.bytes.byteOffset, r.bytes.byteLength);
+  const values = r.format === 'r32uint'
+    ? Array.from({ length: r.bytes.length / 4 }, (_, i) => data.getUint32(i * 4, true))
+    : r.format?.endsWith('16float')
+    ? Array.from({ length: r.bytes.length / 2 }, (_, i) => halfToFloat(data.getUint16(i * 2, true)))
+    : r.format === 'rgba8unorm' ? Array.from(r.bytes, (v) => v / 255)
+    : Array.from({ length: r.bytes.length / 4 }, (_, i) =>
+      r.kind === 'buffer' && uint32Words.includes(i) ? data.getUint32(i * 4, true) : data.getFloat32(i * 4, true));
+  assert.ok(values.every(Number.isFinite), `non-finite ${r.resourceId}`);
+  return { ...r, values };
+}
+
+export function decodeSsrNormalRoughness(read) {
+  if (read.format !== 'r32uint') return read;
+  assert.equal(read.values.length, read.width * read.height, 'packed normal pixel count');
+  // Captured Standard G-buffer: octahedral X12/Y12, roughness UNORM8.
+  // Preserve the oracle's RGB [0,1] normal convention and four values/pixel.
+  const values = read.values.flatMap(packed => {
+    let x = (packed & 4095) * (2 / 4095) - 1;
+    let y = ((packed >>> 12) & 4095) * (2 / 4095) - 1;
+    const z = 1 - Math.abs(x) - Math.abs(y), fold = Math.max(-z, 0);
+    x += x >= 0 ? -fold : fold;
+    y += y >= 0 ? -fold : fold;
+    const length = Math.hypot(x, y, z);
+    return [x / length * 0.5 + 0.5, y / length * 0.5 + 0.5,
+      z / length * 0.5 + 0.5, (packed >>> 24) / 255];
+  });
+  assert.ok(values.every(Number.isFinite), `non-finite decoded ${read.resourceId}`);
+  return { ...read, values };
+}
+
+export function decodeSsrReflectance(read) {
+  if (read.format !== 'r32uint') return read;
+  assert.equal(read.values.length, read.width * read.height, 'packed reflectance pixel count');
+  // Standard stores sqrt(linear RGB) in three UNORM8 lanes; alpha is linear.
+  const values = read.values.flatMap(packed => [((packed & 255) / 255) ** 2,
+    (((packed >>> 8) & 255) / 255) ** 2, (((packed >>> 16) & 255) / 255) ** 2,
+    (packed >>> 24) / 255]);
+  assert.ok(values.every(Number.isFinite), `non-finite decoded ${read.resourceId}`);
+  return { ...read, values };
 }
 
 // The captured shader bindings identify the resources. Never pin transient
@@ -149,20 +192,21 @@ export async function inspectSsrTape(tapePath) {
   if (!opened.ok) throw opened.error;
   const replay = opened.value;
   try {
-    const readId = async (id, workIndex, subresource) => {
+    const readId = async (id, workIndex, subresource, uint32Words = []) => {
       const result = await replay.readResourceAtWork(id, workIndex, subresource);
       if (!result.ok) throw result.error;
       const r = result.value;
       assert.equal(r.provenance.selectedWorkIndex, workIndex);
-      const data = new DataView(r.bytes.buffer, r.bytes.byteOffset, r.bytes.byteLength);
-      const values = r.format?.endsWith('16float')
-        ? Array.from({ length: r.bytes.length / 2 }, (_, i) => halfToFloat(data.getUint16(i * 2, true)))
-        : r.format === 'rgba8unorm' ? Array.from(r.bytes, (v) => v / 255)
-        : Array.from({ length: r.bytes.length / 4 }, (_, i) => data.getFloat32(i * 4, true));
-      assert.ok(values.every(Number.isFinite), `non-finite ${r.resourceId}`);
-      return { ...r, values };
+      return decodeSsrReadback(r, uint32Words);
     };
-    const read = (w, slot) => readId(binding(w, slot), w.workIndex);
+    const read = (w, slot) => {
+      const request = bindingReadRequest(w, 0, slot);
+      if (!request.ok) throw request.error;
+      // The captured View stores lightingChannels: u32 at byte 76; the
+      // all-channel mask 0xffffffff is legal. Every floating lane stays finite.
+      const uint32Words = w === trace && slot === 5 ? [19] : [];
+      return readId(request.value.resourceId, w.workIndex, request.value.subresource, uint32Words);
+    };
     const traced = await read(trace, 4);
     let hitReactivity;
     if (hasHitReactivity) {
@@ -247,7 +291,7 @@ export async function inspectSsrTape(tapePath) {
       s.source.includes('fn fs_taa_resolve(')));
     const sceneTemporal = await read(temporal, 4);
     const previousSsr = await read(temporal, 3);
-    const normal = await read(trace, 1);
+    const normal = decodeSsrNormalRoughness(await read(trace, 1));
     const taaInputs = [];
     for (const w of taaWorks) {
       const id = (slot) => w.bindings.find((b) => b.groupIndex === 1 && b.binding === slot)?.resourceId;
@@ -279,7 +323,11 @@ export async function inspectSsrTape(tapePath) {
     }
     const depth = await read(trace, 0);
     const materialWork = model.works.find((w) => w.pipeline.shaders.some((s) => s.entryPoint === 'fs_gbuffer'));
-    const material = await readId(materialWork.attachments.colorViewHandleIds[1], trace.workIndex);
+    const materialSource = materialWork.pipeline.shaders.find(s => s.entryPoint === 'fs_gbuffer').source;
+    const materialLocation = materialSource.match(/@location\((\d+)\)\s+albedo_metallic\s*:/);
+    assert.ok(materialLocation, 'captured G-buffer must expose albedo_metallic');
+    const material = decodeSsrReflectance(await readId(
+      materialWork.attachments.colorViewHandleIds[Number(materialLocation[1])], trace.workIndex));
     const materialResponse = fullscreenComposition ? await readId(binding(compose, 2), compose.workIndex) : undefined;
     const camera = await read(trace, 5);
     if (process.env.SSR_EXPORT_COMPOSE_INPUTS === '1') {

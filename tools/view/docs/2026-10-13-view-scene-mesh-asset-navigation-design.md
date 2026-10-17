@@ -7,9 +7,9 @@ native plugin now resolves actual held resource identities using public APIs.
 
 This View-only change follows UE's two distinct asset actions: [Browse to
 Asset](https://dev.epicgames.com/documentation/unreal-engine/reference-viewer-in-unreal-engine?lang=en-US)
-opens a Content Browser with the asset selected, while Edit opens its asset
-editor. [UE Static Mesh documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/using-materials-with-static-meshes-in-unreal-engine)
-also shows a mesh asset opening in the Static Mesh Editor. View uses the
+opens a Content Browser with the asset selected, while Edit opens its dedicated
+asset tool. [UE Static Mesh documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/using-materials-with-static-meshes-in-unreal-engine)
+also shows a mesh asset opening in a dedicated mesh tool. View uses the
 existing read-only mesh preview for Edit; no mesh geometry editing is added.
 
 ## Ownership
@@ -23,7 +23,7 @@ the Catalog no longer contains the GUID. No entity name, source path, handle
 order or latest Catalog publication is used to infer a binding.
 
 The Content Browser frontend plugin owns the optional `viewAssetBrowser`
-Cordis service. Its reveal action checks the project and exact Editor target,
+Cordis service. Its reveal action checks the project and exact Scene target,
 focuses the existing Content Browser panel, clears obstructing filters,
 expands the containing Pack, selects the asset by GUID, and waits until that
 card is visible. User navigation and project/target replacement cancel the

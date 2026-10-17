@@ -199,3 +199,37 @@ Post-terminal-GC heap differs by about 0.02-0.04 MB in this local carrier.
 Startup is excluded, sandbox is enabled and GPU is disabled. These are local
 JS allocation observations, not whole-Worker GC, GPU or ordinary FPS acceptance.
 Raw input getter order and custom program identity equality remain covered.
+
+## Integration batch: 2026-10-15
+
+| Boundary | Source change and reusable lesson |
+| --- | --- |
+| Render preparation | One canonical primitive-to-batch membership serves main/shadow preparation; captured ordered draw facts replace duplicate key lists and repeated parsing |
+| Material preparation | Existing shader facts carry fixed mesh/cluster layout fields; first-entry lookup and scalar singleton membership avoid sparse per-material hash tables |
+| Material observation | Privately admitted residency records can be shared; raw/accessor rows still detach through their original capture path, retaining the earlier frozen-getter counterexample |
+| Uniform upload and resources | Direct scalar writes, payload-owned DataViews and lifetime-owned successful resource/shader results remove temporary wrappers without suppressing real byte or physical-target changes |
+| Engine physics/ECS | Frozen contact history is republished on change; conservative native pair admission avoids unnecessary manifold snapshots; existing component rosters/definition metadata replace intermediate collections |
+| Voxel queries | Shared admitted transform numbers, scalar ray intervals, bounded reentrant traversal scratch and persistent revision observations remove repeated preparation; public results retain their own lifetime |
+| Game geometry | Invocation-owned bounds scratch, scalar rotated bounds, consumer-driven impact snapshots and direct typed-buffer mesh writing remove boxed intermediates |
+
+The Engine batch is recorded in
+[f904c88a19](https://github.com/ForgeaX-Games/forgeax-engine/commit/f904c88a19e0d3279f5a44f57eebe62011b708f7)
+and integrated into [PR3855](https://github.com/ForgeaX-Games/forgeax-engine/pull/3855)
+at `dc33e750a2`. Voxel PR193
+and Game PR135
+merged their corresponding changes to main. These references establish delivery
+and implementation scope, not a measured allocation reduction.
+
+> [!IMPORTANT]
+> Focused correctness regressions and a normal Engine build were exercised during
+> development. Complete final-batch Game/graphics acceptance and a matched natural
+> GC/ordinary-throughput comparison were unfinished when submission was requested.
+> The combined 80% allocation target was not measured or achieved by evidence in
+> this batch. Preserve the earlier captures and local results above as separate
+> observations; do not add or multiply their percentages into a whole-Worker claim.
+
+A diagnostic WIP loader and the final pinned/built public-package path produced
+different demolition outcomes. Record the selected loader and actual loaded
+script bytes; source aliases are useful diagnosis but do not qualify the shipped
+bundle or prove a duplicate registry cannot exist there. Use the canonical
+runtime for acceptance rather than selecting whichever replay passes.

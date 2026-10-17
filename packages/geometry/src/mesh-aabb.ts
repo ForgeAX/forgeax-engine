@@ -59,7 +59,8 @@ function hasPositionData(position: unknown): boolean {
   );
 }
 
-function isFiniteAabb(aabb: unknown): aabb is Float32Array {
+/** Admit the complete finite, ordered six-value mesh bounds contract. */
+export function isFiniteAabb(aabb: unknown): aabb is Float32Array {
   if (!(aabb instanceof Float32Array) || aabb.length !== 6) return false;
   for (const value of aabb) {
     if (!Number.isFinite(value)) return false;

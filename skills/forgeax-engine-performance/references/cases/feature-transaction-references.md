@@ -1,10 +1,12 @@
 # Feature GPU transaction reference maintenance
 
 > [!IMPORTANT]
-> This 2026-10-15 owner experiment compares frozen `6a453ef98f` with a local
-> candidate. It establishes no whole-Game, GPU or completed-frame improvement.
-> The Game-owned 40-item tracker
-> retains the live baseline, rejected candidates and delivery state.
+> These 2026-10-15 owner experiments and four later live Game windows establish
+> no stable whole-Game FPS improvement. The optimization was submitted to
+> [PR3855](https://github.com/ForgeaX-Games/forgeax-engine/pull/3855) in integration
+> `5db6cb3e449f917533a1c84b6ed9b45cd5bbe83e`.
+> The frozen Game-owned 40-item tracker
+> retains the baseline, rejected candidates, raw data and delivery limits.
 
 ## Remove copying at the existing transaction owner
 
@@ -27,8 +29,9 @@ The [fixture](../../../../packages/render/bench/feature-rollback-references.benc
 uses actual feature prepare/retain/commit/abort methods, Null RHI buffers and bind
 groups, and actual completion releases. It is not a real GPU draw. The small case
 has one buffer/binding; other cases have 256. After 200 warmup iterations, twelve
-alternating pairs retain raw thread CPU and wall samples. CPU entries below are
-medians of batch means, not frame percentiles.
+alternating pairs retain raw thread CPU and wall samples. CPU entries below use
+the upper median, sorted index 6 of twelve batch means per variant; they are
+not single-frame percentiles.
 
 | Workload | Baseline CPU ms/iteration | Candidate CPU ms/iteration | Reduction |
 | --- | ---: | ---: | ---: |
@@ -101,11 +104,54 @@ baseline owner SHA-256 is
 and candidate owner SHA-256 is
 `297601d0455501c499bfd63d7211093c84d616856ecb8eb3ecd756a223d49159`.
 
-The integrated 73-package source build and targeted resource tests passed.
-The full Render suite ran 4355 passing tests, but a source typecheck error in
-an inherited texture-digest test made that run fail. The byte-edit fixture
-must explicitly prove the indexed byte exists rather than bypass the check.
-Browser, Dawn and core smoke attempts subsequently failed with ENOSPC when
-the host disk filled. Keep those failed logs; freeing owned inactive build
-scratch and rerunning gates is required, not a performance pass.
-Whole-Game before/after measurements and final delivery remain in the tracker.
+## Frozen live Game observations
+
+Engine `ec592e8f7908041f0b26ef6fcb81205345340ce7` versus
+`72d6be1846c8d01170e13dd92abd5ee50a1c9e65` used identical Game author inputs
+and Voxel `6da9204ee5a7c949b906b09f9e78de332be7cd2f`. Both normal builds
+completed; cooked shader manifest bytes matched. Quality remained 1920 x 1080,
+DPR 1, PCF5 and three 1024 directional shadow cascades.
+
+Four fresh contexts ran in before/after/after/before order. Ordinary windows
+used neither CPU profiling nor GPU queries. Public cache inspections occurred
+outside those windows. Combat, ten live combatants, movement, foreground and
+quality guards passed in every run; live work and shared-host load still varied.
+
+| Order | Variant | Completed intervals / seconds | FPS | P95 interval ms |
+| --- | --- | --- | ---: | ---: |
+| 1 | Before | 268 / 16.0017 | 16.748 | 95.800 |
+| 2 | After | 351 / 16.0138 | 21.919 | 70.900 |
+| 3 | After | 255 / 16.0251 | 15.913 | 86.200 |
+| 4 | Before | 319 / 16.0005 | 19.937 | 78.300 |
+
+The pair directions reversed. The positive pooled FPS difference is not a
+stable causal gain. These are live observations, not deterministic replay or
+per-frame visual acceptance. Full completion timestamps, including each final
+closing receipt, are in the 1197-point CSV.
+
+Counter boundaries covered 281/360/302/341 renderer frames, unlike the ordinary
+completed intervals above. Their own decision populations remain in the
+counter deltas.
+Filtered-batch and prepared-Bundle reuse remained high while validation reuse
+was rare. R3 changes bookkeeping, not cache semantics; changing hit rates or
+graph compile counts in these different live windows are not its measured gain.
+
+## Correctness and delivery limits
+
+The frozen `72d6be18` normal 73-package build, 28 focused tests, full Render run
+(4355 pass, one existing skip, zero type errors), and five real feature Dawn
+tests passed. An earlier Render run failed on an inherited texture-digest test's
+unchecked byte index; an explicit fixture-byte guard repaired it before rerun.
+Initial Browser/Dawn/core attempts failed with ENOSPC; those failures remain.
+
+The subsequent core run still failed: LOD lacked its required producer sidecar,
+and a gizmo host fixture compared macOS `/var` and `/private/var` spellings of
+one path. Canonicalizing the temporary directory passed three host/Playwright
+admission tests; the complete core run was not repeated. Preserve semantic and
+pixel assertions when repairing setup. Keep generated smoke images outside
+committed baselines using the collector's output option.
+
+The user stopped further testing and requested immediate submission. Integration
+`5db6cb3e44` also contains later material, main and shadow changes; the frozen
+R3 measurements are not relabeled as that combined head's performance or full
+CI acceptance. No additional validation is implied by this documentation update.

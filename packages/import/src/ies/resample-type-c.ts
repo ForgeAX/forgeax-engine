@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import { IES_PROFILE_HEIGHT, IES_PROFILE_WIDTH, type IesProfileAsset } from '@forgeax/engine-types';
 import type { Lm63TypeC } from './parse-lm63.js';
 
@@ -41,12 +42,7 @@ function toFloat16(value: number): number {
 
 export function readFloat16LE(bytes: Uint8Array, offset: number): number {
   const bits = (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits >>> 10) & 0x1f;
-  const fraction = bits & 0x03ff;
-  if (exponent === 0) return sign * 2 ** -14 * (fraction / 2 ** 10);
-  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + fraction / 2 ** 10);
+  return halfFloat.f16ToF32(bits);
 }
 
 export function resampleTypeC(source: Lm63TypeC): Uint8Array {

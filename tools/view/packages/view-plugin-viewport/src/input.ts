@@ -6,7 +6,7 @@ import { reportWorkspaceCommandError } from '@forgeax/view-workspace-core/comman
 import { ViewWorkspaceInputController } from './workspace-shell.ts';
 import { createViewportInputApi } from './camera-client.ts';
 
-/** Bind tools in the document that owns the exact canvas, including isolated Editor realms. */
+/** Bind tools in the document that owns the exact canvas, including isolated Scene realms. */
 export const viewportInputPlugin: Plugin.Object = {
   name: 'forgeax.view.viewport.input',
   inject: ['viewOperationClient', 'engineWorkspacePresentation', 'frontendPlatform'],

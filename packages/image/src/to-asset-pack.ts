@@ -23,12 +23,9 @@ export interface ExternalAssetPackage {
  * face / array layer / custom colorSpace) without breaking existing meta
  * files (plan-strategy R5).
  */
-export interface ImageImportSettings extends Readonly<Record<string, unknown>> {
-  readonly colorSpace: ImageMeta['colorSpace'];
-  readonly mipmap: ImageMeta['mipmap'];
-  readonly addressMode: ImageMeta['addressMode'];
-  readonly filterMode: ImageMeta['filterMode'];
-  readonly downscaleMaxDimension?: number;
+export interface ImageImportSettings
+  extends Readonly<Record<string, unknown>>,
+    Omit<ImageMeta, 'guid'> {
   /**
    * Explicit per-asset compression override (AC-01: importSettings carries
    * compression intent). When omitted, the build-time compression strategy

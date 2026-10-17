@@ -5,7 +5,7 @@ View owns input bindings, sampling and presentation placement. Engine owns the c
 ### Canvas document input
 
 `viewportInputPlugin` binds the existing `ViewWorkspaceInputController` in a document
-that owns an isolated Editor canvas. The selected exact target and generation come
+that owns an isolated Scene canvas. The selected exact target and generation come
 from the ordinary workspace state. Page or target replacement releases listeners and
 cancels pending picks. Activate this plugin after `engineWorkspacePresentation` is
 published; its native injection lifetime owns the admitted presentation.
@@ -23,6 +23,6 @@ and ignores pointer input; CSS visibility must not suspend its native animation 
 while startup or cleanup still owns work. Engine remains the readiness and retirement
 authority. The presentation Fiber removes the frame only after that ownership ends.
 
-The Editor preview stays hidden while an adopted Play is starting, including after
+The Scene preview stays hidden while an adopted Play is starting, including after
 Stop has revoked Game observations. It becomes eligible for presentation when that
 Play reaches readiness or retires, so its Renderer does not compete with startup.

@@ -1,5 +1,11 @@
 # @forgeax/engine-types
 
+`AssetEnvelope.refs` preserves reference-table presence: absent means a native
+payload, while a supplied table (including `[]`) belongs to indexed wire values.
+The Pack v2 wire envelope still requires its `refs` array. Catalog retains this
+producer fact so Scene binding can distinguish World handles from reference
+indexes using the destination World's component schema.
+
 Material programs declare their resource interface with `program.bindings`.
 Omission selects `render-material`; WGSL identifiers never select an interface.
 The same declaration travels in `MaterialProgramAbi` across Pack and Worker publication.

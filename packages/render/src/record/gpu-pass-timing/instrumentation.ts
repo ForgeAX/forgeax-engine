@@ -73,6 +73,7 @@ export function createPassTimingInstrumentation<Frame extends RenderGraphFrame>(
   };
   const instrumentation: RenderGraphPassInstrumentation<Frame> = {
     begin: (pass) => {
+      if (pass.kind === 'subgraph') return undefined;
       const capture = activeCapture;
       if (capture === undefined) return undefined;
       activeIdentity.passName = pass.name;

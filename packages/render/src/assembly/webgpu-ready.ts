@@ -21,6 +21,7 @@ import type {
   BindGroupLayout,
   Buffer,
   PipelineLayout,
+  PipelineLibraryManifest,
   RenderPipeline,
   Result,
   RhiDevice,
@@ -133,6 +134,20 @@ import {
 } from './webgpu-ready-contract';
 import { prewarmMipmapPipeline } from './webgpu-ready-mipmap';
 import { createReadyPerPassResources } from './webgpu-ready-per-pass';
+
+export async function prepareDevicePipelineLibrary(
+  device: RhiDevice,
+  manifest: PipelineLibraryManifest,
+): Promise<void> {
+  if (device.pipelineLibrary === undefined)
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'backend pipeline library support',
+      hint: 'select a backend with native asynchronous pipeline compilation',
+    });
+  const prepared = await device.pipelineLibrary.prepare(manifest);
+  if (!prepared.ok) throw prepared.error;
+}
 
 /**
  * Load the manifest, compile pipelines and upload builtins before promoting one

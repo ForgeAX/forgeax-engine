@@ -352,3 +352,26 @@ it.each([
   expect(fallback).toContain('forgeax_vfx_update_main');
   expect(fallback).toContain('forgeax_vfx_scan_blocks_main');
 });
+
+it('keeps native plan admission when private view command isolation is requested', () => {
+  const scope = () => ({ resources: [], passes: [] });
+  const finish = vi.fn((work, sourceFeedback) => ({ work, sourceFeedback }));
+  const createNativePlan = vi.fn(() => ({ scope, finish }));
+  const feature = gpuParticleRenderFeature({
+    camera: { read: () => undefined },
+    nativePlanning: true,
+    isolateViewGraph: true,
+  });
+  const result = feature.plan(
+    { worlds: [], frameNumber: 1 } as never,
+    {
+      views: [],
+      generation: 0,
+      createNativePlan,
+    } as never,
+  );
+  expect(result.ok).toBe(true);
+  expect(createNativePlan).toHaveBeenCalledTimes(1);
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(feature.viewGraph).toBe('transient');
+});

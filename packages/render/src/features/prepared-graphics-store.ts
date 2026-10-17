@@ -14,6 +14,7 @@ import type {
   RenderFeatureVertexDataDescriptor,
 } from './prepared-graphics';
 import {
+  createOwnedPreparedGraphicsState,
   RENDER_FEATURE_VERTEX_LAYOUTS,
   validateOwnedRenderFeatureGraphicsPass,
 } from './prepared-graphics';
@@ -44,12 +45,16 @@ export type PreparedGraphicsNormalizedDescriptor =
       readonly layout: string;
       readonly data?: readonly number[];
       readonly buffer?: import('./prepared-gpu-work').RenderFeatureGpuBufferRef;
+      readonly offset?: number;
+      readonly size?: number;
     }
   | {
       readonly kind: 'index-data';
       readonly format: 'uint16' | 'uint32';
       readonly data?: readonly number[];
       readonly buffer?: import('./prepared-gpu-work').RenderFeatureGpuBufferRef;
+      readonly offset?: number;
+      readonly size?: number;
     };
 
 export interface PreparedGraphicsItem<Kind extends PreparedGraphicsKind = PreparedGraphicsKind> {
@@ -75,6 +80,7 @@ export interface PreparedGraphicsTransaction {
     kind: Kind,
     name: string,
     descriptor: PreparedGraphicsRequestByKind[Kind] | PreparedGraphicsSignature,
+    native?: true,
   ): Result<RenderFeaturePreparedRef<Kind>, RenderError>;
   retainResources(matches: (name: string) => boolean): void;
   committedItems(): readonly PreparedGraphicsItem[];
@@ -240,7 +246,11 @@ function normalizeDescriptor(
         kind,
         layout: vertexData.layout,
         ...('buffer' in vertexData && vertexData.buffer !== undefined
-          ? { buffer: vertexData.buffer }
+          ? {
+              buffer: vertexData.buffer,
+              ...(vertexData.offset === undefined ? {} : { offset: vertexData.offset }),
+              ...(vertexData.size === undefined ? {} : { size: vertexData.size }),
+            }
           : { data: valuesOf(vertexData.data) }),
       });
       if ('data' in vertexData && vertexData.data !== undefined) {
@@ -254,7 +264,11 @@ function normalizeDescriptor(
         kind,
         format: indexData.format,
         ...('buffer' in indexData && indexData.buffer !== undefined
-          ? { buffer: indexData.buffer }
+          ? {
+              buffer: indexData.buffer,
+              ...(indexData.offset === undefined ? {} : { offset: indexData.offset }),
+              ...(indexData.size === undefined ? {} : { size: indexData.size }),
+            }
           : { data: valuesOf(indexData.data) }),
       });
       if ('data' in indexData && indexData.data !== undefined) {
@@ -270,12 +284,139 @@ function normalizeDescriptor(
   };
 }
 
+/** Exact native input comparison against an already detached store publication.
+ * The Host has consumed the Engine-owned work; borrowed/custom requests still
+ * normalize and capture before comparison. No frame data or physical ref is
+ * retained from the incoming request on this path. */
+function isNativeDataRecord(value: object): boolean {
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Reflect.ownKeys(value).every(
+    (key) => 'value' in (Object.getOwnPropertyDescriptor(value, key) ?? {}),
+  );
+}
+
+function sameNativeValue(previous: unknown, value: unknown): boolean {
+  // Functions/toJSON and other non-JSON leaves keep their normalization path.
+  if (value === null || typeof value !== 'object')
+    return typeof value !== 'function' && typeof value !== 'symbol' && previous === value;
+  // Typed views keep their original byte/iterator conversion and live reads.
+  if (ArrayBuffer.isView(value)) return false;
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    previous === null ||
+    typeof previous !== 'object'
+  )
+    return false;
+  const array = Array.isArray(value);
+  if (Array.isArray(previous) !== array) return false;
+  if (
+    array &&
+    (Object.getPrototypeOf(value) !== Array.prototype ||
+      Object.getPrototypeOf(previous) !== Array.prototype)
+  )
+    return false;
+  const left = previous as Record<PropertyKey, unknown>,
+    right = value as Record<PropertyKey, unknown>;
+  const keys = Reflect.ownKeys(left),
+    nextKeys = Reflect.ownKeys(right);
+  if (keys.length !== nextKeys.length) return false;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key === undefined || key !== nextKeys[i]) return false;
+    if (array && key !== 'length') {
+      // Array capture uses map or spread. An own iterator, constructor/species,
+      // map override or extra property must keep that original conversion.
+      const index = typeof key === 'string' ? Number(key) : NaN;
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        String(index) !== key ||
+        index >= (value as unknown[]).length
+      )
+        return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(right, key);
+    if (descriptor === undefined || !('value' in descriptor)) return false;
+    const captured = array ? Object.getOwnPropertyDescriptor(left, key) : undefined;
+    if (array && (captured === undefined || !('value' in captured))) return false;
+    if (!sameNativeValue(array ? captured?.value : left[key], descriptor.value)) return false;
+  }
+  return true;
+}
+
+function matchesNativeRequest(
+  item: PreparedGraphicsItem,
+  kind: PreparedGraphicsKind,
+  request: PreparedGraphicsRequestByKind[PreparedGraphicsKind] | PreparedGraphicsSignature,
+): boolean {
+  if ('signature' in request || !isNativeDataRecord(request)) return false;
+  const previous = item.descriptor;
+  switch (kind) {
+    case 'pipeline': {
+      const next = request as RenderFeaturePipelineDescriptor;
+      return (
+        previous?.kind === kind &&
+        previous.shader === next.shader &&
+        previous.preparePipelines === next.preparePipelines &&
+        previous.vertexLayout === next.vertexLayout &&
+        previous.particleInputLanes === next.particleInputLanes &&
+        sameNativeValue(previous.colorFormats, next.colorFormats) &&
+        previous.depthFormat === next.depthFormat &&
+        previous.sampleCount === next.sampleCount &&
+        previous.topology === next.topology &&
+        previous.indexFormat === next.indexFormat &&
+        sameNativeValue(previous.renderState, next.renderState)
+      );
+    }
+    case 'bindings': {
+      const next = request as RenderFeatureBindingsDescriptor;
+      return (
+        previous?.kind === kind &&
+        previous.pipeline === next.pipeline &&
+        sameNativeValue(previous.values, next.values)
+      );
+    }
+    case 'vertex-data': {
+      const next = request as RenderFeatureVertexDataDescriptor;
+      return (
+        previous?.kind === kind &&
+        'buffer' in next &&
+        next.buffer !== undefined &&
+        previous.buffer === next.buffer &&
+        previous.layout === next.layout &&
+        previous.offset === next.offset &&
+        previous.size === next.size
+      );
+    }
+    case 'index-data': {
+      const next = request as RenderFeatureIndexDataDescriptor;
+      return (
+        previous?.kind === kind &&
+        'buffer' in next &&
+        next.buffer !== undefined &&
+        previous.buffer === next.buffer &&
+        previous.format === next.format &&
+        previous.offset === next.offset &&
+        previous.size === next.size
+      );
+    }
+  }
+}
+
 class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
   private aborted = false;
   private committed = false;
   private readonly overlay = new Map<string, PreparedGraphicsItem>();
   private readonly touchedCommitted = new Set<string>();
-  private projection: PreparedGraphicsValidationProjection | undefined;
+  private projection:
+    | {
+        readonly value: PreparedGraphicsValidationProjection;
+        readonly committedSize: number;
+        readonly overlaySize: number;
+      }
+    | undefined;
 
   constructor(
     private readonly store: PreparedGraphicsStoreImpl,
@@ -288,6 +429,7 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
     kind: Kind,
     name: string,
     request: PreparedGraphicsRequestByKind[Kind] | PreparedGraphicsSignature,
+    native?: true,
   ): Result<RenderFeaturePreparedRef<Kind>, RenderError> {
     if (kind === 'pipeline' && !('signature' in request)) {
       const pipeline = request as RenderFeaturePipelineDescriptor;
@@ -309,6 +451,17 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
           ),
         );
       }
+    }
+    if (native && !this.aborted && !this.committed && name.length > 0) {
+      const key = itemKey(kind, name),
+        committed = this.committedSlot?.items.get(key);
+      if (committed !== undefined && matchesNativeRequest(committed, kind, request)) {
+        this.touchedCommitted.add(key);
+        return ok(committed.reference as RenderFeaturePreparedRef<Kind>);
+      }
+      const existing = this.overlay.get(key);
+      if (existing !== undefined && matchesNativeRequest(existing, kind, request))
+        return ok(existing.reference as RenderFeaturePreparedRef<Kind>);
     }
     const normalized = normalizeDescriptor(kind, request);
     if (this.aborted || this.committed || name.length === 0 || normalized.signature.length === 0) {
@@ -433,17 +586,11 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
       readonly format: TextureFormat;
     }[],
   ): RenderFeaturePreparedGraphicsState {
-    const projection = this.preparedProjection();
-    return {
+    return createOwnedPreparedGraphicsState(
       capabilityAvailable,
-      generation: this.generation,
       attachments,
-      pipeline: projection.pipelines[0],
-      pipelines: projection.pipelines,
-      bindings: projection.bindings,
-      vertexData: projection.vertexData,
-      indexData: projection.indexData,
-    };
+      this.preparedProjection(),
+    );
   }
 
   validateGraphicsPass(
@@ -462,13 +609,19 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
   }
 
   private preparedProjection(): PreparedGraphicsValidationProjection {
-    if (this.projection?.isCurrent()) return this.projection;
+    if (
+      this.projection !== undefined &&
+      this.touchedCommitted.size === this.projection.committedSize &&
+      this.overlay.size === this.projection.overlaySize
+    )
+      return this.projection.value;
     const committedSize = this.touchedCommitted.size;
     const overlaySize = this.overlay.size;
     const pipelines: RenderFeaturePreparedRef[] = [];
     const bindings: RenderFeaturePreparedRef[] = [];
     const vertexData: RenderFeaturePreparedRef[] = [];
     const indexData: RenderFeaturePreparedRef[] = [];
+    const references = new Set<RenderFeaturePreparedRef>();
     let validReferences = true;
     const columns = {
       pipeline: pipelines,
@@ -478,6 +631,7 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
     };
     const append = (item: PreparedGraphicsItem): void => {
       columns[item.kind]?.push(item.reference);
+      references.add(item.reference);
       if (item.reference.kind !== item.kind || item.reference.generation !== this.generation)
         validReferences = false;
     };
@@ -497,11 +651,9 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
       vertexData: Object.freeze(vertexData),
       indexData: Object.freeze(indexData),
       validReferences,
-      isCurrent: () =>
-        this.touchedCommitted.size === committedSize && this.overlay.size === overlaySize,
-      owns: (reference) => this.owns(reference),
+      owns: (reference) => references.has(reference),
     };
-    this.projection = projection;
+    this.projection = { value: projection, committedSize, overlaySize };
     return projection;
   }
 

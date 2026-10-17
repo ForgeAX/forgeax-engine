@@ -420,3 +420,35 @@ describe('generic signature comparison observes the top-level passes accessor', 
     expect(reads).toBe(3);
   });
 });
+
+it('excludes range uploads from topology while retaining binding ranges and captured writes', () => {
+  const data = new Uint32Array([1, 2]);
+  const buffer = { kind: 'buffer' as const, name: 'arena', size: 512, usage: ['uniform'] as const };
+  const plan = (
+    uploads?: readonly { readonly offset: number; readonly data: ArrayBufferView }[],
+  ): RenderFeatureWorkPlan => ({
+    resources: [{ ...buffer, ...(uploads === undefined ? {} : { uploads }) }],
+    passes: [],
+  });
+  const initial = plan([{ offset: 256, data }]);
+  const snapshot = cloneRenderFeaturePlanSignatureSnapshot(initial);
+  for (const current of [plan(), plan([]), plan([{ offset: 0, data: new Uint32Array([3]) }])]) {
+    expect(renderFeaturePlanSignature(current)).toBe(renderFeaturePlanSignature(initial));
+    expect(renderFeaturePlanSignatureSnapshotEquals(current, snapshot)).toBe(true);
+  }
+  const captured = freezeRenderFeaturePlan('arena', initial).unwrap().resources[0];
+  expect(captured?.kind === 'buffer' && captured.uploads?.[0]?.offset).toBe(256);
+  expect(captured?.kind === 'buffer' && captured.uploads?.[0]?.data).toBe(data);
+  const binding = (offset: number): RenderFeatureWorkPlan => ({
+    resources: [
+      {
+        kind: 'compute-bindings',
+        name: 'bindings',
+        program: 'program',
+        entries: [{ binding: 0, resource: 'arena', offset, size: 64 }],
+      },
+    ],
+    passes: [],
+  });
+  expect(renderFeaturePlanSignature(binding(0))).not.toBe(renderFeaturePlanSignature(binding(256)));
+});

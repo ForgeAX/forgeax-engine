@@ -19,7 +19,7 @@ import { writeReferencePng } from '../../../shared/png-codec.mjs';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
 import { FIELD_DT, fieldCamera, populateFieldScene } from '../src/field-scene.ts';
 import { trajectory, distribution, gpuIntervals } from './field-oracle.mjs';
-import { normalizeReadbackRgba } from './smoke-diagnostics.mjs';
+import { isSimulationUpdate, normalizeReadbackRgba } from './smoke-diagnostics.mjs';
 
 const unwrap = result => { if(!result.ok)throw result.error; return result.value; };
 const root = resolve(import.meta.dirname,'..');
@@ -102,7 +102,7 @@ if(!performanceRun){
       pass.setPipeline=pipeline=>{entryPoint=entryPoints.get(pipeline);setPipeline(pipeline);};
       for(const method of ['dispatchWorkgroups','dispatchWorkgroupsIndirect']){
         const dispatch=pass[method].bind(pass);
-        pass[method]=(...args)=>{if(/^forgeax_vfx_update(?:_compact)?_main$/.test(entryPoint??''))simulationUpdates++;dispatch(...args);};
+        pass[method]=(...args)=>{if(isSimulationUpdate(entryPoint))simulationUpdates++;dispatch(...args);};
       }
       return pass;
     };
@@ -292,7 +292,7 @@ try{
     assert.equal(report.verdict,'pass', 'Frozen full-frame p95 budget or real GPU timing failed');
   }else{
     const tape=unwrap(decodeTape(tapeBytes));const model=buildFrameModel(tape);
-    const update=model.works.find(w=>w.pipeline?.shaders?.some(s=>/^forgeax_vfx_update(?:_compact)?_main$/.test(s.entryPoint ?? '')));assert(update);
+    const update=model.works.find(w=>w.pipeline?.shaders?.some(s=>isSimulationUpdate(s.entryPoint)));assert(update);
     const particles=update.bindings.find(b=>b.binding===0);assert(particles);
     const field=update.bindings.find(b=>b.binding===17);
     assert.equal(field!==undefined,key!=='off');
@@ -389,7 +389,7 @@ try{
   assert.equal(report.resources.fieldLiveAfterDispose,0);
   console.log(`[fields] PASS ${key}: ${limit} completed frames`);
 }catch(error){
-  writeFileSync(resolve(output,'failure.json'),JSON.stringify({key,error:String(error),detail:error,completedSamples:samples},null,2));
+  writeFileSync(resolve(output,'failure.json'),JSON.stringify({key,error:String(error),detail:error,completedSamples:samples,frames,simulationTicks,simulationUpdates,source:sourceIdentity},null,2));
   throw error;
 }finally{
   globalThis.fetch=originalFetch;

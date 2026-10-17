@@ -1,6 +1,27 @@
 # Measurement and comparison
 
+## Select a change from evidence
+
+| Decision | Evidence needed | When it is missing |
+| --- | --- | --- |
+| Implement a candidate | Expensive owner in the requested workload, removable work and a falsifying observation | Analyze retained data or add one bounded qualification experiment |
+| Retain the candidate | Representative complete-owner net benefit or direct removal of the targeted stall, including affected preparation and retirement | Keep the experiment private; improve the comparison or withdraw it |
+| Claim the requested FPS | Valid ordinary completed-frame window with the requested configuration and work | Integrate proven changes, then measure the actual product |
+
+API compatibility, fewer entries and cache hits establish their stated mechanism.
+They do not select a production optimization by themselves. When A/B order gives
+contradictory conclusions, inspect loaded implementation, observer symmetry,
+work and lifecycle boundaries before another timed run. Preserve inconclusive
+and interrupted comparisons; do not repeat an unchanged matrix to obtain a
+favorable result. The [dynamic publication case](cases/dynamic-publication-case-20261016.md)
+retains both a withdrawn mechanism and the larger owner that replaced it.
+
 ## Admit a comparable workload
+
+The [restored-scene attribution case](cases/restored-scene-attribution-20261017.md)
+shows why current cooked programs, indirect argument versions and same-capture
+Worker owners must be qualified again after a product workload change. It also
+preserves a shader candidate whose static sample reduction did not prove net FPS.
 
 | Record | Why it affects the comparison |
 | --- | --- |
@@ -8,6 +29,7 @@
 | Runtime/backend, adapter/driver, device generation, OS/browser | Software rendering and a different backend are different targets |
 | Resolution/DPR, camera/route, actor count, AI/combat/destruction, input timeline | Rendered pixels and simulated work determine cost |
 | Camera near/far, shadow coverage/cascades/map size/filter/bias, material features | A lower quality or shorter range is a different profile |
+| Build capability profile, published material variants and actually selected backend/programs | Matching UI settings do not make a validation-only shader closure equivalent to an ordinary portable build |
 | Warmup, sampling duration, completed frames, queue/drain bounds, missing rows | Submitted callbacks do not prove completed scene work |
 | Instrumentation and simultaneous CPU/GPU/memory/thermal observations | A profiler, query, readback or competing workload can change timing |
 
@@ -16,7 +38,15 @@ contain the invariant scene, quality, backend and measurement configuration;
 record revision/build evidence beside it. Do not omit a setting merely to make
 `compare_samples.mjs` accept the two identities. Use alternating paired runs
 when order, warm caches or thermal drift matter; report group results as well as
-their aggregate.
+their aggregate. Do not infer a stable gain from a positive pooled mean when
+pair directions reverse and workload or host variation remains unaccounted for.
+Equal cooked shader bytes do not establish equal live draw workloads or
+per-frame image equality.
+
+For product acceptance, use the normal build path unless a specialized target
+is explicitly requested. A storage-only validation build can qualify its own
+WebGPU path; it cannot silently replace a portable production build. Preserve
+the build manifest's profile even when the displayed resolution/features match.
 
 > [!IMPORTANT]
 > Build success, complete sampling and hardware performance are separate claims.
@@ -117,6 +147,20 @@ owner; overlapping worker CPU is not serial wall-clock latency.
 For extreme intervals, [join exact tasks and completion events](slow-frames.md)
 and reject invalid thread-clock rows before treating task CPU as exact evidence.
 
+A profiler-start acknowledgement can precede the first usable sample. Retain
+both timestamps and intersect actual sample coverage with the workload's clock
+anchors and HUD interval. A fully covered later clip cannot qualify the omitted
+first shot. Same-clock sampled busy/idle overlap does not identify task admission,
+queue-credit waits or a missing pipeline feature; those require actual due,
+admit, publish, submit, completion and acknowledgement events.
+
+When an optimization moves work between owners, compare the union of disjoint
+sampled leaf scopes that include both locations. Removing long-key serialization
+can introduce tuple copying, hashing and fact comparisons in another function.
+A better original scope or 100% cache hits alone does not establish net savings.
+Retain native/unattributed work and GC rather than assigning them to convenient
+named owners.
+
 ### Cache populations and window deltas
 
 Sample cumulative owner counters before and after warmup/measurement boundaries.
@@ -154,12 +198,55 @@ normalize each observation to its own population; use an exact identity join or
 drain when identical-frame attribution is required. Never divide one window's
 CPU estimate by another window's lookup count to claim measured hit-path cost.
 
+When a collector stores its final `closingFrame` separately, include that
+completion point when exporting intervals. N intervals require N+1 endpoints;
+dropping the final receipt changes the reconstructed duration and percentiles.
+Follow the collector's declared boundary contract rather than assuming its
+`frames` array contains every endpoint.
+
 Derived counts need a proven branch identity, such as one capacity lookup per
 eligible payload pack minus observed allocations. Verify native/probe count
 equalities and document the derivation. An uninstalled or unused probe returning
 zero is missing coverage, not evidence that no work occurred.
 
+### Qualify continuous changes through the real producer
+
+Separate upload contents, physical allocation, compiled layout and command/pass
+topology. Inspect what the current signature already excludes before adding a
+cache. Compare neighboring actual plans and miss reasons, including a content-only
+negative control; changed uniform data or mesh bytes do not imply changed topology.
+
+| Boundary | Record separately |
+| --- | --- |
+| Simulation edits | Real accepted mutations, unchanged/rejected edits and queue latency |
+| Publication | Transactions, source revisions, accepted mesh identities and typed-view bytes |
+| Renderer | Received/submitted/completed identities and actual changed mesh revisions per frame |
+| Lifetime | Birth, replacement, retirement, failed/aborted preparation and cleanup through the real application |
+
+Several meshes per completed frame on average cannot prove that every Renderer
+frame receives a new mesh. An edit-promise settlement is not the first displayed
+pixel of its hole. Endpoint inventory and reset-per-prepare scan fields are gauges;
+use cumulative counters or actual observations for window totals. Promise elapsed
+time is not thread CPU, and logical mesh bytes are not GPU upload or residency.
+
+Use mixed dynamic geometry, material/layout replacement and transient effects
+when they belong to the target workload. Keep changed data cheap without hiding
+real binding/topology invalidation. Verify that the application's actual owner
+calls cleanup; a helper's manual `dispose()` cannot prove consumer integration.
+
 ### Keep observation cost separate
+
+For a large function, leaf self time counts samples attributed to that symbol;
+it does not identify a removable semantic phase. When samples cannot separate
+the work, bracket the current producer privately into mutually exclusive
+synchronous phases. Retain
+frame identity and work counts; require phase totals to conserve the enclosing
+interval. Report phase self, nested helper self and helper inclusive separately.
+Do not add nested inclusive values or call synchronous wall time thread CPU.
+Compare plain and instrumented complete-owner arms with the same lifecycle and
+commands before using the phase ranking. Keep the measured perturbation visible;
+do not subtract it from individual phases. The
+[VFX phase case](cases/vfx-plan-phases-20261017.md) records this distinction.
 
 Prefer native cumulative counters, then narrowly placed allocation-free integer
 probes for missing decisions. Save probe coverage, original/transformed hashes
@@ -171,7 +258,7 @@ than treating absent source-shaped statements as zero events.
 | --- | --- |
 | Per-call timers on a hot cache walk | Count invocations and calibrate an empty probe; many tiny calls can make the observer dominate. Keep raw results rather than subtracting a guessed overhead |
 | Independent uninstrumented V8 profile | Keep realm time origins; clip individual sample timeDeltas to the measured completion window, checking clock alignment rather than using whole-profile duration |
-| Minified profile attribution | Authenticate loaded JS, intermediate compiled modules and original source; retain unavailable maps as unmapped, not invented source locations |
+| Minified profile attribution | Authenticate loaded JS, intermediate compiled modules and original source; report mapped script sample/time coverage per realm, not just mapper completion |
 | Cache-owner grouping | State owner scopes and exclude ordinary draw generation from enclosing cache callbacks; preserve native/unattributed, idle and GC separately |
 | Sparse samples | Report sample count and detection limits; zero samples do not establish zero cost |
 
@@ -179,6 +266,36 @@ Collect final throughput without diagnostic probes/profilers. If CPU sampling
 and counters use separate warmed runs, label both windows and retain workload
 checks for each. Repeated runs show dynamic-phase variability; they become A/B
 only when their workload and instrumentation identities admit comparison.
+
+A mapper can finish successfully with zero mapped coverage. If hidden maps are
+built after capture, authenticate each captured script digest against that
+build before using its maps; reject changed JavaScript and keep missing scripts
+unmapped. Named source scopes require the matching authored revision too.
+
+### Attribute actual submitted geometry
+
+Use an opt-in receipt-bound command observation to choose scene geometry work
+for removal. Source triangle inventory, candidate counts and batch totals do
+not establish submitted geometry or asset GPU cost. The
+[geometry observation owner](../../../packages/render/src/geometry-observation.ts)
+defines command work and membership; keep its coverage separate from pass timing.
+
+| Boundary | Evidence required before source ranking |
+| --- | --- |
+| Executed work | Record actual inline indirect and executed bundle commands, including bundle cache hits; retain repeated occurrences across passes |
+| Early/late selection | Decode both submitted regions; when late finalize overwrites the early region with a union, recover the executed early prefix from its same-submit counter, rather than counting union plus late |
+| Instance addressing | Validate actual indexed/non-indexed `firstInstance` against the device's whole-buffer or segment-offset binding mode before joining captured visible rows |
+| Source identity | Join each nonzero command's actual instance occurrence to frozen World/entity, primitive slot generation, mesh/source revision, original submesh/material slot and instance ordinal; reject ambiguous membership |
+| Receipt and fence | Retain submit identity, device/resource/graph generations and source lease; wait for that receipt and diagnostic copy/map fence, rejecting superseded data |
+| Completeness | Enforce command/member/byte/time budgets; overflow, unsupported paths and stale data are unavailable, never a truncated complete total |
+| Coverage | Name the observed view and lanes; primary-view commands do not cover shadows, other views, CPU draws or independent feature draws unless those owners were separately observed |
+
+Compute command work as actual index/vertex count times actual instance count;
+zero-count or zero-instance commands contribute zero. Weight source occurrences
+only when complete member mapping proves their share. This counts submitted
+references, not vertex shader invocations, visible pixels or exclusive GPU time.
+Keep the once-only readback, extra queue submission and any successor-frame hold
+outside the ordinary throughput window; preserve the original workload state.
 
 ## Check work and cost together
 
@@ -202,6 +319,53 @@ $100(t_{before}-t_{after})/t_{before}$. A faster isolated stage is not the same
 as whole-frame gain: CPU/GPU overlap, pacing and another bottleneck can limit
 throughput. Use uninstrumented ordinary completion measurements to make that
 claim. Descriptive percentiles alone do not establish statistical significance.
+
+### Rebase the attribution with the baseline
+
+When upstream already removes part of the hotspot, repeat the relevant paired
+comparison against that newer baseline before attributing the old gain to the
+candidate. Preserve mechanism counts: zero stringifications on both sides
+cannot support a new string-allocation reduction. Identify whether an experiment
+compares one owner file or whole source trees, and record later integrations
+separately. A pre-integration microbenchmark does not measure the integrated game.
+
+For pure CPU fixtures, load both variants with the same dependency closure,
+prepare equivalent inputs, warm each and rotate execution order. Retain complete
+ordered output hashes alongside work counts, per-run CPU and wall samples and
+adverse results. Equality does not establish runtime coverage outside that
+fixture; host contention can inflate wall time without equivalent thread CPU.
+The [spatial-key case](cases/voxel-key-indexes.md) includes a query regression
+alongside substantial navigation/surface CPU improvements.
+
+## Freeze inputs for cold producer measurement
+
+Use this boundary when a build/cooker failure or author-data optimization needs
+a fresh-cache claim. Inspect the actual producer's input scope: unreferenced
+scripts and JSON may still be fenced inputs. Stop owned source writers, freeze
+source/dependency revisions and write ongoing diagnostics outside that scope.
+An output directory excluded by one producer may be included by another.
+
+| Evidence | What it establishes |
+| --- | --- |
+| Relevant DDC/output absent before the attempt | Defined cold starting state; preserve unrelated owners' caches |
+| Actual producer input set and before/after byte identity | No observed source change during that attempt; do not silently narrow the producer's scope |
+| One structured result with nested causes and original exit status | Exact failing phase, producer and limit; plain terminal summaries can hide the root diagnostic |
+| Successful cooker plus declared artifact size/hash audit | The produced manifest and bytes agree for that source; no runtime/FPS claim |
+| Retained first failure and later attempt identities | A warm retry is distinguishable from a separate fresh-cache pass |
+
+Classify source-mutation rejection, module initialization, producer execution,
+typechecker heap exhaustion and scheduler delay separately. Timestamp evidence
+can support a suspected race without recovering the original nested error.
+Do not manufacture that missing diagnostic or increase a producer timeout to
+label its cost fixed.
+
+For repeated binary author-data conversion, inspect per-byte callbacks and
+intermediate strings before changing asset formats. Compare the existing native
+decoder and its supported fallback over the same complete payload corpus;
+preserve decoded vertex/color/index bytes, reference order, material identities
+and generator output. Decoder-plus-hash timing measures that stage only. A later
+whole cold build checks the actual producer path, including parsing, inflation
+and publication. These comparisons do not measure peak memory or gameplay FPS.
 
 ## Validate an optimization batch
 

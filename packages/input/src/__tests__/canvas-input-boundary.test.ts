@@ -31,11 +31,11 @@ describe('CanvasInputBoundary', () => {
     const source: InputBackend = { sample: () => sample(['w']), detach() {} };
     const boundary = createCanvasInputBoundary(source);
 
-    expect(boundary.editor.sample().downKeys.has('w')).toBe(true);
+    expect(boundary.preview.sample().downKeys.has('w')).toBe(true);
     expect(boundary.game.sample().downKeys.has('w')).toBe(false);
 
     boundary.grantGame();
-    expect(boundary.editor.sample().downKeys.has('w')).toBe(false);
+    expect(boundary.preview.sample().downKeys.has('w')).toBe(false);
     expect(boundary.game.sample().downKeys.has('w')).toBe(true);
   });
 
@@ -57,7 +57,7 @@ describe('CanvasInputBoundary', () => {
     boundary.revokeGame();
     boundary.revokeGame();
 
-    expect(boundary.owner()).toBe('editor');
+    expect(boundary.owner()).toBe('preview');
     expect(clears).toBe(3);
     expect(locks.filter((allowed) => !allowed).length).toBeGreaterThanOrEqual(3);
     expect(boundary.game.sample().downKeys.size).toBe(0);

@@ -1,230 +1,144 @@
-// @forgeax/engine-assets-runtime -- keyed parseScenePayload coverage.
-
-import type { SceneAsset } from '@forgeax/engine-types';
+import { defineComponent } from '@forgeax/engine-ecs';
+import { componentSchema } from '@forgeax/engine-ecs/internal';
 import { describe, expect, it } from 'vitest';
-import { parseScenePayload } from '../scene-payload';
+import { parseScenePayload, resolveSceneComponentFields } from '../scene-payload';
 
-function isScene(v: unknown): v is SceneAsset {
-  return typeof v === 'object' && v !== null && (v as { kind?: string }).kind === 'scene';
-}
+const Custom = defineComponent('SceneWireCustom', {
+  arbitrary: 'shared<MeshAsset>',
+  items: 'array<shared<MeshAsset>>',
+  fixed: 'array<shared<MeshAsset>, 2>',
+  index: 'u32',
+  density: 'f32',
+  material: 'string',
+  mesh: 'unique<NestedPayload>',
+});
+const schema = componentSchema(Custom);
+const refs = ['guid-a', 'guid-b'];
+const decode = (fields: Record<string, unknown>, table: string[] | undefined = refs) =>
+  resolveSceneComponentFields('root', Custom.name, fields, table, schema);
 
-describe('parseScenePayload without refs', () => {
-  it('returns undefined for a non-keyed entity map', () => {
-    expect(parseScenePayload({})).toBeUndefined();
-    expect(parseScenePayload({ entities: 'nope' })).toBeUndefined();
-    expect(parseScenePayload({ entities: [] })).toBeUndefined();
+describe('structural Scene loading', () => {
+  it.each([
+    {},
+    { entities: 'bad' },
+    { entities: [] },
+    { entities: { root: null } },
+    { entities: { root: { components: { Custom: null } } } },
+  ])('rejects malformed shape %j', (payload) => {
+    expect(parseScenePayload(payload)).toBeUndefined();
   });
-
-  it('passes keyed component fields through verbatim', () => {
-    const out = parseScenePayload({
-      entities: { mesh: { components: { MeshFilter: { assetHandle: 3 } } } },
-    });
-    expect(isScene(out)).toBe(true);
-    if (!isScene(out)) return;
-    expect(out.entities.mesh?.components.MeshFilter?.assetHandle).toBe(3);
-  });
-
-  it('resolves nested instance sources and keyed override addresses', () => {
-    const out = parseScenePayload({
+  it('does not guess component fields before their World schema is available', () => {
+    const payload = {
       entities: {
-        level: {
-          components: {},
+        root: {
+          components: {
+            MeshFilter: { assetHandle: 0 },
+            Collider: { mesh: 13, density: 1 },
+            Anything: { material: null, materials: [null, 0], entityKey: 'text', index: 1 },
+          },
+        },
+      },
+    };
+    expect(parseScenePayload(payload, refs)).toEqual({ kind: 'scene', ...payload });
+  });
+  it('decodes Scene-owned instance/skin indexes and preserves override component values', () => {
+    const result = parseScenePayload(
+      {
+        entities: {
+          parent: {
+            components: {},
+            instance: {
+              source: 1,
+              overrides: [{ target: ['child'], components: { Anything: { arbitrary: 0 } } }],
+            },
+          },
+        },
+        skinGuids: [0, 1],
+      },
+      refs,
+    );
+    expect(result).toMatchObject({
+      kind: 'scene',
+      skinGuids: refs,
+      entities: {
+        parent: {
           instance: {
-            source: 'child-guid',
+            source: 'guid-b',
             overrides: [
-              { target: ['root', 'camera'], components: { Transform: { pos: [1, 2, 3] } } },
+              {
+                target: ['child'],
+                components: { Anything: { arbitrary: 0 } },
+              },
             ],
           },
         },
       },
     });
-    expect(out).toMatchObject({
-      kind: 'scene',
-      entities: {
-        level: {
-          instance: {
-            source: 'child-guid',
-            overrides: [{ target: ['root', 'camera'] }],
-          },
-        },
-      },
-    });
+  });
+  it('rejects malformed Scene-owned reference indexes', () => {
+    expect(
+      parseScenePayload({ entities: { root: { components: {}, instance: { source: 9 } } } }, refs),
+    ).toBeUndefined();
+    expect(parseScenePayload({ entities: {}, skinGuids: [9] }, refs)).toBeUndefined();
   });
 });
 
-describe('parseScenePayload with refs', () => {
-  const refs = ['guid-a', 'guid-b', 'guid-c'];
-
-  it('resolves local volume density and preserves optical numbers', () => {
-    expect(
-      parseScenePayload(
-        {
-          entities: {
-            smoke: {
-              components: {
-                VolumetricFog: { density: 0, light: 'sun', sampling: 1, maxDistance: 60 },
-              },
-            },
-          },
-        },
-        refs,
-      ),
-    ).toMatchObject({
-      entities: {
-        smoke: {
-          components: {
-            VolumetricFog: { density: 'guid-a', light: 'sun', sampling: 1, maxDistance: 60 },
-          },
-        },
-      },
+describe('World-schema component reference decoding', () => {
+  it('decodes arbitrary shared fields and both array forms, distinguishing null from reference zero', () => {
+    expect(decode({ arbitrary: 0, items: [null, 0, 1], fixed: [1, null] }).unwrap()).toEqual({
+      arbitrary: 'guid-a',
+      items: [0, 'guid-a', 'guid-b'],
+      fixed: ['guid-b', 0],
     });
-    expect(
-      parseScenePayload(
-        {
-          entities: {
-            smoke: {
-              components: {
-                VolumetricFog: { density: 3 },
-              },
-            },
-          },
-        },
-        refs,
-      ),
-    ).toMatchObject({
-      entityKey: 'smoke',
-      component: 'VolumetricFog',
-      field: 'density',
-      index: 3,
-      refsLength: 3,
-    });
+    expect(decode({ fixed: new Uint32Array([0, 1]) }).unwrap()).toEqual({ fixed: refs });
   });
-
-  it('resolves scalar and array handle fields by reference index', () => {
-    const out = parseScenePayload(
-      {
-        entities: {
-          player: {
-            components: {
-              ParticleEffectPlayer: { effect: 1, seed: 424242 },
-              MeshRenderer: { materials: [0, 2] },
-            },
-          },
-        },
+  it('preserves non-shared integers and strings regardless of names or values', () => {
+    const fields = { index: 1, density: 0, material: 'guid-a', mesh: 1 };
+    expect(decode(fields).unwrap()).toEqual(fields);
+  });
+  it('preserves native handles without a wire reference table', () => {
+    expect(
+      resolveSceneComponentFields(
+        'root',
+        Custom.name,
+        { arbitrary: 1024, items: [null, 1025], fixed: [1024, 1025] },
+        undefined,
+        schema,
+      ).unwrap(),
+    ).toEqual({ arbitrary: 1024, items: [0, 1025], fixed: [1024, 1025] });
+  });
+  it.each([
+    -1,
+    2,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects scalar and array wire index %s with exact field provenance', (index) => {
+    expect(decode({ arbitrary: index })).toMatchObject({
+      ok: false,
+      error: {
+        entityKey: 'root',
+        component: Custom.name,
+        field: 'arbitrary',
+        index,
+        refsLength: 2,
       },
-      refs,
-    );
-    expect(out).toMatchObject({
-      entities: {
-        player: {
-          components: {
-            ParticleEffectPlayer: { effect: 'guid-b', seed: 424242 },
-            MeshRenderer: { materials: ['guid-a', 'guid-c'] },
-          },
-        },
+    });
+    expect(decode({ items: [0, index] })).toMatchObject({
+      ok: false,
+      error: {
+        entityKey: 'root',
+        component: Custom.name,
+        field: 'items[1]',
+        index,
+        refsLength: 2,
       },
     });
   });
-
-  it('keeps non-handle integer fields as-is', () => {
-    const out = parseScenePayload(
-      { entities: { child: { components: { ChildOf: { parent: 2 } } } } },
-      refs,
-    );
-    if (!isScene(out)) throw new Error('expected scene');
-    expect(out.entities.child?.components.ChildOf?.parent).toBe(2);
-  });
-
-  it('reports keyed provenance for out-of-bounds refs', () => {
-    const out = parseScenePayload(
-      { entities: { camera: { components: { MeshFilter: { assetHandle: 9 } } } } },
-      refs,
-    );
-    expect(out).toMatchObject({
-      entityKey: 'camera',
-      component: 'MeshFilter',
-      field: 'assetHandle',
-      index: 9,
-      refsLength: 3,
-    });
-  });
-
-  it('resolves nested instance source indexes and skin GUID indexes', () => {
-    const out = parseScenePayload(
-      {
-        entities: { parent: { components: {}, instance: { source: 1 } } },
-        skinGuids: [0, 2],
-      },
-      refs,
-    );
-    if (!isScene(out)) throw new Error('expected scene');
-    expect(out.entities.parent?.instance?.source).toBe('guid-b');
-    expect(out.skinGuids).toEqual(['guid-a', 'guid-c']);
-  });
-
-  it('rejects invalid skin indexes and nested source indexes', () => {
-    expect(
-      parseScenePayload(
-        { entities: { parent: { components: {}, instance: { source: 42 } } } },
-        refs,
-      ),
-    ).toBeUndefined();
-    expect(
-      parseScenePayload({ entities: { root: { components: {} } }, skinGuids: [99] }, refs),
-    ).toBeUndefined();
-  });
-});
-
-describe('shared null wire sentinel', () => {
-  it('restores empty shared values while retaining reference index zero', () => {
-    const payload = {
-      entities: {
-        car: {
-          components: {
-            MeshFilter: { assetHandle: null },
-            MeshRenderer: { materials: [null, 0, 1, null] },
-            VolumetricFog: { density: null, light: null },
-            Transform: { pos: [0, 1, 0] },
-          },
-        },
-      },
-    };
-    expect(parseScenePayload(payload, ['material-a', 'material-b'])).toMatchObject({
-      entities: {
-        car: {
-          components: {
-            MeshFilter: { assetHandle: 0 },
-            MeshRenderer: { materials: [0, 'material-a', 'material-b', 0] },
-            VolumetricFog: { density: 0, light: null },
-            Transform: { pos: [0, 1, 0] },
-          },
-        },
-      },
-    });
-  });
-  it('restores empty shared values in inline payloads without a reference table', () => {
-    expect(
-      parseScenePayload({
-        entities: {
-          car: {
-            components: {
-              MeshFilter: { assetHandle: null },
-              MeshRenderer: { materials: [null, 'material-a', null] },
-              Transform: { pos: [0, 1, 0] },
-            },
-          },
-        },
-      }),
-    ).toMatchObject({
-      entities: {
-        car: {
-          components: {
-            MeshFilter: { assetHandle: 0 },
-            MeshRenderer: { materials: [0, 'material-a', 0] },
-            Transform: { pos: [0, 1, 0] },
-          },
-        },
-      },
+  it('rejects reference zero against an explicitly empty table', () => {
+    expect(decode({ arbitrary: 0 }, [])).toMatchObject({
+      ok: false,
+      error: { index: 0, refsLength: 0 },
     });
   });
 });

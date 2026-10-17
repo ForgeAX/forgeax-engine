@@ -229,7 +229,7 @@ export {
   runtimeContentRevision,
 } from './runtime-content';
 // Public scene-pack boundary: editor/play hosts reuse the engine's canonical
-// refs-index -> SceneAsset reconstruction when refreshing a saved SceneAsset.
+// structural SceneAsset reconstruction; component references bind at instantiate.
 export { parseScenePayload } from './scene-payload.js';
 export { validateAssetPublication } from './validate-publication.js';
 export { createDefaultLoaderRegistry, wireDefaultLoaders } from './wire-default-loaders.js';

@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/5.advanced-lighting/3.3.csm/src/main.ts
 // LearnOpenGL section 5.3 -- cascaded shadow maps (CSM / PSSM).
 // Large wood floor (scale ~50) + 10 cubes spanning 0-40m depth + directional
@@ -714,14 +715,13 @@ function installCaptureHook(
     __replayCsmCapture?: typeof replayCapturedFrameInBrowser;
   };
   const renderer = app.renderer;
-  const drawCsmFrame = (): void => {
+  const drawCsmFrame = async (): Promise<void> => {
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
     });
-    if (!drawn.ok) throw drawn.error;
   };
   win.__prepareCsmCapture = async (): Promise<void> => {
     // Stable frames intentionally reuse the populated directional atlas. The
@@ -733,7 +733,7 @@ function installCaptureHook(
     world.set(lightEntity, DirectionalLight, {
       direction: [0.300001, -0.9, -0.3],
     });
-    drawCsmFrame();
+    await drawCsmFrame();
     world.set(lightEntity, DirectionalLight, {
       direction: [0.3, -0.9, -0.3],
     });

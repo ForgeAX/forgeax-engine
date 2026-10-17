@@ -99,7 +99,7 @@ import { createDefaultLoaderRegistry } from './wire-default-loaders.js';
  * computation writes the real AABB into the caller's placeholder).
  */
 
-import { componentSchema } from '@forgeax/engine-ecs/internal';
+import { componentSchema, parseManagedArraySchema } from '@forgeax/engine-ecs/internal';
 // feat-20260705-runtime-tier2-decomposition M1 / w4 (D-4 F1): the pre-class
 // constants, loaders, scene-payload / payload-validate / aabb helpers were
 // straight-cut into sibling modules. The thin class value-imports only what its
@@ -158,6 +158,7 @@ import {
   detectTileNeedsRepeatSampler,
   materialShaderTextureFieldNames as materialShaderTextureFieldNamesImpl,
 } from './registry/validate-material.js';
+import { resolveSceneComponentFields } from './scene-payload';
 
 // Public re-export surface (pre-w14 consumer face preservation): the extracted
 // modules are the new SSOT; asset-registry re-exports them until w14/w15 repoint
@@ -1546,6 +1547,11 @@ export class AssetRegistry {
   ): Result<SceneAsset, AssetError> {
     const active = new Set(visited);
     if (sceneGuidKey !== undefined) active.add(sceneGuidKey.toLowerCase());
+    const envelopeRefs =
+      sceneGuidKey === undefined
+        ? undefined
+        : this.assetCatalog.get(sceneGuidKey.toLowerCase())?.refs;
+    const refs = envelopeRefs?.map((ref) => ref.guid);
 
     const resolveComponents = (
       entityKey: string,
@@ -1554,13 +1560,30 @@ export class AssetRegistry {
       const output: Record<string, Record<string, unknown>> = {};
       for (const [componentName, raw] of Object.entries(source)) {
         if (raw === undefined) continue;
-        const fields = { ...(raw as Record<string, unknown>) };
         const token = world.components.resolve(componentName);
         if (token === undefined) {
-          output[componentName] = fields;
+          output[componentName] = { ...(raw as Record<string, unknown>) };
           continue;
         }
         const schema = componentSchema(token) as Record<string, string>;
+        const decoded = resolveSceneComponentFields(
+          entityKey,
+          componentName,
+          raw as Record<string, unknown>,
+          refs,
+          schema,
+        );
+        if (!decoded.ok) {
+          return err(
+            new AssetError({
+              code: 'asset-parse-failed',
+              expected: 'schema-declared Scene references to index the owning asset refs table',
+              hint: 'recook the SceneAsset with complete references before instantiating it',
+              detail: decoded.error,
+            }),
+          );
+        }
+        const fields = decoded.value;
         for (const [fieldName, value] of Object.entries(fields)) {
           const fieldType = schema[fieldName];
           if (fieldType?.startsWith('shared<') && typeof value === 'string') {
@@ -1574,7 +1597,11 @@ export class AssetRegistry {
             );
             if (!resolved.ok) return resolved;
             fields[fieldName] = resolved.value;
-          } else if (fieldType?.startsWith('array<shared<') && Array.isArray(value)) {
+          } else if (
+            fieldType !== undefined &&
+            parseManagedArraySchema(fieldType)?.elementType.startsWith('shared<') &&
+            Array.isArray(value)
+          ) {
             const array: unknown[] = [];
             for (const [index, item] of value.entries()) {
               if (typeof item !== 'string') {
@@ -1779,7 +1806,7 @@ export class AssetRegistry {
       kind,
       ...(name !== undefined ? { name } : {}),
       payload: stored,
-      refs: refs ?? [],
+      ...(refs === undefined ? {} : { refs }),
     });
     if (stored.kind === 'material') {
       const publication = this.materialPublication(key);
@@ -2271,7 +2298,9 @@ export class AssetRegistry {
               lifecycle: 'current',
             }),
           },
-          ...(envelope.refs.length > 0 ? { refs: envelope.refs.map((r) => r.guid) } : {}),
+          ...(envelope.refs !== undefined && envelope.refs.length > 0
+            ? { refs: envelope.refs.map((r) => r.guid) }
+            : {}),
         });
       }
     }

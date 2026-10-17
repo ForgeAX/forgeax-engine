@@ -444,6 +444,7 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
     // test-owned devices. Upload, Graph work, readback and replay stay on RHI.
     'packages/render/src/__tests__/graph-texture-residency.gpu-fixture.ts',
     'packages/render/src/__tests__/sampler-residency.gpu-fixture.ts',
+    'packages/render/src/__tests__/texture-generations.gpu-fixture.ts',
     // Array/cube mip Dawn evidence observes native validation and destroys
     // fresh test devices; texture production, capture and readback stay on RHI.
     'packages/render/src/__tests__/texture-array-mips.dawn.test.ts',

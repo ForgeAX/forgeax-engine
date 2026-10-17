@@ -53,7 +53,14 @@ export function createAsyncDynamicGeometryHost(renderer: Renderer): AsyncDynamic
             'discard the cancelled preparation',
           ),
         );
-      return renderer.prepareDynamicGeometry(input);
+      const prepared = renderer.prepareDynamicGeometry(input);
+      if (!prepared.ok) return prepared;
+      const pipelines = await renderer.prepareDynamicGeometryPipelines([prepared.value], options);
+      if (!pipelines.ok) {
+        const cancelled = renderer.cancelDynamicGeometry(prepared.value);
+        return cancelled.ok ? pipelines : cancelled;
+      }
+      return prepared;
     },
     async prepareDynamicGeometryCandidates(inputs, options) {
       if (options?.signal?.aborted)
@@ -64,7 +71,18 @@ export function createAsyncDynamicGeometryHost(renderer: Renderer): AsyncDynamic
             'discard the cancelled preparation',
           ),
         );
-      return renderer.prepareDynamicGeometryCandidates(inputs);
+      const prepared = renderer.prepareDynamicGeometryCandidates(inputs);
+      if (!prepared.ok) return prepared;
+      const pipelines = await renderer.prepareDynamicGeometryPipelines(prepared.value, options);
+      if (!pipelines.ok) {
+        let cancellationFailure: DynamicGeometryError | undefined;
+        for (const candidate of prepared.value) {
+          const cancelled = renderer.cancelDynamicGeometry(candidate);
+          if (!cancelled.ok) cancellationFailure ??= cancelled.error;
+        }
+        return cancellationFailure === undefined ? pipelines : err(cancellationFailure);
+      }
+      return prepared;
     },
     async prepareMeshResidency(world, meshHandle, options) {
       if (options?.signal?.aborted)

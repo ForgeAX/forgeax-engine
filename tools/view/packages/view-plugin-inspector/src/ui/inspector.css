@@ -137,7 +137,7 @@
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   gap: var(--fx-ref-space-6);
   border: 0;
@@ -187,7 +187,7 @@
 .fx-inspector .f-row {
   display: flex;
   align-items: center;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-12) var(--fx-ref-space-4) var(--fx-ref-space-8);
   gap: var(--fx-ref-space-8);
 }
@@ -478,7 +478,7 @@
   padding: var(--fx-ref-space-2) var(--fx-ref-space-8);
 }
 .fx-inspector .comp-row {
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   gap: var(--fx-ref-space-8);
   border-radius: var(--fx-radius-control);
@@ -535,7 +535,7 @@
 .fx-inspector .f-row-wrap {
   display: flex;
   align-items: center;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   gap: var(--fx-ref-space-4);
 }

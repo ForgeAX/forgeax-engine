@@ -1,4 +1,4 @@
-import { Entity, type EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineComponent, Entity, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
 import { entityIndex } from '../../../ecs/src/entity-handle';
 import { ChildOf, Transform } from '../index';
@@ -103,7 +103,7 @@ describe('scene hierarchy projection', () => {
     expect(projectHierarchy(world).getParent(root)).toBeUndefined();
   });
 
-  it('bounds hierarchy rebuild work by parent edges when unrelated roots change', () => {
+  it('reuses the hierarchy projection when unrelated roots change', () => {
     const world = new World();
     const parent = world.spawn().unwrap();
     const roots = [parent, ...Array.from({ length: 1023 }, () => world.spawn().unwrap())];
@@ -128,7 +128,7 @@ describe('scene hierarchy projection', () => {
     });
     try {
       const next = projectHierarchy(world);
-      expect(next).not.toBe(first);
+      expect(next).toBe(first);
       expect([...next.parentOf]).toEqual([[child, parent]]);
       expect(next.diagnostics).toEqual([]);
       for (const root of roots) expect(next.getParent(root)).toBeUndefined();
@@ -137,6 +137,31 @@ describe('scene hierarchy projection', () => {
     } finally {
       queries.mockRestore();
     }
+  });
+
+  it('preserves parent iteration order after a child table migration', () => {
+    const world = new World();
+    const parent = world.spawn().unwrap();
+    const firstChild = childOf(world, parent);
+    const secondChild = childOf(world, parent);
+    const thirdChild = childOf(world, parent);
+    const first = projectHierarchy(world);
+    expect([...first.parentOf.keys()]).toEqual([firstChild, secondChild, thirdChild]);
+    const Marker = defineComponent('HierarchyMigrationMarker', { value: 'f32' });
+
+    world.addComponent(firstChild, { component: Marker, data: { value: 1 } }).unwrap();
+    const next = projectHierarchy(world);
+    expect(next).not.toBe(first);
+    expect([...next.parentOf.keys()]).toEqual([thirdChild, secondChild, firstChild]);
+    expect([...first.parentOf.keys()]).toEqual([firstChild, secondChild, thirdChild]);
+    expect(projectHierarchy(world)).toBe(next);
+
+    world.removeComponent(firstChild, Marker).unwrap();
+    expect([...projectHierarchy(world).parentOf.keys()]).toEqual([
+      thirdChild,
+      secondChild,
+      firstChild,
+    ]);
   });
 
   it('rejects a stale parent generation even when its entity slot is live again', () => {
@@ -157,6 +182,27 @@ describe('scene hierarchy projection', () => {
     ]);
   });
 
+  it('rechecks malformed cached edges when an unindexed parent is retired', () => {
+    const world = new World();
+    const ownedParent = world.spawn().unwrap();
+    const unindexedParent = world.spawn().unwrap();
+    const child = childOf(world, ownedParent);
+    setMalformedParentEdge(world, child, unindexedParent);
+    const first = projectHierarchy(world);
+    expect(first.getParent(child)).toBe(unindexedParent);
+
+    world.despawn(unindexedParent).unwrap();
+    const replacement = world.spawn().unwrap();
+    expect(replacement).not.toBe(unindexedParent);
+    const next = projectHierarchy(world);
+    expect(next).not.toBe(first);
+    expect(next.getParent(child)).toBeUndefined();
+    expect(next.diagnostics).toMatchObject([
+      { code: 'hierarchy-broken', detail: { entity: child, parent: unindexedParent } },
+    ]);
+    expect(first.getParent(child)).toBe(unindexedParent);
+  });
+
   it('retains a reparented child when its former parent is deleted', () => {
     const world = new World();
     const former = world.spawn().unwrap();
@@ -170,6 +216,43 @@ describe('scene hierarchy projection', () => {
     expect(first.getParent(child)).toBe(former);
     world.despawn(parent).unwrap();
     expect(projectHierarchy(world).parentOf.size).toBe(0);
+  });
+
+  it('keeps the cached graph after rejected stale or cyclic target writes', () => {
+    const world = new World();
+    const parent = world.spawn({ component: Transform, data: {} }).unwrap();
+    const child = childOf(world, parent);
+    const retired = world.spawn().unwrap();
+    world.despawn(retired).unwrap();
+    const first = projectHierarchy(world);
+
+    expect(world.set(child, ChildOf, { parent: retired }).ok).toBe(false);
+    expect(world.addComponent(parent, { component: ChildOf, data: { parent: child } }).ok).toBe(
+      false,
+    );
+    expect(projectHierarchy(world)).toBe(first);
+    expect([...first.parentOf]).toEqual([[child, parent]]);
+  });
+
+  it('drops all linked descendants when their target is retired', () => {
+    const world = new World();
+    const parent = world.spawn().unwrap();
+    const child = childOf(world, parent);
+    const grandchild = childOf(world, child);
+    const first = projectHierarchy(world);
+    const firstOrder = [...first.parentOf];
+    world.despawn(parent).unwrap();
+    world.spawn().unwrap();
+
+    const next = projectHierarchy(world);
+    expect(next).not.toBe(first);
+    expect([...next.parentOf]).toEqual([]);
+    expect(next.diagnostics).toEqual([]);
+    expect(world.hasComponent(child, Entity)).toBe(false);
+    expect(world.hasComponent(grandchild, Entity)).toBe(false);
+    expect([...first.parentOf]).toEqual(firstOrder);
+    expect(first.getParent(child)).toBe(parent);
+    expect(first.getParent(grandchild)).toBe(child);
   });
 
   it('reuses a stable World projection and invalidates it after a hierarchy mutation', () => {
@@ -188,5 +271,9 @@ describe('scene hierarchy projection', () => {
     expect(second).not.toBe(first);
     expect(second.getParent(child)).toBe(secondParent);
     expect(projectHierarchy(world)).toBe(second);
+    world.set(child, ChildOf, { parent: secondParent }).unwrap();
+    const sameTargetWrite = projectHierarchy(world);
+    expect(sameTargetWrite).not.toBe(second);
+    expect(sameTargetWrite.getParent(child)).toBe(secondParent);
   });
 });

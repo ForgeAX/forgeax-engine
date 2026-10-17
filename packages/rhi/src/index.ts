@@ -1570,7 +1570,18 @@ export interface RhiCanvasContext {
 }
 
 /** GPU device - sole entry point for resource creation + capability probing. */
+export type {
+  PipelineLibrary,
+  PipelineLibraryCompute,
+  PipelineLibraryInspection,
+  PipelineLibraryManifest,
+  PipelineLibraryRender,
+  PipelineLibraryStage,
+} from './pipeline-library';
+
 export interface RhiDevice {
+  /** Backend-owned exact pipeline reuse and portable startup preparation, when supported. */
+  readonly pipelineLibrary?: import('./pipeline-library').PipelineLibrary;
   /** Hardware-probe layer (charter proposition 5). */
   readonly caps: RhiCaps;
   /** Enabled-features layer. */
@@ -1745,10 +1756,10 @@ export interface RhiDevice {
   createPipelineLayout(desc: PipelineLayoutDescriptor): Result<PipelineLayout, RhiError>;
   /** Create render pipeline (synchronous path). */
   createRenderPipeline(desc: RenderPipelineDescriptor): Result<RenderPipeline, RhiError>;
-  /** Optional backend completion: resolves only when the PSO can be used without compilation delay. */
+  /** Completion-qualified PSO: immediate only for an already completed device recipe; otherwise native async completion. */
   createRenderPipelineAsync?(
     desc: RenderPipelineDescriptor,
-  ): Promise<Result<RenderPipeline, RhiError>>;
+  ): Result<RenderPipeline, RhiError> | Promise<Result<RenderPipeline, RhiError>>;
   /**
    * Create a compute pipeline (synchronous path).
    *
@@ -1771,10 +1782,10 @@ export interface RhiDevice {
    *   }
    */
   createComputePipeline(desc: ComputePipelineDescriptor): Result<ComputePipeline, RhiError>;
-  /** Optional native compilation completion for explicitly prepared compute work. */
+  /** Completion-qualified compute recipe; a synchronous factory handle alone never qualifies. */
   createComputePipelineAsync?(
     desc: ComputePipelineDescriptor,
-  ): Promise<Result<ComputePipeline, RhiError>>;
+  ): Result<ComputePipeline, RhiError> | Promise<Result<ComputePipeline, RhiError>>;
   /**
    * Create a query set (occlusion or timestamp).
    *

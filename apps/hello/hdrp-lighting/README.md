@@ -49,7 +49,10 @@ Run the real Dawn path:
 pnpm --filter @forgeax/hello-hdrp-lighting smoke
 ```
 
-The command exercises the clustered lane for 60 frames. A local
+The command exercises the clustered lane for 60 completed, ready frames.
+Pipeline preparation submissions do not count; a bounded wait reports the last
+readiness blocker. The 56 spot lights retain direct lighting, while the four
+admitted shadow tiles must finish their normal preparation. A local
 `FALSIFY=force-forward` run selects the alternate forward graph while keeping
 the same Cluster light transport. A null backend, CPU stand-in, or skipped GPU
 path is not accepted as evidence.

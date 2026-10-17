@@ -41,7 +41,7 @@ function requiredCapability(service: string, request: unknown) {
 }
 
 /**
- * Browser-side adapter for an Editor-issued, session-bound View capability.
+ * Browser-side adapter for a Scene-issued, session-bound View capability.
  * The host authenticates the iframe; this transport never receives or forwards
  * the resident Host endpoint or its bearer token.
  */

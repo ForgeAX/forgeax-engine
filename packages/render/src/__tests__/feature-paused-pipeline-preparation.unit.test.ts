@@ -107,12 +107,24 @@ it('keeps explicit disabled graphics pending until the actual pipeline resolves,
   try {
     const first = frame();
     expect(first.frame.preparationPending).toBe(true);
+    expect(first.frame.preparationPendingReason).toMatchObject({
+      code: 'feature-preparation',
+      featureIdentity: 'paused-prepare',
+      preparationStage: 'graphics-pipeline',
+      pass: 'prepare',
+      shader: 'paused',
+      operation: 'resolve',
+      reason: 'pipeline-pending',
+    });
+    const originalReason = structuredClone(first.frame.preparationPendingReason);
     expect(first.frame.errors).toEqual([]);
     expect(create).not.toHaveBeenCalled();
     first.onAborted();
     pending = false;
     const ready = frame();
     expect(ready.frame.preparationPending).not.toBe(true);
+    expect(ready.frame.preparationPendingReason).toBeUndefined();
+    expect(first.frame.preparationPendingReason).toEqual(originalReason);
     expect(ready.frame.errors).toEqual([]);
     expect(create).toHaveBeenCalledTimes(1);
     const view = ready.views.get('main');

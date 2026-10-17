@@ -284,7 +284,7 @@ test('rhi-debug structural capture uploads without a live readback', async () =>
   assert.equal(result.dims, null);
 });
 
-test('rhi-debug optional browser replay uses the captured bytes before upload', async () => {
+test('rhi-debug optional browser replay uses the retained captured bytes', async () => {
   const events = [];
   const result = await runCaptureLiveUploadTransaction(
     {
@@ -313,7 +313,7 @@ test('rhi-debug optional browser replay uses the captured bytes before upload', 
       },
     },
   );
-  assert.deepEqual(events, ['capture', 'live', 'browser-replay:1,2,3', 'upload']);
+  assert.deepEqual(events, ['capture', 'live', 'upload', 'browser-replay:1,2,3']);
   assert.deepEqual(result.browserReplay, {
     pixels: 'CQgHBg==',
     dims: { width: 2, height: 1 },
@@ -467,4 +467,35 @@ test('browser tape upload keeps binary bytes out of inline protocol messages', a
     if (oldLocation === undefined) delete globalThis.location;
     else Object.defineProperty(globalThis, 'location', oldLocation);
   }
+});
+
+test('rhi-debug retains the raw tape when browser replay fails', async () => {
+  const events = [];
+  const bytes = new Uint8Array([1, 2, 3]);
+  await assert.rejects(
+    runCaptureLiveUploadTransaction(
+      { mode: 'pixel', rawTapeRoute: '/tape', tapeMime: 'application/x-test-tape' },
+      {
+        capture: async (onSubmitted) => {
+          onSubmitted();
+          return { bytes };
+        },
+        readLive: async () => {
+          events.push('live');
+          return { live: 'AQI=', dims: { width: 2, height: 1 } };
+        },
+        upload: async (raw) => {
+          assert.equal(raw, bytes);
+          events.push('upload');
+          return { artifact: {}, runId: 'failed-replay' };
+        },
+        replay: async () => {
+          events.push('replay');
+          throw new Error('no workIndex entries');
+        },
+      },
+    ),
+    /no workIndex entries/,
+  );
+  assert.deepEqual(events, ['live', 'upload', 'replay']);
 });

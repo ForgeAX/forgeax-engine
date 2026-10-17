@@ -227,6 +227,8 @@ export interface CreateAppOptions {
    * structured report in `renderer.inspect().output.colorSpace` when the canvas cannot present it.
    */
   readonly outputColorSpace?: OutputColorSpace;
+  /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
+  readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */

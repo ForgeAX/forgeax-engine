@@ -82,7 +82,7 @@
       }
     },
     "pages": {
-      "editor": "Scene",
+      "scene": "Scene",
       "display": "运行观察",
       "plugins": "插件",
       "material": "材质",

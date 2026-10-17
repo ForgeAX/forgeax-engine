@@ -112,9 +112,15 @@ to development Candidates, and the source still needs its own successful push CI
 
 The Candidate workflow resolves one channel-branch source SHA and binds its CI baseline, builds the SDK seed once, runs npm-consumer and exact archive/browser gates against it while the reproducibility and collision lanes rebuild the same commit in parallel, compares their evidence with the exact seed (npm-tree byte inventory, version/tag collision) in `seal`, then seals `sdk-candidate.json` with per-file SHA-256 and npm integrity. The normal baseline is a successful `ci.yml` `push` run for that exact source SHA; when an admin merge is intentionally tree-empty, the workflow may instead reuse a successful `ci.yml` `push` run for the merge commit's first parent, but only after proving the two commit trees are byte-identical and recording that basis in the run summary. A PR check, a non-empty merge, or an unrelated SHA is never interchangeable. If neither baseline exists, Candidate remains fail-closed and must not be promoted. The reproducibility lane keeps full Git history because `sdk:build` validates the feature-catalog baseline ancestry; a depth-1 checkout can falsely reject a valid main commit. Record the successful workflow run ID; only a sealed Candidate is promotable.
 
-Candidate consumer fan-out keeps every full owner and its existing per-job
-deadline. Its four receipts and seed-byte manifest are documented in the [Candidate
+Candidate sets no consumer matrix concurrency cap after the source-producing
+gates pass, retaining each owner's existing deadline. Its four receipts,
+runner scheduling and seed-byte manifest are documented in the [Candidate
 critical path guide](../../../scripts/ci/README.md#sdk-consumers).
+
+Promotion holds a channel-specific lock only for npm publication. Stable `latest`
+and development `next` do not block each other; public-source preflight and
+Release/mirror work run outside that lock. Never cancel an active npm publisher
+to advance another release: immutable units may already have been submitted.
 
 The collision lane's `game-3d` Preview smoke reuses the exact
 `shared-build-inputs/manifest.json` produced by `pnpm build:engine` and selects
@@ -142,11 +148,20 @@ For stable versions, the original source exporter first qualifies the complete
 public snapshot and target without remote writes. This mandatory admission runs
 even when mirror synchronization is paused; its Candidate-bound proof is required
 by the npm publisher. See [public-source admission](../../../scripts/forgeax/EXPORT.md#stable-publication)
-for coverage and local recovery commands. Promotion then publishes the existing
-tarballs without rebuilding, waits for npm metadata/dist-tag/tarball visibility,
-and creates or completes the GitHub Release idempotently. The later mirror stage
-requires the same export manifest and Git tree as preflight. Re-running Promotion
-with the same Candidate is the recovery path for propagation or Release transport
+for coverage and local recovery commands. Promotion creates or completes the
+GitHub Release idempotently, then publishes the enabled stable source mirror and
+requires its public CI and final tree to pass before npm publication. The mirror
+uses the same export manifest and Git tree as preflight. A paused mirror permits
+npm publication after mandatory source qualification and GitHub Release success.
+Development releases skip the stable source stages.
+
+The three existing npm tarballs upload concurrently under `candidate` without
+rebuilding. One joint gate verifies public metadata and exact downloaded bytes;
+a fresh registry consumer must pass before each package's `latest` or `next`
+advances. These channel tags remain separate registry writes. Candidate cleanup
+requires every enabled publication stage to succeed. GitHub publication may be
+complete while npm is still pending. Re-running Promotion
+with the same Candidate is the recovery path for propagation or GitHub transport
 failures; a changed source needs a new Candidate. A same-version different-integrity
 response is terminal and must never be overwritten.
 

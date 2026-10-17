@@ -25,7 +25,7 @@ import {
 } from '@forgeax/engine-scene';
 import { DEFAULT_SPRITE_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   Camera,
@@ -42,6 +42,7 @@ import {
   Visibility,
   VisibilityStateValue,
 } from '../../components';
+import type { RenderFeature } from '../../features/types';
 import { Materials } from '../../materials';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { subsurfaceDemand } from '../../subsurface/demand';
@@ -50,11 +51,20 @@ import { publicationDispatchGroups } from '../dispatch-groups';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
-function fixture() {
+function fixture(maxInFlight?: 2 | 3, features: readonly RenderFeature<unknown>[] = []) {
   const world = new World();
   const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
   const identity = { source: 'publication-test', epoch: 1 };
-  const publisher = createRenderPublisher(world, assets, identity);
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    features,
+    undefined,
+    undefined,
+    maxInFlight,
+  );
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 5] } },
@@ -1218,6 +1228,10 @@ it('renders a one-frame identity before its sealed removal and reuses two buffer
     const replacement = f.spawn();
     f.world.update(0).unwrap();
     const second = seal();
+    expect(f.publisher.prepare(0)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'in-flight' } },
+    });
     // More source mutations cannot edit either already-transferred publication.
     f.world.despawn(replacement).unwrap();
     f.world.update(0).unwrap();
@@ -1244,6 +1258,146 @@ it('renders a one-frame identity before its sealed removal and reuses two buffer
     }
   } finally {
     f.publisher.dispose();
+  }
+});
+
+it('keeps three transferred publications detached, ordered and bounded while reusing their storage', () => {
+  const f = fixture(3);
+  const seal = () => {
+    const candidate = f.publisher.prepare(0).unwrap();
+    const buffers = renderPublicationTransfers(candidate.packet);
+    const packet = structuredClone(candidate.packet, { transfer: buffers });
+    candidate.accept();
+    expect(buffers.every((buffer) => buffer.byteLength === 0)).toBe(true);
+    return packet;
+  };
+  try {
+    const first = seal();
+    f.world.despawn(f.first).unwrap();
+    const replacement = f.spawn();
+    f.world.update(0).unwrap();
+    const second = seal();
+    f.world.despawn(replacement).unwrap();
+    f.world.set(f.second, Transform, { pos: [3, 0, 0] }).unwrap();
+    f.world.update(0).unwrap();
+    const third = seal();
+    const packets = [first, second, third];
+    expect(packets.map(({ revision, base }) => [revision, base])).toEqual([
+      [1, 0],
+      [2, 1],
+      [3, 2],
+    ]);
+    expect(new Set(packets.flatMap(renderPublicationTransfers)).size).toBe(12);
+    expect(f.publisher.inspect().inFlightCount).toBe(3);
+    expect(f.publisher.prepare(0)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'in-flight' } },
+    });
+    expect(f.publisher.recycle(second.revision, renderPublicationTransfers(second))).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'revision' } },
+    });
+    // Current World writes cannot alter any of the three already-sealed frames.
+    f.world.set(f.second, Transform, { pos: [4, 0, 0] }).unwrap();
+    f.world.update(0).unwrap();
+    const firstFrame = f.scene.consumePublication(f.receiver.accept(first).unwrap());
+    expect(firstFrame.renderables.map(({ entityKey }) => entityKey)).toContain(f.first);
+    f.publisher.recycle(first.revision, renderPublicationTransfers(first)).unwrap();
+    const secondFrame = f.scene.consumePublication(f.receiver.accept(second).unwrap());
+    expect(secondFrame.renderables.map(({ entityKey }) => entityKey)).toContain(replacement);
+    expect(secondFrame.renderables.map(({ entityKey }) => entityKey)).not.toContain(f.first);
+    f.publisher.recycle(second.revision, renderPublicationTransfers(second)).unwrap();
+    const thirdFrame = f.scene.consumePublication(f.receiver.accept(third).unwrap());
+    expect(thirdFrame.renderables.map(({ entityKey }) => entityKey)).not.toContain(replacement);
+    expect(
+      thirdFrame.renderables.find(({ entityKey }) => entityKey === f.second)?.transform.world[12],
+    ).toBe(3);
+    f.publisher.recycle(third.revision, renderPublicationTransfers(third)).unwrap();
+
+    let warmAllocations: number | undefined;
+    for (let cycle = 0; cycle < 4; cycle++) {
+      const next = [1, 2, 3].map((x) => {
+        f.world.set(f.second, Transform, { pos: [x, cycle, 0] }).unwrap();
+        f.world.update(0).unwrap();
+        return seal();
+      });
+      const allocations = f.publisher.inspect().allocations;
+      for (const packet of next)
+        f.publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      warmAllocations ??= allocations;
+      expect(allocations).toBe(warmAllocations);
+      expect(f.publisher.inspect().inFlightCount).toBe(0);
+    }
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
+  }
+});
+
+it('keeps three-flight source ACKs tied to admitted revisions through discard and terminal failure', () => {
+  const submitted: unknown[] = [];
+  const feature: RenderFeature<unknown> = {
+    identity: 'three-flight-source',
+    extract: ({ frameNumber }) => ok(frameNumber),
+    plan: () => ok({ work: [] }),
+    onSourceFrameSubmitted: (data, feedback) => submitted.push({ data, feedback }),
+  };
+  const f = fixture(3, [feature]);
+  const seal = () => {
+    const candidate = f.publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet, {
+      transfer: renderPublicationTransfers(candidate.packet),
+    });
+    candidate.accept();
+    return packet;
+  };
+  try {
+    const first = seal();
+    const second = seal();
+    f.world.set(f.second, Transform, { pos: [3, 0, 0] }).unwrap();
+    f.world.update(0).unwrap();
+    const rejected = f.publisher.prepare(0).unwrap();
+    expect(rejected.packet.revision).toBe(3);
+    expect(f.publisher.prepare(0).ok).toBe(false);
+    expect(() =>
+      structuredClone(
+        { packet: rejected.packet, invalid() {} },
+        { transfer: renderPublicationTransfers(rejected.packet) },
+      ),
+    ).toThrow();
+    expect(rejected.packet.transforms.byteLength).toBeGreaterThan(0);
+    rejected.discard();
+    expect(f.publisher.inspect().inFlightCount).toBe(2);
+    expect(submitted).toEqual([]);
+    const third = seal();
+    expect(third.revision).toBe(3);
+    const ack = (revision: number) =>
+      f.publisher.acknowledgeFeatures(revision, [
+        { identity: feature.identity, feedback: revision },
+      ]);
+    expect(ack(4).ok).toBe(false);
+    ack(first.revision).unwrap();
+    expect(ack(first.revision).ok).toBe(false);
+    expect(submitted).toEqual([{ data: 1, feedback: 1 }]);
+    ack(second.revision).unwrap();
+    expect(submitted).toEqual([
+      { data: 1, feedback: 1 },
+      { data: 2, feedback: 2 },
+    ]);
+    // A terminal transport/renderer failure disposes the publisher without
+    // inventing a submission ACK for the still-admitted third publication.
+    f.publisher.dispose();
+    expect(ack(third.revision)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'disposed' } },
+    });
+    expect(submitted).toHaveLength(2);
+    expect(f.publisher.inspect().inFlightCount).toBe(0);
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
   }
 });
 

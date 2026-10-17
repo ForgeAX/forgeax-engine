@@ -20,7 +20,7 @@ export function TexturePropertiesPanel({
   const { t } = useTranslation();
   if (!client) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-texture-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-texture-properties">
         <EmptyState title={t('texture.unavailable')} description={t('texture.empty')} />
       </div>
     );
@@ -67,20 +67,20 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
 
   if (!subject) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-texture-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-texture-properties">
         <EmptyState title={t('texture.empty')} description={t('texture.unavailable')} />
       </div>
     );
   }
   if (failed) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-texture-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-texture-properties">
         <EmptyState title={t('texture.unavailable')} description={t('texture.inspectFailed')} />
       </div>
     );
   }
   return (
-    <div className="fx-asset-editor fx-ui" data-testid="panel-texture-properties" data-view-readonly="true">
+    <div className="fx-asset-viewer fx-ui" data-testid="panel-texture-properties" data-view-readonly="true">
       <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
       <InspectorForm assetActions={assetActions} inspection={inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('texture.facts')} />
     </div>

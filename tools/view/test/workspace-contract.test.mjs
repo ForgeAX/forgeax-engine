@@ -165,7 +165,7 @@ it('type declarations preserve constructor-owned instance fields', () => {
   const broker = new ViewWorkspaceBroker();
   assert.equal('previewTargetId' in broker, false);
   assert.equal('selectionAbort' in broker, false);
-  assert.equal(Object.hasOwn(broker, 'editorTargetId'), true);
+  assert.equal(Object.hasOwn(broker, 'sceneTargetId'), true);
 });
 
 describe('workspace UI fingerprints', () => {

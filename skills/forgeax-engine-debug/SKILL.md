@@ -189,6 +189,12 @@ smokes reject that event rather than exempting empty scenes from console checks.
 
 ## CI diagnosis and iteration
 
+For a manual run that rejects evidence already on the PR target branch, inspect
+the guard's comparison base. Follow [manual CI comparison base](../../scripts/ci/README.md#manual-ci-comparison-base)
+and dispatch with the actual target comparison SHA through `comparison_base`.
+Keep new-evidence rejection and the complete product checks; do not delete
+unrelated baseline files to compensate for a missing PR event base.
+
 For a synthetic merge that schedules eight Dawn lanes while checked-out product
 source accepts four, align the workflow and executable selectors during main
 integration. SDK ZIP/npm groups and their receipt aggregate must likewise match

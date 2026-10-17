@@ -30,6 +30,13 @@ export function aabbVertices(min: Vec3, max: Vec3): [number, number, number][] {
     [mxx, mxy, mxz], // 7
   ];
 
+  return boxEdgeVertices(c);
+}
+
+/** Expand the shared binary-ordered box corners into detached line-list vertices. */
+export function boxEdgeVertices(
+  corners: readonly [number, number, number][],
+): [number, number, number][] {
   // 12 edges
   const edges: [number, number][] = [
     [0, 1],
@@ -48,8 +55,8 @@ export function aabbVertices(min: Vec3, max: Vec3): [number, number, number][] {
 
   const result: [number, number, number][] = [];
   for (const [ai, bi] of edges) {
-    const ac = c[ai] as [number, number, number];
-    const bc = c[bi] as [number, number, number];
+    const ac = corners[ai] as [number, number, number];
+    const bc = corners[bi] as [number, number, number];
     result.push([ac[0], ac[1], ac[2]]);
     result.push([bc[0], bc[1], bc[2]]);
   }

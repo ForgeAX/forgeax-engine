@@ -35,6 +35,7 @@ import {
   matchPass,
 } from '../systems/pass-selector';
 import { resolveReflectionProbeBinding } from './frame-lighting';
+import type { ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity, worldEntityKey } from './frame-snapshot';
 import { recordGeometryDraws } from './main-pass-geometry';
 import {
@@ -143,6 +144,35 @@ export function isTransparentLaneMaterial(material: MaterialSnapshot): boolean {
   return matchesRecordMode(material, 'transparent');
 }
 
+/** Exclusion is material-wide, just like buildMatchedMaterialHandlesByRenderable. */
+function preparationMaterialExcluded(
+  entry: ValidatedRenderable,
+  materialHandle: number,
+  selector: PassSelector | undefined,
+): boolean {
+  return (
+    selector !== undefined &&
+    (entry.source.pipelinePreparation ?? []).some(
+      (pass) => pass.materialHandle === materialHandle && matchPass(pass.tags, selector),
+    )
+  );
+}
+
+function preparationSubmeshExcluded(
+  entry: ValidatedRenderable,
+  index: number,
+  selector: PassSelector | undefined,
+): boolean {
+  if (selector === undefined) return false;
+  const submesh = entry.mesh.submeshes[index];
+  if (submesh === undefined) return true;
+  return preparationMaterialExcluded(
+    entry,
+    (entry.source.materials[submesh.materialSlot] ?? entry.source.material).materialHandle ?? 0,
+    selector,
+  );
+}
+
 /** Explicit preparation is work even when no visible draw selects this lane. */
 export function hasMainPassPipelinePreparation(
   c: Pick<_InternalRenderPipelineContext, 'pipelinePreparationEntries'>,
@@ -153,12 +183,15 @@ export function hasMainPassPipelinePreparation(
   for (const entry of c.pipelinePreparationEntries ?? []) {
     for (const sm of entry.mesh.submeshes) {
       const material = entry.source.materials[sm.materialSlot] ?? entry.source.material;
-      if (mode !== undefined && !matchesRecordMode(material, mode)) continue;
+      if (
+        (mode !== undefined && !matchesRecordMode(material, mode)) ||
+        preparationMaterialExcluded(entry, material.materialHandle ?? 0, excludeSelector)
+      )
+        continue;
       for (const pass of entry.source.pipelinePreparation ?? []) {
         if (
           pass.materialHandle === (material.materialHandle ?? 0) &&
-          matchPass(pass.tags, selector) &&
-          (excludeSelector === undefined || !matchPass(pass.tags, excludeSelector))
+          matchPass(pass.tags, selector)
         )
           return true;
       }
@@ -174,6 +207,7 @@ export function prepareMainPassPipelines(
   options: MainPassOptions,
   sampleCount: number,
   colorFormats: readonly GPUTextureFormat[],
+  skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
 ): void {
   if (!hasMainPassPipelinePreparation(c, selector, options.recordMode, options.excludeSelector))
     return;
@@ -207,9 +241,10 @@ export function prepareMainPassPipelines(
     options.transparentDepthWrite ?? false,
     mode === 'oit-accumulate' ? 'accumulate' : mode === 'oit-residual' ? 'residual' : undefined,
     (pass, material) =>
-      matchPass(pass.tags, selector) &&
-      (options.excludeSelector === undefined || !matchPass(pass.tags, options.excludeSelector)) &&
-      (mode === undefined || matchesRecordMode(material, mode)),
+      matchPass(pass.tags, selector) && (mode === undefined || matchesRecordMode(material, mode)),
+    (entry, index) =>
+      skipDraw?.(entry, index) === true ||
+      preparationSubmeshExcluded(entry, index, options.excludeSelector),
   );
 }
 
@@ -1047,9 +1082,8 @@ export function recordMainPass(
             preparedPass.tags,
             selector ?? (passKind === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR),
           ) &&
-          (options?.excludeSelector === undefined ||
-            !matchPass(preparedPass.tags, options.excludeSelector)) &&
           (recordMode === undefined || matchesRecordMode(material, recordMode)),
+        (entry, index) => preparationSubmeshExcluded(entry, index, options?.excludeSelector),
       );
     };
     // The late occlusion pass only adds GPU items the HZB revealed; the CPU

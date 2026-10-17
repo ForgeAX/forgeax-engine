@@ -1342,7 +1342,7 @@ describe('View workspace frontend boundary', () => {
         { tabId: VIEW_WORKSPACE_TAB_ID, kind: 'workspace', target: workspaceTarget },
       ],
       project: { id: 'project', root: '/project', name: 'Project' },
-      editorPreview: { asset: { guid: 'scene', kind: 'scene', name: 'Scene' }, target: workspaceTarget },
+      scenePreview: { asset: { guid: 'scene', kind: 'scene', name: 'Scene' }, target: workspaceTarget },
       assets: [],
     };
     shell.update(state);
@@ -1360,8 +1360,8 @@ describe('View workspace frontend boundary', () => {
     assert.equal(displaySurface.hidden, true);
     assert.equal(workspaceSurface.hidden, false);
     // Stop revokes Game observations before native startup/cleanup completes.
-    // The Editor must not resume its Renderer while that starting Play is retained.
-    const returning = { ...state, selectedTabId: VIEW_WORKSPACE_TAB_ID, targetBinding: 'editor',
+    // The Scene must not resume its Renderer while that starting Play is retained.
+    const returning = { ...state, selectedTabId: VIEW_WORKSPACE_TAB_ID, targetBinding: 'scene',
       play: { target: { ...workspaceTarget, targetId: 'game-target' }, phase: 'starting' } };
     shell.update(returning);
     await new Promise((resolve) => setImmediate(resolve));
@@ -1396,7 +1396,7 @@ describe('View workspace frontend boundary', () => {
         { tabId: VIEW_WORKSPACE_TAB_ID, kind: 'workspace', target },
       ],
       project: { id: 'project', root: '/project' },
-      editorPreview: { asset: { guid: 'scene', kind: 'scene' }, target },
+      scenePreview: { asset: { guid: 'scene', kind: 'scene' }, target },
       assets: [],
     };
     shell.update(state);
@@ -1406,7 +1406,7 @@ describe('View workspace frontend boundary', () => {
     const sourceAssignments = surface.srcAssignments;
     assert.equal(surface.tagName, 'canvas');
     assert.equal(surface.src, undefined);
-    shell.update({ ...state, editorPreview: { ...state.editorPreview, target: { ...target } } });
+    shell.update({ ...state, scenePreview: { ...state.scenePreview, target: { ...target } } });
     assert.equal(shell.rootElement, root);
     assert.equal(shell.targetContainer, targets);
     assert.equal(shell.surfaceByTab.get(VIEW_WORKSPACE_TAB_ID).surface, surface);
@@ -1467,7 +1467,7 @@ describe('View workspace frontend boundary', () => {
       selectedTabId: VIEW_WORKSPACE_TAB_ID,
       tabs: [{ tabId: VIEW_WORKSPACE_TAB_ID, kind: 'workspace', target }],
       project: { id: 'project', root: '/project' }, projectTarget: target,
-      editorPreview: { asset: { guid: 'scene', kind: 'scene' }, target }, assets: [],
+      scenePreview: { asset: { guid: 'scene', kind: 'scene' }, target }, assets: [],
     };
     shell.update(state);
     assert.equal(shell.surfaceByTab.get(VIEW_WORKSPACE_TAB_ID).surface, surface);
@@ -1479,7 +1479,7 @@ describe('View workspace frontend boundary', () => {
     await shell.dispose();
   });
 
-  it('restores a createSurface-only Editor before removing the viewport, including its sibling position', async () => {
+  it('restores a createSurface-only Scene before removing the viewport, including its sibling position', async () => {
     const document = fakeDocument();
     const surface = document.createElement('div');
     const canvas = document.createElement('canvas');
@@ -1493,9 +1493,9 @@ describe('View workspace frontend boundary', () => {
     const shell = new ViewWorkspaceShell({ document, presentation: { workspace: {
       surfacePlacement: 'shell', createSurface: () => { acquisitions++; return surface; },
     } } });
-    const target = { targetId: 'editor', generation: 1 };
+    const target = { targetId: 'scene', generation: 1 };
     const state = { selectedTabId: VIEW_WORKSPACE_TAB_ID, project: { id: 'project', root: '/project' },
-      editorPreview: { target, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] };
+      scenePreview: { target, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] };
     shell.update(state);
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(surface.parentNode, shell.targetContainer);
@@ -1545,7 +1545,7 @@ describe('View workspace frontend boundary', () => {
       },
     } } });
     const state = generation => ({ selectedTabId: VIEW_WORKSPACE_TAB_ID, project: { id: 'project', root: '/project' },
-      editorPreview: { target: { targetId: 'editor', generation }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
+      scenePreview: { target: { targetId: 'scene', generation }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
     shell.update(state(1));
     await new Promise(resolve => setImmediate(resolve));
     shell.update(state(2));
@@ -1570,7 +1570,7 @@ describe('View workspace frontend boundary', () => {
       createSurface: () => surface, attach: () => () => { released = true; },
     } } });
     shell.update({ selectedTabId: VIEW_WORKSPACE_TAB_ID, project: { id: 'project', root: '/project' },
-      editorPreview: { target: { targetId: 'editor', generation: 1 }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
+      scenePreview: { target: { targetId: 'scene', generation: 1 }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
     await new Promise(resolve => setImmediate(resolve));
     shell.inputController = { dispose: () => new Promise(resolve => { finishInput = resolve; }) };
     const disposing = shell.dispose();
@@ -1585,13 +1585,13 @@ describe('View workspace frontend boundary', () => {
       surfacePlacement: 'shell', createSurface: () => null,
     } } });
     shell.update({ selectedTabId: VIEW_WORKSPACE_TAB_ID, project: { id: 'project', root: '/project' },
-      editorPreview: { target: { targetId: 'editor', generation: 1 }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
+      scenePreview: { target: { targetId: 'scene', generation: 1 }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
     assert.equal(shell.surface, null);
     assert.equal(shell.targetContainer.children.length, 0);
     await shell.dispose();
   });
 
-  it('restores a borrowed Editor even when its adapter attachment fails', async () => {
+  it('restores a borrowed Scene even when its adapter attachment fails', async () => {
     const document = fakeDocument();
     const surface = document.createElement('div');
     document.body.append(surface);
@@ -1599,7 +1599,7 @@ describe('View workspace frontend boundary', () => {
       createSurface: () => surface, attach: () => { throw new Error('attachment failed'); },
     } } });
     shell.update({ selectedTabId: VIEW_WORKSPACE_TAB_ID, project: { id: 'project', root: '/project' },
-      editorPreview: { target: { targetId: 'editor', generation: 1 }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
+      scenePreview: { target: { targetId: 'scene', generation: 1 }, asset: { guid: 'scene', kind: 'scene' } }, assets: [], tabs: [] });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(shell.state.error, 'attachment failed');
     assert.equal(surface.parentNode, document.body);
@@ -1643,7 +1643,7 @@ describe('View workspace frontend boundary', () => {
     assert.equal(displayEntry.surface.tagName, 'canvas');
     assert.equal(displayEntry.surface.dataset.forgeaxViewSurface, 'engine-target');
     assert.equal(displayEntry.surface.srcAssignments, 0);
-    assert.equal(workspaceEntry, undefined, 'A project target alone is not an Editor scene surface');
+    assert.equal(workspaceEntry, undefined, 'A project target alone is not a Scene surface');
     await shell.dispose();
   });
 
@@ -2029,7 +2029,7 @@ describe('View workspace frontend boundary', () => {
   });
 
   it('detaches local input when the selected tab changes', async () => {
-    for (const binding of ['editorPreview', 'preview']) {
+    for (const binding of ['scenePreview', 'preview']) {
     const document = fakeDocument();
     const aborts = [];
     let detached = 0;
@@ -2063,7 +2063,7 @@ describe('View workspace frontend boundary', () => {
         { tabId: VIEW_DISPLAY_TAB_ID, kind: 'display', targetId: 'cli-target' },
         { tabId: VIEW_WORKSPACE_TAB_ID, kind: 'workspace', target },
       ],
-      [binding]: { ...(binding === 'editorPreview' ? { asset: { guid: 'scene', kind: 'scene' } } : {}), target },
+      [binding]: { ...(binding === 'scenePreview' ? { asset: { guid: 'scene', kind: 'scene' } } : {}), target },
     });
     shell.update({
       selectedTabId: VIEW_DISPLAY_TAB_ID,
@@ -2071,7 +2071,7 @@ describe('View workspace frontend boundary', () => {
         { tabId: VIEW_DISPLAY_TAB_ID, kind: 'display', targetId: 'cli-target' },
         { tabId: VIEW_WORKSPACE_TAB_ID, kind: 'workspace', target },
       ],
-      [binding]: { ...(binding === 'editorPreview' ? { asset: { guid: 'scene', kind: 'scene' } } : {}), target },
+      [binding]: { ...(binding === 'scenePreview' ? { asset: { guid: 'scene', kind: 'scene' } } : {}), target },
     });
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(aborts, ['tab-selection']);

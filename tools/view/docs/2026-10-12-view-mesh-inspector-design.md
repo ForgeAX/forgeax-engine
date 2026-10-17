@@ -18,7 +18,7 @@ their existing components provide data; All preserves every raw component,
 including derived transforms and unknown game components. The subsequent
 all-entity delivery also applies this layout to non-mesh and skinned entities.
 
-This replaces the flat mesh layout recorded under the existing read-only Editor
+This replaces the flat mesh layout recorded under the existing read-only Scene
 tools boundary. Resource pages and independent run ownership remain governed by
 the prior asset-page and independent-session decisions.
 
@@ -50,8 +50,8 @@ override array is not labelled as an empty material table. Catalog names are
 used only after a GUID is explicitly present in the inspected reference.
 
 Known-GUID links use existing `asset.open` and independent asset pages. They do
-not borrow the Editor surface, rebind an AI run, or silently resolve a handle by
-name/source matching. Entity reads remain on the selection's exact Editor
+not borrow the Scene surface, rebind an AI run, or silently resolve a handle by
+name/source matching. Entity reads remain on the selection's exact Scene
 target/generation while a resource page is selected. State publication revokes
 old reads synchronously, and current operation failures remain visible.
 
@@ -75,7 +75,7 @@ Local evidence on 2026-10-12:
 | Architecture source gate | 15 packages, 309 source files, zero violations; architecture contract tests are included in the View suite |
 | Product build | Passed through `node scripts/build-tool.mjs` |
 | Inspector UI probe | Passed through `node scripts/verify-mesh-inspector-ui.mjs`; 320/480/640px, light/dark, raw copying, whitespace search, catalog label refresh, cancellation, target replacement and capability restoration |
-| Real Engine probe | Passed through `node scripts/verify-mesh-inspector-engine.mjs`; actual cooked scene, numeric handles, empty overrides, unnamed mesh child, parent selection and preserved Editor identity; captured pixel contrast was 87 |
+| Real Engine probe | Passed through `node scripts/verify-mesh-inspector-engine.mjs`; actual cooked scene, numeric handles, empty overrides, unnamed mesh child, parent selection and preserved Scene identity; captured pixel contrast was 87 |
 | Brotato browser | Native Backend/View startup opened `game-brotato-v2`, then `scene/arena`; selecting `Farm Floor` showed exactly three Common sections, read-only numeric controls and the 180px relationship scroll area |
 | KB lint and whitespace | Passed; no separate Harness data edits |
 | Strict package types | Blocked by existing `listPackSources` imports in `src/plugins/backend.ts` and `src/plugins/product.ts`: installed Engine Pack JavaScript/source exports it, but its declaration artifact does not |

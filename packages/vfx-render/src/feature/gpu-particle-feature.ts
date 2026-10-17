@@ -48,8 +48,11 @@ import { RenderFeatureStageFailedError } from '../../../render/src/errors/render
 import type { RenderFeatureGpuProgramDescriptor } from '../../../render/src/features/prepared-gpu-work';
 import { RENDER_FEATURE_VERTEX_LAYOUTS } from '../../../render/src/features/prepared-graphics';
 import type { VfxDataInterfaceRegistry } from '../host/data-interface-providers.js';
+import { compileVfxComputeBatchProgram } from './batched-compute-program.js';
 import type { ParticleRenderCamera, ParticleRenderCameraSource } from './camera.js';
 import { coalesceVfxComputePasses, coalesceVfxCopyPasses } from './compute-passes.js';
+import { createVfxDirectComputeFrame } from './direct-compute-frame.js';
+import { createVfxEmitterProgramOwner } from './emitter-program.js';
 import {
   encodeEventBuffer,
   eventCapacity,
@@ -58,6 +61,7 @@ import {
   VFX_EVENT_INPUT_BYTES,
 } from './event-resources.js';
 import { createVfxForceFieldPreparation, type PreparedVfxForceFields } from './force-fields.js';
+import { createVfxInstanceArena, type VfxArenaInstance } from './instance-arena.js';
 import {
   createTopologyResourcePlan,
   PARTICLE_INPUT_SHADER_IDENTIFIERS,
@@ -72,6 +76,13 @@ import {
   prepareParticleMaterialInputs,
 } from './particle-resources.js';
 import { coalesceVfxRasterPasses } from './raster-passes.js';
+import {
+  type RetainedEmitterResources,
+  retainEmitterResources,
+  retainProjectionResources,
+  uploadEmitterResource,
+} from './retained-emitter-resources.js';
+import { shareVfxGraphicsPrograms } from './shared-graphics-programs.js';
 import type { VfxStagePlanObservation, VfxValidatedStagePlan } from './stage-plan.js';
 import { validatedStagePlan } from './stage-plan.js';
 
@@ -211,6 +222,14 @@ export function topologyRecoveryHint(
 
 interface GpuParticleFeatureOptions {
   readonly camera: ParticleRenderCameraSource;
+  /** Same-build diagnostic A/B. Opt in to validated view-local graph isolation. */
+  readonly isolateViewGraph?: boolean;
+  /** Diagnostic opt-in until the complete instance-arena owner is qualified. */
+  readonly instanceArenas?: boolean;
+  /** Build a Host-private primary plan instead of publishing a raw declaration tree. */
+  readonly nativePlanning?: boolean;
+  /** Reuse admitted native resources; requires native planning and instance arenas. */
+  readonly retainedResources?: boolean;
   readonly sceneSdf?: { read(world: World): RenderFeatureSceneSdfDescriptor | undefined };
   readonly dataInterfaces?: Pick<VfxDataInterfaceRegistry, 'resolve'>;
   readonly texture?: { read(world: World, guid: string): TextureAsset | undefined };
@@ -228,6 +247,7 @@ interface GpuParticleFeatureOptions {
 
 interface ExtractedMaterial {
   readonly asset: MaterialAsset;
+  readonly assetHandle?: Handle<'MaterialAsset', 'shared'>;
   readonly projection?: MaterialRenderProjection;
 }
 
@@ -366,13 +386,29 @@ function rendererSortingMode(renderer: ParticleRenderer | undefined): 0 | 1 | 2 
   }
 }
 
-function vector(value: unknown, fallback: readonly number[], size: number): readonly number[] {
-  return Array.isArray(value)
-    ? Array.from({ length: size }, (_, index) => finite(value[index], fallback[index] ?? 0))
-    : fallback;
+function writeVector(
+  target: Float32Array,
+  offset: number,
+  value: unknown,
+  fallback: number,
+  size: number,
+): void {
+  const source = Array.isArray(value) ? value : undefined;
+  for (let index = 0; index < size; index++)
+    target[offset + index] = finite(source?.[index], fallback);
+}
+
+function createRuntimeStorage() {
+  const storage = new ArrayBuffer(RUNTIME_BYTES);
+  return {
+    floats: new Float32Array(storage),
+    words: new Uint32Array(storage),
+    bytes: new Uint8Array(storage),
+  };
 }
 
 function runtimeData(
+  target: ReturnType<typeof createRuntimeStorage> | undefined,
   intent: VfxGpuTickIntent,
   camera: ParticleRenderCamera,
   material: MaterialAsset | undefined,
@@ -382,9 +418,9 @@ function runtimeData(
   particleInputLanes = renderer?.materialInputs?.length ?? 0,
   meshDraw?: { readonly count: number; readonly firstIndex: number },
 ): Uint8Array {
-  const storage = new ArrayBuffer(RUNTIME_BYTES);
-  const floats = new Float32Array(storage);
-  const words = new Uint32Array(storage);
+  const data = target ?? createRuntimeStorage();
+  const { floats, words } = data;
+  if (target !== undefined) data.bytes.fill(0);
   floats[0] = intent.fixedDelta;
   words[1] = intent.phaseTick;
   words[2] = intent.seed;
@@ -398,9 +434,8 @@ function runtimeData(
   floats.set(camera.up, 28);
   floats.set(camera.position, 72);
   const values = material?.values ?? {};
-  floats.set(vector(values.baseColor, [1, 1, 1, 1], 4), 32);
-  const emissive = vector(values.emissive, [0, 0, 0], 3);
-  floats.set(emissive, 36);
+  writeVector(floats, 32, values.baseColor, 1, 4);
+  writeVector(floats, 36, values.emissive, 0, 3);
   floats[39] = finite(values.emissiveIntensity, 0);
   floats[40] = finite(values.metallic, 0);
   floats[41] = finite(values.roughness, 0.5);
@@ -438,7 +473,7 @@ function runtimeData(
   floats[69] = sheet?.rows ?? 1;
   floats[70] = sheet?.frameRate ?? 0;
   floats[71] = sheet?.frameCount ?? (sheet === undefined ? 1 : sheet.columns * sheet.rows);
-  return new Uint8Array(storage);
+  return data.bytes;
 }
 
 function emitterTransform(world: World, intent: VfxGpuTickIntent): Float32Array {
@@ -447,41 +482,47 @@ function emitterTransform(world: World, intent: VfxGpuTickIntent): Float32Array 
   return transform.ok ? transform.value.world : IDENTITY_MATRIX;
 }
 
-function emitterVisible(
-  emitter: VfxGpuTickIntent['emitter'],
-  camera: ParticleRenderCamera,
-  localToWorld: Float32Array,
-): boolean {
-  const bounds = emitter.bounds;
-  const center =
-    bounds.kind === 'sphere'
-      ? bounds.center
-      : ([
-          (bounds.min[0] + bounds.max[0]) * 0.5,
-          (bounds.min[1] + bounds.max[1]) * 0.5,
-          (bounds.min[2] + bounds.max[2]) * 0.5,
-        ] as const);
-  const radius =
-    bounds.kind === 'sphere'
-      ? bounds.radius
-      : Math.hypot(
-          (bounds.max[0] - bounds.min[0]) * 0.5,
-          (bounds.max[1] - bounds.min[1]) * 0.5,
-          (bounds.max[2] - bounds.min[2]) * 0.5,
-        );
-  const matrix = (index: number): number => localToWorld[index] ?? 0;
-  const worldCenter = new Float32Array([
-    matrix(0) * center[0] + matrix(4) * center[1] + matrix(8) * center[2] + matrix(12),
-    matrix(1) * center[0] + matrix(5) * center[1] + matrix(9) * center[2] + matrix(13),
-    matrix(2) * center[0] + matrix(6) * center[1] + matrix(10) * center[2] + matrix(14),
-  ]);
-  const scale = Math.max(
-    Math.hypot(matrix(0), matrix(1), matrix(2)),
-    Math.hypot(matrix(4), matrix(5), matrix(6)),
-    Math.hypot(matrix(8), matrix(9), matrix(10)),
-  );
-  const planes = frustum.fromViewProjection(frustum.create(), camera.viewProjection);
-  return frustum.intersectsSphere(planes, worldCenter, radius * scale);
+/** Each extract/plan invocation owns its scratch, including synchronous reentry. */
+function createEmitterVisibility() {
+  const worldCenter = new Float32Array(3);
+  const planes = frustum.create();
+  return function emitterVisible(
+    emitter: VfxGpuTickIntent['emitter'],
+    camera: ParticleRenderCamera,
+    localToWorld: Float32Array,
+  ): boolean {
+    const bounds = emitter.bounds;
+    const center =
+      bounds.kind === 'sphere'
+        ? bounds.center
+        : ([
+            (bounds.min[0] + bounds.max[0]) * 0.5,
+            (bounds.min[1] + bounds.max[1]) * 0.5,
+            (bounds.min[2] + bounds.max[2]) * 0.5,
+          ] as const);
+    const radius =
+      bounds.kind === 'sphere'
+        ? bounds.radius
+        : Math.hypot(
+            (bounds.max[0] - bounds.min[0]) * 0.5,
+            (bounds.max[1] - bounds.min[1]) * 0.5,
+            (bounds.max[2] - bounds.min[2]) * 0.5,
+          );
+    const matrix = (index: number): number => localToWorld[index] ?? 0;
+    const x = matrix(0) * center[0] + matrix(4) * center[1] + matrix(8) * center[2] + matrix(12);
+    const y = matrix(1) * center[0] + matrix(5) * center[1] + matrix(9) * center[2] + matrix(13);
+    const z = matrix(2) * center[0] + matrix(6) * center[1] + matrix(10) * center[2] + matrix(14);
+    worldCenter[0] = x;
+    worldCenter[1] = y;
+    worldCenter[2] = z;
+    const scale = Math.max(
+      Math.hypot(matrix(0), matrix(1), matrix(2)),
+      Math.hypot(matrix(4), matrix(5), matrix(6)),
+      Math.hypot(matrix(8), matrix(9), matrix(10)),
+    );
+    frustum.fromViewProjection(planes, camera.viewProjection);
+    return frustum.intersectsSphere(planes, worldCenter, radius * scale);
+  };
 }
 
 function resolveDataInterfaces(
@@ -612,6 +653,28 @@ function simulationDispatches(
   ];
 }
 
+function emitterComputeProgram(
+  emitter: VfxGpuTickIntent['emitter'],
+): RenderFeatureGpuProgramDescriptor {
+  const authoredRendererKinds = new Set(emitter.renderers.map((renderer) => renderer.kind));
+  const preparedEntryPoints = emitter.reflection.entryPoints.filter((entryPoint) => {
+    if (
+      entryPoint === 'forgeax_vfx_scan_block_offsets_main' ||
+      entryPoint === 'forgeax_vfx_add_offsets_main'
+    )
+      return needsCompactionOffsets(emitter.capacity);
+    if (entryPoint === 'forgeax_vfx_sort_main')
+      return emitter.renderers.some((renderer) => rendererSortingMode(renderer) !== 0);
+    const kind = rendererOnlyEntryPoints.get(entryPoint);
+    return kind === undefined || authoredRendererKinds.has(kind);
+  });
+  return {
+    wgsl: emitter.wgsl,
+    entryPoints: preparedEntryPoints,
+    bindings: emitter.reflection.bindings,
+  };
+}
+
 type VfxParticleRenderFeature = RenderFeature<PublishedFrame> & {
   readonly inspect: () => VfxRenderObservation;
 };
@@ -619,6 +682,7 @@ type VfxParticleRenderFeature = RenderFeature<PublishedFrame> & {
 export function gpuParticleRenderFeature(
   options: GpuParticleFeatureOptions,
 ): VfxParticleRenderFeature {
+  const packArenas = options.instanceArenas === true ? createVfxInstanceArena() : undefined;
   type IntentOutcomeState = 'dispatched' | 'skipped' | 'deferred';
   interface PlannedIntent {
     readonly intent: VfxGpuTickIntent;
@@ -631,8 +695,8 @@ export function gpuParticleRenderFeature(
   }
   interface TickPassRange {
     readonly sequence: number;
-    readonly start: number;
-    readonly end: number;
+    start: number;
+    end: number;
   }
   interface EmitterStream {
     lastGroup: string;
@@ -684,10 +748,17 @@ export function gpuParticleRenderFeature(
           terminal: Map<number, IntentOutcomeState>;
         }
       | undefined;
-    readonly emitters: Map<string, { readonly id: number; tickCapacity: number }>;
+    readonly emitters: Map<
+      string,
+      { readonly id: number; tickCapacity: number; resources?: RetainedEmitterResources }
+    >;
   }
   const runtimeStates = new Map<number, RuntimeState>();
-  const computePrograms = new WeakMap<object, RenderFeatureGpuProgramDescriptor>();
+  const emitterPrograms = createVfxEmitterProgramOwner(
+    immutableEmitters,
+    emitterComputeProgram,
+    compileVfxComputeBatchProgram,
+  );
   const computeProgramIds = new WeakMap<object, number>();
   let nextComputeProgramId = 0;
   type ComputeBindings = Extract<PlanResource, { readonly kind: 'compute-bindings' }>;
@@ -747,6 +818,7 @@ export function gpuParticleRenderFeature(
   };
   const feature: VfxParticleRenderFeature = {
     identity: IDENTITY,
+    ...(options.isolateViewGraph === true ? { viewGraph: 'transient' as const } : {}),
     requiredCapabilities: ['compute', 'indirectDrawing'],
     // Generated emitter programs are first-use assets. They must hand a
     // WebGPU module to the prepared feature pipeline without waiting for the
@@ -759,6 +831,7 @@ export function gpuParticleRenderFeature(
       ...Object.values(PARTICLE_INPUT_SHADER_IDENTIFIERS),
     ]),
     extract: (context) => {
+      const emitterVisible = createEmitterVisibility();
       // A rejected recovery candidate can outlive the frame that produced it.
       // Keep the producer-owned submission ledger bounded even when a host
       // disappears before it can call onFrameAborted.
@@ -834,17 +907,20 @@ export function gpuParticleRenderFeature(
               runtime.isEmitterSessionEnabled(player, emitter.id),
             localToWorld: new Float32Array(localToWorld),
           });
+          captureResources(player, emitter);
+          if (emitter.forceFields !== undefined)
+            forceFields.set(
+              `${Number(player)}:${emitter.id}`,
+              prepareFields(emitter.forceFields, textures),
+            );
+        };
+        const captureResources = (player: EntityHandle, emitter: VfxGpuTickIntent['emitter']) => {
           for (const field of emitter.forceFields ?? []) {
             if (field.kind !== 'vector') continue;
             textureGuids.add(field.texture);
             const texture = options.texture?.read(world, field.texture);
             if (texture !== undefined) textures.set(field.texture, texture);
           }
-          if (emitter.forceFields !== undefined)
-            forceFields.set(
-              `${Number(player)}:${emitter.id}`,
-              prepareFields(emitter.forceFields, textures),
-            );
           for (const renderer of emitter.renderers) {
             const material =
               captureMaterials && materials.has(renderer.material)
@@ -857,19 +933,23 @@ export function gpuParticleRenderFeature(
                 context.referenceAsset === undefined
                   ? undefined
                   : Object.getOwnPropertyDescriptor(material, 'cooked');
+              // Only the stock capture owner adds uncooked asset references. Raw providers
+              // keep their existing GUID path and cooked-reference observation boundary.
+              const assetHandle =
+                captureMaterials || (cooked?.enumerable === true && 'value' in cooked)
+                  ? (context.referenceAsset?.(sourceWorldIndex, renderer.material, material) as
+                      | Handle<'MaterialAsset', 'shared'>
+                      | undefined)
+                  : undefined;
               // Cooked programs already cross through the exact asset/program closure.
               // Keep every authored field fresh; custom providers retain their full payload.
-              if (
-                cooked?.enumerable === true &&
-                'value' in cooked &&
-                context.referenceAsset?.(sourceWorldIndex, renderer.material, material) !==
-                  undefined
-              ) {
+              if (cooked?.enumerable === true && 'value' in cooked && assetHandle !== undefined) {
                 asset = { ...material };
                 delete (asset as MaterialAsset & { cooked?: unknown }).cooked;
               }
               materials.set(renderer.material, {
                 asset,
+                ...(assetHandle === undefined ? {} : { assetHandle }),
                 ...(projection === undefined ? {} : { projection }),
               });
             }
@@ -926,6 +1006,9 @@ export function gpuParticleRenderFeature(
           captureEmitter(player, emitter, effect, localToWorld, instanceGeneration);
           const intent = runtime.lastCommittedEmitter(player, emitter.id);
           if (intent !== undefined && !preparationPlayers.has(player)) {
+            // A paused or deferred replacement can still draw the previous submission.
+            // Its own definition, rather than the new source, owns those asset leases.
+            if (intent.emitter !== emitter) captureResources(player, intent.emitter);
             retained.push({
               player,
               ...emitterReference(intent.effect, intent.emitter),
@@ -973,6 +1056,9 @@ export function gpuParticleRenderFeature(
       ...new Set(
         frame.worlds.flatMap((world) => [
           ...world.materials.keys(),
+          ...[...world.materials.values()].flatMap(({ assetHandle }) =>
+            assetHandle === undefined ? [] : [assetHandle],
+          ),
           ...[...world.meshes.values()].filter(
             (mesh): mesh is Handle<string, 'shared'> => typeof mesh === 'number',
           ),
@@ -998,6 +1084,10 @@ export function gpuParticleRenderFeature(
       return false;
     },
     plan: (sourceFrame, context) => {
+      // Retained writes consume bytes now; declaration payloads remain independent.
+      const runtimeScratch = createRuntimeStorage();
+      const emitterVisible = createEmitterVisibility();
+      packArenas?.discardRetainedFrame();
       let frame: ExtractedFrame;
       try {
         frame = {
@@ -1107,8 +1197,29 @@ export function gpuParticleRenderFeature(
         if (!liveRuntimes.has(identity)) runtimeStates.delete(identity);
       for (const frameNumber of pendingFrames.keys())
         if (frameNumber + 4 < frame.frameNumber) pendingFrames.delete(frameNumber);
-      const resources: PlanResource[] = [];
-      const passes: PlanPass[] = [];
+      const nativePlan =
+        options.nativePlanning === true &&
+        frame.worlds.every(
+          (entry) =>
+            [...entry.emitterState.values()].every(
+              ({ emitter }) =>
+                immutableEmitters.has(emitter) &&
+                (emitter.reflection.dataInterfaces?.length ?? 0) === 0 &&
+                emitter.forceFields === undefined,
+            ) &&
+            [...entry.intents, ...entry.retained.map(({ intent }) => intent)].every(
+              ({ emitter }) =>
+                immutableEmitters.has(emitter) &&
+                (emitter.reflection.dataInterfaces?.length ?? 0) === 0 &&
+                emitter.forceFields === undefined,
+            ),
+        )
+          ? context.createNativePlan?.()
+          : undefined;
+      const frameWork = nativePlan?.scope('frame');
+      const arenaInstances: VfxArenaInstance[] = [];
+      const resources: PlanResource[] = frameWork?.resources ?? [];
+      const passes: PlanPass[] = frameWork?.passes ?? [];
       const sharedDataInterfaces = new Map<string, PlanResource>();
       const sharedComputePrograms = new Map<
         number,
@@ -1118,13 +1229,16 @@ export function gpuParticleRenderFeature(
       const fieldNames = new Set<string>();
       const viewWork = context.views
         .filter((view) => view.render)
-        .map((view) => ({
-          view,
-          resources: [] as PlanResource[],
-          passes: [] as PlanPass[],
-          opaque: [] as RasterPass[],
-          blended: [] as RasterPass[],
-        }));
+        .map((view) => {
+          const scope = nativePlan?.scope({ view: view.identity });
+          return {
+            view,
+            resources: scope?.resources ?? ([] as PlanResource[]),
+            passes: scope?.passes ?? ([] as PlanPass[]),
+            opaque: [] as RasterPass[],
+            blended: [] as RasterPass[],
+          };
+        });
       const nextBindingLayouts: typeof bindingLayouts = new Map();
       const computeBindings = (
         name: string,
@@ -1238,7 +1352,9 @@ export function gpuParticleRenderFeature(
             intent.instanceGeneration,
           );
           if (!stagePlan.ok) return err(planFailure());
-          const entryPoints = new Set(intent.emitter.reflection.entryPoints);
+          const entryPoints =
+            emitterPrograms(intent.emitter)?.entryPoints ??
+            new Set(intent.emitter.reflection.entryPoints);
           const dispatches = simulationDispatches(intent, stagePlan.value).filter((dispatch) =>
             entryPoints.has(dispatch.entryPoint),
           );
@@ -1416,7 +1532,62 @@ export function gpuParticleRenderFeature(
       const resourceRanges: { key: string; starts: number[]; ends: number[] }[] = [];
       const resourceArrays = [resources, ...viewWork.map((work) => work.resources)];
       for (const group of groups.values()) {
+        const emitter = (group.intents[0]?.intent ?? group.preparation)?.emitter;
+        if (
+          emitter !== undefined &&
+          immutableEmitters.has(emitter) &&
+          !computeProgramIds.has(emitter)
+        )
+          computeProgramIds.set(emitter, nextComputeProgramId++);
+      }
+      const liveArenaOwners = new Set(
+        frame.worlds.flatMap((entry) => {
+          const owners: string[] = [];
+          const include = (player: EntityHandle, emitter: VfxGpuTickIntent['emitter']) => {
+            const id = computeProgramIds.get(emitter);
+            if (id !== undefined)
+              owners.push(
+                `${entry.runtimeId}:${entry.renderGeneration}:${Number(player)}:${emitter.id}:vfx.compute-program-${id}`,
+              );
+          };
+          for (const state of entry.emitterState.values()) include(state.player, state.emitter);
+          for (const intent of entry.intents) include(intent.player, intent.emitter);
+          for (const retained of entry.retained) include(retained.player, retained.emitter);
+          return owners;
+        }),
+      );
+      for (const state of runtimeStates.values())
+        for (const emitter of state.emitters.values()) {
+          const owner = emitter.resources?.ranges[0]?.owner;
+          if (owner !== undefined && !liveArenaOwners.has(owner)) delete emitter.resources;
+        }
+      const resourceAdmission =
+        options.retainedResources === true ? nativePlan?.resourceAdmission : undefined;
+      const retainedArena =
+        resourceAdmission === undefined
+          ? undefined
+          : packArenas?.beginRetainedFrame({
+              liveOwners: liveArenaOwners,
+              generation: context.generation,
+              ...(context.limits === undefined ? {} : { limits: context.limits }),
+            });
+      const directCompute = createVfxDirectComputeFrame();
+      const originalGroups = [...groups.values()];
+      const orderedGroups =
+        retainedArena === undefined
+          ? originalGroups
+          : [...originalGroups].sort((left, right) =>
+              left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
+            );
+      const executionArrays = [
+        passes,
+        ...viewWork.flatMap((work) => [work.passes, work.opaque, work.blended]),
+      ];
+      const executionRanges = new Map<string, { starts: number[]; ends: number[] }>();
+      for (const group of orderedGroups) {
         const resourceStarts = resourceArrays.map((array) => array.length);
+        const executionStarts =
+          retainedArena === undefined ? undefined : executionArrays.map((array) => array.length);
         const first = group.intents[0];
         const firstIntent = first?.intent ?? group.preparation;
         if (firstIntent === undefined) continue;
@@ -1441,6 +1612,16 @@ export function gpuParticleRenderFeature(
           sharedProgramId === undefined
             ? `${prefix}.compute-program`
             : `vfx.compute-program-${sharedProgramId}`;
+        if (
+          sharedProgramId !== undefined &&
+          (firstIntent.emitter.reflection.dataInterfaces?.length ?? 0) === 0 &&
+          firstIntent.emitter.forceFields === undefined
+        )
+          arenaInstances.push({
+            prefix,
+            program: `${program}.a-${group.entry.runtimeId}.r-${group.entry.renderGeneration}`,
+            owner: `${group.entry.runtimeId}:${group.entry.renderGeneration}:${Number(firstIntent.player)}:${firstIntent.emitter.id}:${program}`,
+          });
         const particles = `${prefix}.particles`;
         const aliveIndices = `${prefix}.alive-indices`;
         const counters = `${prefix}.counters`;
@@ -1452,34 +1633,48 @@ export function gpuParticleRenderFeature(
         const projectionEventInputs = `${prefix}.projection-event-inputs`;
         const capacity = firstIntent.emitter.capacity;
         const renderers = firstIntent.emitter.renderers;
-        let computeProgram = immutableEmitters.has(firstIntent.emitter)
-          ? computePrograms.get(firstIntent.emitter)
-          : undefined;
-        if (computeProgram === undefined) {
-          const authoredRendererKinds = new Set(renderers.map((renderer) => renderer.kind));
-          const preparedEntryPoints = firstIntent.emitter.reflection.entryPoints.filter(
-            (entryPoint) => {
-              if (
-                entryPoint === 'forgeax_vfx_scan_block_offsets_main' ||
-                entryPoint === 'forgeax_vfx_add_offsets_main'
-              )
-                return needsCompactionOffsets(capacity);
-              if (entryPoint === 'forgeax_vfx_sort_main')
-                return renderers.some((renderer) => rendererSortingMode(renderer) !== 0);
-              const kind = rendererOnlyEntryPoints.get(entryPoint);
-              return kind === undefined || authoredRendererKinds.has(kind);
-            },
-          );
-          computeProgram = {
-            wgsl: firstIntent.emitter.wgsl,
-            entryPoints: preparedEntryPoints,
-            bindings: firstIntent.emitter.reflection.bindings,
-          };
-          if (immutableEmitters.has(firstIntent.emitter)) {
-            computeProgram = ownRenderFeatureProgramData(computeProgram);
-            computePrograms.set(firstIntent.emitter, computeProgram);
-          }
-        }
+        const preparedProgram = emitterPrograms(firstIntent.emitter);
+        const candidateBatch = preparedProgram?.batch;
+        const batchInputs =
+          candidateBatch === undefined
+            ? 0
+            : Math.max(
+                0,
+                ...renderers.map((renderer) => (renderer.materialInputs?.length ?? 0) * 16),
+              );
+        const batchSizes: readonly [number, number][] =
+          candidateBatch === undefined
+            ? []
+            : [
+                [capacity * VFX_PARTICLE_CORE_STRIDE, VFX_PARTICLE_CORE_STRIDE],
+                [capacity * (candidateBatch?.customStride ?? 0), candidateBatch?.customStride ?? 4],
+                [capacity * 4, 4],
+                [COUNTERS_BYTES, 24],
+                [Math.max(1, renderers.length) * 20, 20],
+                [(capacity * 2 + Math.ceil(capacity / WORKGROUP_SIZE)) * 4, 4],
+                [
+                  capacity *
+                    (Math.max(BILLBOARD_INSTANCE_BYTES, MESH_INSTANCE_BYTES) + batchInputs),
+                  4,
+                ],
+              ];
+        const batchProgram =
+          candidateBatch !== undefined &&
+          retainedArena !== undefined &&
+          (context.limits?.maxStorageBuffersPerShaderStage ?? 0) >= 8 &&
+          Math.min(
+            context.limits?.maxBufferSize ?? 256 * 1024 * 1024,
+            context.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024,
+          ) >=
+            16 * 336 &&
+          group.intents.every((row) => row.intent.emitter === firstIntent.emitter) &&
+          batchSizes.every(([size, stride]) => retainedArena.supports(size, ['storage'], stride))
+            ? candidateBatch
+            : undefined;
+        const computeProgram =
+          batchProgram?.descriptor ??
+          preparedProgram?.program ??
+          emitterComputeProgram(firstIntent.emitter);
         const layout = firstIntent.emitter.reflection.layout;
         const parameterBytes = layout?.parameters.size ?? 0;
         const customStride = layout?.customLayout?.stride ?? 0;
@@ -1491,14 +1686,18 @@ export function gpuParticleRenderFeature(
           );
         const diBindings: Record<number, string> = {};
         const diResources: PlanResource[] = [];
-        const reflectedBindings = new Set(
-          firstIntent.emitter.reflection.bindings.flatMap((group) =>
-            group.entries.map((entry) => entry.binding),
-          ),
-        );
-        const requirements = (firstIntent.emitter.reflection.dataInterfaces ?? []).filter(
-          (requirement) => reflectedBindings.has(requirement.binding),
-        );
+        const requirements =
+          preparedProgram?.requirements ??
+          (() => {
+            const reflectedBindings = new Set(
+              firstIntent.emitter.reflection.bindings.flatMap((group) =>
+                group.entries.map((entry) => entry.binding),
+              ),
+            );
+            return (firstIntent.emitter.reflection.dataInterfaces ?? []).filter((requirement) =>
+              reflectedBindings.has(requirement.binding),
+            );
+          })();
         if (requirements.length > 0) {
           const resolved = resolveDataInterfaces(firstIntent, options.dataInterfaces);
           if (resolved === undefined) return err(planFailure());
@@ -1685,90 +1884,152 @@ export function gpuParticleRenderFeature(
           if (previous === undefined || programDeclaration.preparePipelines)
             sharedComputePrograms.set(sharedProgramId, programDeclaration);
         }
-        resources.push(
-          ...diResources,
-          ...(sharedProgramId === undefined ? [programDeclaration] : []),
-          {
-            kind: 'buffer',
-            name: particles,
-            size: capacity * particleBytes,
-            usage: ['storage'],
-          },
-          ...(parameterBytes === 0
-            ? []
-            : [
-                {
-                  kind: 'buffer' as const,
-                  name: `${prefix}.parameters`,
-                  size: parameterBytes,
-                  usage: ['uniform'] as const,
-                  ...(latest === undefined ? {} : { data: latest.intent.parameterBlock }),
-                },
-              ]),
-          ...(customStride === 0
-            ? []
-            : [
-                {
-                  kind: 'buffer' as const,
-                  name: `${prefix}.custom`,
-                  size: capacity * customStride,
-                  usage: ['storage'] as const,
-                },
-              ]),
-          {
-            kind: 'buffer',
-            name: aliveIndices,
-            size: capacity * 4,
-            usage: ['storage', 'copy-src'],
-          },
-          {
-            kind: 'buffer',
-            name: counters,
-            size: COUNTERS_BYTES,
-            usage: ['storage', 'copy-src'],
-          },
-          {
-            kind: 'buffer',
-            name: indirect,
-            size: indirectWords.byteLength,
-            usage: ['storage', 'indirect', 'copy-src'],
-          },
-          {
-            kind: 'buffer',
-            name: `${prefix}.indirect-initial`,
-            size: indirectWords.byteLength,
-            usage: ['copy-src'],
-            ...(group.intents.some((planned) => !planned.retained && planned.intent.reset)
-              ? { data: indirectWords }
-              : {}),
-          },
-          {
-            kind: 'buffer',
-            name: scratch,
-            size: scratchBytes,
-            usage: ['storage'],
-          },
-          {
-            kind: 'buffer',
-            name: sharedInstances,
-            size:
+        const emitter = emitterResource(
+          runtimeState(group.entry.runtimeId).emitters,
+          `${group.entry.worldId}:${group.entry.renderGeneration}:${Number(firstIntent.player)}:${firstIntent.emitter.id}:${firstIntent.programFingerprint}`,
+        );
+        emitter.tickCapacity = Math.max(emitter.tickCapacity, group.intents.length, 1);
+        let retainedResources: RetainedEmitterResources | undefined;
+        if (
+          resourceAdmission !== undefined &&
+          retainedArena !== undefined &&
+          sharedProgramId !== undefined &&
+          !hasEvents &&
+          parameterBytes === 0 &&
+          (firstIntent.emitter.reflection.dataInterfaces?.length ?? 0) === 0 &&
+          firstIntent.emitter.forceFields === undefined &&
+          diResources.length === 0
+        ) {
+          resourceAdmission.program(
+            'frame',
+            program,
+            computeProgram,
+            programDeclaration.preparePipelines,
+          );
+          retainedResources = retainEmitterResources({
+            previous: emitter.resources,
+            ...(batchProgram === undefined ? {} : { batch: batchProgram }),
+            emitter: firstIntent.emitter,
+            instance: {
+              prefix,
+              program: `${program}.a-${group.entry.runtimeId}.r-${group.entry.renderGeneration}`,
+              owner: `${group.entry.runtimeId}:${group.entry.renderGeneration}:${Number(firstIntent.player)}:${firstIntent.emitter.id}:${program}`,
+            },
+            program,
+            tickCapacity: emitter.tickCapacity,
+            customStride,
+            sharedInstanceBytes:
               capacity *
               (Math.max(BILLBOARD_INSTANCE_BYTES, MESH_INSTANCE_BYTES) + maxParticleInputBytes),
-            usage: ['storage', 'vertex'],
-          },
-          ...(hasEvents
-            ? [
-                {
-                  kind: 'buffer' as const,
-                  name: projectionEventInputs,
-                  size: eventBufferBytes,
-                  usage: ['storage'] as const,
-                  ...(first === undefined ? {} : { data: encodeEventBuffer(first.intent) }),
-                },
-              ]
-            : []),
-        );
-        const entryPoints = new Set(firstIntent.emitter.reflection.entryPoints);
+            indirectBytes: indirectWords.byteLength,
+            arena: retainedArena,
+            admission: resourceAdmission,
+          });
+          if (retainedResources !== undefined) {
+            emitter.resources = retainedResources;
+            for (const view of retainedResources.views.keys())
+              if (!context.views.some((row) => row.identity === view))
+                retainedResources.views.delete(view);
+            for (const binding of retainedResources.bindings)
+              nextBindingLayouts.set(binding.name, {
+                emitter: firstIntent.emitter,
+                resource: binding,
+              });
+            if (group.intents.some((planned) => !planned.retained && planned.intent.reset))
+              uploadEmitterResource(
+                resourceAdmission,
+                retainedResources,
+                `${prefix}.indirect-initial`,
+                indirectWords,
+              );
+          } else delete emitter.resources;
+        }
+        if (retainedResources === undefined)
+          resources.push(
+            ...diResources,
+            ...(sharedProgramId === undefined ? [programDeclaration] : []),
+            {
+              kind: 'buffer',
+              name: particles,
+              size: capacity * particleBytes,
+              usage: ['storage'],
+            },
+            ...(parameterBytes === 0
+              ? []
+              : [
+                  {
+                    kind: 'buffer' as const,
+                    name: `${prefix}.parameters`,
+                    size: parameterBytes,
+                    usage: ['uniform'] as const,
+                    ...(latest === undefined ? {} : { data: latest.intent.parameterBlock }),
+                  },
+                ]),
+            ...(customStride === 0
+              ? []
+              : [
+                  {
+                    kind: 'buffer' as const,
+                    name: `${prefix}.custom`,
+                    size: capacity * customStride,
+                    usage: ['storage'] as const,
+                  },
+                ]),
+            {
+              kind: 'buffer',
+              name: aliveIndices,
+              size: capacity * 4,
+              usage: ['storage', 'copy-src'],
+            },
+            {
+              kind: 'buffer',
+              name: counters,
+              size: COUNTERS_BYTES,
+              usage: ['storage', 'copy-src'],
+            },
+            {
+              kind: 'buffer',
+              name: indirect,
+              size: indirectWords.byteLength,
+              usage: ['storage', 'indirect', 'copy-src'],
+            },
+            {
+              kind: 'buffer',
+              name: `${prefix}.indirect-initial`,
+              size: indirectWords.byteLength,
+              usage: ['copy-src'],
+              ...(group.intents.some((planned) => !planned.retained && planned.intent.reset)
+                ? { data: indirectWords }
+                : {}),
+            },
+            {
+              kind: 'buffer',
+              name: scratch,
+              size: scratchBytes,
+              usage: ['storage'],
+            },
+            {
+              kind: 'buffer',
+              name: sharedInstances,
+              size:
+                capacity *
+                (Math.max(BILLBOARD_INSTANCE_BYTES, MESH_INSTANCE_BYTES) + maxParticleInputBytes),
+              usage: ['storage', 'vertex'],
+            },
+            ...(hasEvents
+              ? [
+                  {
+                    kind: 'buffer' as const,
+                    name: projectionEventInputs,
+                    size: eventBufferBytes,
+                    usage: ['storage'] as const,
+                    ...(first === undefined ? {} : { data: encodeEventBuffer(first.intent) }),
+                  },
+                ]
+              : []),
+          );
+        const entryPoints =
+          preparedProgram?.entryPoints ?? new Set(firstIntent.emitter.reflection.entryPoints);
 
         for (const [rendererIndex, renderer] of renderers.entries()) {
           if (renderer.enabled === false || renderer.kind !== 'trail') continue;
@@ -1778,12 +2039,13 @@ export function gpuParticleRenderFeature(
             destination: `${prefix}.renderer-${rendererIndex}.history`,
             size: historyBytes,
           });
-          resources.push({
-            kind: 'buffer',
-            name: `${prefix}.renderer-${rendererIndex}.history`,
-            size: historyBytes,
-            usage: ['storage', 'copy-src'],
-          });
+          if (retainedResources === undefined)
+            resources.push({
+              kind: 'buffer',
+              name: `${prefix}.renderer-${rendererIndex}.history`,
+              size: historyBytes,
+              usage: ['storage', 'copy-src'],
+            });
         }
 
         for (const copy of resetCopies) resetZeroBytes = Math.max(resetZeroBytes, copy.size);
@@ -1799,163 +2061,232 @@ export function gpuParticleRenderFeature(
         // simulating independent q-0/q-1 copies.
         // Tick occupancy is frame data. Retain the largest admitted batch's
         // slots so alternating fixed/render cadence does not rebuild the graph.
-        const emitter = emitterResource(
-          runtimeState(group.entry.runtimeId).emitters,
-          `${group.entry.worldId}:${group.entry.renderGeneration}:${Number(firstIntent.player)}:${firstIntent.emitter.id}:${firstIntent.programFingerprint}`,
-        );
-        emitter.tickCapacity = Math.max(emitter.tickCapacity, group.intents.length, 1);
-        for (let tickIndex = 0; tickIndex < emitter.tickCapacity; tickIndex++) {
-          const planned = group.intents[tickIndex] ?? first;
-          const enabled =
-            planned !== undefined && tickIndex < group.intents.length && !planned.retained;
-          const tickPrefix = `${prefix}.tick-${tickIndex}`;
-          const tickRuntime = `${tickPrefix}.runtime`;
-          const tickEventInputs = `${tickPrefix}.event-inputs`;
-          const tickBindings = `${tickPrefix}.simulation-bindings`;
-          resources.push(
-            {
-              kind: 'buffer',
-              name: tickRuntime,
-              size: RUNTIME_BYTES,
-              usage: ['uniform'],
-              ...(enabled
-                ? {
-                    data: runtimeData(
+        if (retainedResources?.batch !== undefined) {
+          const ranges = [
+            particles,
+            aliveIndices,
+            counters,
+            indirect,
+            scratch,
+            sharedInstances,
+            `${prefix}.custom`,
+          ].map((name) => {
+            const range = retainedResources.byName.get(name);
+            if (range === undefined) throw new Error(`Missing direct simulation range: ${name}`);
+            return range;
+          });
+          for (let tickIndex = 0; tickIndex < group.intents.length; tickIndex++) {
+            const planned = group.intents[tickIndex];
+            if (planned === undefined) return err(planFailure());
+            if (planned.retained) continue;
+            const runtime = runtimeData(
+              runtimeScratch,
+              planned.intent,
+              group.entry.camera,
+              undefined,
+              planned.localToWorld,
+            );
+            const entries = simulationDispatches(planned.intent, planned.stagePlan)
+              .filter((dispatch) => entryPoints.has(dispatch.entryPoint))
+              .map((dispatch) => dispatch.entryPoint);
+            directCompute.simulation({
+              program,
+              tick: tickIndex,
+              reset: planned.intent.reset ? resetCopies : [],
+              ranges,
+              customStride,
+              entries,
+              runtime,
+            });
+          }
+        } else {
+          for (let tickIndex = 0; tickIndex < emitter.tickCapacity; tickIndex++) {
+            const planned = group.intents[tickIndex] ?? first;
+            const enabled =
+              planned !== undefined && tickIndex < group.intents.length && !planned.retained;
+            const tickPrefix = `${prefix}.tick-${tickIndex}`;
+            const tickRuntime = `${tickPrefix}.runtime`;
+            const tickEventInputs = `${tickPrefix}.event-inputs`;
+            const tickBindings = `${tickPrefix}.simulation-bindings`;
+            if (retainedResources !== undefined && resourceAdmission !== undefined) {
+              if (enabled)
+                uploadEmitterResource(
+                  resourceAdmission,
+                  retainedResources,
+                  tickRuntime,
+                  runtimeData(
+                    runtimeScratch,
+                    planned.intent,
+                    group.entry.camera,
+                    undefined,
+                    planned.localToWorld,
+                  ),
+                );
+            } else
+              resources.push(
+                {
+                  kind: 'buffer',
+                  name: tickRuntime,
+                  size: RUNTIME_BYTES,
+                  usage: ['uniform'],
+                  ...(enabled
+                    ? {
+                        data: runtimeData(
+                          undefined,
+                          planned.intent,
+                          group.entry.camera,
+                          undefined,
+                          planned.localToWorld,
+                        ),
+                      }
+                    : {}),
+                },
+                ...(hasEvents
+                  ? [
+                      {
+                        kind: 'buffer' as const,
+                        name: tickEventInputs,
+                        size: eventBufferBytes,
+                        usage: ['storage'] as const,
+                        ...(enabled ? { data: encodeEventBuffer(planned.intent) } : {}),
+                      },
+                    ]
+                  : []),
+                ...(parameterBytes === 0
+                  ? []
+                  : [
+                      {
+                        kind: 'buffer' as const,
+                        name: `${tickPrefix}.parameters`,
+                        size: parameterBytes,
+                        usage: ['uniform'] as const,
+                        ...(enabled ? { data: planned.intent.parameterBlock } : {}),
+                      },
+                    ]),
+                computeBindings(tickBindings, program, planned?.intent ?? firstIntent, () => ({
+                  0: particles,
+                  1: tickRuntime,
+                  2: aliveIndices,
+                  3: counters,
+                  4: indirect,
+                  5: scratch,
+                  6: sharedInstances,
+                  ...(hasEvents ? { 8: tickEventInputs } : {}),
+                  ...(parameterBytes === 0 ? {} : { 10: `${tickPrefix}.parameters` }),
+                  ...(customStride === 0 ? {} : { 11: `${prefix}.custom` }),
+                  ...diBindings,
+                })),
+              );
+            if (planned === undefined) continue;
+            const dispatches = simulationDispatches(planned.intent, planned.stagePlan).filter(
+              (dispatch) => entryPoints.has(dispatch.entryPoint),
+            );
+            if (dispatches.length === 0) continue;
+            const tickPassStart = passes.length;
+            // Keep the ordinary reset boundary before the complete compute chain.
+            // A rare mid-batch reset needs a real boundary; reserving disabled
+            // copies between every tick would split steady-state compute passes.
+            if (tickIndex === 0 || (enabled && planned.intent.reset))
+              passes.push({
+                kind: 'copy',
+                name: `${tickPrefix}.reset`,
+                enabled: enabled && planned.intent.reset,
+                copies: resetCopies,
+              });
+            passes.push({
+              kind: 'compute',
+              enabled,
+              name: `${tickPrefix}.simulate`,
+              program,
+              bindings: tickBindings,
+              dispatches,
+            });
+
+            // Trail history is part of the fixed-step simulation state.  It must
+            // be written immediately after each tick, before the next tick can
+            // mutate particles; projecting history once after the whole batch
+            // would overwrite only the latest ring slot.
+            for (const [rendererIndex, renderer] of renderers.entries()) {
+              if (renderer.enabled === false) continue;
+              if (renderer.kind !== 'trail') continue;
+              if (!entryPoints.has('forgeax_vfx_trail_history_main')) continue;
+              const rendererPrefix = `${prefix}.renderer-${rendererIndex}`;
+              const history = `${rendererPrefix}.history`;
+              const historyRuntime = `${tickPrefix}.renderer-${rendererIndex}.history-runtime`;
+              const historyBindings = `${tickPrefix}.renderer-${rendererIndex}.history-bindings`;
+              if (retainedResources !== undefined && resourceAdmission !== undefined) {
+                if (enabled)
+                  uploadEmitterResource(
+                    resourceAdmission,
+                    retainedResources,
+                    historyRuntime,
+                    runtimeData(
+                      runtimeScratch,
                       planned.intent,
                       group.entry.camera,
                       undefined,
                       planned.localToWorld,
+                      renderer,
+                      rendererIndex,
                     ),
-                  }
-                : {}),
-            },
-            ...(hasEvents
-              ? [
+                  );
+              } else
+                resources.push(
                   {
-                    kind: 'buffer' as const,
-                    name: tickEventInputs,
-                    size: eventBufferBytes,
-                    usage: ['storage'] as const,
-                    ...(enabled ? { data: encodeEventBuffer(planned.intent) } : {}),
+                    kind: 'buffer',
+                    name: historyRuntime,
+                    size: RUNTIME_BYTES,
+                    usage: ['uniform'],
+                    ...(enabled
+                      ? {
+                          data: runtimeData(
+                            undefined,
+                            planned.intent,
+                            group.entry.camera,
+                            undefined,
+                            planned.localToWorld,
+                            renderer,
+                            rendererIndex,
+                          ),
+                        }
+                      : {}),
                   },
-                ]
-              : []),
-            ...(parameterBytes === 0
-              ? []
-              : [
+                  computeBindings(historyBindings, program, planned?.intent ?? firstIntent, () => ({
+                    0: particles,
+                    1: historyRuntime,
+                    2: aliveIndices,
+                    3: counters,
+                    4: indirect,
+                    5: history,
+                    6: sharedInstances,
+                    ...(hasEvents ? { 8: tickEventInputs } : {}),
+                    ...(parameterBytes === 0 ? {} : { 10: `${tickPrefix}.parameters` }),
+                    ...(customStride === 0 ? {} : { 11: `${prefix}.custom` }),
+                    ...diBindings,
+                  })),
+                );
+              passes.push({
+                kind: 'compute',
+                enabled,
+                name: `${historyBindings}.write`,
+                program,
+                bindings: historyBindings,
+                dispatches: [
                   {
-                    kind: 'buffer' as const,
-                    name: `${tickPrefix}.parameters`,
-                    size: parameterBytes,
-                    usage: ['uniform'] as const,
-                    ...(enabled ? { data: planned.intent.parameterBlock } : {}),
+                    kind: 'direct',
+                    entryPoint: 'forgeax_vfx_trail_history_main',
+                    workgroups: [Math.max(1, Math.ceil(renderer.capacity / WORKGROUP_SIZE))],
                   },
-                ]),
-            computeBindings(tickBindings, program, planned?.intent ?? firstIntent, () => ({
-              0: particles,
-              1: tickRuntime,
-              2: aliveIndices,
-              3: counters,
-              4: indirect,
-              5: scratch,
-              6: sharedInstances,
-              ...(hasEvents ? { 8: tickEventInputs } : {}),
-              ...(parameterBytes === 0 ? {} : { 10: `${tickPrefix}.parameters` }),
-              ...(customStride === 0 ? {} : { 11: `${prefix}.custom` }),
-              ...diBindings,
-            })),
-          );
-          if (planned === undefined) continue;
-          const dispatches = simulationDispatches(planned.intent, planned.stagePlan).filter(
-            (dispatch) => entryPoints.has(dispatch.entryPoint),
-          );
-          if (dispatches.length === 0) continue;
-          const tickPassStart = passes.length;
-          // Keep the ordinary reset boundary before the complete compute chain.
-          // A rare mid-batch reset needs a real boundary; reserving disabled
-          // copies between every tick would split steady-state compute passes.
-          if (tickIndex === 0 || (enabled && planned.intent.reset))
-            passes.push({
-              kind: 'copy',
-              name: `${tickPrefix}.reset`,
-              enabled: enabled && planned.intent.reset,
-              copies: resetCopies,
-            });
-          passes.push({
-            kind: 'compute',
-            enabled,
-            name: `${tickPrefix}.simulate`,
-            program,
-            bindings: tickBindings,
-            dispatches,
-          });
-
-          // Trail history is part of the fixed-step simulation state.  It must
-          // be written immediately after each tick, before the next tick can
-          // mutate particles; projecting history once after the whole batch
-          // would overwrite only the latest ring slot.
-          for (const [rendererIndex, renderer] of renderers.entries()) {
-            if (renderer.enabled === false) continue;
-            if (renderer.kind !== 'trail') continue;
-            if (!entryPoints.has('forgeax_vfx_trail_history_main')) continue;
-            const rendererPrefix = `${prefix}.renderer-${rendererIndex}`;
-            const history = `${rendererPrefix}.history`;
-            const historyRuntime = `${tickPrefix}.renderer-${rendererIndex}.history-runtime`;
-            const historyBindings = `${tickPrefix}.renderer-${rendererIndex}.history-bindings`;
-            resources.push(
-              {
-                kind: 'buffer',
-                name: historyRuntime,
-                size: RUNTIME_BYTES,
-                usage: ['uniform'],
-                ...(enabled
-                  ? {
-                      data: runtimeData(
-                        planned.intent,
-                        group.entry.camera,
-                        undefined,
-                        planned.localToWorld,
-                        renderer,
-                        rendererIndex,
-                      ),
-                    }
-                  : {}),
-              },
-              computeBindings(historyBindings, program, planned?.intent ?? firstIntent, () => ({
-                0: particles,
-                1: historyRuntime,
-                2: aliveIndices,
-                3: counters,
-                4: indirect,
-                5: history,
-                6: sharedInstances,
-                ...(hasEvents ? { 8: tickEventInputs } : {}),
-                ...(parameterBytes === 0 ? {} : { 10: `${tickPrefix}.parameters` }),
-                ...(customStride === 0 ? {} : { 11: `${prefix}.custom` }),
-                ...diBindings,
-              })),
-            );
-            passes.push({
-              kind: 'compute',
-              enabled,
-              name: `${historyBindings}.write`,
-              program,
-              bindings: historyBindings,
-              dispatches: [
-                {
-                  kind: 'direct',
-                  entryPoint: 'forgeax_vfx_trail_history_main',
-                  workgroups: [Math.max(1, Math.ceil(renderer.capacity / WORKGROUP_SIZE))],
-                },
-              ],
-            });
+                ],
+              });
+            }
+            if (enabled)
+              group.stream.ranges?.push({
+                sequence: planned.intent.sequence,
+                start: tickPassStart,
+                end: passes.length,
+              });
           }
-          if (enabled)
-            group.stream.ranges?.push({
-              sequence: planned.intent.sequence,
-              start: tickPassStart,
-              end: passes.length,
-            });
         }
 
         for (const work of viewWork) {
@@ -2051,30 +2382,81 @@ export function gpuParticleRenderFeature(
               renderer.kind === 'trail'
                 ? capacity * (Math.max(2, renderer.historyLength) + 1) * 16
                 : 16;
-            resources.push(
-              {
-                kind: 'buffer',
-                name: instances,
-                size: instanceBytes,
-                usage: ['storage', 'vertex'],
-              },
-              {
-                kind: 'buffer',
-                name: history,
-                size: historyBytes,
-                usage: ['storage'],
-              },
-            );
-            resources.push(
-              { kind: 'buffer', name: viewAliveIndices, size: capacity * 4, usage: ['storage'] },
-              { kind: 'buffer', name: viewCounters, size: COUNTERS_BYTES, usage: ['storage'] },
-              {
-                kind: 'buffer',
-                name: viewIndirect,
-                size: indirectWords.byteLength,
-                usage: ['storage', 'indirect'],
-              },
-            );
+            const projectionBatch =
+              retainedResources?.batch !== undefined &&
+              retainedArena !== undefined &&
+              retainedArena.supports(instanceBytes, ['storage']) &&
+              retainedArena.supports(historyBytes, ['storage']) &&
+              retainedArena.supports(indirectWords.byteLength, ['storage'], 20) &&
+              retainedArena.supports(COUNTERS_BYTES, ['storage'], 24)
+                ? retainedResources.batch
+                : undefined;
+            const projectionProgram =
+              retainedResources?.batch !== undefined && projectionBatch === undefined
+                ? `${program}.single-projection`
+                : program;
+            if (projectionProgram !== program && resourceAdmission !== undefined) {
+              if (preparedProgram === undefined) return err(planFailure());
+              resourceAdmission.program(
+                'frame',
+                projectionProgram,
+                preparedProgram.program,
+                programDeclaration.preparePipelines,
+              );
+            }
+            const retainedProjection =
+              retainedResources === undefined ||
+              retainedArena === undefined ||
+              resourceAdmission === undefined
+                ? undefined
+                : retainProjectionResources({
+                    frame: retainedResources,
+                    ...(projectionBatch === undefined ? {} : { batch: projectionBatch }),
+                    instance: {
+                      prefix,
+                      program: `${program}.a-${group.entry.runtimeId}.r-${group.entry.renderGeneration}`,
+                      owner: `${group.entry.runtimeId}:${group.entry.renderGeneration}:${Number(firstIntent.player)}:${firstIntent.emitter.id}:${program}`,
+                    },
+                    program: projectionProgram,
+                    view: view.identity,
+                    renderer: rendererIndex,
+                    instanceBytes,
+                    historyBytes,
+                    indirectBytes: indirectWords.byteLength,
+                    arena: retainedArena,
+                    admission: resourceAdmission,
+                  });
+            if (retainedProjection?.binding !== undefined)
+              nextBindingLayouts.set(projectionBindings, {
+                emitter: firstIntent.emitter,
+                resource: retainedProjection.binding,
+              });
+            if (retainedProjection === undefined)
+              resources.push(
+                {
+                  kind: 'buffer',
+                  name: instances,
+                  size: instanceBytes,
+                  usage: ['storage', 'vertex'],
+                },
+                {
+                  kind: 'buffer',
+                  name: history,
+                  size: historyBytes,
+                  usage: ['storage'],
+                },
+              );
+            if (retainedProjection === undefined)
+              resources.push(
+                { kind: 'buffer', name: viewAliveIndices, size: capacity * 4, usage: ['storage'] },
+                { kind: 'buffer', name: viewCounters, size: COUNTERS_BYTES, usage: ['storage'] },
+                {
+                  kind: 'buffer',
+                  name: viewIndirect,
+                  size: indirectWords.byteLength,
+                  usage: ['storage', 'indirect'],
+                },
+              );
             const copies = [
               { source: aliveIndices, destination: viewAliveIndices, size: capacity * 4 },
               { source: counters, destination: viewCounters, size: COUNTERS_BYTES },
@@ -2095,49 +2477,79 @@ export function gpuParticleRenderFeature(
               enabled: renderEnabled && (visible || castsShadow),
               copies,
             });
-            resources.push(
-              {
-                kind: 'buffer',
-                name: projectionRuntime,
-                size: RUNTIME_BYTES,
-                usage: ['uniform'],
-                ...(latest === undefined
-                  ? {}
-                  : {
-                      data: runtimeData(
-                        { ...latest.intent, fixedDelta: 0, spawnCount: 0 },
-                        camera,
-                        material,
-                        latestTransform,
-                        renderer,
-                        rendererIndex,
-                        preparedInputs.value.lanes,
-                        renderer.kind === 'mesh' && submesh !== undefined
-                          ? {
-                              count:
-                                mesh?.indices === undefined
-                                  ? submesh.vertexCount
-                                  : submesh.indexCount,
-                              firstIndex: mesh?.indices === undefined ? 0 : submesh.indexOffset,
-                            }
-                          : undefined,
-                      ),
-                    }),
-              },
-              computeBindings(projectionBindings, program, firstIntent, () => ({
-                0: particles,
-                1: projectionRuntime,
-                2: viewAliveIndices,
-                3: viewCounters,
-                4: viewIndirect,
-                5: history,
-                6: instances,
-                ...(hasEvents ? { 8: projectionEventInputs } : {}),
-                ...(parameterBytes === 0 ? {} : { 10: `${prefix}.parameters` }),
-                ...(customStride === 0 ? {} : { 11: `${prefix}.custom` }),
-                ...diBindings,
-              })),
-            );
+            let directProjectionRuntime: ArrayBufferView | undefined;
+            if (retainedProjection !== undefined && resourceAdmission !== undefined) {
+              if (latest !== undefined) {
+                directProjectionRuntime = runtimeData(
+                  runtimeScratch,
+                  { ...latest.intent, fixedDelta: 0, spawnCount: 0 },
+                  camera,
+                  material,
+                  latestTransform,
+                  renderer,
+                  rendererIndex,
+                  preparedInputs.value.lanes,
+                  renderer.kind === 'mesh' && submesh !== undefined
+                    ? {
+                        count:
+                          mesh?.indices === undefined ? submesh.vertexCount : submesh.indexCount,
+                        firstIndex: mesh?.indices === undefined ? 0 : submesh.indexOffset,
+                      }
+                    : undefined,
+                );
+                if (retainedProjection.runtime !== undefined)
+                  resourceAdmission.upload(
+                    { view: view.identity },
+                    retainedProjection.runtime.name,
+                    retainedProjection.runtime.offset,
+                    directProjectionRuntime,
+                  );
+              }
+            } else
+              resources.push(
+                {
+                  kind: 'buffer',
+                  name: projectionRuntime,
+                  size: RUNTIME_BYTES,
+                  usage: ['uniform'],
+                  ...(latest === undefined
+                    ? {}
+                    : {
+                        data: runtimeData(
+                          undefined,
+                          { ...latest.intent, fixedDelta: 0, spawnCount: 0 },
+                          camera,
+                          material,
+                          latestTransform,
+                          renderer,
+                          rendererIndex,
+                          preparedInputs.value.lanes,
+                          renderer.kind === 'mesh' && submesh !== undefined
+                            ? {
+                                count:
+                                  mesh?.indices === undefined
+                                    ? submesh.vertexCount
+                                    : submesh.indexCount,
+                                firstIndex: mesh?.indices === undefined ? 0 : submesh.indexOffset,
+                              }
+                            : undefined,
+                        ),
+                      }),
+                },
+                computeBindings(projectionBindings, projectionProgram, firstIntent, () => ({
+                  0: particles,
+                  1: projectionRuntime,
+                  2: viewAliveIndices,
+                  3: viewCounters,
+                  4: viewIndirect,
+                  5: history,
+                  6: instances,
+                  ...(hasEvents ? { 8: projectionEventInputs } : {}),
+                  ...(parameterBytes === 0 ? {} : { 10: `${prefix}.parameters` }),
+                  ...(customStride === 0 ? {} : { 11: `${prefix}.custom` }),
+                  ...diBindings,
+                })),
+              );
             const projectionDispatches: Extract<
               PlanPass,
               { readonly kind: 'compute' }
@@ -2162,15 +2574,51 @@ export function gpuParticleRenderFeature(
               `forgeax_vfx_${renderer.kind}_main`,
               Math.ceil(projectionCount / WORKGROUP_SIZE),
             );
-            if (projectionDispatches.length > 0) {
-              passes.push({
-                kind: 'compute',
-                name: `${rendererPrefix}.project`,
-                enabled: renderEnabled && (visible || castsShadow),
-                program,
-                bindings: projectionBindings,
-                dispatches: projectionDispatches,
-              });
+            if (retainedProjection?.batch !== undefined && retainedResources !== undefined) {
+              if (
+                renderEnabled &&
+                (visible || castsShadow) &&
+                directProjectionRuntime !== undefined
+              ) {
+                const frameRange = (name: string) => {
+                  const range = retainedResources.byName.get(name);
+                  if (range === undefined) throw new Error(`Missing direct frame range: ${name}`);
+                  return range;
+                };
+                const viewRange = (suffix: string) => {
+                  const range = retainedProjection.byName.get(
+                    `${prefix}.view.renderer-${rendererIndex}.${suffix}`,
+                  );
+                  if (range === undefined) throw new Error(`Missing direct view range: ${suffix}`);
+                  return range;
+                };
+                directCompute.projection(view.identity, {
+                  program,
+                  customStride,
+                  ranges: [
+                    frameRange(particles),
+                    viewRange('alive-indices'),
+                    viewRange('counters'),
+                    viewRange('indirect'),
+                    viewRange('history'),
+                    viewRange('instances'),
+                    frameRange(`${prefix}.custom`),
+                  ],
+                  entries: projectionDispatches.map((dispatch) => dispatch.entryPoint),
+                  runtime: directProjectionRuntime,
+                });
+              }
+            } else {
+              if (projectionDispatches.length > 0) {
+                passes.push({
+                  kind: 'compute',
+                  name: `${rendererPrefix}.project`,
+                  enabled: renderEnabled && (visible || castsShadow),
+                  program: projectionProgram,
+                  bindings: projectionBindings,
+                  dispatches: projectionDispatches,
+                });
+              }
             }
 
             const graphicsProgram = `${rendererPrefix}.graphics-program`;
@@ -2208,7 +2656,9 @@ export function gpuParticleRenderFeature(
                 program: graphicsProgram,
                 values: {
                   group: 0,
-                  runtime: projectionRuntime,
+                  ...(retainedProjection?.batch === undefined
+                    ? { runtime: projectionRuntime }
+                    : {}),
                   instances,
                   ...(sceneDepthBinding === undefined ? {} : { sceneDepthBinding }),
                 },
@@ -2227,7 +2677,13 @@ export function gpuParticleRenderFeature(
                 program: graphicsProgram,
                 values: {
                   group: 1,
-                  material: { world: group.entry.sourceWorldIndex, guid: renderer.material },
+                  material: {
+                    world: group.entry.sourceWorldIndex,
+                    guid: renderer.material,
+                    ...(publishedMaterial?.assetHandle === undefined
+                      ? {}
+                      : { assetHandle: publishedMaterial.assetHandle }),
+                  },
                 },
               });
               drawBindings.push(materialBindings);
@@ -2314,7 +2770,13 @@ export function gpuParticleRenderFeature(
                   kind: 'graphics-bindings',
                   name: shadowBindings,
                   program: shadowProgram,
-                  values: { group: 0, runtime: projectionRuntime, instances },
+                  values: {
+                    group: 0,
+                    ...(retainedProjection?.batch === undefined
+                      ? { runtime: projectionRuntime }
+                      : {}),
+                    instances,
+                  },
                 },
               );
               passes.push({
@@ -2383,6 +2845,41 @@ export function gpuParticleRenderFeature(
           starts: resourceStarts,
           ends: resourceArrays.map((array) => array.length),
         });
+        if (executionStarts !== undefined)
+          executionRanges.set(group.key, {
+            starts: executionStarts,
+            ends: executionArrays.map((array) => array.length),
+          });
+      }
+
+      // Allocate cold slots in the same sorted declaration order as the Arena
+      // owner, then restore the original command and transparent draw order.
+      if (retainedArena !== undefined) {
+        const frameIndices = new Map<number, number>();
+        for (const [index, array] of executionArrays.entries()) {
+          const current = [...array];
+          let destination = 0;
+          for (const group of originalGroups) {
+            const range = executionRanges.get(group.key);
+            if (range === undefined) continue;
+            for (
+              let source = range.starts[index] as number;
+              source < (range.ends[index] as number);
+              source++
+            ) {
+              if (index === 0) frameIndices.set(source, destination);
+              array[destination++] = current[source] as PlanPass;
+            }
+          }
+        }
+        for (const stream of streams.values())
+          if (stream.ranges !== undefined) {
+            for (const range of stream.ranges) {
+              range.start = frameIndices.get(range.start) ?? range.start;
+              range.end = (frameIndices.get(range.end - 1) ?? range.end - 1) + 1;
+            }
+            stream.ranges.sort((left, right) => left.start - right.start);
+          }
       }
 
       // Programs own storage, not execution order. Reorder complete tick blocks
@@ -2457,6 +2954,10 @@ export function gpuParticleRenderFeature(
       };
       batchComputes(passes);
       for (const work of viewWork) batchComputes(work.passes);
+
+      directCompute.finishFrame(resources, passes);
+      for (const work of viewWork)
+        directCompute.finishView(work.view.identity, work.resources, work.passes);
 
       // All emitters share each view's color/depth targets. Finish projection
       // and opaque coverage before blending, regardless of Player spawn order.
@@ -2543,7 +3044,12 @@ export function gpuParticleRenderFeature(
           const resource = declarations[index];
           // Only our generated metadata is retained, after every source read.
           // Upload declarations keep their current bytes and ordinary lifetime.
-          if (resource?.kind !== 'buffer' || Object.hasOwn(resource, 'data')) continue;
+          if (
+            resource?.kind !== 'buffer' ||
+            Object.hasOwn(resource, 'data') ||
+            Object.hasOwn(resource, 'uploads')
+          )
+            continue;
           const previous = nextBufferLayouts.get(resource.name) ?? bufferLayouts.get(resource.name);
           const retained =
             previous !== undefined &&
@@ -2557,30 +3063,43 @@ export function gpuParticleRenderFeature(
         }
         return declarations;
       };
-      retainBuffers(resources);
-      for (const work of viewWork) retainBuffers(work.resources);
+      const work: import('@forgeax/engine-render').RenderFeatureWork[] = [
+        {
+          scope: 'frame',
+          resources: [
+            ...sharedDataInterfaces.values(),
+            ...[...sharedComputePrograms]
+              .sort((a, b) => a[0] - b[0])
+              .map(([, resource]) => resource),
+            ...resources,
+          ],
+          passes,
+        },
+        ...viewWork.map(({ view, resources, passes }) => ({
+          scope: { view: view.identity },
+          resources,
+          passes,
+        })),
+      ];
+      const packed =
+        packArenas?.({
+          work:
+            nativePlan === undefined
+              ? work
+              : work.map((row) => shareVfxGraphicsPrograms(row, true)),
+          transferPasses: nativePlan !== undefined,
+          instances: arenaInstances,
+          liveOwners: liveArenaOwners,
+          generation: context.generation,
+          ...(context.limits === undefined ? {} : { limits: context.limits }),
+        }) ?? work;
+      for (const row of packed) retainBuffers(row.resources as PlanResource[]);
       bufferLayouts = nextBufferLayouts;
-      return ok<RenderFeaturePlan>({
-        work: [
-          {
-            scope: 'frame',
-            resources: [
-              ...sharedDataInterfaces.values(),
-              ...[...sharedComputePrograms]
-                .sort((a, b) => a[0] - b[0])
-                .map(([, resource]) => resource),
-              ...resources,
-            ],
-            passes,
-          },
-          ...viewWork.map(({ view, resources, passes }) => ({
-            scope: { view: view.identity },
-            resources,
-            passes,
-          })),
-        ],
-        sourceFeedback,
-      });
+      return ok<RenderFeaturePlan>(
+        nativePlan === undefined
+          ? { work: packed, sourceFeedback }
+          : nativePlan.finish(packed, sourceFeedback, { batchReadOnlyDepthRaster: true }),
+      );
     },
     onFrameSubmitted: (frame, submission?: RenderFeatureSubmission) => {
       const pending = pendingFrames.get(frame.frameNumber);

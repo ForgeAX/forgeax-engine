@@ -19,7 +19,7 @@ const mesh = {
 
 function state() {
   return {
-    editorPreview: scene,
+    scenePreview: scene,
     preview: scene,
     previews: [scene, mesh],
     resourceOpens: {
@@ -59,11 +59,11 @@ function cameraApi(stateValue = state()) {
 }
 
 describe('mesh preview camera drive', () => {
-  it('selects the open mesh preview instead of the scene editor', () => {
+  it('selects the open mesh preview instead of the scene', () => {
     const target = selectMeshPreviewCameraTarget(state());
     assert.equal(target.targetId, 'mesh-target');
     assert.equal(target.generation, 7);
-    assert.equal(selectMeshPreviewCameraTarget({ editorPreview: scene, previews: [scene] }), undefined);
+    assert.equal(selectMeshPreviewCameraTarget({ scenePreview: scene, previews: [scene] }), undefined);
   });
 
   it('drives the mesh camera through get, begin, update, and commit', async () => {
@@ -115,7 +115,7 @@ describe('mesh preview camera drive', () => {
   });
 
   it('does not open a drive when no mesh preview is live', async () => {
-    const { api } = cameraApi({ editorPreview: scene, previews: [scene] });
+    const { api } = cameraApi({ scenePreview: scene, previews: [scene] });
     await assert.rejects(openMeshPreviewCamera(api), (error) => {
       assert.equal(error instanceof ViewWorkspaceError, true);
       assert.equal(error.code, 'view-workspace-preview-required');

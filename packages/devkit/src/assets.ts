@@ -116,7 +116,11 @@ async function addImage(sourcePath: string, dryRun: boolean): Promise<CommandRes
   return { ok: true, value: { source: sourcePath, metaPath, guid, reused: false, dryRun } };
 }
 
-async function addGltf(sourcePath: string, dryRun: boolean): Promise<CommandResult<unknown>> {
+async function addModel(
+  sourcePath: string,
+  dryRun: boolean,
+  format: 'glTF' | 'FBX',
+): Promise<CommandResult<unknown>> {
   if (dryRun) {
     const exists = await stat(`${sourcePath}.meta.json`)
       .then(() => true)
@@ -133,7 +137,8 @@ async function addGltf(sourcePath: string, dryRun: boolean): Promise<CommandResu
   }
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const exitCode = await runCliGltf(['import', sourcePath], {
+  const run = format === 'glTF' ? runCliGltf : runCliFbx;
+  const exitCode = await run(['import', sourcePath], {
     stdoutWrite: (line) => stdout.push(line),
     stderrWrite: (line) => stderr.push(line),
   });
@@ -143,44 +148,8 @@ async function addGltf(sourcePath: string, dryRun: boolean): Promise<CommandResu
     } catch {
       return failure({
         code: 'asset-add-failed',
-        expected: 'the glTF producer to create or reuse a valid sidecar',
-        hint: 'Inspect the glTF source and its external references.',
-        detail: { source: sourcePath, diagnostic: stderr.join('\n') },
-      });
-    }
-  }
-  return { ok: true, value: { source: sourcePath, metaPath: `${sourcePath}.meta.json` } };
-}
-
-async function addFbx(sourcePath: string, dryRun: boolean): Promise<CommandResult<unknown>> {
-  if (dryRun) {
-    const exists = await stat(`${sourcePath}.meta.json`)
-      .then(() => true)
-      .catch(() => false);
-    return {
-      ok: true,
-      value: {
-        source: sourcePath,
-        metaPath: `${sourcePath}.meta.json`,
-        reused: exists,
-        dryRun: true,
-      },
-    };
-  }
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const exitCode = await runCliFbx(['import', sourcePath], {
-    stdoutWrite: (line) => stdout.push(line),
-    stderrWrite: (line) => stderr.push(line),
-  });
-  if (exitCode !== 0) {
-    try {
-      return failure(JSON.parse(stderr.at(-1) ?? '') as CommandError);
-    } catch {
-      return failure({
-        code: 'asset-add-failed',
-        expected: 'the FBX producer to create or reuse a valid sidecar',
-        hint: 'Inspect the FBX source and its external references.',
+        expected: `the ${format} producer to create or reuse a valid sidecar`,
+        hint: `Inspect the ${format} source and its external references.`,
         detail: { source: sourcePath, diagnostic: stderr.join('\n') },
       });
     }
@@ -265,9 +234,9 @@ export async function assetAddCommand(options: AssetAddOptions): Promise<Command
         : imageExtensions.has(extname(source).toLowerCase())
           ? await addImage(source, options.dryRun === true)
           : gltfExtensions.has(extname(source).toLowerCase())
-            ? await addGltf(source, options.dryRun === true)
+            ? await addModel(source, options.dryRun === true, 'glTF')
             : fbxExtensions.has(extname(source).toLowerCase())
-              ? await addFbx(source, options.dryRun === true)
+              ? await addModel(source, options.dryRun === true, 'FBX')
               : await addFont(source, options.dryRun === true);
       if (!result.ok)
         return failure({

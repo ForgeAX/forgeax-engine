@@ -36,6 +36,8 @@ import {
   terrainShadowTopology,
 } from '../terrain/shadow-family';
 import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
+import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
+import { scenePipelinePreparations } from './scene-pipeline-preparation';
 import { addTargetCaptureGraphPasses, type CubeCaptureGraphState } from './target-capture-graph';
 import { translucentViewOffset, VIEW_UNIFORM_BYTES } from './view-ubo';
 
@@ -73,6 +75,7 @@ import { depthOfFieldTopology } from '../features/depth-of-field/depth-of-field-
 import { resolveDepthOfFieldFrameParams } from '../features/depth-of-field/depth-of-field-params';
 import {
   getRenderFeaturePlanExecutionProjection,
+  hasNativeRenderFeatureExecutionSignature,
   hasSubmissionSensitiveFeatures,
   type RenderFeaturePlanExecution,
 } from '../features/host';
@@ -84,7 +87,6 @@ import {
 } from '../features/plan';
 import {
   createRenderFeatureProjectionState,
-  projectRenderFeaturePlans as projectPlanExecutions,
   projectRenderFeatureShadows,
 } from '../features/render-graph-contribution';
 import type {
@@ -92,6 +94,11 @@ import type {
   RenderFeatureGraphTargetResolver,
 } from '../features/render-graph-raster';
 import { isRenderFeatureTargetHandle } from '../features/targets';
+import {
+  inspectTransientViewGraphs,
+  projectTransientViewPlans,
+  selectTransientViewPlans,
+} from '../features/transient-view-graph';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import {
   buildFullscreenPostProcessPass,
@@ -1442,6 +1449,7 @@ export function getRenderFeatureGraphInspection(
     accepted: metrics.accepted,
     rejected: metrics.rejected,
     abandoned: metrics.abandoned,
+    transientViewGraphs: inspectTransientViewGraphs(internals),
     last: Object.freeze({
       planSignature: metrics.lastPlanSignature,
       topologyKey: metrics.lastTopologyKey,
@@ -1583,10 +1591,9 @@ function validateRenderFeaturePlans(
     // check it again so a mutation between the two synchronous stages cannot
     // smuggle a stale plan into the compiled graph. Only candidates without
     // evidence fall back to the canonical serializer.
-    const signatureCacheHit = renderFeaturePlanSignatureEvidenceMatches(
-      planned.plan,
-      planned.signature,
-    );
+    const signatureCacheHit =
+      hasNativeRenderFeatureExecutionSignature(planned) ||
+      renderFeaturePlanSignatureEvidenceMatches(planned.plan, planned.signature);
     if (metrics !== undefined) {
       if (signatureCacheHit) metrics.signatureValidationCacheHits += 1;
       else metrics.signatureValidationCacheMisses += 1;
@@ -1665,7 +1672,7 @@ function topologyOf(
   shadowMapSize: number | undefined,
   gpuDriven: PreparedGpuDrivenFrame | undefined,
   featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
-  featurePlanRevision: number,
+  featurePlanRevision: number | string,
   cubeCaptureState: CubeCaptureGraphState | undefined,
   transmissionDemand: TransmissionDemand | undefined,
   volumetricFog: ExtractedVolumetricFog | undefined,
@@ -1979,7 +1986,7 @@ function targetResolver(
   };
 }
 
-function resolveTargetBindings(
+export function resolveTargetBindings(
   input: {
     readonly frame: RenderPipelineFrame;
     readonly binding: import('../prepare/prepared-graphics-resolver').PreparedGraphicsResolvedResource & {
@@ -2237,44 +2244,81 @@ function resolveTargetBindings(
   }
   if (sceneDepthBinding === 1) {
     const target = sceneDepth === undefined ? undefined : input.resolveTarget(sceneDepth);
-    const depthView =
-      target === undefined
-        ? frame.pipelineState.shadowFallbackTextureView
-        : (() => {
-            const texture = input.resources.texture(target.texture);
-            if (!texture.ok) throw texture.error;
-            const created = frame.runtime.device.createTextureView(texture.value as Texture, {
-              aspect: 'depth-only',
-              dimension: '2d',
-            });
-            if (!created.ok) throw created.error;
-            return created.value;
-          })();
-    const layout = pipeline.getBindGroupLayout?.(0);
-    if (layout === undefined) return undefined;
-    const created = frame.runtime.device.createBindGroup({
-      layout,
-      entries: [
-        {
-          binding: 0,
-          resource: {
-            kind: 'buffer',
-            value: {
-              buffer: frame.pipelineState.viewUniformBuffer,
-              offset: viewOffset,
-              size: VIEW_UNIFORM_BYTES,
-            },
-          },
-        },
-        { binding: 1, resource: { kind: 'textureView', value: depthView } },
-        ...atmosphereBindings(frame.pipelineState, atmosphereViews),
-        ...atmosphereMaterialVisibilityBindings(
-          frame.pipelineState,
-          directionalShadow,
-          cloudShadow,
-        ),
+    const texture = target === undefined ? undefined : input.resources.texture(target.texture);
+    if (texture !== undefined && !texture.ok) throw texture.error;
+    const depth = texture?.value ?? frame.pipelineState.shadowFallbackTextureView;
+    const getLayout = pipeline.getBindGroupLayout;
+    const layout = getLayout?.call(pipeline, 0);
+    if (layout === undefined) {
+      // Preserve depth-view failure reporting even for a pipeline that cannot
+      // supply this layout; this branch never publishes a cached binding.
+      if (texture !== undefined) {
+        const view = frame.runtime.device.createTextureView(texture.value as Texture, {
+          aspect: 'depth-only',
+          dimension: '2d',
+        });
+        if (!view.ok) throw view.error;
+      }
+      return undefined;
+    }
+    const extraEntries = [
+      ...atmosphereBindings(frame.pipelineState, atmosphereViews),
+      ...atmosphereMaterialVisibilityBindings(frame.pipelineState, directionalShadow, cloudShadow),
+    ];
+    const extraLayout = extraEntries
+      .map((entry) => {
+        const resource = entry.resource;
+        return `${entry.binding}:${resource.kind}${
+          resource.kind === 'buffer' ? `:${resource.value.offset}:${resource.value.size}` : ''
+        }`;
+      })
+      .join(',');
+    // Auto layouts are exclusive to their immutable pipeline even when each
+    // getBindGroupLayout call returns a new wrapper. Keep that actual pipeline
+    // and every current physical input in the existing device-local View cache.
+    // Texture contents and View uploads do not replace either binding resource.
+    const created = getOrCreateFromChainResult(
+      frame.frameState.viewBindGroupCache,
+      [
+        frame.runtime.device,
+        frame.runtime.deviceScope ?? frame.runtime.device,
+        pipeline,
+        getLayout as object,
+        frame.pipelineState.viewUniformBuffer,
+        depth,
+        ...extraEntries.map(extractEntryResourceHandle),
       ],
-    });
+      `feature-depth-view:${texture === undefined ? 'fallback' : 'texture'}:${viewOffset}:${extraLayout}`,
+      () => {
+        const depthView =
+          texture === undefined
+            ? ok(frame.pipelineState.shadowFallbackTextureView)
+            : frame.runtime.device.createTextureView(texture.value as Texture, {
+                aspect: 'depth-only',
+                dimension: '2d',
+              });
+        if (!depthView.ok) return depthView;
+        return frame.runtime.device.createBindGroup({
+          layout,
+          entries: [
+            {
+              binding: 0,
+              resource: {
+                kind: 'buffer',
+                value: {
+                  buffer: frame.pipelineState.viewUniformBuffer,
+                  offset: viewOffset,
+                  size: VIEW_UNIFORM_BYTES,
+                },
+              },
+            },
+            { binding: 1, resource: { kind: 'textureView', value: depthView.value } },
+            ...extraEntries,
+          ],
+        });
+      },
+      frame.bindGroupCounts,
+    );
     if (!created.ok) throw created.error;
     return created.value;
   }
@@ -2483,6 +2527,25 @@ export function ensureCompiledFrameGraph(
       .join('|');
     featureMetrics.planRevisionState = nextPlanRevision;
   }
+  const transientViews = selectTransientViewPlans(
+    internals,
+    featurePlans,
+    projectedFeaturePlans.value,
+    rendererRecording &&
+      frameState.activePipeline === standardPipeline &&
+      frameState.graphTargetCapture === undefined,
+    frameState,
+  );
+  const topologyCandidate = transientViews.ownsPhysicalChanges
+    ? {
+        ...featureGraphCandidate,
+        plans: featurePlans,
+        fullscreenEffects:
+          featureGraphCandidate?.fullscreenEffects ??
+          getRenderFeatureGraphState(internals).fullscreenEffects,
+        preparedResourceKey: '',
+      }
+    : featureGraphCandidate;
   const topologyResult = topologyOf(
     internals,
     frameState,
@@ -2494,8 +2557,8 @@ export function ensureCompiledFrameGraph(
     surfaceHeight,
     shadowMapSize,
     gpuDriven,
-    featureGraphCandidate,
-    featureMetrics.planRevisionState.revision,
+    topologyCandidate,
+    transientViews.topologySignature ?? featureMetrics.planRevisionState.revision,
     cubeCaptureState,
     transmissionDemand,
     volumetricFog,
@@ -2761,6 +2824,7 @@ export function ensureCompiledFrameGraph(
   const ssrHistory =
     ssr?.status === 'admitted' ? importSsrHistoryTargets(builder, topology.extent) : undefined;
   const featureProjection = createRenderFeatureProjectionState();
+  const transientSlots = new Map<string, { complete: boolean; names: Set<string> }>();
   let featureShadows:
     | ReturnType<typeof projectRenderFeatureShadows<RenderPipelineFrame>>
     | undefined;
@@ -2930,43 +2994,74 @@ export function ensureCompiledFrameGraph(
           (typeof target === 'object'
             ? sceneInputs?.get(target as import('../features/targets').RenderFeatureTargetHandle)
             : undefined) ?? resolveDisplayTarget(target);
-        const projected = projectPlanExecutions(builder, plans, {
-          state: featureProjection,
-          resolveTarget,
-          placement,
-          ...(passNames.length === 0 ? {} : { passNames: new Set(passNames) }),
-          standardSurfaceAccesses,
-          viewAccesses:
-            atmosphere === undefined
-              ? []
-              : atmosphereTextures(atmosphere).map((resource) => ({
-                  resource,
-                  usage: 'sampled-read' as const,
-                })),
-          resolveBindings: (input) =>
-            resolveTargetBindings(input, featurePostProcessEntries, atmosphere),
-          resolveStandardLighting: (frame, pipeline) => {
-            const context = frame as import('./render-context')._InternalRenderPipelineContext;
-            if (context.standardLighting?.kind !== 'clustered') return undefined;
-            const layout = (
-              pipeline as RenderPipeline & {
-                getBindGroupLayout?: (index: number) => BindGroupLayout;
-              }
-            ).getBindGroupLayout?.(2);
-            if (layout === undefined) return undefined;
-            return (
-              createStandardSurfaceLightingBindGroup(
-                context.runtime,
-                layout,
-                context.standardLighting.prepared.layout.grid,
-                context.hdrpSsaoBlurredView === undefined
-                  ? { enabled: false }
-                  : { enabled: true, ssaoBlurredView: context.hdrpSsaoBlurredView },
-              ) ?? undefined
-            );
+        const viewAccesses =
+          atmosphere === undefined
+            ? []
+            : atmosphereTextures(atmosphere).map((resource) => ({
+                resource,
+                usage: 'sampled-read' as const,
+              }));
+        const projected = projectTransientViewPlans(
+          builder,
+          plans,
+          transientViews.identities,
+          {
+            state: featureProjection,
+            resolveTarget,
+            placement,
+            ...(passNames.length === 0 ? {} : { passNames: new Set(passNames) }),
+            standardSurfaceAccesses,
+            viewAccesses,
+            resolveBindings: (input) =>
+              resolveTargetBindings(input, featurePostProcessEntries, atmosphere),
+            resolveStandardLighting: (frame, pipeline) => {
+              const context = frame as import('./render-context')._InternalRenderPipelineContext;
+              if (context.standardLighting?.kind !== 'clustered') return undefined;
+              const layout = (
+                pipeline as RenderPipeline & {
+                  getBindGroupLayout?: (index: number) => BindGroupLayout;
+                }
+              ).getBindGroupLayout?.(2);
+              if (layout === undefined) return undefined;
+              return (
+                createStandardSurfaceLightingBindGroup(
+                  context.runtime,
+                  layout,
+                  context.standardLighting.prepared.layout.grid,
+                  context.hdrpSsaoBlurredView === undefined
+                    ? { enabled: false }
+                    : { enabled: true, ssaoBlurredView: context.hdrpSsaoBlurredView },
+                ) ?? undefined
+              );
+            },
+            reportError: (error) => reportRenderFeatureGraphError(internals, error),
           },
-          reportError: (error) => reportRenderFeatureGraphError(internals, error),
-        });
+          {
+            owner: internals,
+            device: internals.device,
+            surfaceSize: { width: surfaceWidth, height: surfaceHeight },
+            slots: transientSlots,
+            ports: [
+              ...standardSurfaceAccesses,
+              ...viewAccesses,
+              ...targets.flatMap((target) => [
+                {
+                  resource: target.view,
+                  usage:
+                    target.kind === 'scene-depth'
+                      ? ('depth-stencil-write' as const)
+                      : ('color-attachment' as const),
+                },
+                ...(target.kind === 'scene-depth'
+                  ? [{ resource: target.view, usage: 'sampled-read' as const }]
+                  : []),
+                ...(target.resolveTarget === undefined
+                  ? []
+                  : [{ resource: target.resolveTarget, usage: 'color-attachment' as const }]),
+              ]),
+            ],
+          },
+        );
         if (!projected.ok) return projected;
         return ok(undefined);
       },
@@ -3070,7 +3165,7 @@ export function ensureCompiledFrameGraph(
   // No new lease means the installed imports remain current, not a second
   // resource transition back to an empty key on the following frame.
   const preparedResourceKey =
-    featureGraphCandidate?.preparedResourceKey ?? installed?.preparedResourceKey;
+    topologyCandidate?.preparedResourceKey ?? installed?.preparedResourceKey;
   const requiresShadowPipelinePreparation =
     rendererRecording && activePipeline === standardPipeline
       ? shadowPipelinePreparationDemand(builder)
@@ -3080,6 +3175,7 @@ export function ensureCompiledFrameGraph(
       ? {}
       : { requiresShadowPipelinePreparation }),
     ...(prepareGpuDrivenPipelines === undefined ? {} : { prepareGpuDrivenPipelines }),
+    scenePipelinePreparations: scenePipelinePreparations(builder),
     ...(directionalShadowViewCount === undefined ? {} : { directionalShadowViewCount }),
     graph: compiled.value,
     topologyKey: key,
@@ -3931,7 +4027,7 @@ function createTimingInstrumentation(
       // WebGPU has no portable timestamp boundary for a copy pass. Do not
       // pretend a command-encoder marker exists; frame timing remains valid
       // when at least one raster/compute pass is present.
-      if (pass.kind === 'copy') return undefined;
+      if (pass.kind === 'copy' || pass.kind === 'subgraph') return undefined;
       const writes = capture.beginPass(pass.name, pass.kind, pass.executionIndex);
       if (writes === undefined) return undefined;
       if (pass.kind === 'raster') {

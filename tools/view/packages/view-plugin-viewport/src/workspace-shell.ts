@@ -9,7 +9,7 @@ type NavigationMode = 'look' | 'orbit' | 'pan' | 'dolly';
 type CameraMotion = { type: NavigationMode | 'move'; mode?: string; yaw?: number; pitch?: number; x?: number; y?: number; amount?: number; distance?: number; pitchLimit?: number; velocity?: number[] };
 type CameraSample = { type: 'key-down' | 'key-up'; mode?: never; code?: string; key: string } | { type: 'wheel'; mode: 'speed' | 'dolly'; deltaY: number } | { type: 'pointer-move'; mode: NavigationMode; movementX: number; movementY: number };
 type CameraInteraction = EngineWorkspaceCameraResult & { interactionId: string; baseVersion: number };
-export type WorkspaceInputBindings = 'editor' | 'orbit';
+export type WorkspaceInputBindings = 'scene' | 'orbit';
 export type WorkspaceInputOptions = {
   api: ViewWorkspaceClient; targetId: string; targetGeneration?: number; tabId?: string;
   bindings?: WorkspaceInputBindings;
@@ -38,7 +38,7 @@ import {
 import { createWorkspaceId } from '@forgeax/view-workspace-core/id';
 import { reopenWorkspaceProject } from '@forgeax/view-workspace-core/workspace-recovery';
 import { PAGE_TYPE } from './identity.ts';
-import { selectWorkspaceEditorSurfaceTarget } from '@forgeax/view-workspace-core/resource-open';
+import { selectWorkspaceSceneSurfaceTarget } from '@forgeax/view-workspace-core/resource-open';
 import { borrowSurface, keepSurfaceInContainer, readSceneShell } from '@forgeax/view-workspace-core/adopt-surface';
 import {
   isViewTraceEnabled,
@@ -109,7 +109,7 @@ function catalogReceipt(asset: WorkspaceAsset, inspection?: WorkspaceInspection 
   return asset?.cookReceiptUrl ?? asset?.ddc?.receiptUrl;
 }
 
-/** Viewport camera capture stays on the Editor page canvas, never a sibling tab preview. */
+/** Viewport camera capture stays on the Scene page canvas, never a sibling tab preview. */
 export function isViewportWorkspaceInputEvent(event: Event, { surface, host }: { surface?: HTMLElement; host?: HTMLElement | null } = {}) {
   const eventTarget = event?.target as Element | null;
   if (event?.defaultPrevented || !eventTarget || typeof eventTarget.closest !== 'function') return false;
@@ -218,7 +218,7 @@ export class ViewWorkspaceInputController {
   constructor({
     api,
     targetId,
-    bindings = 'editor',
+    bindings = 'scene',
     targetGeneration,
     tabId = VIEW_WORKSPACE_TAB_ID,
     interactionIdFactory = () => createWorkspaceId('interaction'),
@@ -231,7 +231,7 @@ export class ViewWorkspaceInputController {
     if (!api) throw new TypeError('workspace input controller requires an API client');
     this.api = api;
     this.targetId = requireWorkspaceString(targetId, 'targetId');
-    this.bindings = bindings === 'orbit' ? 'orbit' : 'editor';
+    this.bindings = bindings === 'orbit' ? 'orbit' : 'scene';
     this.targetGeneration = targetGeneration;
     this.tabId = tabId;
     this.interactionIdFactory = interactionIdFactory;
@@ -878,7 +878,7 @@ export class ViewWorkspaceInputController {
 }
 
 /** Stable exact Engine surfaces; all state and controls use the workspace API.
- * Without a presentation adapter, retain an inert surface. Editor Play owns its
+ * Without a presentation adapter, retain an inert surface. Play owns its
  * one iframe in a separate plugin; an arbitrary target URL never creates one.
  */
 export class ViewWorkspaceShell {
@@ -1228,7 +1228,7 @@ export class ViewWorkspaceShell {
   }
 
   targetForTab(tabId: string) {
-    if (tabId === VIEW_WORKSPACE_TAB_ID) return selectWorkspaceEditorSurfaceTarget(this.state);
+    if (tabId === VIEW_WORKSPACE_TAB_ID) return selectWorkspaceSceneSurfaceTarget(this.state);
     const tab = (this.state.tabs ?? []).find((candidate) => candidate.tabId === tabId);
     if (!tab) return null;
     if (tab.target) {

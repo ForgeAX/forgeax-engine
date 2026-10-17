@@ -8,6 +8,8 @@ import {
   isOwnedRenderFeatureProgramData,
   type RenderFeatureGpuBufferUsage,
   type RenderFeatureGpuProgramDescriptor,
+  type RenderFeatureNativePlanBuilder,
+  type RenderFeatureNativePlanToken,
   validRenderFeatureWorkgroups,
 } from './prepared-gpu-work';
 import type { RenderFeaturePipelineDescriptor } from './prepared-graphics';
@@ -100,6 +102,8 @@ export type RenderFeatureResourceDeclaration =
       readonly size: number;
       readonly usage: readonly RenderFeatureGpuBufferUsage[];
       readonly data?: ArrayBufferView;
+      /** Ordered writes to disjoint or deliberately overlapping buffer ranges. */
+      readonly uploads?: readonly { readonly offset: number; readonly data: ArrayBufferView }[];
     }
   | {
       /** A resident generation-owned resource supplied by a render-owned provider. */
@@ -124,6 +128,8 @@ export type RenderFeatureResourceDeclaration =
       readonly entries: readonly {
         readonly binding: number;
         readonly resource: string;
+        readonly offset?: number;
+        readonly size?: number;
       }[];
     }
   | {
@@ -145,6 +151,8 @@ export type RenderFeatureResourceDeclaration =
       readonly name: string;
       readonly layout: string;
       readonly buffer: string;
+      readonly offset?: number;
+      readonly size?: number;
       readonly data?: never;
     }
   | {
@@ -159,6 +167,8 @@ export type RenderFeatureResourceDeclaration =
       readonly name: string;
       readonly format: 'uint16' | 'uint32';
       readonly buffer: string;
+      readonly offset?: number;
+      readonly size?: number;
       readonly data?: never;
     };
 
@@ -310,6 +320,8 @@ export interface RenderFeaturePlanView {
 }
 
 export interface RenderFeaturePlanContext {
+  /** @internal Host-bound constructor for Engine-owned, non-borrowed primary work. */
+  readonly createNativePlan?: () => RenderFeatureNativePlanBuilder;
   /** Resolve an exact asset in the corresponding source World or accepted publication. */
   readonly resolveAsset?: (
     sourceWorldIndex: number,
@@ -321,6 +333,7 @@ export interface RenderFeaturePlanContext {
 
   readonly materialContext?: MaterialCookRasterContext;
   readonly caps: Readonly<RhiCaps>;
+  readonly limits?: Readonly<Partial<GPUSupportedLimits>>;
   readonly frame: { readonly frameNumber: number };
   readonly generation: number;
   readonly views: readonly RenderFeaturePlanView[];
@@ -338,6 +351,8 @@ export interface RenderFeatureWork extends RenderFeatureWorkPlan {
 
 /** The producer declares one frame containing shared simulation and view projections. */
 export interface RenderFeaturePlan {
+  /** @internal Opaque primary work; ordinary authors continue to declare work. */
+  readonly native?: RenderFeatureNativePlanToken;
   readonly work: readonly RenderFeatureWork[];
   readonly sourceFeedback?: unknown;
 }
@@ -351,6 +366,7 @@ export interface RenderFeaturePlannedFrame {
   readonly plan: RenderFeatureWorkPlan;
   /** Placement selected by the installed feature; omitted means the legacy post stage. */
   readonly placement?: import('./types').RenderFeaturePlacement;
+  readonly viewGraph?: 'transient';
 }
 
 export interface RenderFeatureDerivedAccess {
@@ -743,7 +759,8 @@ function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unk
   if (resource.kind !== 'buffer') return resource;
   // Match resourceTopology exactly: buffer payloads are upload evidence, not
   // topology identity, while usage order is canonicalized before comparison.
-  return { ...resource, usage: [...resource.usage].sort(compareStableKeys), data: undefined };
+  const { uploads: _uploads, ...descriptor } = resource;
+  return { ...descriptor, usage: [...resource.usage].sort(compareStableKeys), data: undefined };
 }
 
 function signaturePassValue(pass: RenderFeaturePassDeclaration): unknown {
@@ -1003,7 +1020,7 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
   // the most frequently validated resources in a frame.
   for (const key in source) {
     if (!Object.hasOwn(source, key)) continue;
-    if (key === payloadKey) continue;
+    if (key === payloadKey || (source.kind === 'buffer' && key === 'uploads')) continue;
     const snapshotIndex = snapshot.keys.indexOf(key);
     if (snapshotIndex < 0) return false;
     comparableKeys += 1;
@@ -1038,7 +1055,7 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
   }
   let expectedComparableKeys = 0;
   for (const key of snapshot.keys) {
-    if (key === payloadKey) continue;
+    if (key === payloadKey || (source.kind === 'buffer' && key === 'uploads')) continue;
     expectedComparableKeys += 1;
     if (!Object.hasOwn(source, key)) return false;
   }
@@ -1168,7 +1185,8 @@ function resourceTopology(
     if (metrics !== undefined && resource.data !== undefined) {
       metrics.typedArrayBytes += resource.data.byteLength;
     }
-    return { ...resource, usage: [...resource.usage].sort(), data: undefined };
+    const { uploads: _uploads, ...descriptor } = resource;
+    return { ...descriptor, usage: [...resource.usage].sort(), data: undefined };
   }
   if (resource.kind === 'prepared-gpu-resource') {
     return {

@@ -78,6 +78,15 @@ describe('Engine Worker thick bootstrap channel', () => {
   });
 
   it('transfers bootstrap data and the realm MessagePort with the canvas', async () => {
+    const pipelineLibrary = {
+      version: 1 as const,
+      backend: 'webgpu' as const,
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
     const worker = new FakeWorker();
     const offscreen = {} as OffscreenCanvas;
     const transferControlToOffscreen = vi.fn(() => offscreen);
@@ -87,6 +96,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       bootstrapUrl: 'https://example.test/bootstrap.js',
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
+      pipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',
@@ -105,6 +115,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       startupTimeoutMs: 100,
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
+      pipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',

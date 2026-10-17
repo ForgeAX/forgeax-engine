@@ -31,6 +31,9 @@ reinserting it must restore the original pixels. The room browser journey separa
 PCSS, moves the pole, removes/reinserts a wall and moves/restores the camera.
 Each restore must recover the original pixels; 60 stationary frames must stay
 identical and retain GPU-driven submission. `smoke:browser` runs both journeys.
+Each capture or settling step advances the World once, then awaits a completed
+receipt with `presentation: 'ready'`. Pending pipeline submissions do not count
+as sampled frames; a 30-second readiness bound reports the last pending reason.
 Native
 `smoke:discrimination` submits 60 real frames per state. The shader-level Dawn
 gate independently covers an unoccluded tilted plane, orthographic projection,

@@ -4,7 +4,7 @@ import { PageTabStrip, type PageTabItem } from './PageTabStrip';
 import { Surface, Text } from './components';
 
 const meta = {
-  title: 'Editor Patterns/Page Tab Strip',
+  title: 'Workspace Patterns/Page Tab Strip',
   parameters: {
     layout: 'fullscreen',
     docs: {

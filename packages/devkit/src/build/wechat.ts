@@ -423,6 +423,7 @@ async function boot(identity, reload) {
     ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
     features: [gameVfx.feature],
     dynamicGeometryMeshBudgetBytes: ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)},
+    pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
     standardProfile: ${JSON.stringify(appOptions.standardProfile)},
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
   }, { ...forgeaxBundlerAdapter(), shaderManifestUrl: 'https://forgeax.package/shaders/manifest.json', readShaderManifest: async url => (await fetcher(url)).text() }));

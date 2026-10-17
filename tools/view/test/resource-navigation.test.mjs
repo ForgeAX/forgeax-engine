@@ -87,12 +87,12 @@ describe('programmatic resource open', () => {
     stop();
   });
 
-  it('resolves scenes to Editor and focuses the existing non-openable singleton', () => {
+  it('resolves scenes to Scene and focuses the existing non-openable singleton', () => {
     const registry = createViewPageTypeRegistry();
     const host = createViewPageHost({ registry });
     host.registerType(pageType({
       context: 'project',
-      typeId: 'editor',
+      typeId: 'scene',
       openable: false,
       initial: true,
       resourceSelector: { kinds: ['scene'] },
@@ -106,11 +106,11 @@ describe('programmatic resource open', () => {
     }));
     const resolved = resolveResourcePageType(registry.getTypes(), { kind: 'scene' });
     assert.equal(resolved.ok, true);
-    assert.equal(resolved.pageType.typeId, 'editor');
-    const pages = [{ id: 'page-editor', typeId: 'editor', title: 'Scene', closable: false }];
+    assert.equal(resolved.pageType.typeId, 'scene');
+    const pages = [{ id: 'page-scene', typeId: 'scene', title: 'Scene', closable: false }];
     assert.deepEqual(planResourcePageActivation(pages, resolved.pageType), {
       action: 'focus',
-      pageId: 'page-editor',
+      pageId: 'page-scene',
       pageType: resolved.pageType,
     });
   });

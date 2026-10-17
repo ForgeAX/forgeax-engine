@@ -6,7 +6,11 @@ import {
   type TerrainError,
   type TerrainSource,
 } from '@forgeax/engine-types';
-import { terrainAxisEndpoint, terrainHeightBounds } from './height-bounds.js';
+import {
+  terrainAxisEndpoint,
+  terrainHeightBounds,
+  terrainSourceHeightRange,
+} from './height-bounds.js';
 
 export function terrainFailure(
   code: TerrainError['code'],
@@ -83,13 +87,7 @@ export function validateTerrain(source: TerrainSource): Result<TerrainSource, Te
       'heights',
       'one finite f32 height per sample; holes and NaN are unsupported',
     );
-  let min = Infinity,
-    max = -Infinity;
-  for (const height of source.heights) {
-    min = Math.min(min, height);
-    max = Math.max(max, height);
-  }
-  const span = Math.max(max - min, 1e-6);
+  const { min, max, span } = terrainSourceHeightRange(source.heights);
   if (
     !Number.isFinite(Math.fround(span)) ||
     !(min + span > min) ||

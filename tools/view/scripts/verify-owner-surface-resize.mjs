@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import { build, transform } from 'esbuild';
 
 // Native layout regression, not a GPU or full workspace substitute. Exercise
-// normal Editor placement with Engine-like canvas size observation and restore.
+// normal Scene placement with Engine-like canvas size observation and restore.
 const browser = await chromium.launch({
   executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE ?? '/opt/google/chrome-beta/chrome',
   headless: true, args: ['--disable-gpu'],
@@ -15,14 +15,14 @@ try {
   const page = await browser.newPage();
   await page.setContent('<div id="surface" style="width:320px;height:240px"><canvas id="canvas" style="width:100%;height:100%;display:block"></canvas></div><main><section><article><div id="anchor" style="width:600px;height:400px"></div></article></section></main>');
   const sources = await Promise.all([
-    '../packages/view-plugin-viewport/src/editor-surface.ts',
+    '../packages/view-plugin-viewport/src/scene-surface.ts',
     '../packages/view-workspace-core/src/adopt-surface.ts',
   ].map(async path => {
     const source = await readFile(new URL(path, import.meta.url), 'utf8');
     return (await transform(source, { loader: 'ts', format: 'esm', target: 'esnext' })).code;
   }));
   const result = await page.evaluate(async ([fitSource, borrowSource]) => {
-    const { fitEditorSurface } = await import('data:text/javascript,' + encodeURIComponent(fitSource));
+    const { fitSceneSurface } = await import('data:text/javascript,' + encodeURIComponent(fitSource));
     const { borrowSurface } = await import('data:text/javascript,' + encodeURIComponent(borrowSource));
     const surface = document.querySelector('#surface');
     const canvas = document.querySelector('#canvas');
@@ -33,7 +33,7 @@ try {
     const originalNext = surface.nextSibling;
     const restore = borrowSurface(surface, anchor);
     anchor.append(surface);
-    const restoreFit = fitEditorSurface(surface);
+    const restoreFit = fitSceneSurface(surface);
     const engineObserver = new ResizeObserver(() => {
       canvas.width = canvas.clientWidth;
       canvas.height = canvas.clientHeight;

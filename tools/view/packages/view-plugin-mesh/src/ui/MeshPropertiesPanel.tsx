@@ -21,7 +21,7 @@ export function MeshPropertiesPanel({
   const { t } = useTranslation();
   if (!client) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-mesh-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-mesh-properties">
         <EmptyState title={t('mesh.unavailable')} description={t('mesh.empty')} />
       </div>
     );
@@ -71,14 +71,14 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
 
   if (!subject) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-mesh-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-mesh-properties">
         <EmptyState title={t('mesh.empty')} description={t('mesh.unavailable')} />
       </div>
     );
   }
   if (failed && !binding) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-mesh-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-mesh-properties">
         <EmptyState title={t('mesh.unavailable')} description={t('mesh.inspectFailed')} />
       </div>
     );
@@ -86,7 +86,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
   const displayed = binding ? { guid: subject.guid, asset: subject, ...binding } : inspection;
   const name = resourceAssetName(subject) ?? resourceAssetName(workspace?.assets?.find(asset => asset.guid === subject.guid)) ?? subject.guid;
   return (
-    <div className="fx-asset-editor fx-ui" data-testid="panel-mesh-properties" data-view-readonly="true">
+    <div className="fx-asset-viewer fx-ui" data-testid="panel-mesh-properties" data-view-readonly="true">
       <PanelHeader start={<span className="mesh-properties-name" title={name}><strong>{name}</strong></span>} />
       {binding?.publication && <dl className="mesh-bound-identity">
         <div><dt>Bound generation</dt><dd>{binding.publication.generation}</dd></div>

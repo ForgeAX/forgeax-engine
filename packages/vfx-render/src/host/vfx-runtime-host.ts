@@ -64,6 +64,12 @@ export interface VfxAuthoringAssetRegistry {
 type AssetRegistry = LegacyAssetRegistry | RuntimeAssetRegistry | VfxAuthoringAssetRegistry;
 
 export interface VfxRuntimeHostOptions {
+  /** Opt-in same-build A/B for separately validated view-local particle work. */
+  readonly isolateViewGraph?: boolean;
+  readonly instanceArenas?: boolean;
+  readonly nativePlanning?: boolean;
+  /** Retain native simulation/projection resources; raw and DI effects keep ordinary preparation. */
+  readonly retainedResources?: boolean;
   readonly camera: ParticleRenderCameraSource;
   readonly sceneSdf?: {
     read(
@@ -321,6 +327,14 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
   };
   const feature = gpuParticleRenderFeature({
     camera: options.camera,
+    ...(options.instanceArenas === undefined ? {} : { instanceArenas: options.instanceArenas }),
+    ...(options.nativePlanning === undefined ? {} : { nativePlanning: options.nativePlanning }),
+    ...(options.retainedResources === undefined
+      ? {}
+      : { retainedResources: options.retainedResources }),
+    ...(options.isolateViewGraph === undefined
+      ? {}
+      : { isolateViewGraph: options.isolateViewGraph }),
     ...(options.sceneSdf === undefined ? {} : { sceneSdf: options.sceneSdf }),
     dataInterfaces,
     material: {

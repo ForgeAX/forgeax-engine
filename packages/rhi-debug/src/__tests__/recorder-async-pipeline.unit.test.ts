@@ -32,7 +32,7 @@ it('preserves native async completion and records the call-time descriptor once'
   if (create === undefined) throw new Error('recorder dropped async capability');
   const promise = create(desc),
     completed = vi.fn();
-  void promise.then(completed);
+  void Promise.resolve(promise).then(completed);
   await Promise.resolve();
   expect(completed).not.toHaveBeenCalled();
   expect(debug.bootstrapEvents().filter((e) => e.kind === 'createRenderPipeline')).toHaveLength(0);
@@ -45,4 +45,49 @@ it('preserves native async completion and records the call-time descriptor once'
   expect(events[0]?.desc.primitive?.cullMode).toBe('none');
   expect(createRenderPipelineAsync).toHaveBeenCalledTimes(1);
   expect(debug.lookupPipeline(device, pipeline)).toBe(events[0]?.handleId);
+});
+
+it('preserves an immediate completed recipe instead of adding a recorder microtask', async () => {
+  const real = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (
+    await rhi.createShaderModule(real, {
+      code: '@vertex fn v() -> @builtin(position) vec4f { return vec4f(0); }',
+    })
+  ).unwrap();
+  const desc: RenderPipelineDescriptor = {
+    layout: 'auto',
+    vertex: { module: shader, entryPoint: 'v', buffers: [] },
+  };
+  const pipeline = real.createRenderPipeline(desc).unwrap();
+  Object.assign(real, { createRenderPipelineAsync: () => ok(pipeline) });
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const debug = wrap({
+    requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+  });
+  const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const ready = device.createRenderPipelineAsync?.(desc);
+  if (ready === undefined || !('ok' in ready)) throw Error('recorder delayed a completed recipe');
+  expect(ready.unwrap()).toBe(pipeline);
+  expect(debug.bootstrapEvents().filter((e) => e.kind === 'createRenderPipeline')).toHaveLength(1);
+});
+
+it('keeps a custom backend throw on the existing rejected-completion boundary', async () => {
+  const real = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const cause = Error('custom backend failed before returning completion');
+  Object.assign(real, {
+    createRenderPipelineAsync: () => {
+      throw cause;
+    },
+  });
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const debug = wrap({
+    requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+  });
+  const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const completion = device.createRenderPipelineAsync?.({
+    layout: 'auto',
+    vertex: { module: {} as never, buffers: [] },
+  });
+  expect(completion).toBeInstanceOf(Promise);
+  await expect(completion).rejects.toBe(cause);
 });

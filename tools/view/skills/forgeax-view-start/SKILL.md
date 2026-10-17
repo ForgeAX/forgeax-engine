@@ -64,7 +64,7 @@ or URL ends at that narrower outcome.
 | View | View plugin command on that backend; never implicitly starts the backend | View returns its interface URL |
 | Browser | Agent uses an available browser tool when the request includes opening the project | Returned URL is visited; low-level CLI commands do not launch a browser |
 | Project | Existing workspace API, reached through the project-intent URL or explicit project.open | Requested project identity, content and exact Engine target are present |
-| Play / AI run | Explicit Engine execution operation for the requested mode | Its own target or run readiness; separate from Editor readiness |
+| Play / AI run | Explicit Engine execution operation for the requested mode | Its own target or run readiness; separate from Scene readiness |
 
 Use a documented convenience command when the installed CLI provides one;
 otherwise compose the independent commands here. Check which services it starts,
@@ -140,7 +140,7 @@ Perform the operations needed for the user's requested outcome:
 | Open the interface | Open that URL in the user's browser; verify Shell connection if browser interaction is requested |
 | Edit a project | Return the URL with the known project intent: backend root is the default project if it contains `forge.json`; `--project /absolute/project` overrides it. Verify project identity and Engine target after opening that URL |
 | Explicitly allocate a project | `forgeax view project open --root <backend> --project /absolute/project --json`; open `projectTarget.url`, or let an already-open empty Shell adopt it. Command success alone does not prove the headed page is ready |
-| Play in Editor | Start Play for the open project; use its exact target for shared tools |
+| Play in Scene | Start Play for the open project; use its exact target for shared tools |
 | Observe an AI run | Bind its explicit `{root, runId}`; verify a timestamped image from that run |
 
 For a complete View startup request, start a missing backend first, then enable
@@ -152,7 +152,7 @@ not to `backend start` or `view start`.
 `--root` selects the existing backend workspace. `view start` creates no
 project target. Do not ask users to retype a known project path. Verify repeated
 refresh carries the confirmed project and old target through the resident View
-entry, then opens a fresh Editor only after Engine validates that exact lost
+entry, then opens a fresh Scene only after Engine validates that exact lost
 target. Verify no manual reconnect or resource/camera/layout history replay. Never
 resend commands to the lost target or restart Play automatically. Report
 conflicts with another active page and require an explicit project choice.
@@ -168,7 +168,7 @@ time to reach the resident View entry separately; the Engine timer starts when
 the replacement target opens. Check the stage distribution before changing
 startup behavior.
 `view project open` takes the
-editor project directory as `--project` and opens it on the running View; it
+project directory as `--project` and opens it on the running View; it
 never launches a browser, starts Play, or switches away from a different open
 project. Its JSON result only proves the headed session was allocated: open
 `projectTarget.url`, or confirm the empty shell navigated there, before

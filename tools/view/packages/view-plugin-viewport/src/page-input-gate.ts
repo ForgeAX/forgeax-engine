@@ -2,13 +2,13 @@ import type { CanvasInputBoundary } from '@forgeax/engine/input';
 import { PAGE_TYPE } from './identity.ts';
 
 /**
- * Engine's browser input backend listens on window. When the Editor page is
+ * Engine's browser input backend listens on window. When the Scene page is
  * not the active page tab, drop those samples so a sibling preview cannot
  * drive the viewport camera or game.
  */
-export function attachViewportPageInputGate({ element, input, pageType = PAGE_TYPE, document }: { element?: HTMLElement; input?: Pick<CanvasInputBoundary, 'editor'>; pageType?: string; document?: Document } = {}) {
-  const editor = input?.editor;
-  if (!element || typeof editor?.setInputAllowed !== 'function') return () => {};
+export function attachViewportPageInputGate({ element, input, pageType = PAGE_TYPE, document }: { element?: HTMLElement; input?: Pick<CanvasInputBoundary, 'preview'>; pageType?: string; document?: Document } = {}) {
+  const preview = input?.preview;
+  if (!element || typeof preview?.setInputAllowed !== 'function') return () => {};
   const ownerDocument = document ?? element.ownerDocument ?? globalThis.document;
   const sync = () => {
     const page = typeof element.closest === 'function'
@@ -17,7 +17,7 @@ export function attachViewportPageInputGate({ element, input, pageType = PAGE_TY
     const pageHidden = page?.getAttribute?.('aria-hidden') === 'true';
     const activePage = ownerDocument?.documentElement?.dataset?.forgeaxViewActivePage;
     const active = !pageHidden && (activePage === undefined || activePage === pageType);
-    editor.setInputAllowed?.(active);
+    preview.setInputAllowed?.(active);
   };
   const observer = typeof MutationObserver === 'function'
     ? new MutationObserver(sync)
@@ -35,6 +35,6 @@ export function attachViewportPageInputGate({ element, input, pageType = PAGE_TY
   sync();
   return () => {
     observer?.disconnect();
-    editor.setInputAllowed?.(true);
+    preview.setInputAllowed?.(true);
   };
 }

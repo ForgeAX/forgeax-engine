@@ -19,7 +19,8 @@
 //    edge no longer carries.
 
 import type { Component } from '@forgeax/engine-ecs';
-import { componentSchema } from '@forgeax/engine-ecs/internal';
+import { componentSchema, parseManagedArraySchema } from '@forgeax/engine-ecs/internal';
+import { resolveSceneComponentFields } from './scene-payload';
 
 /**
  * A single handle-field reference extracted from a SceneAsset entity.
@@ -66,6 +67,7 @@ interface SceneEntityLike {
 export function extractSceneEntityHandleGuids(
   components: ReadonlyMap<string, Component>,
   entities: Readonly<Record<string, SceneEntityLike>>,
+  refs?: readonly string[],
 ): SceneHandleFieldEntry[] {
   const entries: SceneHandleFieldEntry[] = [];
 
@@ -82,20 +84,20 @@ export function extractSceneEntityHandleGuids(
       const comp = components.get(compName);
       if (!comp) continue;
 
-      for (const fieldName of Object.keys(rawFields)) {
-        forEachHandleGuid(
-          componentSchema(comp)[fieldName],
-          rawFields[fieldName],
-          (guidString, arrayIndex) => {
-            entries.push({
-              entityKey,
-              componentName: compName,
-              fieldName,
-              guidString,
-              ...(arrayIndex !== undefined ? { arrayIndex } : {}),
-            });
-          },
-        );
+      const schema = componentSchema(comp);
+      const decoded = resolveSceneComponentFields(entityKey, compName, rawFields, refs, schema);
+      if (!decoded.ok) continue;
+
+      for (const [fieldName, value] of Object.entries(decoded.value)) {
+        forEachHandleGuid(schema[fieldName], value, (guidString, arrayIndex) => {
+          entries.push({
+            entityKey,
+            componentName: compName,
+            fieldName,
+            guidString,
+            ...(arrayIndex !== undefined ? { arrayIndex } : {}),
+          });
+        });
       }
     }
   }
@@ -123,7 +125,10 @@ function forEachHandleGuid(
     if (typeof value === 'string') sink(value);
     return;
   }
-  if (fieldType.startsWith('array<shared<') && Array.isArray(value)) {
+  if (
+    parseManagedArraySchema(fieldType)?.elementType.startsWith('shared<') &&
+    Array.isArray(value)
+  ) {
     for (let elemIdx = 0; elemIdx < value.length; elemIdx++) {
       const elem = value[elemIdx];
       if (typeof elem === 'string') sink(elem, elemIdx);

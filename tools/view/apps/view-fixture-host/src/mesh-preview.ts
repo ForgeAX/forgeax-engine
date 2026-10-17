@@ -6,7 +6,7 @@ import './mesh-preview.css';
 export function mountMeshPreviewPanel({ mountElement, client }: { mountElement: HTMLElement; client?: ViewWorkspaceClient }) {
   const document = mountElement.ownerDocument;
   const panel = document.createElement('div');
-  panel.className = 'fx-asset-editor fx-asset-preview fx-fixture-mesh-preview fx-ui';
+  panel.className = 'fx-asset-viewer fx-asset-preview fx-fixture-mesh-preview fx-ui';
   panel.dataset.testid = 'panel-mesh-preview';
 
   const empty = document.createElement('div');

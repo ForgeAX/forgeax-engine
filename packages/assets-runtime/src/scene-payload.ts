@@ -1,9 +1,10 @@
 // @forgeax/engine-assets-runtime -- keyed scene payload parse + ref resolution
 
+import { parseManagedArraySchema } from '@forgeax/engine-ecs/internal';
 import type { SceneAsset, SceneEntity, SceneInstanceOverride } from '@forgeax/engine-types';
-import { HANDLE_ARRAY_FIELD_NAMES, HANDLE_FIELD_NAMES } from './handles';
+import { err, ok, type Result } from '@forgeax/engine-types';
 
-interface ParseSceneError {
+export interface ParseSceneError {
   readonly entityKey: string;
   readonly component: string;
   readonly field: string;
@@ -11,56 +12,58 @@ interface ParseSceneError {
   readonly refsLength: number;
 }
 
-function isParseSceneError(value: unknown): value is ParseSceneError {
-  return typeof value === 'object' && value !== null && 'entityKey' in value && 'index' in value;
-}
-
-function resolveFields(
+/** Decode only schema-declared shared references; every other storage family stays native. */
+export function resolveSceneComponentFields(
   entityKey: string,
   componentName: string,
   rawFields: Record<string, unknown>,
   refs: readonly string[] | undefined,
-): Record<string, unknown> | ParseSceneError | undefined {
+  schema: Readonly<Record<string, string>> | undefined,
+): Result<Record<string, unknown>, ParseSceneError> {
   const resolved: Record<string, unknown> = {};
   for (const [fieldName, value] of Object.entries(rawFields)) {
-    const handleField =
-      HANDLE_FIELD_NAMES.has(fieldName) || HANDLE_FIELD_NAMES.has(`${componentName}.${fieldName}`);
+    const type = schema?.[fieldName];
+    const handleField = type?.startsWith('shared<') === true;
     if (handleField && value === null) {
       resolved[fieldName] = 0;
       continue;
     }
-    if (refs !== undefined && handleField && typeof value === 'number' && Number.isInteger(value)) {
-      if (value < 0 || value >= refs.length) {
-        return {
+    if (refs !== undefined && handleField && typeof value === 'number') {
+      if (!Number.isInteger(value) || value < 0 || value >= refs.length) {
+        return err({
           entityKey,
           component: componentName,
           field: fieldName,
           index: value,
           refsLength: refs.length,
-        };
+        });
       }
       resolved[fieldName] = refs[value];
       continue;
     }
-    if (HANDLE_ARRAY_FIELD_NAMES.has(fieldName) && Array.isArray(value)) {
+    const array = type === undefined ? null : parseManagedArraySchema(type);
+    if (
+      array?.elementType.startsWith('shared<') &&
+      (Array.isArray(value) || (ArrayBuffer.isView(value) && 'length' in value))
+    ) {
       const values: unknown[] = [];
-      for (const [arrayIndex, item] of value.entries()) {
+      for (const [arrayIndex, item] of Array.from(value as ArrayLike<unknown>).entries()) {
         if (item === null) {
           values.push(0);
           continue;
         }
-        if (refs === undefined || typeof item !== 'number' || !Number.isInteger(item)) {
+        if (refs === undefined || typeof item !== 'number') {
           values.push(item);
           continue;
         }
-        if (item < 0 || item >= refs.length) {
-          return {
+        if (!Number.isInteger(item) || item < 0 || item >= refs.length) {
+          return err({
             entityKey,
             component: componentName,
             field: `${fieldName}[${arrayIndex}]`,
             index: item,
             refsLength: refs.length,
-          };
+          });
         }
         values.push(refs[item]);
       }
@@ -69,14 +72,12 @@ function resolveFields(
     }
     resolved[fieldName] = value;
   }
-  return resolved;
+  return ok(resolved);
 }
 
 function resolveComponents(
-  entityKey: string,
   rawComponents: unknown,
-  refs: readonly string[] | undefined,
-): Record<string, Record<string, unknown>> | ParseSceneError | undefined {
+): Record<string, Record<string, unknown>> | undefined {
   if (rawComponents === null || typeof rawComponents !== 'object' || Array.isArray(rawComponents))
     return undefined;
   const components: Record<string, Record<string, unknown>> = {};
@@ -85,15 +86,7 @@ function resolveComponents(
   )) {
     if (rawFields === null || typeof rawFields !== 'object' || Array.isArray(rawFields))
       return undefined;
-    const resolved = resolveFields(
-      entityKey,
-      componentName,
-      rawFields as Record<string, unknown>,
-      refs,
-    );
-    if (resolved === undefined) return undefined;
-    if (isParseSceneError(resolved)) return resolved;
-    components[componentName] = resolved as Record<string, unknown>;
+    components[componentName] = { ...(rawFields as Record<string, unknown>) };
   }
   return components;
 }
@@ -121,11 +114,11 @@ function resolveSkinGuids(
   return out;
 }
 
-/** Reconstruct and resolve a keyed SceneAsset from one pack payload. */
+/** Reconstruct a keyed SceneAsset. Component refs wait for their owning schema. */
 export function parseScenePayload(
   payload: Record<string, unknown>,
   refs?: string[],
-): SceneAsset | ParseSceneError | undefined {
+): SceneAsset | undefined {
   const rawEntities = payload.entities;
   if (rawEntities === null || typeof rawEntities !== 'object' || Array.isArray(rawEntities))
     return undefined;
@@ -140,8 +133,8 @@ export function parseScenePayload(
       return undefined;
     }
     const entity = rawEntity as { components?: unknown; instance?: unknown };
-    const components = resolveComponents(entityKey, entity.components ?? {}, refs);
-    if (components === undefined || isParseSceneError(components)) return components;
+    const components = resolveComponents(entity.components ?? {});
+    if (components === undefined) return undefined;
     let instance: SceneEntity['instance'];
     if (entity.instance !== undefined) {
       if (
@@ -178,9 +171,8 @@ export function parseScenePayload(
         ) {
           return undefined;
         }
-        const overrideComponents = resolveComponents(entityKey, override.components ?? {}, refs);
-        if (overrideComponents === undefined || isParseSceneError(overrideComponents))
-          return overrideComponents;
+        const overrideComponents = resolveComponents(override.components ?? {});
+        if (overrideComponents === undefined) return undefined;
         overrides.push({
           target: [...override.target] as [string, ...string[]],
           components: overrideComponents,

@@ -31,6 +31,10 @@ export interface DerivedCandidateRecord {
   readonly nativeColliders: readonly { readonly handle: number }[];
   readonly input: DerivedPhysicsCandidateInput;
   readonly retainedGeometry?: DerivedBodyRecord;
+  readonly sharedGeometry?: {
+    readonly owner: DerivedBodyRecord;
+    readonly shapes: readonly DerivedShapeRecord[];
+  };
   readonly bytes: number;
   state: DerivedPhysicsCandidateState;
   commitGeometry?: () => Result<void, Error>;

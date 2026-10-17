@@ -112,12 +112,22 @@ export function* recordFrameTransaction<T>(
   return { ok: true, value: built.value };
 }
 
-/** Encode every view, then finish and submit the one shared encoder exactly once. */
-export function submitFrameRecordings(
+export type FramePreparationCheckpoint = { readonly kind: 'features-prepared' };
+export type FramePreparation<T = boolean> = Generator<FramePreparationCheckpoint, T, void>;
+
+export function drainFramePreparation<T>(operation: FramePreparation<T>): T {
+  let next = operation.next();
+  while (!next.done) next = operation.next();
+  return next.value;
+}
+
+/** Resume the same coordinator without exposing or copying its frame-owned state. */
+export function* prepareFrameSubmission(
   recordings: readonly FrameRecording[],
   afterEncode?: (encoder: RhiCommandEncoder) => boolean,
   rendererInternals?: RenderSystemInternals,
-): boolean {
+  isCurrent?: () => boolean,
+): FramePreparation {
   const pending: FrameRecording[] = [];
   const featureRequests: { recording: FrameRecording; request: FeatureFrameRequest }[] = [];
   let batch: RenderFeatureFrameBatch | undefined;
@@ -154,7 +164,8 @@ export function submitFrameRecordings(
     if (work.onSubmittedWork !== undefined) submittedWork.push(work.onSubmittedWork);
     return true;
   };
-  const encodeAndSubmit = () => {
+  const encodeAndSubmit = function* (): FramePreparation {
+    if (isCurrent?.() === false) return false;
     for (const recording of recordings) {
       const next = recording.next();
       if (!next.done && 'kind' in next.value) {
@@ -184,6 +195,10 @@ export function submitFrameRecordings(
         if (view === undefined) throw new Error('Renderer feature preparation omitted a view');
         request.accept(view);
       }
+      // All views and their prepared Feature batch still belong to this one
+      // coordinator. No capture or shared/view graph is resumed before the fence.
+      yield { kind: 'features-prepared' };
+      if (isCurrent?.() === false) return false;
       const captureOwner = first.internals.rendererCaptureOwner;
       const captures = featureRequests.find(({ request }) => request.captures !== undefined)
         ?.request.captures;
@@ -264,7 +279,7 @@ export function submitFrameRecordings(
         result = { ok: false, stage: 'submit' };
         return false;
       }
-      if (currentChecks.some((check) => !check())) {
+      if (isCurrent?.() === false || currentChecks.some((check) => !check())) {
         result = { ok: false, stage: 'submit' };
         return false;
       }
@@ -298,86 +313,106 @@ export function submitFrameRecordings(
     }
   };
   try {
-    encodeAndSubmit();
-  } catch (cause) {
-    failures.push(cause);
-  }
-  for (const recording of pending) {
     try {
-      recording.next(result);
+      yield* encodeAndSubmit();
     } catch (cause) {
       failures.push(cause);
     }
-  }
-  for (const { recording } of featureRequests) {
-    if (pending.includes(recording)) continue;
-    try {
-      recording.return(false);
-    } catch (cause) {
-      failures.push(cause);
-    }
-  }
-  const first = featureRequests[0]?.request;
-  if (first !== undefined) {
-    const finalize = (action: () => void) => {
+  } finally {
+    for (const recording of pending) {
       try {
-        action();
+        recording.next(result);
       } catch (cause) {
         failures.push(cause);
       }
-    };
-    finalize(() =>
-      first.internals.featureSceneInputs?.complete(result.ok && sceneInputsReady, completion),
-    );
-    finalize(() =>
-      first.internals.rendererCaptureOwner?.complete(result.ok && sceneInputsReady, completion),
-    );
-    if (result.ok && sceneInputsReady) {
-      finalize(() => batch?.onSubmitted());
-      // Queue acceptance survives producer callback failures. Newly retired GPU
-      // resources must still be marked submitted before any cleanup can see them.
-      if (batch !== undefined) {
-        const accepted = batch;
-        finalize(() => first.host.markPreparedGraphicsSubmitted(accepted.preparedResourceBatches));
-      }
-    } else {
-      const stage = result.ok ? 'scene-input-pending' : result.stage;
-      finalize(() => first.internals.gpuPassTimingCapture?.abort({ code: stage }));
-      finalize(() => batch?.onAborted());
-      for (const resources of batch?.preparedResourceBatches ?? []) {
-        finalize(() => {
-          const released = resources.release();
-          if (!released.ok) first.internals.errorRegistry.fire(released.error);
-        });
+    }
+    for (const { recording } of featureRequests) {
+      if (pending.includes(recording)) continue;
+      try {
+        recording.return(false);
+      } catch (cause) {
+        failures.push(cause);
       }
     }
-    if (result.ok && sceneInputsReady && batch !== undefined) {
-      const resources = batch.preparedResourceBatches;
-      const retire = () => {
-        const retired = first.host.retirePreparedGraphics(resources);
-        if (!retired.ok) first.internals.errorRegistry.fire(retired.error);
+    const first = featureRequests[0]?.request;
+    if (first !== undefined) {
+      const finalize = (action: () => void) => {
+        try {
+          action();
+        } catch (cause) {
+          failures.push(cause);
+        }
       };
-      void completion?.then(retire, retire);
+      finalize(() =>
+        first.internals.featureSceneInputs?.complete(result.ok && sceneInputsReady, completion),
+      );
+      finalize(() =>
+        first.internals.rendererCaptureOwner?.complete(result.ok && sceneInputsReady, completion),
+      );
+      if (result.ok && sceneInputsReady) {
+        finalize(() => batch?.onSubmitted());
+        // Queue acceptance survives producer callback failures. Newly retired GPU
+        // resources must still be marked submitted before any cleanup can see them.
+        if (batch !== undefined) {
+          const accepted = batch;
+          finalize(() =>
+            first.host.markPreparedGraphicsSubmitted(accepted.preparedResourceBatches),
+          );
+        }
+      } else {
+        const stage = result.ok ? 'scene-input-pending' : result.stage;
+        finalize(() => first.internals.gpuPassTimingCapture?.abort({ code: stage }));
+        finalize(() => batch?.onAborted());
+        for (const resources of batch?.preparedResourceBatches ?? []) {
+          finalize(() => {
+            const released = resources.release();
+            if (!released.ok) first.internals.errorRegistry.fire(released.error);
+          });
+        }
+      }
+      if (result.ok && sceneInputsReady && batch !== undefined) {
+        const resources = batch.preparedResourceBatches;
+        const retire = () => {
+          const retired = first.host.retirePreparedGraphics(resources);
+          if (!retired.ok) first.internals.errorRegistry.fire(retired.error);
+        };
+        void completion?.then(retire, retire);
+      }
+    }
+    if (sharedGraph !== undefined) {
+      const graph = sharedGraph;
+      if (completion === undefined) void graph.retire();
+      else
+        void completion.then(
+          () => graph.retire(),
+          () => graph.retire(),
+        );
+    }
+    // biome-ignore lint/correctness/noUnsafeFinally: Iterator cancellation must surface collected cleanup failures.
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      // biome-ignore lint/correctness/noUnsafeFinally: Aggregate original and sibling cleanup failures before cancellation exits.
+      throw new AggregateError(failures, 'Renderer view finalization failed');
+    }
+    if (!result.ok && result.stage === 'submit') {
+      // biome-ignore lint/correctness/noUnsafeFinally: Reject physical submit failures on every iterator exit.
+      throw new RendererOperationError('frame-submit-rejected', {
+        operation: 'draw',
+        stage: 'submit',
+        accepted: false,
+      });
     }
   }
-  if (sharedGraph !== undefined) {
-    const graph = sharedGraph;
-    if (completion === undefined) void graph.retire();
-    else
-      void completion.then(
-        () => graph.retire(),
-        () => graph.retire(),
-      );
-  }
-  if (failures.length === 1) throw failures[0];
-  if (failures.length > 1) throw new AggregateError(failures, 'Renderer view finalization failed');
-  if (!result.ok && result.stage === 'submit')
-    throw new RendererOperationError('frame-submit-rejected', {
-      operation: 'draw',
-      stage: 'submit',
-      accepted: false,
-    });
   return result.ok;
+}
+
+/** Encode every view, then finish and submit the one shared encoder exactly once. */
+export function submitFrameRecordings(
+  recordings: readonly FrameRecording[],
+  afterEncode?: (encoder: RhiCommandEncoder) => boolean,
+  rendererInternals?: RenderSystemInternals,
+): boolean {
+  return drainFramePreparation(prepareFrameSubmission(recordings, afterEncode, rendererInternals));
 }
 
 /** Profiling records active CPU segments, excluding other views at the barrier. */

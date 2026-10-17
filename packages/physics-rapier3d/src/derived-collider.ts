@@ -1,5 +1,11 @@
 import type { DerivedShapeInput } from '@forgeax/engine-physics';
-import type { ColliderDesc, Shape } from '../pkg/rapier.mjs';
+import type { ColliderDesc, RigidBody, Shape, World } from '../pkg/rapier.mjs';
+import type {
+  DerivedBodyRecord,
+  DerivedCandidateRecord,
+  DerivedShapeRecord,
+} from './derived-candidate-records.js';
+import { voxelRegionDelta } from './voxel-region-delta.js';
 import type { Rapier3DModule } from './wasm-loader.js';
 
 const boxTriangles = [
@@ -7,6 +13,105 @@ const boxTriangles = [
   7, 6, 4,
 ] as const;
 type CartesianBox = { center: number[]; half: number[] } | { indices: Uint32Array };
+
+/** Compare detached normalized inputs before borrowing an existing collider.
+ * Producer revisions alone cannot authorize reuse of mutable caller geometry. */
+export function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput): boolean {
+  const same = (x: ArrayLike<number> | undefined, y: ArrayLike<number> | undefined) => {
+    if (x === undefined || y === undefined) return x === y;
+    if (x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+  };
+  if (
+    a.id !== b.id ||
+    a.kind !== b.kind ||
+    !same(a.origin, b.origin) ||
+    !same(a.rotation, b.rotation) ||
+    a.friction !== b.friction ||
+    a.restitution !== b.restitution ||
+    a.density !== b.density ||
+    a.isSensor !== b.isSensor ||
+    a.collisionGroups !== b.collisionGroups ||
+    a.solverGroups !== b.solverGroups
+  )
+    return false;
+  if (a.kind === 'voxels' && b.kind === 'voxels')
+    return same(a.voxelSize, b.voxelSize) && same(a.regions, b.regions);
+  if (a.kind === 'heightfield' && b.kind === 'heightfield')
+    return (
+      a.rows === b.rows &&
+      a.columns === b.columns &&
+      same(a.scale, b.scale) &&
+      same(a.heights, b.heights)
+    );
+  return (
+    a.kind === 'convex-compound' &&
+    b.kind === 'convex-compound' &&
+    a.pieces.length === b.pieces.length &&
+    a.pieces.every((piece, i) => same(piece, b.pieces[i]))
+  );
+}
+
+/** Borrow equal committed shapes; only new disabled colliders belong to the
+ * candidate's cancellation path. No committed native state changes here. */
+export function stageDerivedColliders(
+  inputs: readonly DerivedShapeInput[],
+  owner: DerivedBodyRecord | undefined,
+  create: (shape: DerivedShapeInput, previous?: DerivedShapeRecord) => { readonly handle: number },
+  current: (handle: number) => boolean,
+  remove: (handle: number) => void,
+): Pick<DerivedCandidateRecord, 'nativeColliders' | 'sharedGeometry'> {
+  const previous = new Map(owner?.shapes.map((shape) => [shape.input.id, shape]));
+  const nativeColliders: { handle: number }[] = [],
+    shapes: DerivedShapeRecord[] = [];
+  let shared = false;
+  try {
+    for (const input of inputs) {
+      const old = previous.get(input.id);
+      if (old && sameDerivedCollider(old.input, input) && current(old.colliderHandle)) {
+        shapes.push({
+          input: input as DerivedShapeRecord['input'],
+          colliderHandle: old.colliderHandle,
+        });
+        shared = true;
+      } else {
+        const created = create(input, old && current(old.colliderHandle) ? old : undefined);
+        nativeColliders.push({ handle: created.handle });
+        shapes.push({
+          input: input as DerivedShapeRecord['input'],
+          colliderHandle: created.handle,
+        });
+      }
+    }
+    return {
+      nativeColliders,
+      ...(shared && owner !== undefined ? { sharedGeometry: { owner, shapes } } : {}),
+    };
+  } catch (error) {
+    for (const collider of nativeColliders) remove(collider.handle);
+    throw error;
+  }
+}
+
+/** Native copies retain the committed source until ordinary candidate admission.
+ * Only bounded edits use this route; large changes keep complete construction. */
+export function createDerivedCollider(
+  RAPIER: Rapier3DModule,
+  world: World,
+  body: RigidBody,
+  shape: DerivedShapeInput,
+  previous?: DerivedShapeRecord,
+) {
+  const desc = createDerivedColliderDesc(RAPIER, shape);
+  if (shape.kind === 'voxels' && previous?.input.kind === 'voxels') {
+    const source = world.getCollider(previous.colliderHandle);
+    const delta = source && voxelRegionDelta(previous.input, shape);
+    if (delta)
+      return world.createColliderFromVoxelEdits(desc, source, delta.removed, delta.added, body);
+  }
+  return world.createCollider(desc, body);
+}
 
 /** Recognize complete boxes only, without snapping or expanding any input corner. */
 function cartesianBox(vertices: Float32Array): CartesianBox | undefined {
@@ -83,7 +188,13 @@ export function createDerivedColliderDesc(
   shape: DerivedShapeInput,
 ): ColliderDesc {
   let geometry: ColliderDesc;
-  if (shape.kind === 'heightfield') {
+  if (shape.kind === 'voxels') {
+    geometry = RAPIER.ColliderDesc.voxelRegions(shape.regions, {
+      x: shape.voxelSize[0],
+      y: shape.voxelSize[1],
+      z: shape.voxelSize[2],
+    });
+  } else if (shape.kind === 'heightfield') {
     geometry = RAPIER.ColliderDesc.heightfield(
       shape.rows,
       shape.columns,

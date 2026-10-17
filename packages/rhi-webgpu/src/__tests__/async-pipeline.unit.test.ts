@@ -28,7 +28,7 @@ it('exposes only a real backend async capability and mirrors its descriptor', as
   if (create === undefined) throw new Error('async capability unavailable');
   const promise = create(desc);
   const observed = vi.fn();
-  void promise.then(observed);
+  void Promise.resolve(promise).then(observed);
   await Promise.resolve();
   expect(observed).not.toHaveBeenCalled();
   expect(native.mock.calls[0]?.[0]).toEqual({

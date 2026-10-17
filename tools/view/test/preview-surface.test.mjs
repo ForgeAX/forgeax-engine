@@ -53,7 +53,7 @@ describe('dedicated asset preview surfaces', () => {
         surfacePlacement: 'owner',
         createSurface() { return engineSurface({ tagName: 'CANVAS', dataset: {}, style: {} }); },
       },
-      target: { targetId: 'editor-target' },
+      target: { targetId: 'scene-target' },
       container: container(),
       owner: { panelId: 'material-preview', pageType: 'material' },
     });
@@ -251,15 +251,15 @@ describe('dedicated asset preview surfaces', () => {
     globalThis.ResizeObserver = original;
   });
 
-  it('refuses to host the Editor owner canvas', () => {
-    const editorCanvas = {
+  it('refuses to host the Scene owner canvas', () => {
+    const sceneCanvas = {
       tagName: 'CANVAS',
       dataset: { forgeaxViewSurface: 'engine-canvas' },
       style: {},
     };
     const bound = bindWorkspacePreviewSurface({
       presentation: {
-        createSurface() { return editorCanvas; },
+        createSurface() { return sceneCanvas; },
       },
       target: { targetId: 'material-preview-target' },
       container: container(),
@@ -269,16 +269,16 @@ describe('dedicated asset preview surfaces', () => {
     assert.equal(bound.error.code, 'view-preview-surface-unavailable');
   });
 
-  it('selects extra type-preview targets and skips the Editor preview', () => {
+  it('selects extra type-preview targets and skips the Scene preview', () => {
     const snapshot = {
-      editorPreview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'editor-target' } },
-      preview: { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'editor-target' } },
+      scenePreview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'scene-target' } },
+      preview: { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'scene-target' } },
       openRequest: {
         asset: { guid: 'mat-1', kind: 'material' },
-        preview: { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'editor-target' } },
+        preview: { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'scene-target' } },
       },
       previews: [
-        { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'editor-target' } },
+        { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'scene-target' } },
         { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'material-preview-target' } },
       ],
     };
@@ -298,10 +298,10 @@ describe('dedicated asset preview surfaces', () => {
     assert.equal(missing, undefined);
   });
 
-  it('keeps a previous asset-editor subject after a later openRequest of another kind', () => {
+  it('keeps a previous asset-viewer subject after a later openRequest of another kind', () => {
     const snapshot = {
-      editorPreview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'editor-target' } },
-      preview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'editor-target' } },
+      scenePreview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'scene-target' } },
+      preview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'scene-target' } },
       openRequest: {
         asset: { guid: 'mesh-1', kind: 'mesh' },
         preview: { asset: { guid: 'mesh-1', kind: 'mesh' }, target: { targetId: 'mesh-preview-target' } },
@@ -317,7 +317,7 @@ describe('dedicated asset preview surfaces', () => {
         },
       },
       previews: [
-        { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'editor-target' } },
+        { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'scene-target' } },
         { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'material-preview-target' } },
         { asset: { guid: 'mesh-1', kind: 'mesh' }, target: { targetId: 'mesh-preview-target' } },
       ],

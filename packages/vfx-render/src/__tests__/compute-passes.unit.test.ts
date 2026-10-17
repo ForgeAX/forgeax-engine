@@ -1,5 +1,5 @@
 import type { RenderFeatureWorkPlan } from '@forgeax/engine-render';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { coalesceVfxComputePasses, coalesceVfxCopyPasses } from '../feature/compute-passes';
 
 type Pass = RenderFeatureWorkPlan['passes'][number];
@@ -158,4 +158,97 @@ it('keeps shared copy read/write aliases in distinct graph usage scopes', () => 
     expect(coalesceVfxCopyPasses(original)).toEqual(original);
     expect(execute(coalesceVfxCopyPasses(original))).toEqual(execute(original));
   }
+});
+
+it('records one resource owner per pending batch instead of repeating it for each dispatch', () => {
+  const set = Map.prototype.set;
+  let writes = 0;
+  const spy = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
+    this: Map<unknown, unknown>,
+    key: unknown,
+    value: unknown,
+  ) {
+    if (
+      key === 'a' &&
+      typeof value === 'object' &&
+      value !== null &&
+      'program' in value &&
+      'passes' in value
+    )
+      writes++;
+    return set.call(this, key, value);
+  });
+  try {
+    batch([
+      compute('a1', 'a'),
+      compute('a2', 'a'),
+      compute('a3', 'a'),
+      copy('zero', 'a'),
+      compute('a4', 'a'),
+      compute('a5', 'a'),
+      compute('a6', 'a'),
+    ]);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(writes).toBe(2);
+});
+
+it('preserves independent storage traces through changing programs, copies and per-dispatch gates', () => {
+  let seed = 1234567;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed;
+  };
+  for (let iteration = 0; iteration < 120; iteration++) {
+    const original: Pass[] = [];
+    for (let i = 0; i < 24; i++) {
+      const choice = random() % 6;
+      if (choice === 0) original.push(copy('zero', random() % 2 ? 'a' : 'b'));
+      else if (choice === 1) original.push(copy('a', 'b'));
+      else
+        original.push(
+          compute(
+            `dynamic-${i}`,
+            (choice === 2 ? 'other-' : '') + (random() % 2 ? 'a' : 'b'),
+            random() % 4,
+            random() % 4 !== 0,
+            random() % 2 ? 'add' : 'multiply',
+          ),
+        );
+    }
+    expect(execute(batch(original))).toEqual(execute(original));
+  }
+});
+
+it('retains duplicate-resource and getter observations through flush and reacquisition', () => {
+  const observed: string[] = [];
+  let resourceReads = 0;
+  const resolve = (name: string) => ({
+    kind: 'compute-bindings' as const,
+    name,
+    program: name.startsWith('other') ? 'other' : 'program',
+    get entries() {
+      observed.push(name);
+      return ['a', 'a', 'b'].map((resource, binding) => ({
+        binding,
+        get resource() {
+          resourceReads++;
+          return resource;
+        },
+      }));
+    },
+  });
+  const original = [
+    compute('first', 'a'),
+    compute('second', 'a', 2),
+    copy('zero', 'a'),
+    compute('other', 'other-a', 1, true, 'multiply'),
+    compute('reacquired', 'a', 3),
+  ];
+  const optimized = coalesceVfxComputePasses(original, programs, resolve);
+  expect(observed).toEqual(['a', 'a', 'other-a', 'a']);
+  expect(resourceReads).toBe(24);
+  expect(execute(optimized)).toEqual(execute(original));
+  expect(optimized).toHaveLength(4);
 });

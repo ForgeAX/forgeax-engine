@@ -10,6 +10,7 @@ import { RhiError, type TextureView } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
 import { atmosphereTextures } from './environment/luts';
+import { prepareHiddenGpuDrivenPipelines } from './gpu-driven/pipeline-preparation';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -17,13 +18,19 @@ import {
 } from './gpu-texture-usage';
 import { renderExtentSize } from './pipeline/render-extent';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
-import { encodeMainPass } from './record/main-pass';
+import type { ValidatedRenderable } from './record/frame-snapshot';
+import {
+  encodeMainPass,
+  hasMainPassPipelinePreparation,
+  prepareMainPassPipelines,
+} from './record/main-pass';
 import { encodeFrameObservationCapture } from './record/observation-capture';
 import { sceneRenderBundleCache } from './record/render-bundle-cache';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
 } from './record/render-context';
+import { registerScenePipelinePreparation } from './record/scene-pipeline-preparation';
 import {
   encodeSkyboxPass,
   recordBloomCompositePass,
@@ -45,6 +52,7 @@ import type {
   RenderPipelineSurfaceMediumPair,
 } from './render-pipeline';
 import { createRenderPipelineTarget, type RenderPipelineTarget } from './render-pipeline';
+import { markPipelinePreparationPending } from './render-system-presentation';
 import {
   getTemporalBindGroupResources,
   getTemporalGpuState,
@@ -235,7 +243,7 @@ export interface TypedScenePassOptions {
   readonly surfaceNearestLayer?: GraphTextureView | undefined;
   /** Nearest-layer depth produced by the preceding medium pass. */
   readonly surfaceNearestDepth?: GraphTextureView | undefined;
-  /** Restrict GPU-driven projection to the material family owned by this pass. */
+  /** Declares the pass's GPU material lane even before its first live projection. */
   readonly gpuDrivenFilter?: RenderPipelineGpuDrivenFilter | undefined;
   /** Exclude material/pass pairs consumed by an earlier graph lane. */
   readonly excludeSelector?: PassSelector | undefined;
@@ -251,21 +259,103 @@ export function addTypedScenePass(
   options: TypedScenePassOptions,
 ): Result<void, RenderGraphError> {
   const colorTargets = options.colorTargets ?? [options.color];
+  const fragmentEntryPoint =
+    options.passKind === 'temporal'
+      ? 'fs_temporal'
+      : options.passKind === 'deferred'
+        ? 'fs_gbuffer'
+        : options.recordMode === 'single-layer-medium-nearest-layer'
+          ? 'fs_nearest_layer'
+          : options.recordMode === 'single-layer-medium-color'
+            ? 'fs_color'
+            : undefined;
+  const formats = colorTargets.map((target) => target.format);
+  const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
+  registerScenePipelinePreparation(graph, (context, artifacts) => {
+    const selection = options.selectEntities?.(context);
+    const entries =
+      options.selectEntities === undefined
+        ? context.pipelinePreparationEntries
+        : context.pipelinePreparationEntries?.filter(
+            (entry) =>
+              selection !== undefined &&
+              selection.worldId === entry.source.worldId &&
+              selection.entities.includes(entry.source.entityKey),
+          );
+    const preparedContext = { ...context, pipelinePreparationEntries: entries ?? [] };
+    if (
+      !hasMainPassPipelinePreparation(
+        preparedContext,
+        options.selector,
+        options.recordMode,
+        options.excludeSelector,
+      )
+    )
+      return false;
+    const gpuDraws = new Map<ValidatedRenderable, Set<number>>();
+    const factory = context.runtime.prepareMaterialShaderPipelineEntry;
+    if (
+      (options.gpuDriven !== undefined ||
+        (options.gpuDrivenFilter !== undefined &&
+          context.gpuDrivenGeometryLane === 'automatic' &&
+          context.pipelineState.gpuDrivenInstancesBindGroupLayout != null)) &&
+      factory !== undefined &&
+      !prepareHiddenGpuDrivenPipelines({
+        entries: entries ?? [],
+        artifacts,
+        factory,
+        formats,
+        sampleCount,
+        shaderUvSetCount: context.pipelineState.standardPbrShaderUvSetCount,
+        filter: options.gpuDrivenFilter,
+        fragmentEntry: selectForwardFragmentEntry({
+          passKind: options.passKind ?? 'forward',
+          fragmentEntry: fragmentEntryPoint,
+          oitAccumulate: options.recordMode === 'oit-accumulate',
+          viewOffset: 0,
+          atmosphereCapture: false,
+        }),
+        coverageOnly: options.coverageOnly ?? false,
+        visibleSurface: context.visibleSurface !== undefined,
+        onSelected: (entry, index) => {
+          let draws = gpuDraws.get(entry);
+          if (draws === undefined) {
+            draws = new Set();
+            gpuDraws.set(entry, draws);
+          }
+          draws.add(index);
+        },
+        onPending: (reason) => markPipelinePreparationPending(context.frameState, reason),
+      })
+    )
+      markPipelinePreparationPending(context.frameState, { code: 'scene-pipeline-preparation' });
+    prepareMainPassPipelines(
+      preparedContext,
+      options.selector,
+      {
+        ...(options.passKind === undefined ? {} : { passKind: options.passKind }),
+        ...(options.recordMode === undefined ? {} : { recordMode: options.recordMode }),
+        ...(options.excludeSelector === undefined
+          ? {}
+          : { excludeSelector: options.excludeSelector }),
+        ...(options.coverageOnly === undefined ? {} : { coverageOnly: options.coverageOnly }),
+        ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
+        ...(options.transparentDepthWrite === undefined
+          ? {}
+          : { transparentDepthWrite: options.transparentDepthWrite }),
+      },
+      sampleCount,
+      formats,
+      (entry, index) => gpuDraws.get(entry)?.has(index) === true,
+    );
+    return true;
+  });
   options.gpuDriven?.registerPipelinePreparation?.(
     colorTargets.map((target) => target.format),
     options.gpuDrivenFilter,
     selectForwardFragmentEntry({
       passKind: options.passKind ?? 'forward',
-      fragmentEntry:
-        options.passKind === 'temporal'
-          ? 'fs_temporal'
-          : options.passKind === 'deferred'
-            ? 'fs_gbuffer'
-            : options.recordMode === 'single-layer-medium-nearest-layer'
-              ? 'fs_nearest_layer'
-              : options.recordMode === 'single-layer-medium-color'
-                ? 'fs_color'
-                : undefined,
+      fragmentEntry: fragmentEntryPoint,
       oitAccumulate: options.recordMode === 'oit-accumulate',
       viewOffset: 0,
       atmosphereCapture: false,
@@ -505,15 +595,7 @@ export function addTypedScenePass(
             ...(surfaceNearestDepth === null
               ? {}
               : { surfaceNearestDepthView: surfaceNearestDepth }),
-            ...(options.passKind === 'temporal'
-              ? { fragmentEntryPoint: 'fs_temporal' }
-              : options.passKind === 'deferred'
-                ? { fragmentEntryPoint: 'fs_gbuffer' }
-                : options.recordMode === 'single-layer-medium-nearest-layer'
-                  ? { fragmentEntryPoint: 'fs_nearest_layer' }
-                  : options.recordMode === 'single-layer-medium-color'
-                    ? { fragmentEntryPoint: 'fs_color' }
-                    : {}),
+            ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
             ...(options.gpuDriven === undefined
               ? {}
               : {

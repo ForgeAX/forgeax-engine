@@ -103,9 +103,11 @@ export type {
   RenderGraphFrame,
   RenderGraphGenerationAllocationEntry,
   RenderGraphGenerationAllocationInspection,
+  RenderGraphNativePass,
   RenderGraphPassExecution,
   RenderGraphPassInstrumentation,
   RenderGraphPassInstrumentationScope,
   RenderGraphPassRunner,
   RenderGraphResourceAllocationInspection,
+  SubgraphPass,
 } from './types.js';

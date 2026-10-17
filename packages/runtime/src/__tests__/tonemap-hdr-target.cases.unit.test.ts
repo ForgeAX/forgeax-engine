@@ -381,10 +381,12 @@ type __MergedKeep =
   interface CallRecord {
     readonly type: string;
     readonly label?: string | undefined;
+    readonly code?: string | undefined;
     readonly format?: string | undefined;
     readonly size?: number | undefined;
     readonly entries?: number | undefined;
     readonly fragmentTargets?: readonly string[] | undefined;
+    readonly fragmentSource?: string | undefined;
   }
 
   interface DeviceCallLog {
@@ -410,9 +412,9 @@ type __MergedKeep =
         writeTexture: () => undefined,
         onSubmittedWorkDone: async () => undefined,
       },
-      createShaderModule: (desc: { label?: string }) => {
-        log.records.push({ type: 'createShaderModule', label: desc?.label });
-        return { getCompilationInfo: async () => ({ messages: [] }) };
+      createShaderModule: (desc: { label?: string; code: string }) => {
+        log.records.push({ type: 'createShaderModule', label: desc.label, code: desc.code });
+        return { code: desc.code, getCompilationInfo: async () => ({ messages: [] }) };
       },
       createBindGroupLayout: (desc: { label?: string; entries?: unknown[] }) => {
         log.records.push({
@@ -428,7 +430,7 @@ type __MergedKeep =
       },
       createRenderPipeline: (desc: {
         label?: string;
-        fragment?: { targets?: Array<{ format?: string }> };
+        fragment?: { module?: { code?: string }; targets?: Array<{ format?: string }> };
       }) => {
         const targets = desc?.fragment?.targets ?? [];
         const formats = targets.map((t) => t?.format ?? '<missing>');
@@ -436,6 +438,7 @@ type __MergedKeep =
           type: 'createRenderPipeline',
           label: desc?.label,
           fragmentTargets: formats,
+          fragmentSource: desc.fragment?.module?.code,
         });
         return {};
       },
@@ -486,32 +489,38 @@ type __MergedKeep =
     };
   }
 
+  const pbrSource = '/* mock pbr.wgsl - calls f_schlick( for PBR direct lighting */';
+  const unlitSource = '/* mock unlit.wgsl - constant-shading path */';
+  const tonemapSource = '/* mock tonemap.wgsl - struct TonemapParams { exposure: f32 }; */';
+
   function buildManifestDataUrl(): string {
     const materialShaderStub = (identifier: string) => ({
       identifier,
       sourcePath: `${identifier}.wgsl`,
-      composedWgsl: '/* stub */',
+      composedWgsl: identifier === 'forgeax::default-standard-pbr' ? pbrSource : unlitSource,
       paramSchema: '[]',
       variants:
-        identifier === 'forgeax::default-standard-pbr' ? standardMaterialShaderVariants() : [],
+        identifier === 'forgeax::default-standard-pbr'
+          ? standardMaterialShaderVariants(pbrSource)
+          : [],
     });
     const manifest = {
       entries: [
         {
           hash: 'pbr00000',
-          wgsl: '/* mock pbr.wgsl - calls f_schlick( for PBR direct lighting */',
+          wgsl: pbrSource,
           glsl: '',
           bindings: '',
         },
         {
           hash: 'unlit000',
-          wgsl: '/* mock unlit.wgsl - constant-shading path */',
+          wgsl: unlitSource,
           glsl: '',
           bindings: '',
         },
         {
           hash: 'tonemap0',
-          wgsl: '/* mock tonemap.wgsl - struct TonemapParams { exposure: f32 }; */',
+          wgsl: tonemapSource,
           glsl: '',
           bindings: '',
         },
@@ -582,6 +591,7 @@ type __MergedKeep =
       );
       expect(unlitHdr).toBeDefined();
       expect(unlitHdr?.fragmentTargets).toEqual(['rgba16float']);
+      expect(unlitHdr?.fragmentSource).toBe(unlitSource);
       // Standard attachment admission is exercised after real material publication
       // and draw in native-shader-labels.dawn.test.ts, instead of unused boot PSOs.
     });
@@ -637,7 +647,7 @@ type __MergedKeep =
       expect(hdrTextureCalls.map((record) => record.label)).toEqual([]);
     });
 
-    it('row 4: pbr + unlit engine modules compile at boot (tonemap defers to unified channel)', async () => {
+    it('row 4: engine modules prewarm at boot while the tonemap pipeline waits for its first frame', async () => {
       const log: DeviceCallLog = { records: [] };
       const device = makeMockDevice(log);
       vi.stubGlobal('navigator', { ...baseNavigator, gpu: makeMockGPU(device) });
@@ -653,17 +663,20 @@ type __MergedKeep =
       expect(result.ok).toBe(true);
       result.unwrap();
 
-      const moduleLabels = log.records
+      const moduleSources = log.records
         .filter((r) => r.type === 'createShaderModule')
-        .map((r) => r.label);
-      expect(moduleLabels).toContain('pbr');
-      expect(moduleLabels).toContain('unlit');
-      // feat-20260621 M-A3 (D-5): tonemap no longer eager-compiles at boot — it
-      // registers on the unified post-process channel and its module compiles
-      // lazily on the first tonemap frame (dispatchFullscreenPass), so the boot
-      // `createShaderModule` log carries NO 'tonemap' label. Row 5 still proves
-      // the manifest triple guard (missing tonemap entry -> ready rejects).
-      expect(moduleLabels).not.toContain('tonemap');
+        .map((r) => r.code);
+      expect(moduleSources).toContain(pbrSource);
+      expect(moduleSources).toContain(unlitSource);
+      // The unified channel prewarms its module so the first synchronous frame
+      // does not wait for compilation; pipeline admission still belongs to draw.
+      expect(moduleSources).toContain(tonemapSource);
+      expect(
+        log.records.filter(
+          (record) =>
+            record.type === 'createRenderPipeline' && record.fragmentSource === tonemapSource,
+        ),
+      ).toEqual([]);
     });
   });
 }

@@ -12,6 +12,11 @@ from gameplay and clears acquired input when an event enters that root. Node
 identity is checked in the root document’s realm, including same-origin iframe
 documents supplied through the browser backend’s document/window options.
 
+`createCanvasInputBoundary(source)` routes one acquired input producer through
+`preview` and `game` backends. `owner()` returns the same closed pair;
+`grantGame()` and `revokeGame()` transfer ownership and clear stale samples.
+Each consumer retains its own input gate when ownership changes.
+
 ## 4 步 recipe
 
 ```ts

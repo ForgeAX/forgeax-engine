@@ -36,6 +36,7 @@ import {
   type RenderPublicationTemplate,
 } from './contract';
 import { publicationDependencies, publicationFrameDependencies } from './dependencies';
+import { publicationMaterialProgramKeys } from './programs';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
 import {
   materialCanvasSources,
@@ -85,7 +86,10 @@ export function createRenderPublisher(
   features: readonly RenderFeature<unknown>[] = [],
   targetOwner?: RenderPublicationTargetOwner,
   limits?: Readonly<Record<string, number>>,
+  maxInFlight: 2 | 3 | 4 = 2,
 ) {
+  if (maxInFlight !== 2 && maxInFlight !== 3 && maxInFlight !== 4)
+    throw new RenderPublicationError({ reason: 'shape', subject: 'publication capacity' });
   const publishedFullscreenFeatures = new Map<string, object>();
   const pendingMeshContent = new Set<Handle<string, 'shared'>>();
   const releaseTransforms = registerRenderSourceSystems(world, assets, {
@@ -101,7 +105,7 @@ export function createRenderPublisher(
   const pending = new Set<number>();
   let canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
   let videoConsumers = new Map<number, readonly number[]>();
-  // Two slots: the consuming frame and one sealed successor.
+  // One consuming frame and a bounded number of sealed successors.
   const flights = new Map<
     number,
     {
@@ -162,9 +166,17 @@ export function createRenderPublisher(
 
   const fail = (reason: RenderPublicationError['detail']['reason'], subject: string) =>
     err(new RenderPublicationError({ reason, subject }));
+  const acknowledgePrograms = (programs: RenderPublication['programs']): void => {
+    if (disposed) return;
+    for (const program of programs) publishedPrograms.add(program.key);
+  };
 
   return {
     identity,
+    /** A successful candidate preparation ACK proves these programs reached this receiver. */
+    acknowledgePrograms,
+    unpublishedPrograms: (programs: RenderPublication['programs']) =>
+      programs.filter((program) => !publishedPrograms.has(program.key)),
     inspect: () => ({
       revision,
       members: members.size,
@@ -179,8 +191,8 @@ export function createRenderPublisher(
       temporalReset = false,
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       if (disposed) return fail('disposed', 'publisher');
-      if (active || flights.size === 2)
-        return fail('in-flight', 'both publication slots are occupied');
+      if (active || flights.size >= maxInFlight)
+        return fail('in-flight', 'publication slots are occupied');
       const baseline = revision === 0;
       const featureSources = [...features];
       const batch = source.projection.read();
@@ -376,20 +388,7 @@ export function createRenderPublisher(
           for (const material of materials) {
             if (programMaterials.has(material)) continue;
             programMaterials.add(material);
-            const keys = new Set([
-              ...Object.values(material.materialProgramKeys ?? {}),
-              ...Object.values(material.materialSurfacePrograms ?? {}).map(
-                (program) => program.programKey,
-              ),
-              ...Object.values(material.materialSceneIndexProgramKeys ?? {}).map(
-                (program) => program.specializationKey,
-              ),
-              ...(material.materialShaderId === undefined ||
-              material.materialShaderId.startsWith('forgeax::')
-                ? []
-                : [material.materialShaderId]),
-            ]);
-            for (const key of keys) publishProgram(key);
+            for (const key of publicationMaterialProgramKeys(material)) publishProgram(key);
           }
         };
         for (let i = 0; i < frame.renderables.length; i++) {

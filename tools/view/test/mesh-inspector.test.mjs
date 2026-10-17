@@ -129,10 +129,10 @@ describe('mesh inspector presentation', () => {
     assert.equal(entity([{ name: 'Skin', fields: {}, values: {} }]).kind, 'skinnedMesh');
     assert.equal(inspectorEntityFromInspection({ entityId: 'light', components: [{ name: 'DirectionalLight', fields: {}, values: {} }] }).kind, 'directionalLight');
   });
-  it('keeps entity reads on their Editor binding while an independent resource preview is selected', () => {
-    const editor = { targetId: 'editor', generation: 4 };
-    const workspace = { editorPreview: { target: editor }, preview: { target: { targetId: 'mesh-preview', generation: 1 } }, sceneSelection: { targetId: 'editor', targetGeneration: 4, primary: { entityId: 'floor' } } };
-    assert.equal(inspectorWorkspaceTarget(workspace), editor);
+  it('keeps entity reads on their Scene binding while an independent resource preview is selected', () => {
+    const scene = { targetId: 'scene', generation: 4 };
+    const workspace = { scenePreview: { target: scene }, preview: { target: { targetId: 'mesh-preview', generation: 1 } }, sceneSelection: { targetId: 'scene', targetGeneration: 4, primary: { entityId: 'floor' } } };
+    assert.equal(inspectorWorkspaceTarget(workspace), scene);
     assert.equal(inspectorWorkspaceTarget({ ...workspace, sceneSelection: { ...workspace.sceneSelection, targetGeneration: 3 } }), undefined);
   });
 });

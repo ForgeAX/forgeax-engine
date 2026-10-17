@@ -250,6 +250,21 @@ describe('material upload storage', () => {
       uploadMaterialUniforms(context(mutable));
       expect(reads).toBe(4);
       expect(write).toHaveBeenCalledTimes(1);
+      const moved = { ...material };
+      uploadMaterialUniforms(context(moved));
+      uploadMaterialUniforms(context(moved));
+      const { materialParamSchema: schema, ...runtimeSchema } = material;
+      expect(schema).toBeDefined();
+      uploadMaterialUniforms(context(runtimeSchema));
+      expect(frameState.materialUboCounters).toMatchObject({
+        packHits: 1,
+        packMisses: 7,
+        packMissNoComparison: 1,
+        packMissMutable: 2,
+        packMissRuntimeSchema: 1,
+        packMissMovedSlot: 1,
+        packMissCold: 2,
+      });
     } finally {
       write.mockRestore();
       device.destroyBuffer(buffer).unwrap();

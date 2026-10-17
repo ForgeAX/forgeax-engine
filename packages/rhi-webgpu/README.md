@@ -176,3 +176,39 @@ A: D-S1 single-point exemption — `apps/hello/triangle/src/main.ts:96` `context
 - [`@forgeax/engine-rhi`](../rhi) — pure interface contract (14 opaque handles + descriptor projections + 7 main interfaces + `RhiError` / `Result`).
 - [`@forgeax/engine-types`](../types) — POD types / enum SSOT.
 - [`@forgeax/engine-runtime`](../engine) — async factory entry (M3 injects via `rhi.requestDevice()`).
+
+## Device pipeline library
+
+Every ordinary shader, bind-group layout, pipeline layout and render/compute pipeline
+factory uses one library per physical device. Exact WGSL and complete pipeline state
+identify reusable native handles; diagnostic labels do not. Changed sources, specialization
+constants, vertex/attachment formats, blend/depth/sample state or layouts create new entries.
+Feature-local descriptor caches still avoid reconstructing descriptions; they do not own
+another native compilation cache. Module aliases also share one native `getCompilationInfo()`
+completion, including its diagnostic messages; they never query the same native module again.
+Disposal/device loss clears retained handles.
+
+`device.pipelineLibrary.export()` returns the reachable JSON recipe graph. It contains
+WGSL and descriptors, never driver binaries. `await device.pipelineLibrary.prepare(manifest)`
+recreates dependencies and awaits native asynchronous pipeline completion (at most four
+requests concurrently). Concurrent requests share completion. A synchronous creation is
+usable but never counted as evidence that native compilation finished. Known asynchronous
+validation failure evicts an earlier unverified handle and remains retryable.
+
+`RendererOptions.pipelineLibrary` / `CreateAppOptions.pipelineLibrary` runs this preparation
+before renderer readiness, including a replacement device. `renderer.inspect()` exposes
+counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.
+Worker execution uses `await execution.inspectRenderer({pipelineLibrary:true})`.
+Watch new synchronous/asynchronous creations after loading to find missing scenario coverage.
+The cumulative `warmup.elapsedMs` reports preparation wall time, including failed attempts.
+Export refuses in-flight compilation so pending requirements cannot silently disappear.
+Collection is bounded to 4096 entries per dependency class and 64 MiB of UTF-16 shader
+source. Unrecordable native dependencies or overflow make export fail explicitly.
+
+The manifest version/backend and all dependency references are checked before native
+creation. Native validation still enforces the current device's features and limits;
+an incompatible or invalid library fails startup explicitly. Generate a library for the
+supported device/profile family and refresh it when content changes. Exact source/state
+keys prevent stale reuse but cannot predict unvisited gameplay. Browser/driver caches
+may persist compiled code across launches; WebGPU does not expose persistence or guarantee
+zero driver compilation at the next launch. Library warmup moves that work before play.

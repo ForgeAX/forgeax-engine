@@ -19,7 +19,7 @@ export function AssetPropertiesPanel({
   const { t } = useTranslation();
   if (!client) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-asset-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-asset-properties">
         <EmptyState title={t('asset.unavailable')} description={t('asset.empty')} />
       </div>
     );
@@ -66,21 +66,21 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
 
   if (!subject) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-asset-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-asset-properties">
         <EmptyState title={t('asset.empty')} description={t('asset.unavailable')} />
       </div>
     );
   }
   if (failed) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-asset-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-asset-properties">
         <EmptyState title={t('asset.unavailable')} description={t('asset.inspectFailed')} />
       </div>
     );
   }
   const inspectionRecord = inspection ?? { guid: subject.guid, asset: subject };
   return (
-    <div className="fx-asset-editor fx-ui" data-testid="panel-asset-properties" data-view-readonly="true">
+    <div className="fx-asset-viewer fx-ui" data-testid="panel-asset-properties" data-view-readonly="true">
       <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
       <InspectorForm assetActions={assetActions} inspection={inspectionRecord} identityTitle={t('asset.facts')} />
     </div>

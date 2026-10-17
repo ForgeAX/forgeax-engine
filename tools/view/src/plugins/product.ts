@@ -250,7 +250,7 @@ export default {
         id: 'view.project.open',
         path: ['view', 'project', 'open'],
         title: 'Open View project',
-        summary: 'Open an editor project on the running View and return its headed document URL.',
+        summary: 'Open a project on the running View and return its headed document URL.',
         realm: 'host',
         argsSchema: toolJsonSchema(projectOpenSchema),
         resultSchema: toolJsonSchema({ type: 'object' }),

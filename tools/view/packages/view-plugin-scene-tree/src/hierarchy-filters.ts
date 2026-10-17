@@ -1,6 +1,5 @@
 /**
- * Scene-tree type filters mirror forgeax-editor hierarchy filter options:
- * option ids are component schema names from the Engine host, not UI enums.
+ * Scene-tree filter option ids are component schema names from the Engine host, not UI enums.
  */
 
 const CATEGORY_RULES = [

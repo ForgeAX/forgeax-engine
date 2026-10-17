@@ -6,7 +6,7 @@ import { serializableDetail } from './worker-error';
 export function rendererInspectionFailure(
   reason: RendererInspectionFailureReason,
   cause?: unknown,
-): ExecutionRendererInspectionResult {
+): Extract<ExecutionRendererInspectionResult, { readonly ok: false }> {
   let preservedCause: unknown;
   try {
     preservedCause = serializableDetail(cause);
@@ -24,12 +24,13 @@ export function rendererInspectionFailure(
 export function readRendererInspection(
   renderer: Renderer | undefined,
   signal?: AbortSignal,
+  options?: { readonly pipelineLibrary?: boolean },
 ): ExecutionRendererInspectionResult {
   if (signal?.aborted) return rendererInspectionFailure('cancelled');
   try {
     if (renderer === undefined || renderer.state() !== 'alive')
       return rendererInspectionFailure('not-ready');
-    return { ok: true, value: structuredClone(renderer.inspect()) };
+    return { ok: true, value: structuredClone(renderer.inspect(options)) };
   } catch (cause) {
     return rendererInspectionFailure('inspection', cause);
   }

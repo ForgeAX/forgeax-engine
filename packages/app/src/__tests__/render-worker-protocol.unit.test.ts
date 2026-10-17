@@ -11,17 +11,21 @@ import type { RenderWorkerInput } from '../execution/render-worker-protocol';
 const mocks = vi.hoisted(() => ({
   construct: vi.fn(),
   draw: vi.fn(),
+  scheduled: vi.fn(),
   observe: vi.fn(),
+  geometry: vi.fn(),
   bounds: vi.fn(),
   dispose: vi.fn(),
   subscribe: vi.fn(),
   unsubscribe: vi.fn(),
   configure: vi.fn(),
   inspect: vi.fn(),
+  setProfile: vi.fn(),
   installFeature: vi.fn(),
   uninstallFeature: vi.fn(),
   prepareMesh: vi.fn(),
   state: vi.fn(),
+  turn: vi.fn(),
   listener: undefined as ((event: RendererEvent) => void) | undefined,
 }));
 vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
@@ -36,12 +40,15 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
         },
         renderer: {
           draw: mocks.draw,
+          drawScheduled: mocks.scheduled,
           observe: mocks.observe,
+          observeGeometry: mocks.geometry,
           bounds: mocks.bounds,
           dispose: mocks.dispose,
           subscribe: mocks.subscribe,
           state: mocks.state,
           inspect: mocks.inspect,
+          setProfile: mocks.setProfile,
           preparePublishedMeshResidency: mocks.prepareMesh,
         },
       },
@@ -50,6 +57,10 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
 }));
 vi.mock('../execution/bootstrap-entry', () => ({
   prepareBootstrapEntry: async () => ({ ok: true, value: { configureRenderer: mocks.configure } }),
+}));
+vi.mock('../execution/render-worker-task-turn', () => ({
+  yieldRenderWorkerTaskTurn: () => mocks.turn(),
+  createRenderWorkerTaskTurns: () => ({ yield: () => mocks.turn(), dispose: () => undefined }),
 }));
 afterEach(() => vi.unstubAllGlobals());
 beforeEach(() => {
@@ -64,6 +75,13 @@ beforeEach(() => {
   mocks.installFeature.mockResolvedValue({ ok: true, value: undefined });
   mocks.uninstallFeature.mockResolvedValue({ ok: true, value: undefined });
   mocks.state.mockReturnValue('alive');
+  mocks.turn.mockReset().mockResolvedValue(undefined);
+  mocks.scheduled.mockReset().mockImplementation(async (input, schedule) => {
+    await schedule.checkpoint();
+    if (schedule.signal?.aborted || schedule.isCurrent?.() === false)
+      return { ok: false, error: rendererLossError() };
+    return mocks.draw(input);
+  });
   mocks.inspect.mockReturnValue({
     state: 'alive',
     frame: { frameId: 0, deviceGeneration: 7 },
@@ -75,8 +93,15 @@ beforeEach(() => {
 async function start(
   options: {
     readonly gpuPassTiming?: object;
+    readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
+    readonly gbufferBatchOrderDiagnostic?: {
+      readonly order: 'near' | 'far';
+      readonly programDigests: readonly string[];
+    };
     readonly geometryLane?: RenderFrameInput['geometryLane'];
     readonly dynamicGeometryMeshBudgetBytes?: number;
+    readonly renderTaskYield?: 'none' | 'completion' | 'features';
+    readonly renderPipelineCapacity?: 2 | 3 | 4;
   } = {},
   ready = true,
 ) {
@@ -117,6 +142,7 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
       epoch: 1,
       revision,
       features: [],
+      templates: [],
       videoFrames: source === 'video' ? [{ frame: { close } }] : [],
       canvasFrames:
         source === 'canvas'
@@ -132,6 +158,305 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
     },
   };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+it('forwards the pending cause captured on the completed receipt, without inspecting a later frame', async () => {
+  const completion = deferred<{ ok: true; value: undefined }>();
+  const reason = {
+    code: 'feature-preparation',
+    featureIdentity: 'forgeax.vfx-render.gpu-particles',
+    preparationStage: 'graphics-pipeline',
+    pass: 'particle-draw',
+    shader: 'actual-material-guid',
+    resource: 'view::variant-program',
+    operation: 'resolve',
+    reason: 'pipeline-pending',
+  } as const;
+  mocks.draw
+    .mockReturnValueOnce({
+      ok: true,
+      value: {
+        deviceGeneration: 7,
+        graphGeneration: 111,
+        presentation: 'pending',
+        presentationPendingReason: reason,
+        completed: completion.promise,
+      },
+    })
+    .mockReturnValueOnce({
+      ok: true,
+      value: {
+        deviceGeneration: 7,
+        graphGeneration: 112,
+        presentation: 'ready',
+        presentationPendingReason: { code: 'sky-cubemap' },
+        completed: Promise.resolve({ ok: true, value: undefined }),
+      },
+    });
+  const { post, receive } = await start();
+  try {
+    receive({ data: drawMessage(1) });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([m]) => m.kind === 'submitted')).toHaveLength(1),
+    );
+    receive({ data: drawMessage(2) });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([m]) => m.kind === 'submitted')).toHaveLength(2),
+    );
+    completion.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([m]) => m.kind === 'completed')).toHaveLength(2),
+    );
+    const completed = post.mock.calls.filter(([m]) => m.kind === 'completed');
+    expect(completed[0]?.[0]).toMatchObject({
+      frame: {
+        frameId: 1,
+        graphGeneration: 111,
+        presentation: 'pending',
+        presentationPendingReason: reason,
+      },
+    });
+    expect(completed[1]?.[0].frame).not.toHaveProperty('presentationPendingReason');
+    expect(structuredClone(completed[0]?.[0]).frame.presentationPendingReason).toEqual(reason);
+  } finally {
+    completion.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it.each([
+  'completion',
+  'features',
+] as const)('retires a real predecessor during one controlled %s task turn before drawing its successor', async (mode) => {
+  const first = deferred<{ ok: true; value: undefined }>();
+  const second = deferred<{ ok: true; value: undefined }>();
+  const turn = deferred<void>();
+  const events: string[] = [];
+  mocks.turn.mockReturnValue(turn.promise);
+  mocks.draw
+    .mockImplementationOnce(() => {
+      events.push('draw:1');
+      return { ok: true, value: { deviceGeneration: 7, completed: first.promise } };
+    })
+    .mockImplementationOnce(() => {
+      events.push('draw:2');
+      return { ok: true, value: { deviceGeneration: 7, completed: second.promise } };
+    });
+  mocks.scheduled.mockImplementation(async (input, schedule) => {
+    await schedule.checkpoint();
+    return mocks.draw(input);
+  });
+  const { post, receive } = await start({ renderTaskYield: mode });
+  post.mockImplementation((message) => {
+    if (message.kind === 'submitted' || message.kind === 'completed')
+      events.push(`${message.kind}:${message.revision}`);
+  });
+  try {
+    receive({ data: drawMessage(1) });
+    await vi.waitFor(() => expect(events).toEqual(['draw:1', 'submitted:1']));
+    expect(mocks.turn).not.toHaveBeenCalled();
+    receive({ data: drawMessage(2) });
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
+    expect(events).toEqual(['draw:1', 'submitted:1']);
+    expect(mocks.draw).toHaveBeenCalledOnce();
+    first.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(events).toEqual(['draw:1', 'submitted:1', 'completed:1']));
+    expect(mocks.draw).toHaveBeenCalledOnce();
+    turn.resolve(undefined);
+    await vi.waitFor(() =>
+      expect(events).toEqual(['draw:1', 'submitted:1', 'completed:1', 'draw:2', 'submitted:2']),
+    );
+    second.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(events.at(-1)).toBe('completed:2'));
+    expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
+    expect(mocks.turn).toHaveBeenCalledOnce();
+  } finally {
+    turn.resolve(undefined);
+    first.resolve({ ok: true, value: undefined });
+    second.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it.each([
+  'completion',
+  'features',
+] as const)('discards yielded and queued publications exactly once when %s disposal starts', async (mode) => {
+  const first = deferred<{ ok: true; value: undefined }>();
+  const turn = deferred<void>();
+  const closes = [vi.fn(), vi.fn(), vi.fn()];
+  mocks.turn.mockReturnValue(turn.promise);
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: { deviceGeneration: 7, completed: first.promise },
+  });
+  const { post, receive } = await start({ renderTaskYield: mode });
+  try {
+    receive({ data: drawMessage(1, closes[0]) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2, closes[1], 'canvas') });
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
+    expect(post.mock.calls.filter(([message]) => message.kind === 'submitted')).toHaveLength(1);
+    first.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(closes[0]).toHaveBeenCalledOnce());
+    // Only the actual completed receipt frees the credit for this queued frame.
+    receive({ data: drawMessage(3, closes[2]) });
+    receive({ data: { kind: 'dispose' } });
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(closes[1]).not.toHaveBeenCalled();
+    expect(closes[2]).not.toHaveBeenCalled();
+    turn.resolve(undefined);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(mocks.draw).toHaveBeenCalledOnce();
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    expect(
+      post.mock.calls
+        .filter(([message]) => message.kind === 'submitted')
+        .map(([message]) => message.revision),
+    ).toEqual([1]);
+    expect(
+      post.mock.calls
+        .filter(([message]) => message.kind === 'completed')
+        .map(([message]) => message.revision),
+    ).toEqual([1]);
+    expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
+    for (const close of closes) expect(close).toHaveBeenCalledOnce();
+  } finally {
+    turn.resolve(undefined);
+    first.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it.each([
+  'completion',
+  'features',
+] as const)('latches receipt failure during a %s task turn without drawing or acknowledging the waiting frame', async (mode) => {
+  const first = deferred<{ ok: false; error: RenderError }>();
+  const turn = deferred<void>();
+  const closes = [vi.fn(), vi.fn(), vi.fn()];
+  const error = rendererLossError('complete-frame');
+  mocks.turn.mockReturnValue(turn.promise);
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: { deviceGeneration: 7, completed: first.promise },
+  });
+  const { post, receive } = await start({ renderTaskYield: mode });
+  try {
+    receive({ data: drawMessage(1, closes[0]) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2, closes[1], 'canvas') });
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
+    first.resolve({ ok: false, error });
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'failed',
+          recoverable: true,
+          publication: expect.objectContaining({ revision: 1 }),
+        }),
+      ),
+    );
+    mocks.state.mockReturnValue('device-lost');
+    mocks.listener?.({ kind: 'error', error: rendererLossError() });
+    mocks.listener?.({ kind: 'error', error: rendererLossError() });
+    receive({ data: drawMessage(3, closes[2]) });
+    turn.resolve(undefined);
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(mocks.draw).toHaveBeenCalledOnce();
+    expect(post.mock.calls.filter(([message]) => message.kind === 'failed')).toHaveLength(1);
+    expect(
+      post.mock.calls
+        .filter(([message]) => message.kind === 'submitted')
+        .map(([message]) => message.revision),
+    ).toEqual([1]);
+    expect(post.mock.calls.some(([message]) => message.kind === 'completed')).toBe(false);
+    for (const close of closes) expect(close).toHaveBeenCalledOnce();
+  } finally {
+    turn.resolve(undefined);
+    first.resolve({ ok: false, error });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it("keeps mesh preparation behind the yielded frame's existing serial draw drain", async () => {
+  const first = deferred<{ ok: true; value: undefined }>();
+  const second = deferred<{ ok: true; value: undefined }>();
+  const turn = deferred<void>();
+  mocks.turn.mockReturnValue(turn.promise);
+  mocks.draw
+    .mockImplementationOnce(() => ({
+      ok: true,
+      value: { deviceGeneration: 7, completed: first.promise },
+    }))
+    .mockImplementationOnce(() => ({
+      ok: true,
+      value: { deviceGeneration: 7, completed: second.promise },
+    }));
+  mocks.prepareMesh.mockResolvedValue({
+    ok: true,
+    value: {
+      deviceGeneration: 7,
+      isCurrent: () => true,
+      recordStageLane: () => ({ ok: true, value: undefined }),
+      release: () => Promise.resolve(),
+    },
+  });
+  const { post, receive } = await start({ renderTaskYield: 'features' });
+  try {
+    receive({ data: drawMessage(1) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2) });
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
+    receive({
+      data: {
+        kind: 'mesh-prepare',
+        requestId: 1,
+        entity: 42,
+        input: {
+          source: 'test',
+          epoch: 1,
+          meshHandle: 1,
+          mesh: createBoxGeometry(1, 1, 1).unwrap(),
+        },
+      },
+    });
+    await Promise.resolve();
+    expect(mocks.prepareMesh).not.toHaveBeenCalled();
+    first.resolve({ ok: true, value: undefined });
+    turn.resolve(undefined);
+    await vi.waitFor(() => expect(mocks.prepareMesh).toHaveBeenCalledOnce());
+    expect(mocks.draw).toHaveBeenCalledTimes(2);
+    expect(
+      post.mock.calls
+        .filter(([message]) => message.kind === 'submitted')
+        .map(([message]) => message.revision),
+    ).toEqual([1, 2]);
+    expect(
+      post.mock.calls
+        .filter(([message]) => message.kind === 'completed')
+        .map(([message]) => message.revision),
+    ).toEqual([1]);
+  } finally {
+    first.resolve({ ok: true, value: undefined });
+    second.resolve({ ok: true, value: undefined });
+    turn.resolve(undefined);
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
 
 it.each([
   undefined,
@@ -161,6 +486,7 @@ it.each([
       if (geometryLane === undefined) expect(request).not.toHaveProperty('geometryLane');
       else expect(request).toHaveProperty('geometryLane', geometryLane);
     }
+    expect(mocks.turn).not.toHaveBeenCalled();
   } finally {
     receive({ data: { kind: 'dispose' } });
     await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
@@ -470,6 +796,7 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
         epoch: 1,
         revision: 1,
         features: [],
+        templates: [],
         videoFrames: [],
         upserts: new Float32Array(0),
         removed: new Uint32Array(0),
@@ -510,6 +837,7 @@ it('reports publication overflow as deterministic protocol failure and drains ow
       epoch: 1,
       revision,
       features: [],
+      templates: [],
       videoFrames: [{ frame: { close: closeFrames[revision - 1] } }],
       upserts: new Float32Array(0),
       removed: new Uint32Array(0),
@@ -591,7 +919,14 @@ it.each([
       frameId: 1,
       width: 32,
       height: 32,
-      publication: { source: 'test', epoch: 1, revision: 1, features: [], videoFrames: [] },
+      publication: {
+        source: 'test',
+        epoch: 1,
+        revision: 1,
+        features: [],
+        templates: [],
+        videoFrames: [],
+      },
     },
   });
   try {
@@ -1177,4 +1512,411 @@ it('installs game-owned fullscreen declarations before drawing and retires their
     receive({ data: { kind: 'dispose' } });
     await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
   }
+});
+
+it.each([
+  3, 4,
+] as const)('keeps %i admitted publications in FIFO order across a held preparation and real out-of-order GPU completion', async (capacity) => {
+  const prepared = deferred<void>();
+  const completions = Array.from({ length: capacity }, () =>
+    deferred<{ ok: true; value: undefined }>(),
+  );
+  const closes = Array.from({ length: capacity }, () => vi.fn());
+  mocks.scheduled.mockImplementation(async (input) => {
+    if (input.publication.revision === 1) await prepared.promise;
+    return mocks.draw(input);
+  });
+  mocks.draw.mockImplementation((input) => ({
+    ok: true,
+    value: { deviceGeneration: 7, completed: completions[input.publication.revision - 1]?.promise },
+  }));
+  const { post, receive } = await start({
+    renderTaskYield: 'features',
+    renderPipelineCapacity: capacity,
+  });
+  const revisions = (kind: string) =>
+    post.mock.calls
+      .filter(([message]) => message.kind === kind)
+      .map(([message]) => message.revision);
+  try {
+    receive({ data: drawMessage(1, closes[0]) });
+    await vi.waitFor(() => expect(mocks.scheduled).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2, closes[1], 'canvas') });
+    for (let id = 3; id <= capacity; id++) receive({ data: drawMessage(id, closes[id - 1]) });
+    expect(revisions('submitted')).toEqual([]);
+    prepared.resolve(undefined);
+    await vi.waitFor(() =>
+      expect(revisions('submitted')).toEqual(
+        Array.from({ length: capacity }, (_, index) => index + 1),
+      ),
+    );
+    expect(mocks.draw.mock.calls.map(([input]) => input.publication.revision)).toEqual(
+      Array.from({ length: capacity }, (_, index) => index + 1),
+    );
+    expect(revisions('completed')).toEqual([]);
+    for (let index = capacity - 1; index > 0; index--)
+      completions[index]?.resolve({ ok: true, value: undefined });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(revisions('completed')).toEqual([]);
+    for (const close of closes) expect(close).not.toHaveBeenCalled();
+    completions[0]?.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(revisions('completed')).toEqual(
+        Array.from({ length: capacity }, (_, index) => index + 1),
+      ),
+    );
+    for (const close of closes) expect(close).toHaveBeenCalledOnce();
+    expect(revisions('failed')).toEqual([]);
+  } finally {
+    prepared.resolve(undefined);
+    for (const completion of completions) completion.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it.each([
+  { terminal: 'dispose', capacity: 3 },
+  { terminal: 'overflow', capacity: 3 },
+  { terminal: 'dispose', capacity: 4 },
+  { terminal: 'overflow', capacity: 4 },
+] as const)('closes all $capacity accepted FIFO owners exactly once on $terminal without publishing fake completions', async ({
+  terminal,
+  capacity,
+}) => {
+  const prepared = deferred<void>();
+  const closes = Array.from({ length: capacity + 1 }, () => vi.fn());
+  mocks.scheduled.mockImplementation(async (_input, schedule) => {
+    await prepared.promise;
+    if (schedule.signal.aborted || !schedule.isCurrent())
+      return { ok: false, error: rendererLossError() };
+    return mocks.draw(_input);
+  });
+  const { post, receive } = await start({
+    renderTaskYield: 'features',
+    renderPipelineCapacity: capacity,
+  });
+  try {
+    receive({ data: drawMessage(1, closes[0]) });
+    await vi.waitFor(() => expect(mocks.scheduled).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2, closes[1], 'canvas') });
+    for (let id = 3; id <= capacity; id++) receive({ data: drawMessage(id, closes[id - 1]) });
+    if (terminal === 'overflow') receive({ data: drawMessage(capacity + 1, closes[capacity]) });
+    receive({ data: { kind: 'dispose' } });
+    prepared.resolve(undefined);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(mocks.draw).not.toHaveBeenCalled();
+    expect(
+      post.mock.calls.some(
+        ([message]) => message.kind === 'submitted' || message.kind === 'completed',
+      ),
+    ).toBe(false);
+    expect(post.mock.calls.filter(([message]) => message.kind === 'failed')).toHaveLength(
+      terminal === 'overflow' ? 1 : 0,
+    );
+    for (const close of closes.slice(0, terminal === 'overflow' ? capacity + 1 : capacity))
+      expect(close).toHaveBeenCalledOnce();
+  } finally {
+    prepared.resolve(undefined);
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it('drains the third FIFO owner without ACK when an older real receipt fails during preparation', async () => {
+  const completion = deferred<{ ok: false; error: RenderError }>();
+  const turn = deferred<void>();
+  const closes = [vi.fn(), vi.fn(), vi.fn()];
+  mocks.turn.mockReturnValue(turn.promise);
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: { deviceGeneration: 7, completed: completion.promise },
+  });
+  const { post, receive } = await start({ renderTaskYield: 'features', renderPipelineCapacity: 3 });
+  try {
+    receive({ data: drawMessage(1, closes[0]) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2, closes[1], 'canvas') });
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(3, closes[2]) });
+    completion.resolve({ ok: false, error: rendererLossError('complete-frame') });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([message]) => message.kind === 'failed')).toHaveLength(1),
+    );
+    turn.resolve(undefined);
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(mocks.draw).toHaveBeenCalledOnce();
+    expect(
+      post.mock.calls
+        .filter(([message]) => message.kind === 'submitted')
+        .map(([message]) => message.revision),
+    ).toEqual([1]);
+    expect(post.mock.calls.some(([message]) => message.kind === 'completed')).toBe(false);
+    for (const close of closes) expect(close).toHaveBeenCalledOnce();
+  } finally {
+    completion.resolve({ ok: false, error: rendererLossError('complete-frame') });
+    turn.resolve(undefined);
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it('holds one requested geometry receipt through readback and resumes ordinary queued draws', async () => {
+  const read = deferred<unknown>();
+  mocks.geometry.mockReturnValue(read.promise);
+  mocks.draw.mockImplementation((input) => ({
+    ok: true,
+    value: {
+      frameId: input.publication.revision,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      completed: Promise.resolve({ ok: true, value: undefined }),
+    },
+  }));
+  const { receive, post } = await start();
+  receive({
+    data: {
+      kind: 'geometry-observe-next',
+      requestId: 81,
+      identity: { source: 'test', epoch: 1 },
+      worldIdentity: 'test-world',
+    },
+  });
+  receive({ data: drawMessage(1) });
+  receive({ data: drawMessage(2) });
+  await vi.waitFor(() => expect(mocks.geometry).toHaveBeenCalledTimes(1));
+  expect(mocks.draw).toHaveBeenCalledTimes(1);
+  expect(mocks.draw.mock.calls[0]?.[0].geometryObservation).toBe(true);
+  expect(mocks.draw.mock.calls[0]?.[0].geometryObservationSourceWorldIdentity).toBe('test-world');
+  read.resolve({
+    status: 'complete',
+    scope: 'primary-display-view-gpu-commands',
+    frameId: 1,
+    deviceGeneration: 7,
+    commands: [],
+  });
+  await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledTimes(2));
+  expect(mocks.draw.mock.calls[1]?.[0].geometryObservation).toBeUndefined();
+  expect(mocks.draw.mock.calls[1]?.[0].geometryObservationSourceWorldIdentity).toBeUndefined();
+  expect(post).toHaveBeenCalledWith(
+    expect.objectContaining({
+      kind: 'geometry-observation-result',
+      requestId: 81,
+      result: expect.objectContaining({ ok: true, value: expect.objectContaining({ frameId: 1 }) }),
+    }),
+  );
+});
+it('rejects geometry source World mismatch without arming or reading another World', async () => {
+  mocks.geometry.mockReset();
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: {
+      frameId: 1,
+      deviceGeneration: 7,
+      completed: Promise.resolve({ ok: true, value: undefined }),
+    },
+  });
+  const { receive, post } = await start();
+  receive({
+    data: {
+      kind: 'geometry-observe-next',
+      requestId: 84,
+      identity: { source: 'test', epoch: 1 },
+      worldIdentity: 'test-world',
+    },
+  });
+  receive({ data: { ...drawMessage(1), worldIdentity: 'another-world' } });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'geometry-observation-result',
+        requestId: 84,
+        result: expect.objectContaining({
+          ok: false,
+          error: expect.objectContaining({
+            detail: expect.objectContaining({ reason: 'stale-session' }),
+          }),
+        }),
+      }),
+    ),
+  );
+  expect(mocks.draw.mock.calls[0]?.[0].geometryObservation).toBeUndefined();
+  expect(mocks.draw.mock.calls[0]?.[0].geometryObservationSourceWorldIdentity).toBeUndefined();
+  expect(mocks.geometry).not.toHaveBeenCalled();
+  expect(post.mock.calls.some(([row]) => row.kind === 'failed')).toBe(false);
+});
+it('cancels a pending geometry request before any draw without arming ordinary frames', async () => {
+  mocks.geometry.mockReset();
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: {
+      frameId: 1,
+      deviceGeneration: 7,
+      completed: Promise.resolve({ ok: true, value: undefined }),
+    },
+  });
+  const { receive, post } = await start();
+  receive({
+    data: {
+      kind: 'geometry-observe-next',
+      requestId: 82,
+      identity: { source: 'test', epoch: 1 },
+      worldIdentity: 'test-world',
+    },
+  });
+  receive({ data: { kind: 'geometry-observe-cancel', requestId: 82 } });
+  receive({ data: drawMessage(1) });
+  await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledTimes(1));
+  expect(mocks.draw.mock.calls[0]?.[0].geometryObservation).toBeUndefined();
+  expect(mocks.geometry).not.toHaveBeenCalled();
+  expect(post.mock.calls.some(([message]) => message.kind === 'geometry-observation-result')).toBe(
+    false,
+  );
+});
+it('rejects an observation from a foreign publication epoch before arming a frame', async () => {
+  const { receive, post } = await start();
+  receive({
+    data: {
+      kind: 'geometry-observe-next',
+      requestId: 83,
+      identity: { source: 'test', epoch: 2 },
+      worldIdentity: 'test-world',
+    },
+  });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'geometry-observation-result',
+        requestId: 83,
+        result: expect.objectContaining({ ok: false }),
+      }),
+    ),
+  );
+  expect(mocks.draw).not.toHaveBeenCalled();
+});
+
+it('binds composite and predecessor continuation marks to each original receipt without changing FIFO retirement', async () => {
+  const events: unknown[] = [];
+  const execution = { enabled: true, failures: 0, emit: (event: unknown) => events.push(event) };
+  vi.stubGlobal('__forgeaxFramePhaseDiagnostics', { execution });
+  const first = deferred<{ ok: true; value: undefined }>(),
+    second = deferred<{ ok: true; value: undefined }>();
+  mocks.draw
+    .mockReturnValueOnce({ ok: true, value: { deviceGeneration: 7, completed: first.promise } })
+    .mockReturnValueOnce({ ok: true, value: { deviceGeneration: 8, completed: second.promise } });
+  const { post, receive } = await start();
+  try {
+    receive({ data: drawMessage(1) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledTimes(2));
+    second.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        event: 'render-own-composite-continuation',
+        worldIdentity: 'test-world',
+        frameId: 2,
+        deviceGeneration: 8,
+        source: 'test',
+        epoch: 1,
+        revision: 2,
+      }),
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ event: 'render-previous-prefix-passed', frameId: 2 }),
+    );
+    expect(post.mock.calls.filter(([message]) => message.kind === 'completed')).toHaveLength(0);
+    first.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([message]) => message.kind === 'completed')).toHaveLength(2),
+    );
+    expect(events).toEqual([
+      {
+        event: 'render-own-composite-continuation',
+        worldIdentity: 'test-world',
+        frameId: 2,
+        deviceGeneration: 8,
+        source: 'test',
+        epoch: 1,
+        revision: 2,
+      },
+      {
+        event: 'render-own-composite-continuation',
+        worldIdentity: 'test-world',
+        frameId: 1,
+        deviceGeneration: 7,
+        source: 'test',
+        epoch: 1,
+        revision: 1,
+      },
+      {
+        event: 'render-previous-prefix-passed',
+        worldIdentity: 'test-world',
+        frameId: 1,
+        deviceGeneration: 7,
+        source: 'test',
+        epoch: 1,
+        revision: 1,
+      },
+      {
+        event: 'render-previous-prefix-passed',
+        worldIdentity: 'test-world',
+        frameId: 2,
+        deviceGeneration: 8,
+        source: 'test',
+        epoch: 1,
+        revision: 2,
+      },
+    ]);
+    expect(execution.failures).toBe(0);
+  } finally {
+    first.resolve({ ok: true, value: undefined });
+    second.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it('applies the explicit startup order after project configuration before ready, preserving profile', async () => {
+  const profile = {
+    pipelineId: 'forgeax::standard',
+    renderPath: 'deferred',
+    lightCount: 256,
+    ssao: true,
+  };
+  const gbufferBatchOrderDiagnostic = {
+    order: 'far' as const,
+    programDigests: [`sha256:${'a'.repeat(64)}`],
+  };
+  mocks.inspect.mockReturnValue({ ...mocks.inspect(), profile });
+  mocks.setProfile.mockReturnValue({ ok: true, value: undefined });
+  await start({ gbufferBatchOrderDiagnostic });
+  expect(mocks.setProfile).toHaveBeenCalledWith({ ...profile, gbufferBatchOrderDiagnostic });
+  expect(mocks.configure.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.setProfile.mock.invocationCallOrder[0] as number,
+  );
+});
+
+it.each([
+  false,
+  true,
+])('applies explicit read-only depth experiment %s after configuration before ready', async (featureReadOnlyDepthBatchDiagnostic) => {
+  const profile = {
+    pipelineId: 'forgeax::standard',
+    renderPath: 'deferred',
+    lightCount: 256,
+    ssao: true,
+  };
+  mocks.inspect.mockReturnValue({ ...mocks.inspect(), profile });
+  mocks.setProfile.mockReturnValue({ ok: true, value: undefined });
+  await start({ featureReadOnlyDepthBatchDiagnostic });
+  expect(mocks.setProfile).toHaveBeenCalledWith({
+    ...profile,
+    featureReadOnlyDepthBatchDiagnostic,
+  });
+  expect(mocks.configure.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.setProfile.mock.invocationCallOrder[0] as number,
+  );
 });

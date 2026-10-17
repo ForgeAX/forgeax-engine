@@ -64,116 +64,38 @@ export function fromViewProjection(out: Frustum, vp: Mat4Like): Frustum {
   const m14 = vp[14] as number;
   const m15 = vp[15] as number;
 
-  // Left plane: row3 + row0
-  let nx = m3 + m0,
-    ny = m7 + m4,
-    nz = m11 + m8,
-    d = m15 + m12;
-  let len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 0) {
-    const il = 1 / len;
-    nx *= il;
-    ny *= il;
-    nz *= il;
-    d *= il;
-  }
-  out[0] = nx;
-  out[1] = ny;
-  out[2] = nz;
-  out[3] = d;
-
-  // Right plane: row3 - row0
-  nx = m3 - m0;
-  ny = m7 - m4;
-  nz = m11 - m8;
-  d = m15 - m12;
-  len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 0) {
-    const il = 1 / len;
-    nx *= il;
-    ny *= il;
-    nz *= il;
-    d *= il;
-  }
-  out[4] = nx;
-  out[5] = ny;
-  out[6] = nz;
-  out[7] = d;
-
-  // Bottom plane: row3 + row1
-  nx = m3 + m1;
-  ny = m7 + m5;
-  nz = m11 + m9;
-  d = m15 + m13;
-  len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 0) {
-    const il = 1 / len;
-    nx *= il;
-    ny *= il;
-    nz *= il;
-    d *= il;
-  }
-  out[8] = nx;
-  out[9] = ny;
-  out[10] = nz;
-  out[11] = d;
-
-  // Top plane: row3 - row1
-  nx = m3 - m1;
-  ny = m7 - m5;
-  nz = m11 - m9;
-  d = m15 - m13;
-  len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 0) {
-    const il = 1 / len;
-    nx *= il;
-    ny *= il;
-    nz *= il;
-    d *= il;
-  }
-  out[12] = nx;
-  out[13] = ny;
-  out[14] = nz;
-  out[15] = d;
-
-  // Lower Z clip plane: row2 (WebGPU 0 <= z <= w).
-  // This is the near plane for forward Z and the far plane for Reverse-Z.
-  nx = m2;
-  ny = m6;
-  nz = m10;
-  d = m14;
-  len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 0) {
-    const il = 1 / len;
-    nx *= il;
-    ny *= il;
-    nz *= il;
-    d *= il;
-  }
-  out[16] = nx;
-  out[17] = ny;
-  out[18] = nz;
-  out[19] = d;
-
-  // Upper Z clip plane: row3 - row2 (near for Reverse-Z).
-  nx = m3 - m2;
-  ny = m7 - m6;
-  nz = m11 - m10;
-  d = m15 - m14;
-  len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 0) {
-    const il = 1 / len;
-    nx *= il;
-    ny *= il;
-    nz *= il;
-    d *= il;
-  }
-  out[20] = nx;
-  out[21] = ny;
-  out[22] = nz;
-  out[23] = d;
+  // Keep arithmetic in double precision until each normalized plane is stored.
+  writePlane(out, 0, m3 + m0, m7 + m4, m11 + m8, m15 + m12); // left
+  writePlane(out, 4, m3 - m0, m7 - m4, m11 - m8, m15 - m12); // right
+  writePlane(out, 8, m3 + m1, m7 + m5, m11 + m9, m15 + m13); // bottom
+  writePlane(out, 12, m3 - m1, m7 - m5, m11 - m9, m15 - m13); // top
+  // WebGPU 0 <= z <= w: lower-Z is far for Reverse-Z; upper-Z is near.
+  writePlane(out, 16, m2, m6, m10, m14);
+  writePlane(out, 20, m3 - m2, m7 - m6, m11 - m10, m15 - m14);
 
   return out;
+}
+
+function writePlane(
+  out: Frustum,
+  offset: number,
+  nx: number,
+  ny: number,
+  nz: number,
+  d: number,
+): void {
+  const length = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (length > 0) {
+    const inverse = 1 / length;
+    nx *= inverse;
+    ny *= inverse;
+    nz *= inverse;
+    d *= inverse;
+  }
+  out[offset] = nx;
+  out[offset + 1] = ny;
+  out[offset + 2] = nz;
+  out[offset + 3] = d;
 }
 
 /**

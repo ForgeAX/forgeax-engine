@@ -8,6 +8,11 @@ CPU cost. Use [Slow frames](slow-frames.md) to join native steps to the exact
 picture interval; separately time Game queries/controllers, sync/writeback,
 native execution, event drain and observation wrappers.
 
+For cumulative CPU profiles, state the sampled window and each scope's inclusive
+or self unit. Seconds accumulated over a multi-second window are not seconds in
+one frame. Divide by step counts only when they cover that same interval;
+picture-window counters and a longer CPU window are different denominators.
+
 | Native observation | Interpretation/action |
 | --- | --- |
 | Broad, narrow, solver, island and CCD wall clocks | Find the dominating phase; timers can overlap and include scheduling pauses; retain resolution and below-resolution values |
@@ -79,3 +84,5 @@ Use [Measurement](measurement.md) for final matched ordinary runs. A successful
 device-specific collider removal remains implementation proof until its own
 live A/B is measured. The [firefight case](cases/firefight-physics-scheduling.md)
 records the adopted boundary cleanup and unadopted contact counterfactuals.
+When physics cost grows after destruction, follow the
+[whole update chain](destruction.md) before selecting a native-only fix.

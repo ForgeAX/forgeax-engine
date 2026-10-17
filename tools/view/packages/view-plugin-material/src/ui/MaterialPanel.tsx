@@ -24,7 +24,7 @@ export function MaterialPropertiesPanel({
   const { t } = useTranslation();
   if (!client) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-material-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties">
         <EmptyState title={t('material.unavailable')} description={t('material.empty')} />
       </div>
     );
@@ -71,20 +71,20 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
 
   if (!subject) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-material-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties">
         <EmptyState title={t('material.empty')} description={t('material.unavailable')} />
       </div>
     );
   }
   if (failed) {
     return (
-      <div className="fx-asset-editor fx-ui" data-testid="panel-material-properties">
+      <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties">
         <EmptyState title={t('material.unavailable')} description={t('material.inspectFailed')} />
       </div>
     );
   }
   return (
-    <div className="fx-asset-editor fx-ui" data-testid="panel-material-properties" data-view-readonly="true">
+    <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties" data-view-readonly="true">
       <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
       <InspectorForm assetActions={assetActions} inspection={inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('material.facts')} />
     </div>

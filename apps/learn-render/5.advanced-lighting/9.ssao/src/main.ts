@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { type App, type CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
@@ -155,13 +156,12 @@ function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasEle
   const lease = attached.value;
   const advance = async (): Promise<void> => {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({
+    const frame = await drawReadyFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
     });
-    if (!frame.ok) throw frame.error;
-    const observed = await renderer.observe(frame.value, {
+    const observed = await renderer.observe(frame, {
       include: [
         'draws',
         ...(new URLSearchParams(location.search).has('timings') ? ['timings' as const] : []),

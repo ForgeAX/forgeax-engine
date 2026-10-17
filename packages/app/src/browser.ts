@@ -335,6 +335,8 @@ export async function createApp(
   if (opts?.standardProfile !== undefined) {
     Object.assign(rendererOpts, { standardProfile: opts.standardProfile });
   }
+  if (opts?.pipelineLibrary !== undefined)
+    Object.assign(rendererOpts, { pipelineLibrary: opts.pipelineLibrary });
   if (opts?.outputColorSpace !== undefined) {
     Object.assign(rendererOpts, { outputColorSpace: opts.outputColorSpace });
   }

@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { attachViewportPageInputGate } from '../packages/view-plugin-viewport/src/page-input-gate.ts';
 
 describe('attachViewportPageInputGate', () => {
-  it('disables Engine editor input when the viewport page is hidden', () => {
+  it('disables Engine scene input when the viewport page is hidden', () => {
     const allowed = [];
     const page = {
       getAttribute(name) {
@@ -24,12 +24,12 @@ describe('attachViewportPageInputGate', () => {
     };
     const restore = attachViewportPageInputGate({
       element,
-      input: { editor: { setInputAllowed: (value) => allowed.push(value) } },
-      pageType: 'editor',
+      input: { preview: { setInputAllowed: (value) => allowed.push(value) } },
+      pageType: 'scene',
     });
     assert.equal(allowed.at(-1), false);
     page.hidden = 'false';
-    element.ownerDocument.documentElement.dataset.forgeaxViewActivePage = 'editor';
+    element.ownerDocument.documentElement.dataset.forgeaxViewActivePage = 'scene';
     restore();
     assert.equal(allowed.at(-1), true);
   });

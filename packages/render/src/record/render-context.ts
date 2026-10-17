@@ -229,6 +229,8 @@ export interface RenderSystemRuntime {
     readonly misses: number;
     readonly keyCharacters: number;
   };
+  /** Candidate-only failure boundary; native PSO errors cannot poison the live frame. */
+  readonly withPipelinePreparationErrors?: (action: () => void) => void;
   readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
   readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
   readonly getMaterialShaderPipeline?: (
@@ -627,6 +629,8 @@ export interface _StandardForwardSceneView {
   readonly validatedOrdered: readonly ValidatedRenderable[];
   /** Residency-validated explicit preparation rows, including hidden meshes. */
   readonly pipelinePreparationEntries?: readonly ValidatedRenderable[];
+  /** Existing scene owner policy, also available before its first GPU batch. */
+  readonly gpuDrivenGeometryLane?: 'automatic' | 'direct';
   readonly gpuDrivenShadowPreparationArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
   readonly viewBindGroup: BindGroup | null;
   /** Dynamic View-UBO slot used by auxiliary cube/probe face cameras. */

@@ -427,7 +427,7 @@ export function ContentBrowserPanel({
         const panelRect = panel?.getBoundingClientRect();
         const cardRect = card?.getBoundingClientRect();
         if (current() && card?.getAttribute('aria-selected') === 'true'
-          && document.documentElement.dataset.forgeaxViewActivePage === 'editor'
+          && document.documentElement.dataset.forgeaxViewActivePage === 'scene'
           && panelRect && cardRect && panelRect.width > 0 && panelRect.height > 0
           && cardRect.bottom > panelRect.top && cardRect.top < panelRect.bottom
           && cardRect.right > panelRect.left && cardRect.left < panelRect.right) return true;
@@ -489,7 +489,7 @@ export function ContentBrowserPanel({
           await new Promise(resolve => requestAnimationFrame(resolve));
           const panelRect = panel?.getBoundingClientRect();
           const cardRect = card?.getBoundingClientRect();
-          const shown = current() && card?.getAttribute('aria-selected') === 'true' && document.documentElement.dataset.forgeaxViewActivePage === 'editor'
+          const shown = current() && card?.getAttribute('aria-selected') === 'true' && document.documentElement.dataset.forgeaxViewActivePage === 'scene'
             && !!panelRect && !!cardRect && panelRect.width > 0 && panelRect.height > 0
             && cardRect.width > 0 && cardRect.height > 0
             && cardRect.bottom > panelRect.top && cardRect.top < panelRect.bottom

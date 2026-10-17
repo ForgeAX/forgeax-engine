@@ -235,11 +235,31 @@ export function snapshotTextureDescriptor<T extends GraphTextureDescriptor>(desc
 }
 
 /** Own descriptor data while retaining opaque handles and explicit frame callbacks. */
-export function snapshotPass<FrameCtx>(pass: GraphPass<FrameCtx>): GraphPass<FrameCtx> {
+export function snapshotPass<FrameCtx extends RenderGraphFrame>(
+  pass: GraphPass<FrameCtx>,
+): GraphPass<FrameCtx> {
   const accesses = Object.freeze(
     pass.descriptor.accesses.map((access) => Object.freeze({ ...access })),
   );
   switch (pass.kind) {
+    case 'subgraph': {
+      const descriptor = pass.descriptor;
+      const commands = descriptor.commands;
+      return {
+        kind: 'subgraph',
+        descriptor: Object.freeze({
+          accesses,
+          ...(commands === undefined
+            ? (() => {
+                const child = descriptor.child;
+                if (child === undefined) throw new TypeError('Missing subgraph execution callback');
+                return { child: child.bind(descriptor) };
+              })()
+            : { commands: commands.bind(descriptor) }),
+          executeIf: descriptor.executeIf?.bind(descriptor),
+        }),
+      };
+    }
     case 'copy': {
       const descriptor = pass.descriptor;
       return {

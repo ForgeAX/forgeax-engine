@@ -7,6 +7,7 @@ import { transformWithOxc } from 'vite';
 import { expect, it } from 'vitest';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
+import { generatedPlayerQueries } from './generated-player-queries.js';
 
 it('projects the current Host audio consumer and resolves the native factory on every rebuild', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-host-audio-'));
@@ -55,6 +56,7 @@ it('projects the current Host audio consumer and resolves the native factory on 
     // with real native service visibility. App's own replacement/disposal path
     // is covered by worker-execution-stop.test.ts in the App owner.
     const source = `(async () => {
+      ${generatedPlayerQueries(generated)}
       ${generated.slice(start, end)}
       ${generated.slice(hostStart, hostEnd)}
       publishHost(host);
@@ -68,6 +70,8 @@ it('projects the current Host audio consumer and resolves the native factory on 
         await runInNewContext(transformed.code, {
           ctx,
           URL,
+          URLSearchParams,
+          location: { search: '' },
           workerExecution: true,
           canvas: {},
           animation: undefined,
@@ -75,11 +79,6 @@ it('projects the current Host audio consumer and resolves the native factory on 
           programDeliveryChannel: undefined,
           gameChannel: undefined,
           pointerLockAllowed: undefined,
-          cpuProfileRequested: false,
-          rhiCaptureRequested: false,
-          gpuPassTiming: undefined,
-          geometryLane: undefined,
-          dynamicGeometryMeshBudgetBytes: undefined,
           bundler: {},
           document: { baseURI: 'https://game.example/', body: {}, querySelector: () => null },
           controlMode: { read: () => 'pointer', subscribe: () => () => {} },

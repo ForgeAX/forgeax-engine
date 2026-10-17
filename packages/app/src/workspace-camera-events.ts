@@ -37,7 +37,7 @@ export function bindWorkspaceCameraEvents(
   const ownsPoint = (event: MouseEvent) => {
     const bounds = canvas.getBoundingClientRect();
     return (
-      input.owner() === 'editor' &&
+      input.owner() === 'preview' &&
       event.clientX >= bounds.left &&
       event.clientX < bounds.right &&
       event.clientY >= bounds.top &&

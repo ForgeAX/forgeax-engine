@@ -7,6 +7,7 @@ import { decodeHdr, type HdrDecoded } from './hdr-decoder.js';
 import { parseImage } from './parse-image.js';
 import type { Result } from './result.js';
 import { err, ok } from './result.js';
+import type { ExternalAssetPackage } from './to-asset-pack.js';
 
 /**
  * Sidecar JSON shape consumed by decodeImageFromFile. The schema is the
@@ -14,22 +15,10 @@ import { err, ok } from './result.js';
  * (research F-9). Only the fields required by the Node-side decoder are
  * enumerated here; importSettings remains free-form per plan-strategy R5.
  */
-interface SidecarMeta {
-  readonly schemaVersion: string;
-  readonly kind: 'external-asset-package';
-  readonly importer: 'image';
-  readonly source: string;
-  readonly importSettings: Partial<{
-    colorSpace: ImageMeta['colorSpace'];
-    mipmap: ImageMeta['mipmap'];
-    addressMode: ImageMeta['addressMode'];
-    filterMode: ImageMeta['filterMode'];
-  }>;
-  readonly subAssets: ReadonlyArray<{
-    readonly guid: string;
-    readonly sourceIndex: number;
-    readonly kind: string;
-  }>;
+interface SidecarMeta extends Omit<ExternalAssetPackage, 'importSettings'> {
+  readonly importSettings: Partial<
+    Pick<ImageMeta, 'colorSpace' | 'mipmap' | 'addressMode' | 'filterMode'>
+  >;
 }
 
 /**

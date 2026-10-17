@@ -18,7 +18,7 @@ test('viewport dock is not deferred behind Engine workspace presentation', () =>
   assert.equal(
     VIEW_PRODUCT_FRONTEND_CATALOG.get(viewportIdentity.FRONTEND_MODULE).requiresWorkspacePresentation,
     false,
-    'The fill dock must start with the other editor panels',
+    'The fill dock must start with the other scene panels',
   );
   assert.deepEqual(viewportFrontendPlugin.inject, ['viewOperationClient', 'viewScenePage']);
   assert.equal(viewportFrontendPlugin.inject.includes('viewPlayPresentation'), false);

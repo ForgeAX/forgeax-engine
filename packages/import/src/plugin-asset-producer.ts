@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
-import { type PluginModuleReference, validatePluginAssetSource } from '@forgeax/engine-pack/source';
-import { err, ImportError, ok } from '@forgeax/engine-types';
+import type { PluginModuleReference } from '@forgeax/engine-pack/source';
+import { err, ImportError } from '@forgeax/engine-types';
 import { producePluginAsset } from './plugin-asset-output.js';
 import type { AssetOutputProducer } from './scriptable-pack.js';
 
@@ -52,31 +52,15 @@ export const pluginAssetOutputProducer: AssetOutputProducer = {
   kind: 'plugin',
   version: 'plugin-definition/1',
   produce(input) {
-    const source = validatePluginAssetSource(input.asset);
-    if (!source.ok)
-      return err(
-        new ImportError({
-          code: 'import-internal-error',
-          expected: source.error.expected,
-          hint: source.error.hint,
-          detail: {
-            reason: `${input.sourceKey}: ${source.error.detail.path}: ${source.error.detail.reason}`,
-          },
-        }),
-      );
     try {
-      if (!input.sourcePath)
-        throw new TypeError('plugin producer requires the original declaring sourcePath');
-      const resolved = resolvePluginProgram(
-        input.sourcePath,
-        source.value.module,
-        input.projectRoot,
-      );
-      const product = producePluginAsset(input, resolved.program);
-      if (!product.ok) return product;
-      return ok({
-        ...product.value,
-        sourceDependencies: resolved.program.startsWith('project:') ? [resolved.module] : [],
+      return producePluginAsset(input, (module) => {
+        if (!input.sourcePath)
+          throw new TypeError('plugin producer requires the original declaring sourcePath');
+        const resolved = resolvePluginProgram(input.sourcePath, module, input.projectRoot);
+        return {
+          program: resolved.program,
+          sourceDependencies: resolved.program.startsWith('project:') ? [resolved.module] : [],
+        };
       });
     } catch (cause) {
       return err(

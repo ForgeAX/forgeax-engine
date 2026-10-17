@@ -1,5 +1,6 @@
 import type { StandardProfile } from '../pipeline/standard-profile';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import type { FramePresentationPendingReason } from '../render-contract';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 // @forgeax/engine-runtime - RenderSystem record stage: frame-snapshot.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
@@ -451,6 +452,7 @@ export interface FrameGraphTargets {
 
 /** A compiled graph together with the topology key and target lookup installed with it. */
 export interface InstalledFrameGraph {
+  readonly scenePipelinePreparations?: readonly import('./scene-pipeline-preparation').ScenePipelinePreparation[];
   /** Pure demand from the same graph's retained shadow target/raster owner. */
   readonly requiresShadowPipelinePreparation?: (
     frame: import('../render-pipeline').RenderPipelineFrame,
@@ -460,6 +462,7 @@ export interface InstalledFrameGraph {
   readonly prepareGpuDrivenPipelines?: (
     entries?: readonly ValidatedRenderable[],
     artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
+    onPending?: (reason: import('../render-contract').FramePresentationPendingReason) => void,
   ) => boolean;
   /** Stock pipeline directional views actually projected during this graph build.
    * Absent for custom/legacy graphs: their preparation retains the full capacity. */
@@ -492,6 +495,8 @@ export interface InstalledFrameGraph {
 export interface RenderFrameState {
   /** A required non-drawing pipeline request has not completed this record. */
   pipelinePreparationPending?: boolean;
+  pipelinePreparationPendingReason?: FramePresentationPendingReason;
+  candidatePipelinePreparations?: import('./candidate-pipeline-preparation').CandidatePipelinePreparationOwner;
   frameNumber: number;
   materialUboCounters?: {
     -readonly [K in keyof import('../inspection-types').MaterialUniformCacheInspection]: import('../inspection-types').MaterialUniformCacheInspection[K];

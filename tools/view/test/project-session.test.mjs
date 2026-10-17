@@ -53,7 +53,7 @@ test('explicit URL intent opens only after connection and never starts Play', as
 test('URL-less fixture target stays in the current document after project open', async () => {
   const window = browser('http://localhost:5175/?project=%2Ffixture%2Fproject');
   const api = client({ revision: 1 });
-  api.openProject = async (root) => ({ project: { id: 'fixture-project', root }, projectTarget: { targetId: 'fixture-editor-target' } });
+  api.openProject = async (root) => ({ project: { id: 'fixture-project', root }, projectTarget: { targetId: 'fixture-scene-target' } });
   const session = createProjectSession(api, { window });
   await session.ready;
   assert.equal(session.getSnapshot().restoring, false);

@@ -4,7 +4,7 @@ type FixtureAsset = EngineWorkspaceAsset & { sourcePath: string; sourceKey?: str
 
 export const PROJECT_ROOT = '/fixture/project';
 export const PROJECT = Object.freeze({ id: 'fixture-project', root: PROJECT_ROOT, assetRoots: ['assets'], name: 'Game 3D' });
-export const EDITOR_TARGET_ID = 'fixture-editor-target';
+export const SCENE_TARGET_ID = 'fixture-scene-target';
 export const SCENE_ASSET_ID = 'fixture-scene';
 
 function fixtureAsset(source: string, key: string, kind: string, guid = `fixture-${key.replaceAll('/', '-')}`): FixtureAsset {

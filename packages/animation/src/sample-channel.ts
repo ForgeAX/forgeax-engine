@@ -8,29 +8,26 @@ type ChannelKind = Exclude<AnimationChannel['property'], 'property'>;
  * Returns an array of floats whose length matches the property element count:
  *   - translation / scale: 3 floats (vec3)
  *   - rotation: 4 floats (quat)
+ * A supplied result is overwritten; omitted results remain independent arrays.
  */
 export function sampleChannel(
   sampler: AnimationSampler,
   time: number,
   property: ChannelKind,
+  result: number[] = [],
 ): number[] | undefined {
   const { input, output, interpolation } = sampler;
   if (input.length === 0) return undefined;
 
   const cubic = interpolation === 'CUBICSPLINE';
   const elementCount = output.length / input.length / (cubic ? 3 : 1);
-  const valuesAt = (index: number) =>
-    sliceOutput(output, cubic ? index * 3 + 1 : index, elementCount);
-
-  // Clamp if before first key.
-  if (time <= (input[0] as number)) {
-    return valuesAt(0);
-  }
-
-  // Clamp if after last key.
   const lastIdx = input.length - 1;
-  if (time >= (input[lastIdx] as number)) {
-    return valuesAt(lastIdx);
+  if (time <= (input[0] as number) || time >= (input[lastIdx] as number)) {
+    const key = time <= (input[0] as number) ? 0 : lastIdx;
+    const base = (cubic ? key * 3 + 1 : key) * elementCount;
+    result.length = Math.ceil(elementCount);
+    for (let i = 0; i < elementCount; i++) result[i] = output[base + i] as number;
+    return result;
   }
 
   // Binary search for the bracket.
@@ -46,9 +43,13 @@ export function sampleChannel(
   }
   const prev = lo;
   const next = hi;
+  const prevBase = (cubic ? prev * 3 + 1 : prev) * elementCount;
+  const nextBase = (cubic ? next * 3 + 1 : next) * elementCount;
+  result.length = Math.ceil(elementCount);
 
   if (interpolation === 'STEP') {
-    return valuesAt(prev);
+    for (let i = 0; i < elementCount; i++) result[i] = output[prevBase + i] as number;
+    return result;
   }
 
   // LINEAR interpolation.
@@ -56,22 +57,21 @@ export function sampleChannel(
   const t1 = input[next] as number;
   const alpha = (time - t0) / (t1 - t0);
 
-  const prevValues = valuesAt(prev);
-  const nextValues = valuesAt(next);
   if (cubic) {
     const a2 = alpha * alpha,
       a3 = a2 * alpha,
       dt = t1 - t0;
-    const result = prevValues.map(
-      (value, c) =>
-        (2 * a3 - 3 * a2 + 1) * value +
+    for (let c = 0; c < elementCount; c++) {
+      result[c] =
+        (2 * a3 - 3 * a2 + 1) * (output[prevBase + c] as number) +
         (a3 - 2 * a2 + alpha) * dt * (output[(prev * 3 + 2) * elementCount + c] ?? 0) +
-        (-2 * a3 + 3 * a2) * (nextValues[c] ?? 0) +
-        (a3 - a2) * dt * (output[next * 3 * elementCount + c] ?? 0),
-    );
+        (-2 * a3 + 3 * a2) * (output[nextBase + c] ?? 0) +
+        (a3 - a2) * dt * (output[next * 3 * elementCount + c] ?? 0);
+    }
     if (property === 'rotation') {
       const length = Math.hypot(...result);
-      return length > 0 ? result.map((value) => value / length) : undefined;
+      if (!(length > 0)) return undefined;
+      for (let i = 0; i < result.length; i++) result[i] = (result[i] as number) / length;
     }
     return result;
   }
@@ -79,14 +79,16 @@ export function sampleChannel(
   if (property === 'rotation') {
     // Per-sampler quat slerp at the bracket level — multi-slot blending is
     // a separate stage (nlerp at the entity level, in advanceAnimationPlayer).
-    const px = prevValues[0] ?? 0;
-    const py = prevValues[1] ?? 0;
-    const pz = prevValues[2] ?? 0;
-    const pw = prevValues[3] ?? 1;
-    let nx = nextValues[0] ?? 0;
-    let ny = nextValues[1] ?? 0;
-    let nz = nextValues[2] ?? 0;
-    let nw = nextValues[3] ?? 1;
+    const width = result.length;
+    const px = width > 0 ? (output[prevBase] ?? 0) : 0;
+    const py = width > 1 ? (output[prevBase + 1] ?? 0) : 0;
+    const pz = width > 2 ? (output[prevBase + 2] ?? 0) : 0;
+    const pw = width > 3 ? (output[prevBase + 3] ?? 1) : 1;
+    let nx = width > 0 ? (output[nextBase] ?? 0) : 0;
+    let ny = width > 1 ? (output[nextBase + 1] ?? 0) : 0;
+    let nz = width > 2 ? (output[nextBase + 2] ?? 0) : 0;
+    let nw = width > 3 ? (output[nextBase + 3] ?? 1) : 1;
+    result.length = 4;
     let dot = px * nx + py * ny + pz * nz + pw * nw;
     if (dot < 0) {
       nx = -nx;
@@ -102,23 +104,26 @@ export function sampleChannel(
       const lz = pz + alpha * (nz - pz);
       const lw = pw + alpha * (nw - pw);
       const len = Math.sqrt(lx * lx + ly * ly + lz * lz + lw * lw);
-      return len > 0 ? [lx / len, ly / len, lz / len, lw / len] : [0, 0, 0, 1];
+      result[0] = len > 0 ? lx / len : 0;
+      result[1] = len > 0 ? ly / len : 0;
+      result[2] = len > 0 ? lz / len : 0;
+      result[3] = len > 0 ? lw / len : 1;
+      return result;
     }
     const theta = Math.acos(dot);
     const sinTheta = Math.sin(theta);
     const sa = Math.sin((1 - alpha) * theta) / sinTheta;
     const sb = Math.sin(alpha * theta) / sinTheta;
-    return [px * sa + nx * sb, py * sa + ny * sb, pz * sa + nz * sb, pw * sa + nw * sb];
+    result[0] = px * sa + nx * sb;
+    result[1] = py * sa + ny * sb;
+    result[2] = pz * sa + nz * sb;
+    result[3] = pw * sa + nw * sb;
+    return result;
   }
 
-  return prevValues.map((value, index) => value + alpha * ((nextValues[index] ?? value) - value));
-}
-
-function sliceOutput(output: Float32Array, index: number, elementCount: number): number[] {
-  const result: number[] = [];
-  const base = index * elementCount;
   for (let i = 0; i < elementCount; i++) {
-    result.push(output[base + i] as number);
+    const value = output[prevBase + i] as number;
+    result[i] = value + alpha * ((output[nextBase + i] ?? value) - value);
   }
   return result;
 }

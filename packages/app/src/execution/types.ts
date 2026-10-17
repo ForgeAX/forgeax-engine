@@ -197,6 +197,14 @@ export interface ExecutionOptions {
 
 /** Structured-cloneable diagnostics switches shared by main and Worker hosts. */
 export interface ExecutionDiagnosticsOptions {
+  /** Startup-only, default-off native view read-only depth raster batching experiment. */
+  readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
+  /** Startup-only, explicit audited GBuffer ordering experiment. */
+  readonly gbufferBatchOrderDiagnostic?: import('@forgeax/engine-render').RenderProfile['gbufferBatchOrderDiagnostic'];
+  /** Allow one task turn before a successor draw while a real GPU receipt is pending. */
+  readonly renderTaskYield?: 'none' | 'completion' | 'features';
+  /** Bound sealed publications across simulation, preparation and GPU completion. */
+  readonly renderPipelineCapacity?: 2 | 3 | 4;
   /** Compare geometry submission lanes with the same scene and Worker topology. */
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Create the existing Profiler in the selected realm. */
@@ -231,9 +239,18 @@ export type ExecutionRendererInspectionResult =
       >;
     };
 
+export type ExecutionGeometryObservationResult =
+  | { readonly ok: true; readonly value: import('@forgeax/engine-render').GeometryObservation }
+  | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
+
 /** Public `execution` root injected into App.remoteEval/executeScript in the Engine realm. */
 export interface ExecutionRendererInspectionContext {
+  /** One intrusive diagnostic frame; not ordinary FPS acceptance. */
+  observeNextGeometry(options?: {
+    readonly signal?: AbortSignal;
+  }): Promise<ExecutionGeometryObservationResult>;
   inspectRenderer(options?: {
+    readonly pipelineLibrary?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<ExecutionRendererInspectionResult>;
 }

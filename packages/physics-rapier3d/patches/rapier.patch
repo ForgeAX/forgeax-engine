@@ -76,6 +76,22 @@ index 742684e..08506ce 100644
      #[test]
      fn character_controller_climb_test() {
          let mut colliders = ColliderSet::new();
+diff --git a/src/dynamics/ccd/ccd_solver.rs b/src/dynamics/ccd/ccd_solver.rs
+index ee5cd9b..50d5739 100644
+--- a/src/dynamics/ccd/ccd_solver.rs
++++ b/src/dynamics/ccd/ccd_solver.rs
+@@ -43,6 +43,11 @@ impl CCDSolver {
+         Self::default()
+     }
+ 
++    /// Remember scene changes even when no fast body consumes the cache this step.
++    pub(crate) fn invalidate_fixed_targets_cache(&mut self) {
++        self.fixed_targets_cache = None;
++    }
++
+     /// Updates the set of bodies that needs CCD to be resolved.
+     ///
+     /// Returns `true` if any rigid-body must have CCD resolved.
 diff --git a/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs b/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs
 index 941bc64..55a65f8 100644
 --- a/src/dynamics/solver/contact_constraint/contact_with_coulomb_friction.rs
@@ -147,6 +163,122 @@ index 6879a80..29df7b6 100644
              tangent_impulse: na::zero(),
              warmstart_impulse: 0.0,
              warmstart_tangent_impulse: na::zero(),
+diff --git a/src/geometry/narrow_phase/pair_update.rs b/src/geometry/narrow_phase/pair_update.rs
+index b1f626c..a9354c9 100644
+--- a/src/geometry/narrow_phase/pair_update.rs
++++ b/src/geometry/narrow_phase/pair_update.rs
+@@ -670,7 +670,16 @@ pub(super) fn process_pair(
+     // Composite pairs have unstable manifold ordinals (see `OUTCOME_FULL_COMPOSITE`),
+     // so signal a full rebuild. Must be checked before the `FULL_CLEAN` shortcut: a
+     // surviving manifold can look "clean" while a dropped sibling leaked its graph slot.
+-    if outcome == OUTCOME_FULL && pair.workspace.is_some() {
++    // The specialized voxel/ball dispatcher also rebuilds manifold ordinals,
++    // but deliberately has no persistent query workspace. Workspace presence
++    // alone is therefore not a sufficient proof of stable solver references.
++    if outcome == OUTCOME_FULL
++        && (co1.changes.contains(ColliderChanges::SHAPE)
++            || co2.changes.contains(ColliderChanges::SHAPE)
++            || pair.workspace.is_some()
++            || co1.shape().as_voxels().is_some()
++            || co2.shape().as_voxels().is_some())
++    {
+         return OUTCOME_FULL_COMPOSITE;
+     }
+     if outcome == OUTCOME_FULL && !membership_changed {
+diff --git a/src/pipeline/physics_pipeline/substep.rs b/src/pipeline/physics_pipeline/substep.rs
+index 75b86d0..e1eb9bc 100644
+--- a/src/pipeline/physics_pipeline/substep.rs
++++ b/src/pipeline/physics_pipeline/substep.rs
+@@ -339,6 +339,9 @@ impl PhysicsPipeline {
+         let ccd_scene_changed = !modified_colliders.is_empty()
+             || !removed_colliders.is_empty()
+             || !modified_bodies.is_empty();
++        if ccd_scene_changed {
++            ccd_solver.invalidate_fixed_targets_cache();
++        }
+ 
+         // Join islands based on new joints.
+         #[cfg(feature = "enhanced-determinism")]
+diff --git a/typescript/src.ts/geometry/collider.ts b/typescript/src.ts/geometry/collider.ts
+index 1f1298f..b629461 100644
+--- a/typescript/src.ts/geometry/collider.ts
++++ b/typescript/src.ts/geometry/collider.ts
+@@ -820,6 +820,18 @@ export class Collider {
+         this._shape = null;
+     }
+ 
++    // #if DIM3
++    /** Applies a homogeneous XYZ edit batch and returns the number of changed voxels. */
++    public setVoxels(coords: Int32Array, filled: boolean): number {
++        if (!(coords instanceof Int32Array) || coords.length % 3 !== 0) {
++            throw new Error("Voxel edits must be an Int32Array of XYZ triples");
++        }
++        const changed = this.colliderSet.raw.coSetVoxels(this.handle, coords, filled);
++        this._shape = null;
++        return changed;
++    }
++    // #endif
++
+     /**
+      * If this and `voxels2` are voxel colliders, and a voxel from `this` was
+      * modified with `setVoxel`, this will ensure that a
+@@ -1537,6 +1549,13 @@ export class ColliderDesc {
+         return new ColliderDesc(shape);
+     }
+ 
++    // #if DIM3
++    /** Creates a voxel collider from the union of half-open integer grid regions. */
++    public static voxelRegions(regions: Int32Array, voxelSize: Vector): ColliderDesc {
++        return new ColliderDesc(Voxels.fromRegions(regions, voxelSize));
++    }
++    // #endif
++
+     /**
+      * Creates a new collider descriptor with a triangle mesh shape.
+      *
+diff --git a/typescript/src.ts/geometry/collider_set.ts b/typescript/src.ts/geometry/collider_set.ts
+index 832b837..df8de66 100644
+--- a/typescript/src.ts/geometry/collider_set.ts
++++ b/typescript/src.ts/geometry/collider_set.ts
+@@ -72,6 +72,9 @@ export class ColliderSet {
+         bodies: RigidBodySet,
+         desc: ColliderDesc,
+         parentHandle: RigidBodyHandle,
++        // #if DIM3
++        voxelEdits?: {source: Collider; removed: Int32Array; added: Int32Array},
++        // #endif
+     ): Collider {
+         let hasParent = parentHandle != undefined && parentHandle != null;
+ 
+@@ -80,7 +83,18 @@ export class ColliderSet {
+                 "Cannot create a collider with a parent rigid-body handle that is not a number.",
+             );
+ 
++        // #if DIM3
++        if (voxelEdits && (this.get(voxelEdits.source.handle) !== voxelEdits.source ||
++            !(voxelEdits.removed instanceof Int32Array) || !(voxelEdits.added instanceof Int32Array))) {
++            throw new Error("Voxel copy needs a live collider from this World and Int32Array edits");
++        }
++        let rawShape = voxelEdits
++            ? this.raw.coCopyVoxels(voxelEdits.source.handle, voxelEdits.removed, voxelEdits.added)
++            : desc.shape.intoRaw();
++        // #endif
++        // #if DIM2
+         let rawShape = desc.shape.intoRaw();
++        // #endif
+         let rawTra = VectorOps.intoRaw(desc.translation);
+         let rawRot = RotationOps.intoRaw(desc.rotation);
+         let rawCom = VectorOps.intoRaw(desc.centerOfMass);
+@@ -139,6 +153,9 @@ export class ColliderSet {
+ 
+         let parent = hasParent ? bodies.get(parentHandle) : null;
+         let collider = new Collider(this, handle, parent, desc.shape);
++        // #if DIM3
++        if (voxelEdits) collider.clearShapeCache();
++        // #endif
+         this.map.set(handle, collider);
+         return collider;
+     }
 diff --git a/typescript/src.ts/geometry/narrow_phase.ts b/typescript/src.ts/geometry/narrow_phase.ts
 index 6163053..58d7c5a 100644
 --- a/typescript/src.ts/geometry/narrow_phase.ts
@@ -212,6 +344,108 @@ index 6163053..58d7c5a 100644
      public numSolverContacts(): number {
          return this.raw.num_solver_contacts();
      }
+diff --git a/typescript/src.ts/geometry/shape.ts b/typescript/src.ts/geometry/shape.ts
+index e74c8e5..b8596ce 100644
+--- a/typescript/src.ts/geometry/shape.ts
++++ b/typescript/src.ts/geometry/shape.ts
+@@ -1300,10 +1300,31 @@ export class Voxels extends Shape {
+         this.voxelSize = voxelSize;
+     }
+ 
++    // #if DIM3
++    /** Half-open [minX,minY,minZ,maxX,maxY,maxZ] regions, when constructed compactly. */
++    regions?: Int32Array;
++
++    /** Constructs a union of regions without allocating one XYZ triple per voxel. */
++    public static fromRegions(regions: Int32Array, voxelSize: Vector): Voxels {
++        if (!(regions instanceof Int32Array) || regions.length % 6 !== 0) {
++            throw new Error("Voxel regions must be an Int32Array of sextuples");
++        }
++        const shape = new Voxels(new Int32Array(0), voxelSize);
++        shape.regions = regions;
++        return shape;
++    }
++    // #endif
++
+     public intoRaw(): RawShape {
+         let voxelSize = VectorOps.intoRaw(this.voxelSize);
+ 
+         let result;
++        // #if DIM3
++        if (this.regions !== undefined) {
++            try { return RawShape.voxelRegions(voxelSize, this.regions); }
++            finally { voxelSize.free(); }
++        }
++        // #endif
+         if (this.data instanceof Int32Array) {
+             result = RawShape.voxels(voxelSize, this.data);
+         } else {
+diff --git a/typescript/src.ts/pipeline/world.ts b/typescript/src.ts/pipeline/world.ts
+index 4c919fd..863a837 100644
+--- a/typescript/src.ts/pipeline/world.ts
++++ b/typescript/src.ts/pipeline/world.ts
+@@ -545,6 +545,16 @@ export class World {
+         return this.colliders.createCollider(this.bodies, desc, parentHandle);
+     }
+ 
++    // #if DIM3
++    /** Creates independent voxel geometry from a source and local XYZ edits.
++     * Descriptor pose/contact/mass policy applies; its geometry is replaced by
++     * the copied voxel shape. The source is never mutated, even on cancellation. */
++    public createColliderFromVoxelEdits(desc: ColliderDesc, source: Collider,
++        removed: Int32Array, added: Int32Array, parent?: RigidBody): Collider {
++        return this.colliders.createCollider(this.bodies, desc, parent?.handle, {source, removed, added});
++    }
++    // #endif
++
+     /**
+      * Creates a new impulse joint from the given joint descriptor.
+      *
+diff --git a/typescript/src/geometry/collider.rs b/typescript/src/geometry/collider.rs
+index a7880c7..25fd640 100644
+--- a/typescript/src/geometry/collider.rs
++++ b/typescript/src/geometry/collider.rs
+@@ -585,6 +585,40 @@ impl RawColliderSet {
+         })
+     }
+ 
++    /// Copies occupied storage and applies a local edit without touching the source collider.
++    #[cfg(feature = "dim3")]
++    pub fn coCopyVoxels(&self, handle: FlatHandle, removed: &[i32], added: &[i32]) -> Result<RawShape, JsValue> {
++        for coords in [removed, added] {
++            if coords.len() % 3 != 0 || coords.iter().any(|v| *v < i32::MIN + 8 || *v > i32::MAX - 8) {
++                return Err(JsValue::from_str("Invalid voxel copy coordinates"));
++            }
++        }
++        let collider = self.0.get(utils::collider_handle(handle))
++            .ok_or_else(|| JsValue::from_str("Voxel source collider no longer exists"))?;
++        let mut voxels = collider.shape().as_voxels()
++            .ok_or_else(|| JsValue::from_str("Collider is not a voxel shape"))?.clone();
++        for c in removed.chunks_exact(3) { voxels.set_voxel(IVector::from_slice(c), false); }
++        for c in added.chunks_exact(3) { voxels.set_voxel(IVector::from_slice(c), true); }
++        Ok(RawShape(rapier::geometry::SharedShape::new(voxels)))
++    }
++
++    /// Applies one homogeneous edit batch, returning the number of changed cells.
++    #[cfg(feature = "dim3")]
++    pub fn coSetVoxels(&mut self, handle: FlatHandle, coords: &[i32], filled: bool) -> Result<u32, JsValue> {
++        if coords.len() % 3 != 0 || coords.iter().any(|v| *v < i32::MIN + 8 || *v > i32::MAX - 8) {
++            return Err(JsValue::from_str("Invalid voxel edit coordinates"));
++        }
++        self.map_mut(handle, |co| {
++            let vox = co.shape_mut().as_voxels_mut()
++                .ok_or_else(|| JsValue::from_str("Collider is not a voxel shape"))?;
++            let mut changed = 0;
++            for c in coords.chunks_exact(3) {
++                if vox.set_voxel(IVector::from_slice(c), filled).is_empty() == filled { changed += 1; }
++            }
++            Ok(changed)
++        })
++    }
++
+     #[cfg(feature = "dim2")]
+     pub fn coPropagateVoxelChange(
+         &mut self,
 diff --git a/typescript/src/geometry/narrow_phase.rs b/typescript/src/geometry/narrow_phase.rs
 index fc1cc9d..f7745eb 100644
 --- a/typescript/src/geometry/narrow_phase.rs
@@ -289,72 +523,38 @@ index fc1cc9d..f7745eb 100644
      pub fn num_solver_contacts(&self) -> usize {
          unsafe { (*self.0).data.solver_contacts.len() }
      }
-diff --git a/src/dynamics/ccd/ccd_solver.rs b/src/dynamics/ccd/ccd_solver.rs
-index ee5cd9b..50d5739 100644
---- a/src/dynamics/ccd/ccd_solver.rs
-+++ b/src/dynamics/ccd/ccd_solver.rs
-@@ -43,6 +43,11 @@ impl CCDSolver {
-         Self::default()
+diff --git a/typescript/src/geometry/shape.rs b/typescript/src/geometry/shape.rs
+index 94c2635..8328350 100644
+--- a/typescript/src/geometry/shape.rs
++++ b/typescript/src/geometry/shape.rs
+@@ -727,6 +727,22 @@ impl RawShape {
+         Self(SharedShape::voxels(voxel_size.0, &grid_coords))
      }
  
-+    /// Remember scene changes even when no fast body consumes the cache this step.
-+    pub(crate) fn invalidate_fixed_targets_cache(&mut self) {
-+        self.fixed_targets_cache = None;
++    #[cfg(feature = "dim3")]
++    pub fn voxelRegions(voxel_size: &RawVector, regions: &[i32]) -> Result<Self, JsValue> {
++        if regions.len() % 6 != 0
++            || !voxel_size.0.is_finite()
++            || voxel_size.0.min_element() <= 0.0
++            || regions.chunks_exact(6).any(|r| (0..3).any(|i|
++                r[i] >= r[i + 3] || r[i] < i32::MIN + 8 || r[i + 3] > i32::MAX - 8))
++        {
++            return Err(JsValue::from_str("Invalid half-open voxel regions or voxel size"));
++        }
++        let regions: Vec<_> = regions.chunks_exact(6)
++            .map(|r| [IVector::from_slice(&r[..3]), IVector::from_slice(&r[3..])])
++            .collect();
++        Ok(Self(SharedShape::new(rapier::parry::shape::Voxels::from_regions(voxel_size.0, &regions))))
 +    }
 +
-     /// Updates the set of bodies that needs CCD to be resolved.
-     ///
-     /// Returns `true` if any rigid-body must have CCD resolved.
-diff --git a/src/pipeline/physics_pipeline/substep.rs b/src/pipeline/physics_pipeline/substep.rs
-index 75b86d0..e1eb9bc 100644
---- a/src/pipeline/physics_pipeline/substep.rs
-+++ b/src/pipeline/physics_pipeline/substep.rs
-@@ -339,6 +339,9 @@ impl PhysicsPipeline {
-         let ccd_scene_changed = !modified_colliders.is_empty()
-             || !removed_colliders.is_empty()
-             || !modified_bodies.is_empty();
-+        if ccd_scene_changed {
-+            ccd_solver.invalidate_fixed_targets_cache();
-+        }
- 
-         // Join islands based on new joints.
-         #[cfg(feature = "enhanced-determinism")]
-diff --git a/typescript/src/pipeline/physics_pipeline.rs b/typescript/src/pipeline/physics_pipeline.rs
---- a/typescript/src/pipeline/physics_pipeline.rs
-+++ b/typescript/src/pipeline/physics_pipeline.rs
-@@ -151,6 +151,17 @@
-             filter_contact_pair: hookFilterContactPair,
-             filter_intersection_pair: hookFilterIntersectionPair,
-         };
-+        // Preserve events when the public optional hook object is absent.
-+        // Any explicitly supplied callbacks keep the original JS hook path.
-+        let hooks: &dyn rapier::pipeline::PhysicsHooks =
-+            if (hooks.this.is_undefined() || hooks.this.is_null())
-+                && hooks.filter_contact_pair.is_none()
-+                && hooks.filter_intersection_pair.is_none()
-+            {
-+                &()
-+            } else {
-+                &hooks
-+            };
- 
-         self.0.step(
-             gravity.0,
-@@ -163,7 +174,7 @@
-             &mut joints.0,
-             &mut articulations.0,
-             &mut ccd_solver.0,
--            &hooks,
-+            hooks,
-             &eventQueue.collector,
-         );
-     }
-
-
+     pub fn voxelsFromPoints(voxel_size: &RawVector, points: Vec<f32>) -> Self {
+         let points: Vec<_> = points.chunks_exact(DIM).map(Vector::from_slice).collect();
+         Self(SharedShape::voxels_from_points(voxel_size.0, &points))
 diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/physics_hooks.rs
+index 58ce979..8110b5f 100644
 --- a/typescript/src/pipeline/physics_hooks.rs
 +++ b/typescript/src/pipeline/physics_hooks.rs
-@@ -5,8 +5,8 @@
+@@ -5,8 +5,8 @@ use wasm_bindgen::prelude::*;
  
  pub struct RawPhysicsHooks {
      pub this: js_sys::Object,
@@ -365,7 +565,7 @@ diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/
      // pub modify_solver_contacts: &'a js_sys::Function,
  }
  
-@@ -20,6 +20,9 @@
+@@ -20,6 +20,9 @@ extern "C" {
  
  impl PhysicsHooks for RawPhysicsHooks {
      fn filter_contact_pair(&self, ctxt: &PairFilterContext) -> Option<SolverFlags> {
@@ -375,7 +575,7 @@ diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/
          let rb1 = ctxt
              .rigid_body1
              .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
-@@ -29,14 +32,14 @@
+@@ -29,14 +32,14 @@ impl PhysicsHooks for RawPhysicsHooks {
              .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
              .unwrap_or(JsValue::NULL);
  
@@ -394,7 +594,7 @@ diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/
              .ok()?;
          let flags = result.as_f64()?;
          // TODO: not sure exactly why we have to do `flags as u32` instead
-@@ -45,6 +48,9 @@
+@@ -45,6 +48,9 @@ impl PhysicsHooks for RawPhysicsHooks {
      }
  
      fn filter_intersection_pair(&self, ctxt: &PairFilterContext) -> bool {
@@ -404,7 +604,7 @@ diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/
          let rb1 = ctxt
              .rigid_body1
              .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
-@@ -54,13 +60,14 @@
+@@ -54,13 +60,14 @@ impl PhysicsHooks for RawPhysicsHooks {
              .map(|rb| JsValue::from(utils::flat_handle(rb.0)))
              .unwrap_or(JsValue::NULL);
  
@@ -422,11 +622,11 @@ diff --git a/typescript/src/pipeline/physics_hooks.rs b/typescript/src/pipeline/
              .ok()
              .and_then(|res| res.as_bool())
              .unwrap_or(false)
-
 diff --git a/typescript/src/pipeline/physics_pipeline.rs b/typescript/src/pipeline/physics_pipeline.rs
+index e844ed9..7c3ee3a 100644
 --- a/typescript/src/pipeline/physics_pipeline.rs
 +++ b/typescript/src/pipeline/physics_pipeline.rs
-@@ -139,8 +139,8 @@
+@@ -139,8 +139,8 @@ impl RawPhysicsPipeline {
          ccd_solver: &mut RawCCDSolver,
          eventQueue: &mut RawEventQueue,
          hookObject: js_sys::Object,
@@ -437,3 +637,30 @@ diff --git a/typescript/src/pipeline/physics_pipeline.rs b/typescript/src/pipeli
      ) {
          if eventQueue.auto_drain {
              eventQueue.clear();
+@@ -151,6 +151,17 @@ impl RawPhysicsPipeline {
+             filter_contact_pair: hookFilterContactPair,
+             filter_intersection_pair: hookFilterIntersectionPair,
+         };
++        // Preserve events when the public optional hook object is absent.
++        // Any explicitly supplied callbacks keep the original JS hook path.
++        let hooks: &dyn rapier::pipeline::PhysicsHooks =
++            if (hooks.this.is_undefined() || hooks.this.is_null())
++                && hooks.filter_contact_pair.is_none()
++                && hooks.filter_intersection_pair.is_none()
++            {
++                &()
++            } else {
++                &hooks
++            };
+ 
+         self.0.step(
+             gravity.0,
+@@ -163,7 +174,7 @@ impl RawPhysicsPipeline {
+             &mut joints.0,
+             &mut articulations.0,
+             &mut ccd_solver.0,
+-            &hooks,
++            hooks,
+             &eventQueue.collector,
+         );
+     }

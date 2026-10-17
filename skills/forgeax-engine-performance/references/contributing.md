@@ -7,6 +7,7 @@
 | Generalizable decision or recurring pitfall | Its existing topic reference |
 | New independent topic with substantial guidance | A focused reference and a row in SKILL.md |
 | Dated benchmark/failed candidate with source-specific facts | `references/cases/<topic>.md`, linked from its relevant topic |
+| Large-function phase or temporary-collection experiment | Observation method in [Measurement](measurement.md#keep-observation-cost-separate), semantic controls in [CPU ownership](cpu-submission.md#remove-temporary-collection-work-at-its-owner), numbers in one scoped case |
 | Repeated deterministic analysis | A `scripts/` helper, Toolbox entry and meaningful `scripts/__tests__/` regressions |
 | Platform-specific collection/device procedure | Existing WeChat/RHI/CLI owner; link it from Toolbox |
 
@@ -50,6 +51,12 @@ recursive CPU attribution, quality mismatch, stale/partial evidence or invalid
 units/counts. Assertions that merely match headings or generated prose do not
 establish tool correctness. Replay a retained real capture when its format is
 available; replay qualifies analysis, not a new live hardware benchmark.
+
+For private owner instrumentation, retain plain/transformed bundle hashes,
+source-map authority, frame/work conservation and the complete-owner perturbation
+comparison. Reuse a retained runner only with its exact declared inputs and
+carrier; [the VFX phase case](cases/vfx-plan-phases-20261017.md) distinguishes
+Node/Null diagnosis from Chrome and product acceptance.
 
 ## Validate the contribution
 

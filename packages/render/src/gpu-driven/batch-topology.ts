@@ -326,6 +326,9 @@ function hasActiveAlphaMask(
 }
 
 function eligibleDraws(slot: RenderSceneSlot): readonly EligibleGpuDrivenDraw[] {
+  // Hidden staged entities retain their Scene slot, but only an explicit
+  // preparation request may make their new pipelines a readiness dependency.
+  if (slot.snapshot.authorVisible === false) return [];
   return eligibleGpuDrivenDraws(slot.snapshot);
 }
 

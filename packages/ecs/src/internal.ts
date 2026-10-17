@@ -10,7 +10,12 @@
 // Keep this entry limited to package-owner metadata and the derived writer.
 // Raw World storage stays source-private; semantic World reads live behind the
 // separate `./world-read` entry.
-export { componentId, componentSchema } from './component';
+export {
+  bufferFieldByteLength,
+  componentId,
+  componentSchema,
+  parseManagedArraySchema,
+} from './component';
 export { componentDefinition } from './component-schema';
 
 import type { Result } from '@forgeax/engine-types';

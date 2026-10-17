@@ -17,6 +17,7 @@ import { serializableDetail } from './worker-error';
 
 interface Request {
   readonly prepared: Promise<PreparedPublishedMeshResidency | undefined>;
+  readonly controller: AbortController;
   readonly entity: number | undefined;
   lease?: PreparedPublishedMeshResidency;
   release?: Promise<void>;
@@ -93,12 +94,14 @@ export class RenderMeshResidency {
     }
     if (
       message.requestId <= this.lastRequest ||
-      (message.entity !== undefined && !Number.isSafeInteger(message.entity))
+      (message.entity !== undefined && !Number.isSafeInteger(message.entity)) ||
+      (message.input.pipelinePreparation !== undefined &&
+        message.input.pipelinePreparation.entity !== message.entity)
     ) {
       fail(
         new DynamicGeometryError(
           'dynamic-geometry-invalid',
-          'mesh request IDs are fresh and entities are safe integers',
+          'mesh request IDs are fresh and pipeline preparation belongs to the requested entity',
           'repair the source mesh request',
         ),
       );
@@ -128,6 +131,7 @@ export class RenderMeshResidency {
       prepared: new Promise<PreparedPublishedMeshResidency | undefined>((done) => {
         resolve = done;
       }),
+      controller: new AbortController(),
       entity: message.entity,
     };
     this.requests.set(message.requestId, request);
@@ -135,7 +139,9 @@ export class RenderMeshResidency {
     try {
       // The native Worker message owns this clone. Shared buffers are still
       // detected and copied by the Renderer before becoming prepared storage.
-      const result = await this.renderer.preparePublishedMeshResidency(message.input, 'received');
+      const result = await this.renderer.preparePublishedMeshResidency(message.input, 'received', {
+        signal: request.controller.signal,
+      });
       if (!result.ok) {
         resolve(undefined);
         fail(result.error);
@@ -170,6 +176,7 @@ export class RenderMeshResidency {
       return request.release;
     }
     request.evict = evict;
+    request.controller.abort();
     this.credits.add(request);
     request.release = (async () => {
       const lease = await request.prepared;

@@ -36,7 +36,7 @@ describe('workspace scene selection', () => {
     broker.selectTarget({ targetId: 'other' });
     await broker.selectSceneEntity({ ...selection, targetId: 'other', targetGeneration: 2 });
     assert.equal(broker.snapshot().sceneSelection.targetId, 'other');
-    assert.equal(broker.snapshot().editorPreview.target.targetId, 'target');
+    assert.equal(broker.snapshot().scenePreview.target.targetId, 'target');
   });
   it('stores an Engine-validated target binding, separately from asset inspection', async () => {
     const { broker } = fixture();

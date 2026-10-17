@@ -62,6 +62,7 @@ import type {
   HostToEngineMessage,
 } from './protocol';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
+import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
 import { SourceRenderWorker } from './source-render-worker';
 import type {
   ExecutionRendererInspectionContext,
@@ -236,6 +237,19 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
           engine: { realm: 'worker' },
           world: { identity: target.world.identity },
         }),
+        observeNextGeometry: async (options?: { readonly signal?: AbortSignal }) => {
+          if (
+            realm !== target ||
+            realmTransitions > 0 ||
+            inspectionsClosed ||
+            target.renderWorker === undefined
+          )
+            return rendererInspectionFailure('not-ready');
+          const result = await target.renderWorker.observeNextGeometry(options);
+          return realm === target && realmTransitions === 0 && !inspectionsClosed
+            ? result
+            : rendererInspectionFailure('stale-session');
+        },
         inspectRenderer: async (
           options?: Parameters<ExecutionRendererInspectionContext['inspectRenderer']>[0],
         ): Promise<ExecutionRendererInspectionResult> => {
@@ -243,7 +257,7 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
             return rendererInspectionFailure('stale-session');
           const result =
             target.renderWorker === undefined
-              ? readRendererInspection(renderer, options?.signal)
+              ? readRendererInspection(renderer, options?.signal, options)
               : await target.renderWorker.inspectRenderer(options);
           return realm === target && realmTransitions === 0 && !inspectionsClosed
             ? result
@@ -575,6 +589,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       ...(init.diagnostics?.gpuPassTiming === undefined
         ? {}
         : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
+      ...(init.pipelineLibrary === undefined ? {} : { pipelineLibrary: init.pipelineLibrary }),
       ...(init.outputColorSpace === undefined ? {} : { outputColorSpace: init.outputColorSpace }),
       ...(init.dynamicGeometryMeshBudgetBytes === undefined
         ? {}
@@ -737,6 +752,12 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       await activateExecutionRoot(pluginContext, prepared.root, {
         timeoutMs: init.startupTimeoutMs,
       });
+    if (candidateRenderer !== undefined)
+      applyRendererOrderDiagnostic(
+        candidateRenderer,
+        init.diagnostics?.gbufferBatchOrderDiagnostic,
+        init.diagnostics?.featureReadOnlyDepthBatchDiagnostic,
+      );
     const activeRenderer = candidateRenderer;
     const previousRealm = realm;
     await candidate.kernelPool?.ready();
@@ -1040,6 +1061,10 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
           ? {}
           : { barrelDistortion: draw.value.barrelDistortion }),
         presentation: draw.value.presentation,
+        ...(draw.value.presentation !== 'pending' ||
+        draw.value.presentationPendingReason === undefined
+          ? {}
+          : { presentationPendingReason: draw.value.presentationPendingReason }),
         engineUpdateMs: updateFinished - started,
         kernelWaitMs: kernelDispatch?.waitMs ?? 0,
         ...(audioIntents.length > 0 ? { audioIntents } : {}),

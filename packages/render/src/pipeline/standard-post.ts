@@ -779,7 +779,11 @@ export function addStandardPost(
     !clearOnly &&
     !rawOnly &&
     outputPlan.features.lut &&
-    topology.camera.antialias === 'none' &&
+    (topology.camera.antialias === 'none' ||
+      (topology.camera.antialias === 'taa' &&
+        (topology.extent === undefined ||
+          (topology.extent.internalWidth === topology.extent.outputWidth &&
+            topology.extent.internalHeight === topology.extent.outputHeight)))) &&
     !outputPlan.features.outline &&
     !outputPlan.features.barrelDistortion &&
     !outputPlan.features.lensEffects &&

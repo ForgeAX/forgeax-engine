@@ -6,7 +6,7 @@ import { ASSET_REFERENCE_QUERY, ASSET_REFERENCE_SOURCE } from '../packages/view-
 
 function fixture(t, { deferPrepare = false, missing = false, abortAdmission = false } = {}) {
   const api = createToolApi();
-  let snapshot = { project: { id: 'project' }, projectTarget: { targetId: 'editor', worldId: 'world', generation: 1 }, browserGeneration: 1 };
+  let snapshot = { project: { id: 'project' }, projectTarget: { targetId: 'scene', worldId: 'world', generation: 1 }, browserGeneration: 1 };
   let update;
   let finishPrepare;
   const calls = [];
@@ -57,34 +57,34 @@ function fixture(t, { deferPrepare = false, missing = false, abortAdmission = fa
 it('installs before selection and stays resident across selection, panels and resource page changes', async t => {
   const f = fixture(t);
   assert.equal(f.session.getState().phase, 'installing');
-  await f.session.query('editor:world:1');
+  await f.session.query('scene:world:1');
   assert.equal(f.session.getState().phase, 'ready');
   assert.equal(f.session.getState().pluginUid, 1);
-  f.publish({ sceneSelection: { primary: { entityId: 'editor:world:2' } }, openRequest: { asset: { guid: 'mesh', kind: 'mesh' } } });
-  await f.session.query('editor:world:2');
+  f.publish({ sceneSelection: { primary: { entityId: 'scene:world:2' } }, openRequest: { asset: { guid: 'mesh', kind: 'mesh' } } });
+  await f.session.query('scene:world:2');
   assert.equal(f.calls.filter(call => call.operation === 'runtime-pack.plugin-install').length, 1);
   assert(!f.calls.some(call => call.operation === 'runtime-pack.plugin-dispose'));
 });
 
 it('cleans only its own plugin and Pack and can recover a removed provider', async t => {
   const f = fixture(t);
-  await f.session.query('editor:world:1');
+  await f.session.query('scene:world:1');
   const provider = f.installations.get(1);
   await provider.revoke();
   f.installations.delete(1);
   assert.equal(f.session.getState().phase, 'unavailable');
-  await f.session.query('editor:world:1');
+  await f.session.query('scene:world:1');
   assert.equal(f.session.getState().phase, 'ready');
   await f.session.dispose();
   assert.equal(f.session.getState().scope, undefined);
-  await assert.rejects(f.session.query('editor:world:1'), /editor-unavailable/);
+  await assert.rejects(f.session.query('scene:world:1'), /scene-unavailable/);
   assert(f.calls.some(call => call.operation === 'runtime-pack.plugin-dispose' && call.args.uid === 2));
   assert(!f.calls.some(call => call.operation === 'runtime-pack.release'));
 });
 
 it('revokes pending queries synchronously when the target is replaced', async t => {
   const f = fixture(t, { deferPrepare: true });
-  const query = f.session.query('editor:world:1');
+  const query = f.session.query('scene:world:1');
   const rejected = assert.rejects(query, error => error.name === 'AbortError');
   await new Promise(resolve => setImmediate(resolve));
   f.publish({ projectTarget: null });
@@ -95,22 +95,22 @@ it('revokes pending queries synchronously when the target is replaced', async t 
 
 it('missing runtime capability fails explicitly and recovers on a later user query', async t => {
   const f = fixture(t, { missing: true });
-  await assert.rejects(f.session.query('editor:world:1'), /capability-unavailable/);
+  await assert.rejects(f.session.query('scene:world:1'), /capability-unavailable/);
   assert.equal(f.session.getState().phase, 'failed');
   f.available();
-  await f.session.query('editor:world:1');
+  await f.session.query('scene:world:1');
   assert.equal(f.session.getState().phase, 'ready');
 });
 
 it('withdraws its old publication when admission committed before cancellation was acknowledged', async t => {
   const f = fixture(t, { abortAdmission: true });
-  const query = f.session.query('editor:world:1');
+  const query = f.session.query('scene:world:1');
   const rejected = assert.rejects(query, error => error.name === 'AbortError');
   await new Promise(resolve => setImmediate(resolve));
   const oldPackage = f.session.getState().packageId;
-  f.publish({ projectTarget: { targetId: 'editor', worldId: 'world', generation: 2 } });
+  f.publish({ projectTarget: { targetId: 'scene', worldId: 'world', generation: 2 } });
   await rejected;
-  await f.session.query('editor:world:2');
+  await f.session.query('scene:world:2');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.packs.has(oldPackage), false);
   assert(f.calls.some(call => call.operation === 'runtime-pack.withdraw' && call.args.packageId === oldPackage));

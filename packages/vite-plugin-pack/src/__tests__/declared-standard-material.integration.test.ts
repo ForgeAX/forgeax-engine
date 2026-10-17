@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   AssetRegistry,
   createMaterialLoader,
+  resolveAssetHandle,
   walkMaterialPassesOverSharedRefs,
 } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
@@ -11,9 +12,14 @@ import * as naga from '@forgeax/engine-naga';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
-import { Materials } from '@forgeax/engine-render';
+import { Materials, MeshRenderer } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { type MaterialAsset, resolveMaterialAsset, type SceneAsset } from '@forgeax/engine-types';
+import {
+  type Handle,
+  type MaterialAsset,
+  resolveMaterialAsset,
+  type SceneAsset,
+} from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { afterAll, expect, it, vi } from 'vitest';
 import { AssetOutputProducerRegistry } from '../../../import/src/scriptable-pack';
@@ -492,8 +498,36 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
   const loadedScene = registry.parseAssetPayload('scene', scene.payload, [
     ...scene.refs,
   ]) as SceneAsset;
-  const references = loadedScene.entities.blueball?.components.MeshRenderer?.materials as string[];
-  const selected = projected.assets.find((asset) => asset.guid === references[0]);
+  const world = new World();
+  world.components.register(MeshRenderer).unwrap();
+  for (const asset of projected.assets) {
+    if (asset.kind === 'material')
+      registry
+        .catalog(asset.guid, { kind: 'material', ...asset.payload } as MaterialAsset)
+        .unwrap();
+  }
+  const blueball = loadedScene.entities.blueball;
+  if (blueball === undefined) throw new Error('authored BlueBall entity required');
+  const materialScene: SceneAsset = { ...loadedScene, entities: { blueball } };
+  registry
+    .catalog(
+      scene.guid,
+      materialScene,
+      scene.refs.map((guid) => ({ guid })),
+    )
+    .unwrap();
+  const bound = registry._resolveSceneGuids(materialScene, world, scene.guid).unwrap();
+  const references = bound.entities.blueball?.components.MeshRenderer?.materials as Handle<
+    'MaterialAsset',
+    'shared'
+  >[];
+  const reference = references[0];
+  if (reference === undefined) throw new Error('actual BlueBall material reference required');
+  const referencedGuid = registry.guidOf(
+    resolveAssetHandle<MaterialAsset>(world, reference).unwrap(),
+  );
+  world.sharedRefs.release(reference).unwrap();
+  const selected = projected.assets.find((asset) => asset.guid === referencedGuid);
   if (selected?.kind !== 'material') throw new Error('actual BlueBall scene material must resolve');
   const draft = await createMaterialPackCooker().cook({
     guid: selected.guid,
@@ -512,16 +546,10 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
   }).load({ guid: selected.guid, specializationKey: record.specializationKey ?? '' });
   expect(readiness.status).toBe('Ready');
   if (readiness.status !== 'Ready') throw new Error('published BlueBall root required');
-  registry.assetCatalog.set(selected.guid, {
-    guid: selected.guid,
-    kind: 'material',
-    payload,
-    refs: [],
-  });
+  registry.catalog(selected.guid, payload).unwrap();
   registry.recordMaterialReadiness(selected.guid, readiness);
   expect(payload.staticSwitches?.clearcoat).toBe(true);
   expect(payload).toHaveProperty('cooked', (draft.payload as { cooked: unknown }).cooked);
-  const world = new World();
   const authored = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', payload);
   // Load the contributor gameplay fixture without making it a package build dependency.
   const { cloneWithClearcoat } = await import(

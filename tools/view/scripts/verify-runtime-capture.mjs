@@ -22,7 +22,7 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
   await waitForImage();
   assert.match(await surface.locator('details pre').last().textContent(), new RegExp(`Run: ${runId}`));
   // The independent run owns these DOM and Shadow DOM markers. Sampling the
-  // displayed image proves this page presents the run's pixels, not the Editor.
+  // displayed image proves this page presents the run's pixels, not the Scene.
   await page.waitForFunction(() => {
     const image = document.querySelector('.fx-view-run-observer img');
     if (!image?.complete || !image.naturalWidth) return false;
@@ -62,7 +62,7 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
   assert.deepEqual(dimensions, { natural: [1280, 720], fits: true });
   await page.screenshot({ path: '/tmp/view-runtime-capture-compact.png' });
   await sameRun();
-  await page.locator('[data-page-id="page-editor"]').click();
+  await page.locator('[data-page-id="page-scene"]').click();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('[data-page-id="page-display"]').click();
   assert.match(await surface.locator('details pre').last().textContent(), new RegExp(`Run: ${runId}`));
@@ -83,7 +83,7 @@ export async function verifyRuntimeCapture({ page, root, runId, sameRun, updateI
   await bind();
   await waitForImage();
   await sameRun();
-  await page.locator('[data-page-id="page-editor"]').click();
+  await page.locator('[data-page-id="page-scene"]').click();
   const proof = { runId, firstFrame, refreshedFrame, pixelsUpdated: true, runLogUpdated: true, dimensions, wrongBindingClearsImage: true, disconnectPreservesRun: true, reconnect: true };
   await writeFile('/tmp/view-runtime-capture-proof.json', JSON.stringify(proof, null, 2));
   console.error('Runtime Capture UI: exact pixels, live refresh, resize, tab return, wrong binding, disconnect and reconnect passed', proof);

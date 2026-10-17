@@ -1,8 +1,20 @@
 import type { RenderResourceScope } from './publication/resource-scope';
 import type { RenderSystemInternals } from './record/render-context';
-import type { FramePresentation } from './render-contract';
+import type { FramePresentation, FramePresentationPendingReason } from './render-contract';
 import type { DispatchEntry, RenderableSnapshot } from './render-system-extract';
 import { createMaterialResidencyObserver } from './render-system-residency';
+
+/** The existing boolean remains the readiness authority; record only its first owner. */
+export function markPipelinePreparationPending(
+  state: {
+    pipelinePreparationPending?: boolean;
+    pipelinePreparationPendingReason?: FramePresentationPendingReason;
+  },
+  reason: FramePresentationPendingReason,
+): void {
+  state.pipelinePreparationPending = true;
+  state.pipelinePreparationPendingReason ??= Object.freeze(reason);
+}
 
 type DrawIndices = Map<number, number | Set<number> | undefined>;
 
@@ -66,13 +78,21 @@ export function projectFramePresentation(input: {
   readonly renderables: readonly RenderableSnapshot[];
   readonly preparedWorlds: readonly RenderResourceScope[];
   readonly internals: RenderSystemInternals;
+  readonly onPending?: (reason: FramePresentationPendingReason) => void;
 }): FramePresentation {
   const observeResidency = createMaterialResidencyObserver(input.internals, false);
   for (const renderable of input.renderables) {
     const materialWorld = input.preparedWorlds[renderable.worldId];
     for (const material of renderable.materials) {
       const readiness = observeResidency(materialWorld, material).readiness;
-      if (readiness === 'pending' || readiness === 'failed') return 'pending';
+      if (readiness === 'pending' || readiness === 'failed') {
+        input.onPending?.({
+          code: 'material-residency',
+          worldId: renderable.worldId,
+          entity: renderable.entityKey,
+        });
+        return 'pending';
+      }
     }
   }
   return 'ready';

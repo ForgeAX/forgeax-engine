@@ -1,6 +1,4 @@
-// @forgeax/engine-assets-runtime -- builtin mesh handles + scene-parse handle field
-// name sets (feat-20260705-runtime-tier2-decomposition M1 / w4, D-4 F1
-// straight-cut). Pure move from asset-registry.ts; zero identifier changes.
+// @forgeax/engine-assets-runtime -- builtin mesh handles and GUID identity.
 
 import type { Handle } from '@forgeax/engine-types';
 import { handleSlot, toShared } from '@forgeax/engine-types';
@@ -149,40 +147,3 @@ export function builtinMeshGuid(handle: Handle<string, 'shared'>): string | unde
   const slot = handleSlot(handle);
   return BUILTIN_MESH_GUIDS.find(([candidate]) => handleSlot(candidate) === slot)?.[1];
 }
-
-/**
- * Field names known to carry handle<> schema-vocab references (plan-strategy
- * D-4).  parseScenePayload uses this allowlist to replace integer values
- * with GUID strings from refs[] only for handle fields — a Transform.pos lane of 0,
- * ChildOf.parent=0 and similar non-handle integers are left untouched.
- *
- * Ambiguous names use a component-qualified key: Collider.density is numeric,
- * while VolumetricFog.density is a texture reference.
- */
-export const HANDLE_FIELD_NAMES: ReadonlySet<string> = new Set([
-  'assetHandle',
-  'material',
-  'skeleton',
-  'clip',
-  // ParticleEffectPlayer.effect (shared<ParticleEffectAsset>) uses the same
-  // scene-pack refs[] index contract as every other scalar shared field.
-  'effect',
-  // Collider.density is f32; only the volume component uses a texture reference.
-  'VolumetricFog.density',
-  // feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w27:
-  // Skylight.equirect + SkyboxBackground.equirect (shared<EquirectAsset>). The
-  // generic extractSceneEntityHandleGuids path already covers shared< fields by
-  // schema; this allowlist is the second scene-parse path (parseScenePayload),
-  // so the new handle field name is registered here too (R-1).
-  'equirect',
-  'iesProfile',
-  'cookie',
-]);
-
-/**
- * Field names known to carry `array<handle<X>>` schema-vocab references
- * (feat-20260608 M2 / w7: MeshRenderer.materials). Each element is a refs
- * index that resolves to a GUID string. Coexists with HANDLE_FIELD_NAMES;
- * a field name lives in exactly one set.
- */
-export const HANDLE_ARRAY_FIELD_NAMES: ReadonlySet<string> = new Set(['materials', 'clips']);

@@ -17,6 +17,7 @@ export function featureResourceKey(scope: RenderFeatureWorkScope, name: string):
 export interface FeatureWorkResources {
   readonly work: RenderFeatureWork;
   readonly closure: RenderFeatureWorkPlan;
+  readonly native?: true;
   readonly keys: ReadonlyMap<string, string>;
   readonly resources: readonly RenderFeatureResourceDeclaration[];
 }
@@ -166,6 +167,45 @@ export function resolveFeatureWorkResources(
       },
       keys,
       resources,
+    };
+  });
+}
+
+/** Engine-private primary work: names are mapped only at the physical owner.
+ * The original resources remain the one IR instead of building a namespaced
+ * declaration copy and reparsing its bindings. */
+export function resolveNativeFeatureWorkResources(
+  works: readonly RenderFeatureWork[],
+): readonly FeatureWorkResources[] {
+  const sharedWork = works.find((work) => work.scope === 'frame');
+  const shared = sharedWork?.resources ?? [];
+  const sharedKeys = new Map(
+    shared.map((resource) => [resource.name, featureResourceKey('frame', resource.name)]),
+  );
+  // Preparation follows the shared dependency before any view, independently
+  // of declaration order. Ordered view raster work itself is never reordered.
+  const ordered =
+    sharedWork === undefined || works[0] === sharedWork
+      ? works
+      : [sharedWork, ...works.filter((work) => work !== sharedWork)];
+  return ordered.map((work) => {
+    const keys = new Map(sharedKeys);
+    const local = new Set<string>();
+    for (const resource of work.resources) {
+      if (local.has(resource.name) || (work.scope !== 'frame' && sharedKeys.has(resource.name)))
+        throw new Error('Duplicate native feature resource');
+      local.add(resource.name);
+      keys.set(resource.name, featureResourceKey(work.scope, resource.name));
+    }
+    return {
+      work,
+      native: true,
+      closure:
+        work.scope === 'frame'
+          ? work
+          : { resources: [...shared, ...work.resources], passes: work.passes },
+      keys,
+      resources: work.resources,
     };
   });
 }

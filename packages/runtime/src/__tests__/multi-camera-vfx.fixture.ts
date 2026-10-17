@@ -313,9 +313,16 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
           model.works.filter((work) =>
             work.pipeline.shaders.some((shader) => shader.entryPoint === entryPoint),
           ).length;
+        const updates = model.works.filter((work) =>
+          work.pipeline.shaders.some(
+            (shader) =>
+              shader.entryPoint === 'forgeax_vfx_update_main' ||
+              shader.entryPoint === 'forgeax_vfx_update_compact_main',
+          ),
+        ).length;
         stages.push({
           name,
-          updates: workCount('forgeax_vfx_update_compact_main'),
+          updates,
           projections: workCount('forgeax_vfx_billboard_main'),
           graphGeneration: required(completed.graphGeneration),
           deviceGeneration: completed.deviceGeneration,
@@ -323,7 +330,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         await options.save(`vfx-${name}.rgba`, pixels.bytes);
         return {
           pixels,
-          updates: workCount('forgeax_vfx_update_compact_main'),
+          updates,
           projections: workCount('forgeax_vfx_billboard_main'),
         };
       };
@@ -398,9 +405,16 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       model.works.filter((work) =>
         work.pipeline.shaders.some((shader) => shader.entryPoint === entryPoint),
       );
-    expect(entries('forgeax_vfx_update_compact_main')).toHaveLength(1);
+    const updates = model.works.filter((work) =>
+      work.pipeline.shaders.some(
+        (shader) =>
+          shader.entryPoint === 'forgeax_vfx_update_main' ||
+          shader.entryPoint === 'forgeax_vfx_update_compact_main',
+      ),
+    );
+    expect(updates).toHaveLength(1);
     expect(entries('forgeax_vfx_sort_main')).toHaveLength(2);
-    const simulation = required(entries('forgeax_vfx_update_compact_main')[0]);
+    const simulation = required(updates[0]);
     const depthWriters = model.works.filter(
       (work) =>
         work.workIndex < simulation.workIndex && work.attachments?.depthStencilViewHandleId != null,

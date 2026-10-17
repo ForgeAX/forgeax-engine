@@ -666,7 +666,11 @@ export function createSceneChildContextLookup(
     // no per-entity detail (prod path: GUID-only refs[]) or no envelope is
     // available (e.g. direct catalog() registration with scene payload, no refs).
     if (origins === undefined) {
-      const extracted = extractSceneEntityHandleGuids(registry.componentCatalog, scene.entities);
+      const extracted = extractSceneEntityHandleGuids(
+        registry.componentCatalog,
+        scene.entities,
+        sceneEnvelope?.refs?.map((ref) => ref.guid),
+      );
       const index = new Map<string, SceneHandleFieldEntry>();
       for (const entry of extracted) {
         const key = entry.guidString.toLowerCase();

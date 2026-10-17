@@ -37,3 +37,14 @@ export function terrainTranslationValid(asset: TerrainAsset, matrix: ArrayLike<n
     ...height.map((value) => Math.fround(Math.fround(value) + (matrix[13] ?? NaN))),
   ].every(Number.isFinite);
 }
+
+/** Actual author extrema and the shared minimum span used by height encoding. */
+export function terrainSourceHeightRange(heights: Float32Array) {
+  let min = Infinity,
+    max = -Infinity;
+  for (const height of heights) {
+    min = Math.min(min, height);
+    max = Math.max(max, height);
+  }
+  return { min, max, span: Math.max(max - min, 1e-6) };
+}

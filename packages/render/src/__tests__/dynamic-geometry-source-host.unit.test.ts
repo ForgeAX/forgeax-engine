@@ -702,7 +702,9 @@ it('invalidates a source candidate even if the native generation number did not 
   expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(false);
 });
 
-it('publishes the consumed source tick when simulation has advanced beyond its remote picture', async () => {
+it.each([
+  1, 2,
+])('publishes the consumed source tick after %i successor FixedUpdates', async (steps) => {
   const f = fixture();
   const pending = f.host.prepareDynamicGeometry(f.input);
   await Promise.resolve();
@@ -715,9 +717,9 @@ it('publishes the consumed source tick when simulation has advanced beyond its r
   f.submitted(false);
   expect(f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 })).toEqual([]);
   f.submitted();
-  f.world.update(1 / 60).unwrap();
+  f.world.update(steps / 60).unwrap();
   const receipts = f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 });
-  expect(f.world.getResource(FixedTime).tick).toBeGreaterThan(0);
+  expect(f.world.getResource(FixedTime).tick).toBe(steps);
   expect(receipts).toMatchObject([
     {
       candidateId: accepted.candidateId,

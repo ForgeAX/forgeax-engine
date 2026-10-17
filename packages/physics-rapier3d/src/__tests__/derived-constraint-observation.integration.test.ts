@@ -78,7 +78,9 @@ it('observes fresh committed constraint revisions without copying geometry or re
             bytes +
             (shape.kind === 'heightfield'
               ? shape.heights.byteLength
-              : shape.pieces.reduce((total, piece) => total + piece.byteLength, 0)),
+              : shape.kind === 'voxels'
+                ? shape.regions.byteLength
+                : shape.pieces.reduce((total, piece) => total + piece.byteLength, 0)),
           0,
         ),
     ).toBe(384);

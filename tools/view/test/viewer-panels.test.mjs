@@ -155,8 +155,8 @@ describe('dynamic Viewer panel contributions', () => {
     const unsubscribe = registry.subscribe((types) => snapshots.push(types));
     const dispose = pageHost.registerType({
       context: 'project',
-      typeId: 'editor',
-      titleKey: 'view.pages.editor',
+      typeId: 'scene',
+      titleKey: 'view.pages.scene',
       order: 0,
       closable: false,
       singleton: true,
@@ -166,11 +166,11 @@ describe('dynamic Viewer panel contributions', () => {
       showPanelRail: false,
       hideWhenInactive: true,
     });
-    assert.equal(registry.getTypes()[0].typeId, 'editor');
+    assert.equal(registry.getTypes()[0].typeId, 'scene');
     assert.throws(
       () => pageHost.registerType({
         context: 'project',
-        typeId: 'editor',
+        typeId: 'scene',
         title: 'Other',
         order: 1,
         closable: true,
@@ -183,7 +183,7 @@ describe('dynamic Viewer panel contributions', () => {
       }),
       /already registered/,
     );
-    assert.equal(registry.getTypes()[0].titleKey, 'view.pages.editor');
+    assert.equal(registry.getTypes()[0].titleKey, 'view.pages.scene');
     dispose();
     dispose();
     assert.deepEqual(registry.getTypes(), []);
@@ -198,8 +198,8 @@ describe('dynamic Viewer panel contributions', () => {
     const pageHost = createViewPageHost({ registry });
     const dispose = pageHost.registerType({
       context: 'project',
-      typeId: 'editor',
-      titleKey: 'view.pages.editor',
+      typeId: 'scene',
+      titleKey: 'view.pages.scene',
       order: 0,
       closable: false,
       singleton: true,
@@ -217,7 +217,7 @@ describe('dynamic Viewer panel contributions', () => {
       }),
     });
     const pageType = registry.getTypes()[0];
-    assert.equal(resolvePageTypeTitle(pageType, (key) => key === 'view.pages.editor' ? 'Scene' : key), 'Scene');
+    assert.equal(resolvePageTypeTitle(pageType, (key) => key === 'view.pages.scene' ? 'Scene' : key), 'Scene');
     title = 'Main';
     assert.equal(resolvePageTypeTitle(pageType, () => 'Scene'), 'Main');
     assert.equal(resolvePageTypeLabel(pageType, () => 'Scene'), 'Scene');
@@ -236,10 +236,10 @@ describe('dynamic Viewer panel contributions', () => {
   it('mounts a bare page surface and lists only hidden singleton page types', () => {
     const registry = createViewPageTypeRegistry();
     const pageHost = createViewPageHost({ registry });
-    const disposeEditor = pageHost.registerType({
+    const disposeScene = pageHost.registerType({
       context: 'project',
-      typeId: 'editor',
-      title: 'Editor',
+      typeId: 'scene',
+      title: 'Scene',
       order: 0,
       closable: false,
       singleton: true,
@@ -283,7 +283,7 @@ describe('dynamic Viewer panel contributions', () => {
     assert.equal(anchor.contains(surface), true);
     assert.deepEqual(
       registry.getTypes().filter(({ initial }) => initial).map(({ typeId }) => typeId),
-      ['editor', 'display'],
+      ['scene', 'display'],
     );
     assert.deepEqual(
       listOpenablePageTypes(registry.getTypes(), []).map(({ typeId }) => typeId),
@@ -296,7 +296,7 @@ describe('dynamic Viewer panel contributions', () => {
     unmount();
     disposePlugins();
     disposeDisplay();
-    disposeEditor();
+    disposeScene();
   });
 
   it('requires pageType and filters claims for the active page', async () => {
@@ -304,7 +304,7 @@ describe('dynamic Viewer panel contributions', () => {
     const registry = createViewSlotRegistry(document);
     assert.throws(() => registry.claim({ id: 'missing-page' }), /requires pageType/);
     assert.throws(
-      () => registry.claim({ id: 'missing-layout', pageType: 'editor' }),
+      () => registry.claim({ id: 'missing-layout', pageType: 'scene' }),
       /requires layout/,
     );
     await assert.rejects(
@@ -312,7 +312,7 @@ describe('dynamic Viewer panel contributions', () => {
       /requires pageType/,
     );
     const claims = [
-      { id: 'editor-panel', pageType: 'editor' },
+      { id: 'scene-panel', pageType: 'scene' },
       { id: 'plugins-panel', pageType: 'plugins' },
     ];
     assert.deepEqual(claimsForPage(claims, 'plugins'), [claims[1]]);
@@ -325,7 +325,7 @@ describe('dynamic Viewer panel contributions', () => {
     assert.deepEqual(registry.getClaims(), []);
     const unclaim = registry.claim({
       id: 'example',
-      pageType: 'editor',
+      pageType: 'scene',
       titleKey: 'example.title',
       activity: { icon: 'box' },
       layout: { dock: 'left', size: { value: 0.2, unit: 'fraction' }, stack: 'tabs', order: 7 },
@@ -341,7 +341,7 @@ describe('dynamic Viewer panel contributions', () => {
     const registry = createViewSlotRegistry(document);
     registry.claim({
       id: 'example',
-      pageType: 'editor',
+      pageType: 'scene',
       layout: { dock: 'fill', stack: 'tabs', order: 0 },
     });
     const child = node('span');
@@ -492,7 +492,7 @@ describe('display Frontend Fiber surface ownership', () => {
     assert.deepEqual(pageRegistry.getTypes(), []);
   });
 
-  it('claims the editor viewport dock before Play or Engine surface attach', async () => {
+  it('claims the scene viewport dock before Play or Engine surface attach', async () => {
     const { document } = fakeDocument();
     const claims = [];
     const panelHost = {
@@ -505,11 +505,11 @@ describe('display Frontend Fiber surface ownership', () => {
     };
     const context = new Context();
     context.provide('viewOperationClient', { subscribe: () => () => {}, getState: async () => ({}) });
-    context.provide('viewScenePage', { typeId: 'editor' });
+    context.provide('viewScenePage', { typeId: 'scene' });
     const fiber = context.plugin(viewportFrontendPlugin, { document, panelHost });
     await Promise.resolve();
     assert.equal(claims[0]?.id, 'viewport');
-    assert.equal(claims[0]?.pageType, 'editor');
+    assert.equal(claims[0]?.pageType, 'scene');
     assert.equal(context.get('viewWorkspaceShell', false), undefined);
     await context.plugin(viewPlayPresentationPlugin, { document });
     await fiber.await();
@@ -517,7 +517,7 @@ describe('display Frontend Fiber surface ownership', () => {
     await context.fiber.dispose();
   });
 
-  it('owns the Editor preview presenter without creating an empty iframe', async () => {
+  it('owns the Scene preview presenter without creating an empty iframe', async () => {
     const { document, root } = fakeDocument();
     const registry = createViewSlotRegistry(document);
     const panelHost = {
@@ -528,7 +528,7 @@ describe('display Frontend Fiber surface ownership', () => {
     const context = new Context();
     context.provide('viewOperationClient', { subscribe: () => () => {}, getState: async () => ({}) });
     await context.plugin(viewPlayPresentationPlugin, { document });
-    context.provide('viewScenePage', { typeId: 'editor' });
+    context.provide('viewScenePage', { typeId: 'scene' });
     await context.plugin(viewportFrontendPlugin, { document, panelHost });
     const anchor = node('div');
     anchor.id = 'forgeax-view-slot-viewport';
@@ -536,7 +536,7 @@ describe('display Frontend Fiber surface ownership', () => {
     registry.resolve('viewport');
     const surface = document.getElementById('forgeax-view-workspace');
 
-    assert.equal(registry.getClaims()[0].pageType, 'editor');
+    assert.equal(registry.getClaims()[0].pageType, 'scene');
     assert.equal(surface?.tagName, 'DIV');
     assert.equal(walk(root).filter(element => element.tagName === 'IFRAME').length, 0);
     await context.fiber.dispose();
@@ -573,13 +573,13 @@ describe('display Frontend Fiber surface ownership', () => {
     assert.equal(walk(root).filter(element => element.tagName === 'IFRAME').length, 1);
     assert.equal(surface.src, undefined);
     assert.equal(surface.srcdoc, '<canvas></canvas>');
-    state = { ...state, targetBinding: 'editor' };
+    state = { ...state, targetBinding: 'scene' };
     publish(state);
     assert.equal(surface.style.visibility, 'visible', 'An adopted Play must retain native frames until Engine acknowledges cleanup');
     assert.equal(surface.style.opacity, '0');
     assert.equal(surface.style.pointerEvents, 'none');
     assert.deepEqual(detached, []);
-    state = { projectPhase: 'running', targetBinding: 'editor' };
+    state = { projectPhase: 'running', targetBinding: 'scene' };
     publish(state);
     await context.fiber.dispose();
     assert.deepEqual(detached, [target.url]);

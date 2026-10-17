@@ -235,7 +235,7 @@ describe('isViewportWorkspaceInputEvent', () => {
     }
   });
 
-  it('accepts pointer events on the active Editor viewport canvas', () => {
+  it('accepts pointer events on the active Scene viewport canvas', () => {
     const preview = {};
     const viewport = {};
     const page = { getAttribute: () => 'false' };

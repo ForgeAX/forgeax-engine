@@ -250,7 +250,7 @@ try {
         && config?.projectId === target.projectId && config.targetId === target.targetId
         && config.worldId === target.worldId && config.providerId?.startsWith('view-asset-references:');
     });
-    assert.equal(tooling.length, 1, 'The Editor must retain exactly one known resident query definition');
+    assert.equal(tooling.length, 1, 'The Scene must retain exactly one known resident query definition');
     return { ...inspection, packs: inspection.packs.filter(pack => pack.source.packageId !== tooling[0].source.packageId) };
   };
   const capturePreview = async (subject) => {

@@ -63,7 +63,7 @@
   align-items: center;
   gap: var(--fx-ref-space-8);
   width: 100%;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   border: 0;
   border-radius: var(--fx-radius-control);
@@ -106,7 +106,7 @@
 .ol-colhead {
   display: flex;
   align-items: center;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
   color: var(--fx-color-text-muted);
@@ -129,7 +129,7 @@
 .tn {
   display: flex;
   align-items: center;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding-right: var(--fx-ref-space-8);
   border: 0;
   border-left: var(--fx-border-focus-width) solid transparent;

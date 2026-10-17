@@ -116,12 +116,12 @@ async function mountResourcePage(ctx: Context, config: FrontendConfig & Presenta
     const snapshot = reader.getSnapshot();
     if (!guid || !snapshot?.assets?.some(asset => asset.guid === guid)) return;
     const scope = ctx.get('viewAssetReferences', false)?.getState().scope;
-    const target = snapshot.editorPreview?.target ?? snapshot.projectTarget;
+    const target = snapshot.scenePreview?.target ?? snapshot.projectTarget;
     if (!snapshot.project || !target) return;
     const input = { projectId: snapshot.project.id, targetId: target.targetId, targetGeneration: target.generation, guid };
     const current = () => {
       const now = reader.getSnapshot();
-      const activeTarget = now?.editorPreview?.target ?? now?.projectTarget;
+      const activeTarget = now?.scenePreview?.target ?? now?.projectTarget;
       return now?.project?.id === input.projectId && activeTarget?.targetId === input.targetId && activeTarget?.generation === input.targetGeneration;
     };
     const open = () => current() ? ctx.get('viewAssetReferences', false)?.open(guid)

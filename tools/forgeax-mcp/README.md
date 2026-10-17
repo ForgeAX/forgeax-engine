@@ -28,7 +28,7 @@ supplied by optional plugins through the existing platform boundary.
 Use platform independent mode for ordinary View work. Open the returned View URL
 or `projectTarget.url` directly when handing a page to the user. The simulation
 header and its host controls belong to the test harness; they are not View UI.
-Editor and Play may retain their own isolated child documents in each mode.
+Preview and Play may retain their own isolated child documents in each mode.
 Top-level View access therefore does not imply annotation access inside every child.
 
 Simulation evidence must record the carrier's `srcdoc`, sandbox and CSP conditions.
@@ -77,13 +77,13 @@ The generated `plugin.json` and `mcp.json` live beside the bundled stdio servers
 
 Build the App, then select `tools/forgeax-mcp/host.app.pack.json` when explicitly starting the backend. The ordinary `host.pack.json` keeps browser presentation. Generate the Codex package with the same generator above: it contains the six domain tools and an App server with `forgeax_view_start` plus app-only `forgeax_view_transport`.
 
-Source checkouts should prepare the ordinary Engine shader profiles before measuring Editor startup:
+Source checkouts should prepare the ordinary Engine shader profiles before measuring Preview startup:
 
 ```sh
 node scripts/forgeax/prepare-shader-release-inputs.mjs --build --shared-input-manifest shared-build-inputs/manifest.json
 ```
 
-This existing producer verifies source/compiler/profile identity and rebuilds missing inputs. Missing profiles otherwise invoke complete source compilation during Editor startup; that cost is separate from MCP resource transfer. Published Engine SDKs already carry the prepared profiles.
+This existing producer verifies source/compiler/profile identity and rebuilds missing inputs. Missing profiles otherwise invoke complete source compilation during Preview startup; that cost is separate from MCP resource transfer. Published Engine SDKs already carry the prepared profiles.
 
 | MCP server | Purpose |
 |:--|:--|
@@ -101,7 +101,7 @@ Both servers use stdio and connect to the same selected backend. Server names, p
 | Performance | One batched 60 Hz event pump, three foreground/one background slots, gzip level 1, bounded resource references, shared concurrent reads; 192 KiB chunks with four reads in flight |
 | Resource reads | Same-turn GET/HEAD fetches use bounded HTTP batches. Each read retains its status, response bytes and cancellation; mutations are not batched. Batch replies reuse the common compressed byte decoder and origin admission. Gzip buffers feed the native transform directly; concurrent read/write handles backpressure and decode rejection without a Blob storage stream |
 | Source URLs | The isolated document exposes its logical base through the platform; sandbox origin and browser security policy remain intact |
-| Document frames | `FrontendPlatform.createFrame` carries both Editor and Play through MCP. Play owns its disposable handle; Editor placement borrows its retained document. No child navigates localhost. The game retains the sampled platform preparation without inheriting the Editor root |
+| Document frames | `FrontendPlatform.createFrame` carries both Preview and Play through MCP. Play owns its disposable handle; Preview placement borrows its retained document. No child navigates localhost. The game retains the sampled platform preparation without inheriting the Preview root |
 
 The generator includes platform-specific installed Vite/TypeScript runtime dependencies and the built UI resources. It does not depend on the source checkout for its MCP server. Its launcher and project binding are local to the generating machine; regenerate after changing Node or moving to another platform. The backend still uses its explicitly built immutable frontend artifact. UI resource URIs carry the package version so an upgrade cannot reuse an older carrier document.
 

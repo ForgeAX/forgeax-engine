@@ -1297,7 +1297,7 @@
         }
       }
     },
-    "editor": {
+    "control": {
       "row-height": {
         "$type": "dimension",
         "$value": {

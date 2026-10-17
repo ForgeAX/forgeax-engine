@@ -91,6 +91,39 @@ function stableLayouts(emitters: readonly VfxGpuEmitterProgramV3[]): boolean {
   return fingerprints.every((fingerprint) => fingerprint === fingerprints[0]);
 }
 
+function validInstanceCompute(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (
+    record(value) &&
+    typeof value.format === 'string' &&
+    value.format !== 'forgeax-vfx-instance-compute-1'
+  )
+    return true;
+  if (
+    !record(value) ||
+    value.format !== 'forgeax-vfx-instance-compute-1' ||
+    value.jobBytes !== 336 ||
+    typeof value.wgsl !== 'string' ||
+    value.wgsl.length === 0 ||
+    !Array.isArray(value.bindings) ||
+    value.bindings.length !== 1
+  )
+    return false;
+  const group = value.bindings[0];
+  if (!record(group) || !Array.isArray(group.entries) || group.entries.length !== 9) return false;
+  const slots = [0, 1, 2, 3, 4, 5, 6, 11, 12];
+  return group.entries.every(
+    (entry: unknown, index: number) =>
+      record(entry) &&
+      entry.binding === slots[index] &&
+      entry.visibility === 4 &&
+      record(entry.buffer) &&
+      entry.buffer.type ===
+        (slots[index] === 1 ? 'read-only-storage' : slots[index] === 12 ? 'uniform' : 'storage') &&
+      entry.buffer.hasDynamicOffset !== true,
+  );
+}
+
 function validEmitter(value: unknown): boolean {
   const reflection = record(value) && record(value.reflection) ? value.reflection : undefined;
   const layout = reflection !== undefined ? reflection.layout : undefined;
@@ -106,6 +139,7 @@ function validEmitter(value: unknown): boolean {
     Object.keys(value.backend).length === 1 &&
     typeof value.wgsl === 'string' &&
     value.wgsl.length > 0 &&
+    validInstanceCompute(value.instanceCompute) &&
     (value.forceFields === undefined || validateVfxForceFields(value.forceFields).ok) &&
     validForceFieldBinding(value.forceFields, reflection) &&
     record(value.reflection) &&

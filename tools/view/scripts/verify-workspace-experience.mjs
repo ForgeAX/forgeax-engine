@@ -129,7 +129,7 @@ try {
   const target = (await client.getState()).preview.target;
   const identity = { targetId: target.targetId, targetGeneration: target.generation };
   assert.equal(await canvas.evaluate(element => Boolean(element.closest('[data-forgeax-view-workspace="targets"]'))), true,
-    'The exact Engine Editor canvas is borrowed into the viewport DOM');
+    'The exact Engine Scene canvas is borrowed into the viewport DOM');
   await client.clearSceneSelection(identity);
   assert.equal((await client.getState()).sceneSelection, null);
   const outputCenter = await canvas.evaluate(element => ({ x: element.width / 2, y: element.height / 2 }));
@@ -233,19 +233,19 @@ try {
     navigation: performance.getEntriesByType('navigation')[0]?.type,
   }));
   assert.equal(new URL(saved.record.entry).origin, new URL(start.url).origin);
-  // Older records must not replay removed resources or temporary editor state.
+  // Older records must not replay removed resources or temporary scene state.
   if (injectLegacyHistory) await page.addInitScript(() => {
     if (performance.getEntriesByType('navigation')[0]?.type !== 'reload') return;
     const key = 'forgeax.view.project-session/1';
     const value = JSON.parse(sessionStorage.getItem(key));
     if (!value) return;
     value.resources = ['00000000-0000-4000-8000-000000000001'];
-    value.presentation = { activeType: 'mesh', pageOrder: ['mesh', 'editor'] };
+    value.presentation = { activeType: 'mesh', pageOrder: ['mesh', 'scene'] };
     sessionStorage.setItem(key, JSON.stringify(value));
   });
   assert.equal(saved.record.resources, undefined);
   assert.equal(saved.record.camera, undefined);
-  console.error('PASS project identity persists without editor history');
+  console.error('PASS project identity persists without scene history');
   await page.screenshot({ path: join(output, 'before-refresh.png') });
   const projectUrlBeforeRefresh = page.url();
   const reloadVisits = [];
@@ -305,7 +305,7 @@ try {
   await page.keyboard.press('Escape');
   assert.deepEqual(errors, []);
   console.error('PASS refresh reattached the exact project server without history replay');
-  await page.locator('[role="tab"][data-page-id="page-editor"]').click();
+  await page.locator('[role="tab"][data-page-id="page-scene"]').click();
   const play = await client.call('play.start', { projectId: restored.project.id });
   const playTarget = play.play.target;
   console.error('Play target created; waiting for browser readiness');
@@ -345,14 +345,14 @@ try {
     assert.equal(await page.locator('.fx-engine-fatal-banner:not([hidden])').count(), 0);
   }
   assert.deepEqual([...new Set(reloadVisits)], [projectUrlBeforeRefresh],
-    'The refreshed Editor must remain on its exact project URL through subsequent operations');
+    'The refreshed Scene must remain on its exact project URL through subsequent operations');
   console.error('PASS repeated refresh returns to the project without manual reconnect');
   const observed = await client.call('display.status');
   assert.equal(observed.observation.status.runId, independent.runId);
   const after = await command('engine', 'run', 'status');
   for (const key of ['runId', 'revision', 'inputVersion', 'worldIdentity']) assert.equal(after[key], independent[key]);
   assert.equal(after.phase, 'ready');
-  console.error('PASS refresh ended Editor Play and preserved exact independent AI run');
+  console.error('PASS refresh ended Play and preserved exact independent AI run');
   assert.deepEqual(errors, []);
   assert.deepEqual(consoleErrors, [], 'Refresh must not bootstrap a doomed renderer or leave connection errors');
   assert.equal(await page.locator('.fx-error-notice').count(), 0);

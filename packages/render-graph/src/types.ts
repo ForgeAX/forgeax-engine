@@ -143,8 +143,25 @@ export type GraphAccessUsage = GraphAccess['usage'];
 
 export interface GraphResourceResolver {
   buffer(resource: GraphBuffer): Result<Buffer, RenderGraphError>;
+  bufferSource?(resource: GraphBuffer): Result<
+    {
+      readonly buffer: Buffer;
+      readonly descriptor: ImportedBufferDescriptor;
+    },
+    RenderGraphError
+  >;
   texture(resource: GraphTexture): Result<Texture, RenderGraphError>;
   textureView(resource: GraphTextureView): Result<TextureView, RenderGraphError>;
+  /** Borrow one declared view with its exact compiled allocation and slice facts. */
+  textureViewSource?(resource: GraphTextureView): Result<
+    {
+      readonly texture: Texture;
+      readonly view: TextureView;
+      readonly descriptor: ImportedTextureDescriptor;
+      readonly viewDescriptor: GraphTextureViewDescriptor;
+    },
+    RenderGraphError
+  >;
   /** Pixel extent of the declared view's base mip, from compiled allocation facts. */
   textureViewExtent(
     resource: GraphTextureView,
@@ -210,12 +227,63 @@ export interface CopyGraphPass<FrameCtx> {
   }): void;
 }
 
-export type GraphPass<FrameCtx> =
+/**
+ * Ordered import-only child work on the parent's device and encoder. Ports cover
+ * every borrowed texture view and shared buffer usage; child-private buffers
+ * remain caller-owned. Selecting a child neither submits nor transfers ownership.
+ */
+export type RenderGraphNativePass =
+  | {
+      readonly kind: 'raster';
+      readonly name: string;
+      readonly descriptor: RenderPassDescriptor;
+      readonly encode: (pass: RhiRenderPassEncoder) => void;
+    }
+  | {
+      readonly kind: 'compute';
+      readonly name: string;
+      readonly descriptor?: ComputePassDescriptor;
+      readonly encode: (pass: RhiComputePassEncoder) => void;
+    }
+  | {
+      readonly kind: 'copy';
+      readonly name: string;
+      readonly encode: (encoder: RhiCommandEncoder) => void;
+    };
+
+/**
+ * An ordered, synchronous command domain. Every graph-owned resource is a declared
+ * port; undeclared resources must be caller-owned and disjoint from other graph
+ * domains. The executor opens/closes native passes and preserves instrumentation.
+ */
+export type SubgraphPass<FrameCtx extends RenderGraphFrame> = {
+  readonly accesses: readonly GraphAccess[];
+  readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
+} & (
+  | {
+      readonly child: (
+        frame: FrameCtx,
+        resources: GraphResourceResolver,
+      ) => CompiledRenderGraph<FrameCtx>;
+      readonly commands?: never;
+    }
+  | {
+      readonly child?: never;
+      commands(context: {
+        readonly frame: FrameCtx;
+        readonly resources: GraphResourceResolver;
+        readonly execute: (pass: RenderGraphNativePass) => void;
+      }): void;
+    }
+);
+
+export type GraphPass<FrameCtx extends RenderGraphFrame> =
   | { readonly kind: 'raster'; readonly descriptor: RasterGraphPass<FrameCtx> }
   | { readonly kind: 'compute'; readonly descriptor: ComputeGraphPass<FrameCtx> }
-  | { readonly kind: 'copy'; readonly descriptor: CopyGraphPass<FrameCtx> };
+  | { readonly kind: 'copy'; readonly descriptor: CopyGraphPass<FrameCtx> }
+  | { readonly kind: 'subgraph'; readonly descriptor: SubgraphPass<FrameCtx> };
 
-export type GraphPassKind = GraphPass<unknown>['kind'];
+export type GraphPassKind = GraphPass<RenderGraphFrame>['kind'];
 
 export interface GraphAccessInfo {
   readonly resource: string;

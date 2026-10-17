@@ -189,7 +189,7 @@ try {
   assert.equal(await panel.getAttribute('data-entity-id'), 'floor');
   const opened = await page.evaluate(() => globalThis.meshInspectorFixture.calls.find(call => call.operation === 'asset.open'));
   assert.equal(opened.args.guid, 'mesh-guid');
-  assert.equal(opened.args.targetId, 'editor');
+  assert.equal(opened.args.targetId, 'scene');
   assert.equal(opened.args.targetGeneration, 1);
   assert.equal(await panel.getByRole('treeitem', { name: 'Floor Trim', exact: true }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.meshInspectorFixture.sceneTreeRequests()), 0);

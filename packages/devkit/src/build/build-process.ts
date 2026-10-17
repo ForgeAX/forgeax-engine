@@ -124,7 +124,10 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     value === null ||
     (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
     Reflect.ownKeys(value).some(
-      (key) => key !== 'dynamicGeometryMeshBudgetBytes' && key !== 'standardProfile',
+      (key) =>
+        key !== 'dynamicGeometryMeshBudgetBytes' &&
+        key !== 'standardProfile' &&
+        key !== 'pipelineLibrary',
     )
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');

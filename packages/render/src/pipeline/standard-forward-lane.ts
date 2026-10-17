@@ -325,9 +325,7 @@ function buildUrp(
     // segments. Keeping the opaque filter unconditional prevents an
     // ordinary transparent material from being drawn before the cloud pass.
     recordMode: 'opaque' as const,
-    ...(backdropActive && gpuDriven.value !== undefined
-      ? { gpuDrivenFilter: 'opaque' as const }
-      : {}),
+    gpuDrivenFilter: 'opaque' as const,
     ...(gpuDriven.value === undefined ? {} : { gpuDriven: gpuDriven.value }),
   } satisfies TypedScenePassOptions;
   const main = addTypedScenePass(graph, mainOptions);

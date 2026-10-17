@@ -1,5 +1,6 @@
 import type {
   GraphAccess,
+  GraphBuffer,
   RenderGraphBuilder,
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
@@ -21,6 +22,9 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
   const copies = pass.resolvedGpuCopies;
   if (copies === undefined) return ok(undefined);
   const accesses: GraphAccess[] = [];
+  // Deduplicate each usage independently so source/destination aliases still conflict.
+  const sources = new Set<GraphBuffer>();
+  const destinations = new Set<GraphBuffer>();
   for (const [index, copy] of copies.entries()) {
     const source = importRenderFeatureGraphBuffer(
       builder,
@@ -36,10 +40,14 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
       copy.destination,
     );
     if (!destination.ok) return destination;
-    accesses.push(
-      { resource: source.value, usage: 'copy-src' },
-      { resource: destination.value, usage: 'copy-dst' },
-    );
+    if (!sources.has(source.value)) {
+      sources.add(source.value);
+      accesses.push({ resource: source.value, usage: 'copy-src' });
+    }
+    if (!destinations.has(destination.value)) {
+      destinations.add(destination.value);
+      accesses.push({ resource: destination.value, usage: 'copy-dst' });
+    }
   }
   return builder.addCopyPass(pass.name, {
     accesses,

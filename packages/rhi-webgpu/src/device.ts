@@ -95,6 +95,7 @@ import {
   validateImportedTexture,
 } from './internal/texture-import';
 import { resolveTimestampQueries } from './internal/timestamp-query';
+import { WebGpuPipelineLibrary } from './pipeline-library';
 import { WebGpuAccelerationStructures, webgpuRayQueryCaps } from './ray-query';
 
 /**
@@ -187,6 +188,11 @@ const QUERY_SET_COUNT_LIMIT = 4096;
  * forward recording calls to the underlying GPUCommandEncoder.
  */
 const RAW_DEVICE_MAP: WeakMap<RhiDevice, GPUDevice> = new WeakMap();
+const PIPELINE_LIBRARY_MAP = new WeakMap<RhiDevice, WebGpuPipelineLibrary>();
+
+export function pipelineLibraryFor(device: RhiDevice): WebGpuPipelineLibrary | undefined {
+  return PIPELINE_LIBRARY_MAP.get(device);
+}
 const DISPOSED_DEVICE_SET: WeakSet<RhiDevice> = new WeakSet();
 const RAW_DEVICE_GENERATION_MAP: WeakMap<GPUDevice, number> = new WeakMap();
 const R32FLOAT_PROBE_CACHE: WeakMap<
@@ -313,6 +319,7 @@ export function _internal_getRawDevice(device: RhiDevice): GPUDevice | undefined
 export function disposeDevice(device: RhiDevice): void {
   const rawDevice = RAW_DEVICE_MAP.get(device);
   if (rawDevice === undefined || DISPOSED_DEVICE_SET.has(device)) return;
+  PIPELINE_LIBRARY_MAP.get(device)?.dispose();
   rawDevice.destroy();
   DISPOSED_DEVICE_SET.add(device);
 }
@@ -1551,6 +1558,8 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
    *  bypass the createX Result wrapper. */
   raw: GPUDevice;
 } {
+  const pipelineLibrary = new WebGpuPipelineLibrary(rawDevice);
+  void rawDevice.lost?.then(() => pipelineLibrary.dispose());
   const caps = deriveCaps(rawDevice, rawDevice.features, rawDevice.limits);
   const accelerationStructures = new WebGpuAccelerationStructures(
     caps.rayQuery,
@@ -1571,6 +1580,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
     })();
 
   const device: RhiDevice = {
+    pipelineLibrary,
     caps,
     features,
     limits,
@@ -1808,7 +1818,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
     createBindGroupLayout(desc: BindGroupLayoutDescriptor): Result<BindGroupLayout, RhiError> {
       const gate = validateRayQueryBindGroupLayout(caps.rayQuery, desc);
       if (!gate.ok) return gate;
-      const out = rawDevice.createBindGroupLayout(
+      const out = pipelineLibrary.createBindGroupLayout(
         mirror(desc, BGL_KEYS) as unknown as GPUBindGroupLayoutDescriptor,
       );
       return ok(out as unknown as BindGroupLayout);
@@ -1896,14 +1906,14 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
       return ok(out as unknown as BindGroup);
     },
     createPipelineLayout(desc: PipelineLayoutDescriptor): Result<PipelineLayout, RhiError> {
-      const out = rawDevice.createPipelineLayout(
+      const out = pipelineLibrary.createPipelineLayout(
         mirror(desc, PL_KEYS) as unknown as GPUPipelineLayoutDescriptor,
       );
       return ok(out as unknown as PipelineLayout);
     },
     createRenderPipeline(desc: RenderPipelineDescriptor): Result<RenderPipeline, RhiError> {
       try {
-        const out = rawDevice.createRenderPipeline(mirrorRenderPipelineDescriptor(desc));
+        const out = pipelineLibrary.createRenderPipeline(mirrorRenderPipelineDescriptor(desc));
         return ok(out as unknown as RenderPipeline);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -1931,16 +1941,10 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
     ...(typeof rawDevice.createRenderPipelineAsync !== 'function'
       ? {}
       : {
-          async createRenderPipelineAsync(
+          createRenderPipelineAsync(
             desc: RenderPipelineDescriptor,
-          ): Promise<Result<RenderPipeline, RhiError>> {
-            try {
-              // forgeax-async-whitelist: dom-native - WebGPU pipeline compilation completion.
-              const pipeline = await rawDevice.createRenderPipelineAsync(
-                mirrorRenderPipelineDescriptor(desc),
-              );
-              return ok(pipeline as unknown as RenderPipeline);
-            } catch (cause) {
+          ): Result<RenderPipeline, RhiError> | Promise<Result<RenderPipeline, RhiError>> {
+            const failed = (cause: unknown): Result<RenderPipeline, RhiError> => {
               const reason =
                 cause !== null && typeof cause === 'object' && 'reason' in cause
                   ? cause.reason
@@ -1952,15 +1956,26 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
                   hint: cause instanceof Error ? cause.message : String(cause),
                 }),
               );
+            };
+            try {
+              const completion = pipelineLibrary.createRenderPipelineAsync(
+                mirrorRenderPipelineDescriptor(desc),
+              );
+              // forgeax-async-whitelist: dom-native - only a completed device recipe can return immediately.
+              return completion instanceof Promise
+                ? completion.then((pipeline) => ok(pipeline as unknown as RenderPipeline), failed)
+                : ok(completion as unknown as RenderPipeline);
+            } catch (cause) {
+              return failed(cause);
             }
           },
         }),
     ...(typeof rawDevice.createComputePipelineAsync !== 'function'
       ? {}
       : {
-          async createComputePipelineAsync(
+          createComputePipelineAsync(
             desc: ComputePipelineDescriptor,
-          ): Promise<Result<ComputePipeline, RhiError>> {
+          ): Result<ComputePipeline, RhiError> | Promise<Result<ComputePipeline, RhiError>> {
             if (caps.compute === false)
               return err(
                 new RhiErrorClass({
@@ -1969,13 +1984,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
                   hint: 'check compute capability before preparing a compute pipeline',
                 }),
               );
-            try {
-              // forgeax-async-whitelist: dom-native - WebGPU compute pipeline compilation completion.
-              const pipeline = await rawDevice.createComputePipelineAsync(
-                mirror(desc, CP_KEYS) as unknown as GPUComputePipelineDescriptor,
-              );
-              return ok(pipeline as unknown as ComputePipeline);
-            } catch (cause) {
+            const failed = (cause: unknown): Result<ComputePipeline, RhiError> => {
               const reason =
                 cause !== null && typeof cause === 'object' && 'reason' in cause
                   ? cause.reason
@@ -1987,6 +1996,17 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
                   hint: cause instanceof Error ? cause.message : String(cause),
                 }),
               );
+            };
+            try {
+              const completion = pipelineLibrary.createComputePipelineAsync(
+                mirror(desc, CP_KEYS) as unknown as GPUComputePipelineDescriptor,
+              );
+              // forgeax-async-whitelist: dom-native - only a completed device recipe can return immediately.
+              return completion instanceof Promise
+                ? completion.then((pipeline) => ok(pipeline as unknown as ComputePipeline), failed)
+                : ok(completion as unknown as ComputePipeline);
+            } catch (cause) {
+              return failed(cause);
             }
           },
         }),
@@ -2004,7 +2024,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
         );
       }
       try {
-        const out = rawDevice.createComputePipeline(
+        const out = pipelineLibrary.createComputePipeline(
           mirror(desc, CP_KEYS) as unknown as GPUComputePipelineDescriptor,
         );
         return ok(out as unknown as ComputePipeline);
@@ -2162,6 +2182,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
     // (see ../index.ts).
   };
   RAW_DEVICE_MAP.set(device, rawDevice);
+  PIPELINE_LIBRARY_MAP.set(device, pipelineLibrary);
   return { device, raw: rawDevice };
 }
 

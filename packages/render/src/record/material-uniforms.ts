@@ -64,6 +64,11 @@ export function uploadMaterialUniforms(c: _InternalRenderPipelineContext): void 
   let changedSlots = 0;
   let packHits = 0;
   let packMisses = 0;
+  let packMissNoComparison = 0;
+  let packMissMutable = 0;
+  let packMissRuntimeSchema = 0;
+  let packMissMovedSlot = 0;
+  let packMissCold = 0;
   let rebuild = frameState.materialUboRebuilds ?? 0;
   if (previousUploaded && frameState.materialUboFullChurn === true && (rebuild + 1) % 32 !== 0) {
     let recurring = false;
@@ -150,13 +155,15 @@ export function uploadMaterialUniforms(c: _InternalRenderPipelineContext): void 
         const schema =
           mat.materialParamSchema ??
           (materialShaderId !== undefined ? runtime.getParamSchema?.(materialShaderId) : undefined);
-        const basePayload =
-          compareBytes &&
-          mat.immutableValues === true &&
-          mat.materialParamSchema !== undefined &&
-          previous?.materialSlots[materialSlot] === mat
-            ? basePayloads.get(mat)
-            : undefined;
+        let basePayload: ReturnType<typeof basePayloads.get>;
+        if (!compareBytes) packMissNoComparison++;
+        else if (mat.immutableValues !== true) packMissMutable++;
+        else if (mat.materialParamSchema === undefined) packMissRuntimeSchema++;
+        else if (previous?.materialSlots[materialSlot] !== mat) packMissMovedSlot++;
+        else {
+          basePayload = basePayloads.get(mat);
+          if (basePayload === undefined) packMissCold++;
+        }
         if (basePayload !== undefined) {
           packHits++;
           slotPayload.set(basePayload.payload);
@@ -319,6 +326,11 @@ export function uploadMaterialUniforms(c: _InternalRenderPipelineContext): void 
     }
     counters.packHits += packHits;
     counters.packMisses += packMisses;
+    counters.packMissNoComparison = (counters.packMissNoComparison ?? 0) + packMissNoComparison;
+    counters.packMissMutable = (counters.packMissMutable ?? 0) + packMissMutable;
+    counters.packMissRuntimeSchema = (counters.packMissRuntimeSchema ?? 0) + packMissRuntimeSchema;
+    counters.packMissMovedSlot = (counters.packMissMovedSlot ?? 0) + packMissMovedSlot;
+    counters.packMissCold = (counters.packMissCold ?? 0) + packMissCold;
     frameState.materialUboFullChurn =
       previousUploaded && (!compareBytes || changedSlots === materialSlotCount);
     // Another capture context can overwrite the same storage. Retain its

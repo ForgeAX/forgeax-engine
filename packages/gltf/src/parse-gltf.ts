@@ -344,18 +344,6 @@ export interface GltfDoc {
       readonly lights?: readonly GltfPunctualLightIr[];
     };
   };
-  /**
-   * Original glTF-mesh-index -> number of primitives that mesh expanded into
-   * (feat-20260608 round-2). parseGltf flattens N glTF meshes with M_i
-   * primitives into sum(M_i) GltfMeshIr entries; this map preserves the M_i so
-   * downstream consumers (gltfDocToSceneAsset's `meshPrimitiveCount` param)
-   * can map a glTF mesh index back to the flat-GltfMeshIr offset range without
-   * re-parsing JSON.
-   *
-   * Optional for backwards compatibility with hand-constructed test
-   * fixtures; producers from parseGltf / parseGlb always populate it.
-   */
-  readonly meshPrimitiveCount?: ReadonlyMap<number, number>;
   readonly lod?: GltfLodRelation;
 }
 
@@ -647,12 +635,9 @@ async function parseGltfWithBin(
   buffers.splice(0, buffers.length, ...draco.value.buffers);
 
   const meshes: GltfMeshIr[] = [];
-  // Preserve original mesh -> primitive counts for the flattened IR.
-  const meshPrimitiveCount = new Map<number, number>();
   for (let meshIndex = 0; meshIndex < meshesJson.length; meshIndex++) {
     const meshJson = meshesJson[meshIndex];
     if (meshJson === undefined) continue;
-    meshPrimitiveCount.set(meshIndex, meshJson.primitives.length);
     for (const prim of meshJson.primitives) {
       if (prim === undefined) continue;
       const positionAccessorIndex = prim.attributes?.POSITION;
@@ -1068,7 +1053,6 @@ async function parseGltfWithBin(
       unsupportedExtensions: diagnostics.unsupportedExtensions,
       matrixTrsCoexistNodes: diagnostics.matrixTrsCoexistNodes,
     },
-    meshPrimitiveCount,
     lights: lightsResult.value,
     ...(lodResult.value.lodNodeIds.length === 0 ? {} : { lod: lodResult.value }),
   });

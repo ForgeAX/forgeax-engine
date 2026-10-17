@@ -10,6 +10,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { writeReferencePng } from '../../../shared/png-codec.mjs';
 import {
   deriveReflectionFallbackEvidence,
+  deriveReflectionProbeRecoveryEvidence,
+  REFLECTION_PROBE_SETTLE_FRAMES,
   reflectionFallbackValidationLog,
 } from './ssr-fallback-evidence.mjs';
 
@@ -1207,7 +1209,7 @@ const resized = renderer.resizeRenderTarget(targetResult.value, {
   readback: true,
 });
 if (SSR_REFLECTION_EVIDENCE) {
-  for (let settle = 0; settle < 64; settle += 1) {
+  for (let settle = 0; settle < REFLECTION_PROBE_SETTLE_FRAMES; settle += 1) {
     const current = renderer.inspect().reflectionProbes;
     const probeFallback = current.reflectionFallbacks?.find(
       (row) => row.source === 'probe' && row.state === 'active' && row.candidateVisible === false,
@@ -1344,45 +1346,25 @@ if (SSR_REFLECTION_EVIDENCE) {
   const recoverCode = recovered.ok ? 'recovered' : recovered.error.code;
   if (!recovered.ok) throw recovered.error;
   let recoveryReceipt;
-  for (let frame = 0; frame < 40; frame += 1) {
+  let afterRecovery = renderer.inspect();
+  let replacement = deriveReflectionProbeRecoveryEvidence(afterRecovery, beforeDeviceGeneration);
+  for (let frame = 0; frame < REFLECTION_PROBE_SETTLE_FRAMES; frame += 1) {
     recoveryReceipt = await drawEvidenceFrame();
     await delay(0);
+    afterRecovery = renderer.inspect();
+    replacement = deriveReflectionProbeRecoveryEvidence(afterRecovery, beforeDeviceGeneration);
+    if (replacement.matchingReplacement && replacement.replacementSsrReady) break;
   }
-  const afterRecovery = renderer.inspect();
   const replacementOwner = afterRecovery.reflectionProbes;
-  const replacementRow = fallbackRow(replacementOwner, 'probe');
-  const replacementReadback = replacementOwner.reflectionFallbackReadback;
-  const generationChanged = afterRecovery.frame.deviceGeneration > beforeDeviceGeneration;
-  const matchingReplacement =
-    generationChanged &&
-    replacementRow?.state === 'active' &&
-    replacementRow.candidateVisible === false &&
-    replacementRow.deviceGeneration === afterRecovery.frame.deviceGeneration &&
-    replacementReadback?.readbackStatus === 'complete' &&
-    replacementReadback.deviceGeneration === replacementRow.deviceGeneration &&
-    replacementReadback.frameId === replacementRow.frameId;
-  const replacementSsrReady =
-    afterRecovery.ssr.status === 'admitted' &&
-    afterRecovery.ssr.history.state === 'stable' &&
-    afterRecovery.ssr.history.bytes > 0 &&
-    afterRecovery.ssrDependencies.temporal.successfulSubmit === true &&
-    afterRecovery.ssrDependencies.temporal.generation === afterRecovery.frame.deviceGeneration;
   deviceRecovery = {
     triggered: true,
     lostState,
     recoverCode,
     beforeDeviceGeneration,
-    afterDeviceGeneration: afterRecovery.frame.deviceGeneration,
-    generationChanged,
-    replacementRow,
-    readback: replacementReadback,
-    matchingReplacement,
     beforeSsr: beforeLoss.ssr,
-    afterSsr: afterRecovery.ssr,
-    replacementTemporal: afterRecovery.ssrDependencies.temporal,
-    replacementSsrReady,
+    ...replacement,
   };
-  if (!matchingReplacement || !replacementSsrReady || recoveryReceipt === undefined) {
+  if (!replacement.matchingReplacement || !replacement.replacementSsrReady || recoveryReceipt === undefined) {
     throw new Error(`device replacement receipt mismatch: ${JSON.stringify({ ...deviceRecovery, owner: replacementOwner })}`);
   }
 }

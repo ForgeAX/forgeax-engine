@@ -6,6 +6,7 @@
 // No staging / GPU concerns; consumed by DebugDraw class.
 
 import { type Mat4, mat4 } from '@forgeax/engine-math';
+import { boxEdgeVertices } from './aabb';
 
 function at(m: { readonly [index: number]: number }, i: number): number {
   return m[i] as number;
@@ -155,28 +156,5 @@ export function frustumVertices(viewProj: Mat4): [number, number, number][] | nu
     return [cx * iw, cy * iw, cz * iw] as [number, number, number];
   });
 
-  // 12 edges
-  const edges: [number, number][] = [
-    [0, 1],
-    [0, 2],
-    [1, 3],
-    [2, 3],
-    [4, 5],
-    [4, 6],
-    [5, 7],
-    [6, 7],
-    [0, 4],
-    [1, 5],
-    [2, 6],
-    [3, 7],
-  ];
-
-  const result: [number, number, number][] = [];
-  for (const [ai, bi] of edges) {
-    const ac = corners[ai] as [number, number, number];
-    const bc = corners[bi] as [number, number, number];
-    result.push([ac[0], ac[1], ac[2]]);
-    result.push([bc[0], bc[1], bc[2]]);
-  }
-  return result;
+  return boxEdgeVertices(corners);
 }

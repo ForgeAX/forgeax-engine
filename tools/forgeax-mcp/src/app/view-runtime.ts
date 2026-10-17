@@ -32,7 +32,7 @@ export async function startFullViewBridge() {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  const editorHostContext = () => ({
+  const previewHostContext = () => ({
     ...app.getHostContext(),
     theme:
       document.documentElement.dataset.theme === 'dark' ? ('dark' as const) : ('light' as const),
@@ -46,13 +46,13 @@ export async function startFullViewBridge() {
     });
     return client;
   };
-  const documents = createMcpDocumentRuntime(app, invoke, runtime.bytes, editorHostContext);
+  const documents = createMcpDocumentRuntime(app, invoke, runtime.bytes, previewHostContext);
   const createSurface = ({ target }: any) => {
     if (!target?.targetId || !target.url)
       throw new Error('Exact Engine target has no document URL');
     const handle = documents.createFrame(target.url);
-    handle.element.title = 'ForgeaX Editor 3D viewport';
-    handle.element.dataset.forgeaxMcpEditor = target.targetId;
+    handle.element.title = 'ForgeaX Preview 3D viewport';
+    handle.element.dataset.forgeaxMcpPreview = target.targetId;
     void handle.ready.catch(error => console.error('MCP document failed', error));
     return handle.element;
   };
@@ -106,10 +106,10 @@ export async function startFullViewBridge() {
   const themeListeners = new Set<() => void>();
   app.onhostcontextchanged = () => {
     for (const listener of themeListeners) listener();
-    documents.setHostContext(editorHostContext());
+    documents.setHostContext(previewHostContext());
   };
   const themeObserver = new MutationObserver(() => {
-    documents.setHostContext(editorHostContext());
+    documents.setHostContext(previewHostContext());
   });
   themeObserver.observe(document.documentElement, {
     attributes: true,

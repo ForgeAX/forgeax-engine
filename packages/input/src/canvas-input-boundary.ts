@@ -1,7 +1,7 @@
 // @forgeax/engine-input -- exclusive host-owned canvas input boundary.
 //
 // A physical canvas has one DOM acquisition backend. Hosts with two worlds (for
-// example editor + transient Play) route that one producer through these two
+// example preview + transient Play) route that one producer through these two
 // InputBackend views. This is exclusive ownership, deliberately separate from
 // synthetic/replay input composition.
 
@@ -13,9 +13,9 @@ import {
 import { isUiOwnedEvent } from './ui-ownership';
 
 export interface CanvasInputBoundary {
-  readonly editor: InputBackend;
+  readonly preview: InputBackend;
   readonly game: InputBackend;
-  owner(): 'editor' | 'game';
+  owner(): 'preview' | 'game';
   grantGame(): void;
   revokeGame(): void;
   /** Clear the active consumer when an event originated in the host UI. */
@@ -26,9 +26,9 @@ export interface CanvasInputBoundary {
 type CanvasInputOwner = ReturnType<CanvasInputBoundary['owner']>;
 
 export function createCanvasInputBoundary(source: InputBackend): CanvasInputBoundary {
-  let active: CanvasInputOwner = 'editor';
+  let active: CanvasInputOwner = 'preview';
   let gamePointerLockAllowed = false;
-  let editorInputAllowed = true;
+  let previewInputAllowed = true;
   let gameInputAllowed = true;
   source.setPointerLockAllowed?.(false);
 
@@ -51,8 +51,8 @@ export function createCanvasInputBoundary(source: InputBackend): CanvasInputBoun
     },
     setInputAllowed: (allowed) => {
       if (consumer === 'game') gameInputAllowed = allowed;
-      else editorInputAllowed = allowed;
-      source.setInputAllowed?.(active === 'game' ? gameInputAllowed : editorInputAllowed);
+      else previewInputAllowed = allowed;
+      source.setInputAllowed?.(active === 'game' ? gameInputAllowed : previewInputAllowed);
     },
     clear: () => {
       if (consumer === active) clear();
@@ -70,12 +70,12 @@ export function createCanvasInputBoundary(source: InputBackend): CanvasInputBoun
 
   const revokeGame = (): void => {
     clear();
-    active = 'editor';
-    source.setInputAllowed?.(editorInputAllowed);
+    active = 'preview';
+    source.setInputAllowed?.(previewInputAllowed);
   };
 
   return {
-    editor: routed('editor'),
+    preview: routed('preview'),
     game: routed('game'),
     owner: () => active,
     grantGame,

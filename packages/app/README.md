@@ -477,12 +477,24 @@ one persistent RenderScene; the child never constructs a World.
 
 Source plugins use `executionBootstrapHost.dynamicGeometry` for asynchronous
 mesh preparation in either execution layout. Same-realm execution adapts the
-actual Renderer; split execution transports only source/epoch, request/entity
-identity, mesh handle and cloned Mesh POD to the child GPU residency owner.
+actual Renderer; split execution transports source/epoch, request/entity
+identity, mesh handle, cloned Mesh POD and the real candidate's material/pass
+projection to the child Renderer. A replacement uses its candidate mesh layout
+while the live MeshFilter still refers to the accepted mesh. Immutable programs
+already known through ordinary publication or a successful preparation ACK are
+omitted from this preparation. The existing publisher records only ACKs from the
+current source epoch and device generation; concurrent unacknowledged requests
+may safely repeat programs, while failed or cancelled preparations do not mark
+them known.
 Candidate budgets, World bindings and synchronous FixedUpdate admission stay in
 the source realm. The service exists before plugin startup; preparation before
 child readiness returns `dynamic-geometry-gpu-not-ready`, so startup does not
 wait on a child whose initialization depends on that startup finishing.
+Rigid candidates await both mesh upload and the pipelines required by the
+current view's actual scene passes. This wait does not occupy frame credit or
+the drawing chain: the accepted scene continues to render. A current view graph
+must exist; a missing graph returns a structured readiness refusal. Standalone
+mesh residency without an entity has no material or pipeline preparation.
 
 Mesh readiness reports the actual device generation. Cancellation and release
 retain source ownership until the receiver acknowledges its GPU release fence.

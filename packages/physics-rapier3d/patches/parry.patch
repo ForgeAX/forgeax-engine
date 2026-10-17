@@ -588,6 +588,158 @@ index 0000000..95a474c
 +        );
 +    }
 +}
+diff --git a/crates/parry3d/tests/voxel_copy.rs b/crates/parry3d/tests/voxel_copy.rs
+new file mode 100644
+index 0000000..4fbdc3a
+--- /dev/null
++++ b/crates/parry3d/tests/voxel_copy.rs
+@@ -0,0 +1,24 @@
++use parry3d::math::{IVector, Vector};
++use parry3d::shape::Voxels;
++#[test]
++fn removes_a_complete_chunk_from_a_cloned_grid() {
++    let original=Voxels::from_regions(Vector::ONE, &[[IVector::new(-2,0,-1),IVector::new(-1,1,0)],[IVector::new(1,0,-1),IVector::new(2,1,0)]]);
++    let mut copy=original.clone();
++    copy.set_voxel(IVector::new(-2,0,-1),false);
++    assert!(original.voxel_state(IVector::new(-2,0,-1)).unwrap().is_empty()==false);
++    assert!(copy.voxel_state(IVector::new(-2,0,-1)).map_or(true, |s|s.is_empty()));
++    copy.set_voxel(IVector::new(-2,0,-1),true);
++    assert!(!copy.voxel_state(IVector::new(-2,0,-1)).unwrap().is_empty());
++}
++
++#[test]
++fn tiny_bvhs_keep_external_leaf_ids_in_any_input_order() {
++    use parry3d::bounding_volume::Aabb;
++    use parry3d::partitioning::{Bvh, BvhBuildStrategy};
++    for ids in [vec![7], vec![1,0], vec![9,3]] {
++        let mut tree=Bvh::from_iter(BvhBuildStrategy::Ploc, ids.iter().map(|id|(*id,Aabb::new(Vector::splat(*id as f32),Vector::splat(*id as f32+1.0)))));
++        for id in &ids { assert_eq!(tree.leaf_node(*id as u32).unwrap().leaf_data(),Some(*id as u32)); }
++        for id in ids { tree.remove(id as u32); assert!(tree.leaf_node(id as u32).is_none()); }
++        assert!(tree.is_empty());
++    }
++}
+diff --git a/crates/parry3d/tests/voxel_nonlinear_cast.rs b/crates/parry3d/tests/voxel_nonlinear_cast.rs
+new file mode 100644
+index 0000000..bf04d40
+--- /dev/null
++++ b/crates/parry3d/tests/voxel_nonlinear_cast.rs
+@@ -0,0 +1,41 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
++use parry3d::shape::{Ball, Cuboid, Shape, Voxels};
++
++fn compare(grid_motion: NonlinearRigidMotion, other_motion: NonlinearRigidMotion, other: &dyn Shape, start: f32, end: f32) {
++    let voxels = Voxels::from_regions(Vector::splat(0.1), &[[IVector::new(-10,-1,0), IVector::new(10,1,1)]]);
++    let solid = Cuboid::new(Vector::new(1.0,0.1,0.05));
++    let reference = cast_shapes_nonlinear(&grid_motion.prepend_translation(Vector::new(0.0,0.0,0.05)), &solid, &other_motion, other, start, end, true).unwrap().expect("reference collision");
++    let actual = cast_shapes_nonlinear(&grid_motion, &voxels, &other_motion, other, start, end, true).unwrap().expect("voxel collision");
++    assert!((actual.time_of_impact-reference.time_of_impact).abs()<0.00003,"reference={reference:?} actual={actual:?}");
++    let point = grid_motion.position_at_time(actual.time_of_impact) * actual.witness1;
++    let other_point = other_motion.position_at_time(actual.time_of_impact) * actual.witness2;
++    assert!((point-other_point).length()<0.003,"witnesses disagree: {point:?} != {other_point:?}");
++}
++
++#[test]
++fn translated_and_rotated_grid_uses_local_velocity_at_nonzero_substeps() {
++    let ball=Ball::new(0.05);
++    for angle in [0.0,0.37,-0.83] {
++        let rotation=Rotation::from_rotation_y(angle);
++        let direction=rotation*Vector::Z;
++        for start in [0.0,0.002] {
++            let velocity=Vector::new(20.0,-1.0,3.0);
++            compare(NonlinearRigidMotion::new(Pose::from_parts(Vector::ZERO,rotation),Vector::ZERO,velocity,Vector::ZERO),
++                NonlinearRigidMotion::new(Pose::from_translation(-direction*2.0),Vector::ZERO,velocity+direction*300.0,Vector::ZERO),&ball,start,0.01);
++        }
++    }
++}
++
++#[test]
++fn rotating_grid_keeps_its_actual_angular_motion() {
++    compare(NonlinearRigidMotion::new(Pose::IDENTITY,Vector::ZERO,Vector::ZERO,Vector::Y*-90.0),
++        NonlinearRigidMotion::constant_position(Pose::translation(0.0,0.0,0.8)),&Ball::new(0.05),0.0,1.0/60.0);
++}
++
++#[test]
++fn rotating_other_shape_keeps_the_arc_between_endpoint_orientations() {
++    let bar=Cuboid::new(Vector::new(0.04,0.8,0.04));
++    compare(NonlinearRigidMotion::constant_position(Pose::IDENTITY),
++        NonlinearRigidMotion::new(Pose::translation(0.0,0.0,-0.6),Vector::ZERO,Vector::ZERO,Vector::X*std::f32::consts::TAU),&bar,0.0,1.0);
++}
+diff --git a/src/bounding_volume/aabb_voxels.rs b/src/bounding_volume/aabb_voxels.rs
+index 881ef8a..1ed6437 100644
+--- a/src/bounding_volume/aabb_voxels.rs
++++ b/src/bounding_volume/aabb_voxels.rs
+@@ -1,17 +1,23 @@
+ use crate::bounding_volume::Aabb;
+-use crate::math::Pose;
++use crate::math::{Pose, Vector};
+ use crate::shape::Voxels;
+ 
+ impl Voxels {
+     /// Computes the world-space Aabb of this set of voxels, transformed by `pos`.
+     #[inline]
+     pub fn aabb(&self, pos: &Pose) -> Aabb {
+-        self.chunk_bvh().root_aabb().transform_by(pos)
++        self.local_aabb().transform_by(pos)
+     }
+ 
+     /// Computes the local-space Aabb of this set of voxels.
+     #[inline]
+     pub fn local_aabb(&self) -> Aabb {
+-        self.chunk_bvh().root_aabb()
++        // An empty shape has no contacts, but still needs a finite bound so
++        // Rapier can track a later refill without quarantining the collider.
++        if self.chunk_bvh().is_empty() {
++            Aabb::new(Vector::ZERO, Vector::ZERO)
++        } else {
++            self.chunk_bvh().root_aabb()
++        }
+     }
+ }
+diff --git a/src/mass_properties/mass_properties_voxels.rs b/src/mass_properties/mass_properties_voxels.rs
+index e08b907..30e0c87 100644
+--- a/src/mass_properties/mass_properties_voxels.rs
++++ b/src/mass_properties/mass_properties_voxels.rs
+@@ -1,4 +1,5 @@
+ use crate::mass_properties::MassProperties;
++use num::Zero;
+ #[cfg(feature = "dim3")]
+ use crate::math::Matrix;
+ use crate::math::{Real, Vector};
+@@ -187,6 +188,9 @@ impl MassProperties {
+             }
+         }
+ 
++        if num_not_empty == 0 {
++            return Self::zero();
++        }
+         com /= num_not_empty as Real;
+ 
+         for vox in voxels.voxels() {
+diff --git a/src/partitioning/bvh/bvh_tree.rs b/src/partitioning/bvh/bvh_tree.rs
+index 9fd6907..ed8cb7f 100644
+--- a/src/partitioning/bvh/bvh_tree.rs
++++ b/src/partitioning/bvh/bvh_tree.rs
+@@ -1939,7 +1939,7 @@ impl Bvh {
+                     right: BvhNode::zeros(),
+                 });
+                 result.parents.push(BvhNodeIndex::default());
+-                result.leaf_node_indices[0] = BvhNodeIndex::left(0);
++                result.leaf_node_indices[workspace.rebuild_leaves[0].children as usize] = BvhNodeIndex::left(0);
+             }
+             2 => {
+                 result.nodes.push(BvhNodeWide {
+@@ -1947,8 +1947,8 @@ impl Bvh {
+                     right: workspace.rebuild_leaves[1],
+                 });
+                 result.parents.push(BvhNodeIndex::default());
+-                result.leaf_node_indices[0] = BvhNodeIndex::left(0);
+-                result.leaf_node_indices[1] = BvhNodeIndex::right(0);
++                result.leaf_node_indices[workspace.rebuild_leaves[0].children as usize] = BvhNodeIndex::left(0);
++                result.leaf_node_indices[workspace.rebuild_leaves[1].children as usize] = BvhNodeIndex::right(0);
+             }
+             _ => {
+                 result.nodes.reserve(capacity);
 diff --git a/src/query/contact/contact_cuboid_capsule.rs b/src/query/contact/contact_cuboid_capsule.rs
 new file mode 100644
 index 0000000..c60b455
@@ -756,6 +908,267 @@ index 2c03f02..c7584fa 100644
              } else if let (Some(s1), Some(s2)) = (shape1.as_support_map(), shape2.as_support_map())
              {
                  return Ok(query::details::cast_shapes_support_map_support_map(
+diff --git a/src/query/epa/epa3.rs b/src/query/epa/epa3.rs
+index a32b339..3f099ea 100644
+--- a/src/query/epa/epa3.rs
++++ b/src/query/epa/epa3.rs
+@@ -553,12 +553,27 @@ impl EPA {
+             if self.vertices.len() == 2 {
+                 let dpt = self.vertices[1] - self.vertices[0];
+ 
++                let endpoints = [self.vertices[0].point, self.vertices[1].point];
+                 crate::math::orthonormal_subspace_basis(&[dpt], |dir| {
+-                    // dir is already normalized by orthonormal_subspace_basis
+-                    self.vertices
+-                        .push(CsoPoint::from_shapes(pos12, g1, g2, dir));
+-                    false
++                    // An exactly touching CSO edge can return another point on the
++                    // same line in this direction. Such a triangle has no normal.
++                    // Keep the original support when valid; otherwise try the
++                    // opposite direction before the next orthonormal axis.
++                    for candidate_dir in [dir, -dir] {
++                        let candidate = CsoPoint::from_shapes(pos12, g1, g2, candidate_dir);
++                        if utils::ccw_face_normal([endpoints[0], endpoints[1], candidate.point])
++                            .is_some()
++                        {
++                            self.vertices.push(candidate);
++                            return false;
++                        }
++                    }
++                    true
+                 });
++                if self.vertices.len() != 3 {
++                    // A genuinely linear CSO cannot provide a contact-plane normal.
++                    return None;
++                }
+             }
+ 
+             let pts1 = [0, 1, 2];
+@@ -779,3 +794,99 @@ impl EPA {
+         }
+     }
+ }
++
++#[cfg(all(test, feature = "f32"))]
++mod touching_edge_tests {
++    use crate::math::{Pose, Vector};
++    use crate::query::details::contact_support_map_support_map_with_params;
++    use crate::query::gjk::{GJKResult, VoronoiSimplex};
++    use crate::shape::{ConvexPolyhedron, Cuboid};
++
++    fn shapes() -> (ConvexPolyhedron, Cuboid, Pose) {
++        // Captured Hull/Cuboid child pair at first native admission. The CSO
++        // reaches the origin on a Z edge, not on a full triangular facet.
++        let vertices = [
++            Vector::new(2.9, 0.9, 1.4),
++            Vector::new(3.0, 0.9, 1.4),
++            Vector::new(2.9, 1.0, 1.4),
++            Vector::new(3.0, 1.0, 1.4),
++            Vector::new(2.9, 0.9, 1.5),
++            Vector::new(3.0, 0.9, 1.5),
++            Vector::new(2.9, 1.0, 1.5),
++            Vector::new(3.0, 1.0, 1.5),
++        ];
++        let hull = ConvexPolyhedron::from_convex_hull(&vertices).unwrap();
++        let cuboid = Cuboid::new(Vector::new(0.20000004768371582, 3.5999999046325684, 5.25));
++        let relative =
++            Pose::from_translation(Vector::new(2.700000047683716, 4.599999904632568, -2.75));
++        (hull, cuboid, relative)
++    }
++
++    #[test]
++    fn touching_edge_has_real_plane_normal() {
++        let (hull, cuboid, relative) = shapes();
++        let mut simplex = VoronoiSimplex::new();
++        let result = contact_support_map_support_map_with_params(
++            &relative,
++            &hull,
++            &cuboid,
++            0.02,
++            &mut simplex,
++            None,
++        );
++        assert_eq!(
++            simplex.dimension(),
++            1,
++            "retain the captured line-simplex path"
++        );
++        let GJKResult::ClosestPoints(a, b, normal) = result else {
++            panic!("the touching pair must retain a contact: {result:?}");
++        };
++        assert!(normal.is_finite());
++        assert!((normal.length_squared() - 1.0).abs() < 1.0e-5, "{normal:?}");
++        assert!((b - a).dot(normal).abs() < 1.0e-5);
++        assert!(a.is_finite() && b.is_finite());
++    }
++
++    #[test]
++    fn touching_edge_directions_and_separation() {
++        let (hull, cuboid, relative) = shapes();
++        for direction in [
++            None,
++            Some(Vector::X),
++            Some(-Vector::X),
++            Some(Vector::Y),
++            Some(-Vector::Y),
++            Some(Vector::Z),
++            Some(-Vector::Z),
++        ] {
++            let result = contact_support_map_support_map_with_params(
++                &relative,
++                &hull,
++                &cuboid,
++                0.02,
++                &mut VoronoiSimplex::new(),
++                direction,
++            );
++            let GJKResult::ClosestPoints(_, _, normal) = result else {
++                panic!("{result:?}")
++            };
++            assert!(
++                normal.is_finite() && (normal.length_squared() - 1.0).abs() < 1.0e-5,
++                "{normal:?}"
++            );
++        }
++        let separated = Pose::from_translation(relative.translation - Vector::X * 0.1);
++        assert!(matches!(
++            contact_support_map_support_map_with_params(
++                &separated,
++                &hull,
++                &cuboid,
++                0.02,
++                &mut VoronoiSimplex::new(),
++                None,
++            ),
++            GJKResult::NoIntersection(_)
++        ));
++    }
++}
+diff --git a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
+index 123a8e3..31328b9 100644
+--- a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
++++ b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
+@@ -1,4 +1,4 @@
+-use crate::bounding_volume::BoundingVolume;
++use crate::bounding_volume::Aabb;
+ use crate::math::{IVector, IVectorExt, Real, Vector, VectorExt};
+ use crate::query::{NonlinearRigidMotion, QueryDispatcher, ShapeCastHit};
+ use crate::shape::{Cuboid, Shape, Voxels};
+@@ -19,16 +19,42 @@ where
+ {
+     use num_traits::Bounded;
+ 
+-    // HACK: really supporting nonlinear shape-casting on a rotating voxels shape would
+-    //       be extremely inefficient without any sort of hierarchical traversal on the voxel.
+-    //       So for now we assume that the voxels shape only has a translational motion.
+-    //       We can fix that once we introduce a sparse representation (and its accompanying
+-    //       acceleration structure) for the voxels shape.
++    #[cfg(feature = "dim2")]
++    let rotating1 = motion1.angvel != 0.0;
++    #[cfg(feature = "dim3")]
++    let rotating1 = motion1.angvel != Vector::ZERO;
++    if rotating1 {
++        // A rotating voxel grid has no fixed local traversal direction. Keep
++        // the actual rigid motion for every occupied cell instead of freezing
++        // it and silently missing rotational collisions.
++        let cuboid = Cuboid::new(g1.voxel_size() / 2.0);
++        let mut hit = None;
++        let mut earliest = end_time;
++        for vox in g1.voxels().filter(|vox| !vox.state.is_empty()) {
++            let center = g1.voxel_center(vox.grid_coords);
++            if let Some(mut next) = dispatcher.cast_shapes_nonlinear(
++                &motion1.prepend_translation(center), &cuboid, motion2, g2,
++                start_time, earliest, stop_at_penetration,
++            ).ok().flatten() {
++                next.witness1 += center;
++                earliest = next.time_of_impact;
++                hit = Some(next);
++            }
++        }
++        return hit;
++    }
+     let mut motion2 = *motion2;
+     let mut motion1 = *motion1;
++    // Preserve positions at a nonzero CCD substep boundary while removing
++    // the grid's common translational velocity from subsequent relative motion.
++    motion2.start.translation += motion1.linvel * start_time;
+     motion2.linvel -= motion1.linvel;
+     motion1.freeze(start_time);
+     let pos1 = motion1.position_at_time(start_time);
++    #[cfg(feature = "dim2")]
++    let local_linvel = pos1.rotation.inverse_transform_vector(motion2.linvel);
++    #[cfg(feature = "dim3")]
++    let local_linvel = pos1.rotation.inverse() * motion2.linvel;
+ 
+     // Search for the smallest time of impact.
+     //
+@@ -47,14 +73,20 @@ where
+     let mut hit = None;
+     let mut smallest_t = end_time;
+ 
+-    // NOTE: we approximate the AABB of the shape using its orientation at the start and
+-    //       end time. It might miss some cases if the object is rotating fast.
+     let start_pos2_1 = pos1.inv_mul(&motion2.position_at_time(start_time));
+-    let mut end_pos2_1 = pos1.inv_mul(&motion2.position_at_time(end_time));
+-    end_pos2_1.translation = start_pos2_1.translation;
+-    let start_aabb2_1 = g2
+-        .compute_aabb(&start_pos2_1)
+-        .merged(&g2.compute_aabb(&end_pos2_1));
++    #[cfg(feature = "dim2")]
++    let rotating2 = motion2.angvel != 0.0;
++    #[cfg(feature = "dim3")]
++    let rotating2 = motion2.angvel != Vector::ZERO;
++    let start_aabb2_1 = if rotating2 {
++        // The start/end orientations alone miss the arc between them. A sphere
++        // about the rotation centre bounds every intervening orientation.
++        let sphere = g2.compute_local_bounding_sphere();
++        let radius = sphere.radius() + (sphere.center - motion2.local_center).length();
++        Aabb::from_half_extents(start_pos2_1 * motion2.local_center, Vector::splat(radius))
++    } else {
++        g2.compute_aabb(&start_pos2_1)
++    };
+ 
+     let mut check_voxels_in_range = |search_domain: [IVector; 2]| {
+         for vox in g1.voxels_in_range(search_domain[0], search_domain[1]) {
+@@ -63,7 +95,7 @@ where
+                 let center = g1.voxel_center(vox.grid_coords);
+                 let cuboid = Cuboid::new(g1.voxel_size() / 2.0);
+                 let vox_motion1 = motion1.prepend_translation(center);
+-                if let Some(new_hit) = dispatcher
++                if let Some(mut new_hit) = dispatcher
+                     .cast_shapes_nonlinear(
+                         &vox_motion1,
+                         &cuboid,
+@@ -77,6 +109,7 @@ where
+                     .flatten()
+                 {
+                     if new_hit.time_of_impact < smallest_t {
++                        new_hit.witness1 += center;
+                         smallest_t = new_hit.time_of_impact;
+                         hit = Some(new_hit);
+                     }
+@@ -101,17 +134,17 @@ where
+         let ii = [0, 1, 2];
+ 
+         let toi = ii.map(|i| {
+-            if motion2.linvel.vget(i) > 0.0 {
++            if local_linvel.vget(i) > 0.0 {
+                 let t = (search_domain_aabb.maxs.vget(i) - start_aabb2_1.maxs.vget(i))
+-                    / motion2.linvel.vget(i);
++                    / local_linvel.vget(i);
+                 if t < 0.0 {
+                     (Real::max_value(), true)
+                 } else {
+                     (t, true)
+                 }
+-            } else if motion2.linvel.vget(i) < 0.0 {
++            } else if local_linvel.vget(i) < 0.0 {
+                 let t = (search_domain_aabb.mins.vget(i) - start_aabb2_1.mins.vget(i))
+-                    / motion2.linvel.vget(i);
++                    / local_linvel.vget(i);
+                 if t < 0.0 {
+                     (Real::max_value(), false)
+                 } else {
 diff --git a/src/query/point/point_triangle.rs b/src/query/point/point_triangle.rs
 index 810e3e3..0d54399 100644
 --- a/src/query/point/point_triangle.rs
@@ -984,139 +1397,184 @@ index b965e7e..99e4714 100644
 +        Some(contact)
 +    })
 +}
-diff --git a/src/query/epa/epa3.rs b/src/query/epa/epa3.rs
-index a32b339..3f099ea 100644
---- a/src/query/epa/epa3.rs
-+++ b/src/query/epa/epa3.rs
-@@ -553,12 +553,27 @@ impl EPA {
-             if self.vertices.len() == 2 {
-                 let dpt = self.vertices[1] - self.vertices[0];
+diff --git a/src/shape/voxels/voxels.rs b/src/shape/voxels/voxels.rs
+index 892b9f5..c83fd99 100644
+--- a/src/shape/voxels/voxels.rs
++++ b/src/shape/voxels/voxels.rs
+@@ -589,8 +589,11 @@ impl Voxels {
+                 result.chunk_keys.push(chunk_key);
+                 VoxelsChunkHeader { id, len: 0 }
+             });
+-            chunk_header.len += 1;
+-            result.chunks[chunk_header.id].states[id_in_chunk] = VoxelState::INTERIOR;
++            let state = &mut result.chunks[chunk_header.id].states[id_in_chunk];
++            if state.is_empty() {
++                chunk_header.len += 1;
++                *state = VoxelState::INTERIOR;
++            }
+         }
  
-+                let endpoints = [self.vertices[0].point, self.vertices[1].point];
-                 crate::math::orthonormal_subspace_basis(&[dpt], |dir| {
--                    // dir is already normalized by orthonormal_subspace_basis
--                    self.vertices
--                        .push(CsoPoint::from_shapes(pos12, g1, g2, dir));
--                    false
-+                    // An exactly touching CSO edge can return another point on the
-+                    // same line in this direction. Such a triangle has no normal.
-+                    // Keep the original support when valid; otherwise try the
-+                    // opposite direction before the next orthonormal axis.
-+                    for candidate_dir in [dir, -dir] {
-+                        let candidate = CsoPoint::from_shapes(pos12, g1, g2, candidate_dir);
-+                        if utils::ccw_face_normal([endpoints[0], endpoints[1], candidate.point])
-+                            .is_some()
-+                        {
-+                            self.vertices.push(candidate);
-+                            return false;
+         result.chunk_bvh = Bvh::from_iter(
+@@ -604,6 +607,47 @@ impl Voxels {
+         result
+     }
+ 
++    /// Builds the union of half-open grid regions without expanding XYZ inputs.
++    /// Each chunk is looked up once per region, and overlapping regions are deduplicated.
++    #[cfg(feature = "dim3")]
++    pub fn from_regions(voxel_size: Vector, regions: &[[IVector; 2]]) -> Self {
++        let mut result = Self::new(voxel_size, &[]);
++        let width = VoxelsChunk::VOXELS_PER_CHUNK_DIM as i32;
++        for [min, max] in regions {
++            assert!(min.x < max.x && min.y < max.y && min.z < max.z);
++            let first = Self::voxel_to_chunk_key(*min);
++            let last = Self::voxel_to_chunk_key(*max - IVector::ONE);
++            for z in first.z..=last.z { for y in first.y..=last.y { for x in first.x..=last.x {
++                let key = IVector::new(x, y, z);
++                let header = result.chunk_headers.entry(key).or_insert_with(|| {
++                    let id = result.chunks.len();
++                    result.chunks.push(VoxelsChunk::default());
++                    result.chunk_keys.push(key);
++                    VoxelsChunkHeader { id, len: 0 }
++                });
++                let origin = key * width;
++                let lo = (*min - origin).max(IVector::ZERO);
++                let hi = (*max - origin).min(IVector::splat(width));
++                let states = &mut result.chunks[header.id].states;
++                for iz in lo.z..hi.z { for iy in lo.y..hi.y { for ix in lo.x..hi.x {
++                    let at = (ix + iy * width + iz * width * width) as usize;
++                    if states[at].is_empty() {
++                        states[at] = VoxelState::INTERIOR;
++                        header.len += 1;
++                    }
++                } } }
++            } } }
++        }
++        result.chunk_bvh = Bvh::from_iter(
++            BvhBuildStrategy::Ploc,
++            result.chunk_headers.iter().map(|(key, header)| {
++                (header.id, VoxelsChunk::aabb(key, result.voxel_size))
++            }),
++        );
++        result.recompute_all_voxels_states();
++        result
++    }
++
+     /// Computes a voxel shape from a set of world-space points.
+     ///
+     /// This constructor converts continuous world-space coordinates into discrete grid coordinates
+diff --git a/src/shape/voxels/voxels_neighborhood.rs b/src/shape/voxels/voxels_neighborhood.rs
+index 659f8b0..edcda43 100644
+--- a/src/shape/voxels/voxels_neighborhood.rs
++++ b/src/shape/voxels/voxels_neighborhood.rs
+@@ -57,27 +57,49 @@ impl Voxels {
+     }
+ 
+     pub(super) fn recompute_all_voxels_states(&mut self) {
++        let width = VoxelsChunk::VOXELS_PER_CHUNK_DIM;
+         for (chunk_key, chunk_header) in self.chunk_headers.iter() {
+-            for id_in_chunk in 0..VoxelsChunk::VOXELS_PER_CHUNK {
+-                let voxel_key = VoxelsChunk::voxel_key_at_id(*chunk_key, id_in_chunk as u32);
+-                self.chunks[chunk_header.id].states[id_in_chunk] =
+-                    self.compute_voxel_state(voxel_key);
++            let mut neighbors = [[None; 2]; DIM];
++            for axis in 0..DIM {
++                for side in 0..2 {
++                    let mut key = *chunk_key;
++                    key.ivset(axis, key.ivget(axis) + if side == 0 { 1 } else { -1 });
++                    neighbors[axis][side] = self.chunk_headers.get(&key).map(|header| header.id);
++                }
++            }
++            for id in 0..VoxelsChunk::VOXELS_PER_CHUNK {
++                if self.chunks[chunk_header.id].states[id].is_empty() {
++                    continue;
++                }
++                let mut mask = 0;
++                let mut stride = 1;
++                for axis in 0..DIM {
++                    let coordinate = (id / stride) % width;
++                    let positive = if coordinate + 1 < width {
++                        Some((chunk_header.id, id + stride))
++                    } else {
++                        neighbors[axis][0].map(|chunk| (chunk, id - (width - 1) * stride))
++                    };
++                    let negative = if coordinate > 0 {
++                        Some((chunk_header.id, id - stride))
++                    } else {
++                        neighbors[axis][1].map(|chunk| (chunk, id + (width - 1) * stride))
++                    };
++                    for (side, neighbor) in [positive, negative].into_iter().enumerate() {
++                        if let Some((chunk, offset)) = neighbor {
++                            if !self.chunks[chunk].states[offset].is_empty() {
++                                mask |= 1 << (axis * 2 + side);
++                            }
 +                        }
 +                    }
-+                    true
-                 });
-+                if self.vertices.len() != 3 {
-+                    // A genuinely linear CSO cannot provide a contact-plane normal.
-+                    return None;
++                    stride *= width;
 +                }
++                // Face-bit updates do not change occupancy, including adjacent chunks.
++                self.chunks[chunk_header.id].states[id] = VoxelState::new(mask);
              }
+         }
+     }
  
-             let pts1 = [0, 1, 2];
-@@ -779,3 +794,99 @@ impl EPA {
+-    fn compute_voxel_state(&self, key: IVector) -> VoxelState {
+-        let Some(id) = self.linear_index(key) else {
+-            return VoxelState::EMPTY;
+-        };
+-
+-        if self.chunks[id.chunk_id].states[id.id_in_chunk].is_empty() {
+-            return VoxelState::EMPTY;
+-        }
+-
+-        self.compute_voxel_neighborhood_bits(key)
+-    }
+-
+     pub(super) fn compute_voxel_neighborhood_bits(&self, key: IVector) -> VoxelState {
+         let mut occupied_faces = 0;
+ 
+@@ -203,3 +225,44 @@ impl Voxels {
          }
      }
  }
 +
-+#[cfg(all(test, feature = "f32"))]
-+mod touching_edge_tests {
-+    use crate::math::{Pose, Vector};
-+    use crate::query::details::contact_support_map_support_map_with_params;
-+    use crate::query::gjk::{GJKResult, VoronoiSimplex};
-+    use crate::shape::{ConvexPolyhedron, Cuboid};
-+
-+    fn shapes() -> (ConvexPolyhedron, Cuboid, Pose) {
-+        // Captured Hull/Cuboid child pair at first native admission. The CSO
-+        // reaches the origin on a Z edge, not on a full triangular facet.
-+        let vertices = [
-+            Vector::new(2.9, 0.9, 1.4),
-+            Vector::new(3.0, 0.9, 1.4),
-+            Vector::new(2.9, 1.0, 1.4),
-+            Vector::new(3.0, 1.0, 1.4),
-+            Vector::new(2.9, 0.9, 1.5),
-+            Vector::new(3.0, 0.9, 1.5),
-+            Vector::new(2.9, 1.0, 1.5),
-+            Vector::new(3.0, 1.0, 1.5),
-+        ];
-+        let hull = ConvexPolyhedron::from_convex_hull(&vertices).unwrap();
-+        let cuboid = Cuboid::new(Vector::new(0.20000004768371582, 3.5999999046325684, 5.25));
-+        let relative =
-+            Pose::from_translation(Vector::new(2.700000047683716, 4.599999904632568, -2.75));
-+        (hull, cuboid, relative)
-+    }
++#[cfg(all(test, feature = "dim3"))]
++mod neighborhood_tests {
++    use super::*;
++    use alloc::vec::Vec;
++    use crate::math::Vector;
 +
 +    #[test]
-+    fn touching_edge_has_real_plane_normal() {
-+        let (hull, cuboid, relative) = shapes();
-+        let mut simplex = VoronoiSimplex::new();
-+        let result = contact_support_map_support_map_with_params(
-+            &relative,
-+            &hull,
-+            &cuboid,
-+            0.02,
-+            &mut simplex,
-+            None,
-+        );
-+        assert_eq!(
-+            simplex.dimension(),
-+            1,
-+            "retain the captured line-simplex path"
-+        );
-+        let GJKResult::ClosestPoints(a, b, normal) = result else {
-+            panic!("the touching pair must retain a contact: {result:?}");
-+        };
-+        assert!(normal.is_finite());
-+        assert!((normal.length_squared() - 1.0).abs() < 1.0e-5, "{normal:?}");
-+        assert!((b - a).dot(normal).abs() < 1.0e-5);
-+        assert!(a.is_finite() && b.is_finite());
-+    }
-+
-+    #[test]
-+    fn touching_edge_directions_and_separation() {
-+        let (hull, cuboid, relative) = shapes();
-+        for direction in [
-+            None,
-+            Some(Vector::X),
-+            Some(-Vector::X),
-+            Some(Vector::Y),
-+            Some(-Vector::Y),
-+            Some(Vector::Z),
-+            Some(-Vector::Z),
-+        ] {
-+            let result = contact_support_map_support_map_with_params(
-+                &relative,
-+                &hull,
-+                &cuboid,
-+                0.02,
-+                &mut VoronoiSimplex::new(),
-+                direction,
-+            );
-+            let GJKResult::ClosestPoints(_, _, normal) = result else {
-+                panic!("{result:?}")
-+            };
-+            assert!(
-+                normal.is_finite() && (normal.length_squared() - 1.0).abs() < 1.0e-5,
-+                "{normal:?}"
-+            );
++    fn chunk_neighbors_match_scalar_oracle_after_construction_and_edits() {
++        let mut cells = Vec::new();
++        let mut random = 9137u32;
++        for z in -17..18 {
++            for y in -9..10 {
++                for x in -18..19 {
++                    random = random.wrapping_mul(1664525).wrapping_add(1013904223);
++                    if random % 7 < 5 {
++                        cells.push(IVector::new(x, y, z));
++                    }
++                }
++            }
 +        }
-+        let separated = Pose::from_translation(relative.translation - Vector::X * 0.1);
-+        assert!(matches!(
-+            contact_support_map_support_map_with_params(
-+                &separated,
-+                &hull,
-+                &cuboid,
-+                0.02,
-+                &mut VoronoiSimplex::new(),
-+                None,
-+            ),
-+            GJKResult::NoIntersection(_)
-+        ));
++        let mut voxels = Voxels::new(Vector::splat(0.1), &cells);
++        for pass in 0..3 {
++            if pass != 0 {
++                for key in cells.iter().step_by(3) {
++                    let _ = voxels.set_voxel(*key, pass == 2);
++                }
++                voxels.recompute_all_voxels_states();
++            }
++            for (key, header) in &voxels.chunk_headers {
++                for id in 0..VoxelsChunk::VOXELS_PER_CHUNK {
++                    let state = voxels.chunks[header.id].states[id];
++                    if !state.is_empty() {
++                        let cell = VoxelsChunk::voxel_key_at_id(*key, id as u32);
++                        assert_eq!(state, voxels.compute_voxel_neighborhood_bits(cell));
++                    }
++                }
++            }
++        }
 +    }
 +}

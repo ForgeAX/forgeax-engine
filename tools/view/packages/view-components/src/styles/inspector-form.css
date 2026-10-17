@@ -49,7 +49,7 @@
 .fx-inspector-form__row {
   display: flex;
   align-items: center;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   gap: var(--fx-ref-space-4);
 }

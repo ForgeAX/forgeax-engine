@@ -5,7 +5,7 @@ import type { WorkspaceProject } from './contract.ts';
 import { workspaceError } from './contract.ts';
 
 /**
- * Editor `/api/files` classify() equivalent. Unknown extensions are text so
+ * Scene `/api/files` classify() equivalent. Unknown extensions are text so
  * `.pack.json` / `.pack.ts` / `.ts` / `.js` decode as UTF-8. Binary kinds skip
  * decode and leave `content` unset — the preview then shows the no-text note.
  */

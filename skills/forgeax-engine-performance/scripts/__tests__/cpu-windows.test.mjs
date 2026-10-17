@@ -43,7 +43,12 @@ function capture() {
     failures: [],
   };
   const anchor = { offsetLowerMs: 0, offsetUpperMs: 0, timeOriginMs: 10000 };
-  const previous = { frameId: 3, worldIdentity: 'world', deviceGeneration: 0, completedAtMs: 0.2 };
+  const previous = {
+    frameId: 3,
+    worldIdentity: 'world',
+    deviceGeneration: 0,
+    completedAtMs: 0.2,
+  };
   const current = { ...previous, frameId: 4, completedAtMs: 0.6 };
   const report = {
     gameCommit: 'game',
@@ -140,6 +145,7 @@ test('same-capture analysis retains separate targets, raw-bound mappings and non
   assert.equal(result.ordinaryFpsAcceptance, false);
   assert.equal(result.completeness, 'complete');
   assert.equal(result.slices.length, 2);
+  assert.equal(result.smokeObservation.status, 'notCollected');
   assert.deepEqual(
     result.slices[0].profiles.map((p) => p.target),
     raw.profiles.map((p) => p.target),
@@ -190,4 +196,69 @@ test('CLI replays explicit inputs, marks partial coverage, and protects every in
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+function withSmoke() {
+  const x = capture();
+  const receipt = {
+    at: 0.6,
+    frameId: 4,
+    worldIdentity: 'world',
+    deviceGeneration: 0,
+    count: 1,
+    zones: [],
+  };
+  x.frames.smokeObservations = [{ ...receipt, at: 0.2, frameId: 3, count: 0 }, receipt];
+  x.report.windows.sampled.smokeAppearance = {
+    status: 'observed',
+    observedAtMs: 0.6,
+    receipt,
+    longestInterval: { fromMs: 0.2, toMs: 0.6, ms: 0.4, frameId: 4 },
+  };
+  return x;
+}
+
+test('automatically admits same-capture first-smoke and longest-gap CPU slices', () => {
+  const x = withSmoke();
+  const result = analyzeCaptureWindows(x.raw, x.report, x.frames, x.maps, hash);
+  assert.deepEqual(
+    result.slices.slice(2).map((s) => s.name),
+    ['first-smoke-receipt', 'first-smoke-longest-gap'],
+  );
+  assert.equal(result.slices[2].startMs, 0.2);
+  assert.equal(result.slices[2].endMs, 0.6);
+  assert.equal(
+    result.slices[2].boundary,
+    'HUD smoke observation; creation, visibility and exclusive cause are unobserved',
+  );
+});
+
+test('rejects foreign smoke receipts, missing prior zero and conflicting gap endpoints', () => {
+  for (const mutate of [
+    (x) => x.frames.smokeObservations.shift(),
+    (x) => x.frames.smokeObservations.pop(),
+    (x) =>
+      (x.report.windows.sampled.smokeAppearance.receipt = {
+        ...x.report.windows.sampled.smokeAppearance.receipt,
+        worldIdentity: 'foreign',
+      }),
+    (x) => (x.report.windows.sampled.smokeAppearance.longestInterval.fromMs = 0.3),
+    (x) => (x.report.windows.sampled.smokeAppearance.longestInterval.ms = 0.5),
+  ]) {
+    const x = withSmoke();
+    mutate(x);
+    assert.throws(() => analyzeCaptureWindows(x.raw, x.report, x.frames, x.maps, hash));
+  }
+});
+
+test('admits an actual separately stored closing smoke receipt and rejects conflicting duplicates', () => {
+  const x = withSmoke();
+  x.frames.closingFrame = x.frames.frames.pop();
+  const result = analyzeCaptureWindows(x.raw, x.report, x.frames, x.maps, hash);
+  assert.equal(result.slices.at(-1).endMs, 0.6);
+  x.frames.frames.push({ ...x.frames.closingFrame, at: 0.65 });
+  assert.throws(
+    () => analyzeCaptureWindows(x.raw, x.report, x.frames, x.maps, hash),
+    /Closing receipt conflicts/,
+  );
 });

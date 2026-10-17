@@ -1,4 +1,5 @@
 import { ProjectedDecalInvalidError } from '../decals/component';
+import { unavailableGeometry } from '../geometry-observation';
 import { RenderPublicationError } from '../publication/contract';
 import {
   freezeDiffuseGi,
@@ -57,6 +58,15 @@ import { createRendererLifecycle, isRendererStateOperational } from './renderer-
 export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
   const listeners = new Set<RendererEventListener>();
   const lifecycle = createRendererLifecycle(renderer.inspect().state);
+  let scheduledFrame:
+    | {
+        readonly controller: AbortController;
+        readonly done: Promise<RenderResult<FrameReceipt, RenderError>>;
+      }
+    | undefined;
+  let disposeInFlight: Promise<RenderResult<void, RenderError>> | undefined;
+  let synchronousDrawDepth = 0;
+  let synchronousDrawDrained: (() => void) | undefined;
   let disposed = lifecycle.state() === 'disposed';
   let recoverInFlight: Promise<RenderResult<void, RenderError>> | undefined;
   const dynamicGeometryFault = (world: World): DynamicGeometryError | undefined =>
@@ -112,6 +122,49 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       cause: structuredRendererCause(cause, 'draw'),
     });
   };
+  const assertPreparationIdle = () => {
+    if (scheduledFrame !== undefined)
+      throw new RendererContractFailureError(
+        'draw',
+        'one active Renderer preparation without interleaved mutation',
+      );
+  };
+  const afterScheduledPreparation = async <T>(action: () => T | Promise<T>): Promise<T> => {
+    // Re-read after every settlement: a completion callback can already have
+    // admitted another frame before this waiter resumes. No await on idle.
+    while (scheduledFrame !== undefined) {
+      const active = scheduledFrame;
+      try {
+        await active.done;
+      } catch {
+        /* Failed preparation still drains its owners. */
+      }
+    }
+    return action();
+  };
+  const projectSubmittedFrame = (
+    result: RenderResult<FrameReceipt, RhiError | RenderError>,
+    frameFailure?: RenderError,
+  ): RenderResult<FrameReceipt, RenderError> => {
+    if (!result.ok)
+      return err(
+        result.error instanceof RendererContractFailureError && frameFailure !== undefined
+          ? frameFailure
+          : drawError(result.error),
+      );
+    emit(
+      Object.freeze({
+        kind: 'frame-submitted',
+        frameId: result.value.frameId,
+        deviceGeneration: result.value.deviceGeneration,
+        ...(result.value.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: result.value.graphGeneration }),
+        receipt: result.value,
+      }),
+    );
+    return ok(result.value);
+  };
   const offHostEvents = renderer.subscribeHostEvents((event) => {
     if (event.kind === 'error') {
       emit(Object.freeze({ kind: 'error', error: eventError(event.error) }));
@@ -127,9 +180,13 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
   });
 
   return {
-    setSurfaceDynamicInput: (frame) => renderer.setSurfaceDynamicInput(frame),
+    setSurfaceDynamicInput: (frame) => {
+      assertPreparationIdle();
+      renderer.setSurfaceDynamicInput(frame);
+    },
     bounds: (world, entity) => (disposed ? undefined : renderer.bounds(world, entity)),
     attach: (world) => {
+      assertPreparationIdle();
       const result = renderer.attach(world);
       return result.ok
         ? result
@@ -140,26 +197,48 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
             }),
           );
     },
+    prepareDynamicGeometryPipelines: (candidates, options) =>
+      afterScheduledPreparation(() =>
+        renderer.prepareDynamicGeometryPipelines(candidates, options),
+      ),
     prepareDynamicGeometry: (input: DynamicGeometryPrepareInput) => {
+      assertPreparationIdle();
       const fault = dynamicGeometryFault(input.world as World);
       return fault === undefined ? renderer.prepareDynamicGeometry(input) : err(fault);
     },
     prepareDynamicGeometryCandidates: (inputs) => {
+      assertPreparationIdle();
       const first = inputs[0];
       const fault = first === undefined ? undefined : dynamicGeometryFault(first.world as World);
       return fault === undefined ? renderer.prepareDynamicGeometryCandidates(inputs) : err(fault);
     },
-    preparePublishedMeshResidency: (input) => renderer.preparePublishedMeshResidency(input),
-    prepareMeshResidency: (world, meshHandle, observePhase) =>
-      renderer.prepareMeshResidency(world, meshHandle, observePhase),
+    preparePublishedMeshResidency: async (input, inputOwnership, options) => {
+      const prepared = await afterScheduledPreparation(() =>
+        renderer.preparePublishedMeshResidency(input, inputOwnership, options),
+      );
+      if (!prepared.ok) return prepared;
+      const lease = prepared.value;
+      return ok({
+        ...lease,
+        // A previously issued lease may be released while a newer frame holds
+        // its extracted references. Recheck every active preparation owner.
+        release: (evict) => afterScheduledPreparation(() => lease.release(evict)),
+      });
+    },
+    prepareMeshResidency: (world, meshHandle, observePhase) => {
+      assertPreparationIdle();
+      return renderer.prepareMeshResidency(world, meshHandle, observePhase);
+    },
     acceptDynamicGeometry: (
       candidate: DynamicGeometryCandidate,
       ordering: DynamicGeometryOrdering,
     ) => {
+      assertPreparationIdle();
       const fault = dynamicGeometryFault(candidate.world as World);
       return fault === undefined ? renderer.acceptDynamicGeometry(candidate, ordering) : err(fault);
     },
     acceptDynamicGeometryCandidates: (candidates, ordering) => {
+      assertPreparationIdle();
       const first = candidates[0];
       const fault = first === undefined ? undefined : dynamicGeometryFault(first.world as World);
       return fault === undefined
@@ -173,24 +252,46 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         ? renderer.dynamicGeometryReceipt(candidate)
         : undefined,
     cancelDynamicGeometry: (candidate: DynamicGeometryCandidate) => {
+      assertPreparationIdle();
       const fault = dynamicGeometryFault(candidate.world as World);
       return fault === undefined ? renderer.cancelDynamicGeometry(candidate) : err(fault);
     },
     retireDynamicGeometry: (candidate: DynamicGeometryCandidate) => {
+      assertPreparationIdle();
       const fault = dynamicGeometryFault(candidate.world as World);
       return fault === undefined ? renderer.retireDynamicGeometry(candidate) : err(fault);
     },
-    createRenderTarget: (descriptor) => renderer.createRenderTarget(descriptor),
-    resizeRenderTarget: (target, descriptor) => renderer.resizeRenderTarget(target, descriptor),
-    createRenderTargetTextureSource: (target, options) =>
-      renderer.createRenderTargetTextureSource(target, options),
-    requestTargetReadback: (target, request) => renderer.requestTargetReadback(target, request),
-    requestFramebufferSnapshot: (target, request) =>
-      renderer.requestFramebufferSnapshot(target, request),
-    destroyRenderTarget: (target) => renderer.destroyRenderTarget(target),
-    importTexture: (input) => renderer.importTexture(input),
+    createRenderTarget: (descriptor) => {
+      assertPreparationIdle();
+      return renderer.createRenderTarget(descriptor);
+    },
+    resizeRenderTarget: (target, descriptor) => {
+      assertPreparationIdle();
+      return renderer.resizeRenderTarget(target, descriptor);
+    },
+    createRenderTargetTextureSource: (target, options) => {
+      assertPreparationIdle();
+      return renderer.createRenderTargetTextureSource(target, options);
+    },
+    requestTargetReadback: (target, request) => {
+      assertPreparationIdle();
+      return renderer.requestTargetReadback(target, request);
+    },
+    requestFramebufferSnapshot: (target, request) => {
+      assertPreparationIdle();
+      return renderer.requestFramebufferSnapshot(target, request);
+    },
+    destroyRenderTarget: (target) => {
+      assertPreparationIdle();
+      return renderer.destroyRenderTarget(target);
+    },
+    importTexture: (input) => {
+      assertPreparationIdle();
+      return renderer.importTexture(input);
+    },
     nativeDevice: () => renderer.nativeDevice(),
     setProfile: (profile) => {
+      assertPreparationIdle();
       const state = lifecycle.state();
       if (!isRendererStateOperational(state)) {
         return err(
@@ -203,6 +304,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       return renderer.setProfile(profile);
     },
     setOutputColorSpace: (colorSpace) => {
+      assertPreparationIdle();
       const state = lifecycle.state();
       if (!isRendererStateOperational(state)) {
         return err(
@@ -217,7 +319,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
     state: () => lifecycle.state(),
     draw: (request) => {
       const state = lifecycle.state();
-      if (!isRendererStateOperational(state)) {
+      if (disposed || !isRendererStateOperational(state)) {
         return err(
           new RendererOperationError('renderer-state-invalid', {
             operation: 'draw',
@@ -225,6 +327,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
           }),
         );
       }
+      assertPreparationIdle();
       // A failed record can publish its precise owner error before returning the
       // generic no-submission guard. Preserve that same-call cause for the caller.
       let frameFailure: RenderError | undefined;
@@ -233,42 +336,89 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       };
       listeners.add(observeFailure);
       let result: RenderResult<FrameReceipt, RhiError | RenderError>;
+      synchronousDrawDepth++;
       try {
         result = renderer.drawFrame(request);
       } finally {
         listeners.delete(observeFailure);
+        if (--synchronousDrawDepth === 0) {
+          synchronousDrawDrained?.();
+          synchronousDrawDrained = undefined;
+        }
       }
-      if (!result.ok) {
-        return err(
-          result.error instanceof RendererContractFailureError && frameFailure !== undefined
-            ? frameFailure
-            : drawError(result.error),
-        );
-      }
-      emit(
-        Object.freeze({
-          kind: 'frame-submitted',
-          frameId: result.value.frameId,
-          deviceGeneration: result.value.deviceGeneration,
-          ...(result.value.graphGeneration === undefined
-            ? {}
-            : { graphGeneration: result.value.graphGeneration }),
-          receipt: result.value,
-        }),
-      );
-      return ok(result.value);
+      return projectSubmittedFrame(result, frameFailure);
     },
-    requestObservation: (domains: readonly FrameObservationDomain[]) =>
-      renderer.requestObservation?.(domains) ??
-      err(
-        new RendererOperationError('renderer-state-invalid', {
-          operation: 'request-observation',
-          state: lifecycle.state(),
-        }),
-      ),
+    drawScheduled: (request, schedule) => {
+      const state = lifecycle.state();
+      const scheduledDraw = renderer.drawFrameScheduled;
+      if (
+        !isRendererStateOperational(state) ||
+        disposed ||
+        scheduledFrame !== undefined ||
+        scheduledDraw === undefined
+      )
+        return Promise.resolve(
+          err(new RendererOperationError('renderer-state-invalid', { operation: 'draw', state })),
+        );
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      schedule.signal?.addEventListener('abort', cancel, { once: true });
+      if (schedule.signal?.aborted) controller.abort();
+      let resolveDone!: (value: RenderResult<FrameReceipt, RenderError>) => void;
+      let rejectDone!: (cause: unknown) => void;
+      const done = new Promise<RenderResult<FrameReceipt, RenderError>>((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+      const active = { controller, done };
+      scheduledFrame = active;
+      void (async () => {
+        let frameFailure: RenderError | undefined;
+        const observeFailure: RendererEventListener = (event) => {
+          if (event.kind === 'error') frameFailure ??= event.error;
+        };
+        listeners.add(observeFailure);
+        try {
+          const result = await scheduledDraw.call(renderer, request, {
+            checkpoint: schedule.checkpoint,
+            signal: controller.signal,
+            isCurrent: () =>
+              !disposed &&
+              isRendererStateOperational(lifecycle.state()) &&
+              (schedule.isCurrent?.() ?? true),
+          });
+          return projectSubmittedFrame(result, frameFailure);
+        } finally {
+          listeners.delete(observeFailure);
+          schedule.signal?.removeEventListener('abort', cancel);
+        }
+      })().then(resolveDone, rejectDone);
+      const clear = () => {
+        if (scheduledFrame === active) scheduledFrame = undefined;
+      };
+      void done.then(clear, clear);
+      return done;
+    },
+    requestObservation: (domains: readonly FrameObservationDomain[]) => {
+      assertPreparationIdle();
+      return (
+        renderer.requestObservation?.(domains) ??
+        err(
+          new RendererOperationError('renderer-state-invalid', {
+            operation: 'request-observation',
+            state: lifecycle.state(),
+          }),
+        )
+      );
+    },
     currentDeviceGeneration: () =>
       renderer.currentDeviceGeneration?.() ?? renderer.inspect().frame.deviceGeneration,
-    inspect: () => ({ ...renderer.inspect(), state: lifecycle.state() }),
+    inspect: (options) => ({ ...renderer.inspect(options), state: lifecycle.state() }),
+    observeGeometry: (receipt) =>
+      renderer.observeGeometry?.(receipt) ??
+      Promise.resolve(
+        unavailableGeometry('unsupported-renderer', receipt.frameId, receipt.deviceGeneration),
+      ),
     observe: (receipt, request) => renderer.observe(receipt, request),
     subscribe: (listener) => {
       if (disposed) return () => undefined;
@@ -276,6 +426,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       return () => listeners.delete(listener);
     },
     releaseSurface: () => {
+      assertPreparationIdle();
       const result = renderer.releaseSurface();
       return result.ok
         ? result
@@ -287,6 +438,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
           );
     },
     restoreSurface: () => {
+      assertPreparationIdle();
       const result = renderer.restoreSurface();
       return result.ok
         ? result
@@ -311,8 +463,10 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         );
       }
       transition('recovering');
-      recoverInFlight = renderer
-        .recover()
+      scheduledFrame?.controller.abort();
+      recoverInFlight = Promise.resolve(scheduledFrame?.done)
+        .catch(() => undefined)
+        .then(() => renderer.recover())
         .then((result): RenderResult<void, RenderError> => {
           if (!result.ok) {
             const error = new RendererOperationError('recovery-failed', {
@@ -331,15 +485,38 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         });
       return recoverInFlight;
     },
-    dispose: async () => {
-      if (disposed) return ok(undefined);
-      const result = renderer.dispose();
-      if (!result.ok) emit(Object.freeze({ kind: 'error', error: result.error }));
+    dispose: () => {
+      if (disposeInFlight !== undefined) return disposeInFlight;
+      if (disposed) return Promise.resolve(ok(undefined));
       disposed = true;
-      transition('disposed');
-      offHostEvents();
-      listeners.clear();
-      return result;
+      scheduledFrame?.controller.abort();
+      const active =
+        scheduledFrame?.done ??
+        (synchronousDrawDepth > 0
+          ? new Promise<void>((resolve) => {
+              synchronousDrawDrained = resolve;
+            })
+          : undefined);
+      disposeInFlight = (async () => {
+        // Idle disposal closes both facade and legacy Host admission in this
+        // stack. Only an already-admitted preparation may delay destruction.
+        if (active !== undefined) {
+          try {
+            await active;
+          } catch {
+            /* The frame error already owns its failure. */
+          }
+        }
+        const result = renderer.dispose();
+        if (!result.ok) emit(Object.freeze({ kind: 'error', error: result.error }));
+        transition('disposed');
+        offHostEvents();
+        listeners.clear();
+        return result;
+      })().finally(() => {
+        disposeInFlight = undefined;
+      });
+      return disposeInFlight;
     },
   };
 }
@@ -428,6 +605,8 @@ function projectRecoveryFailureDetail(
 }
 
 const RENDER_PROFILE_KEYS = new Set([
+  'featureReadOnlyDepthBatching',
+  'featureReadOnlyDepthBatchDiagnostic',
   'pipelineId',
   'lightCount',
   'renderPath',
@@ -440,6 +619,7 @@ const RENDER_PROFILE_KEYS = new Set([
   'ssao',
   'volumetricFog',
   'gpuOcclusion',
+  'gbufferBatchOrderDiagnostic',
   'postStages',
 ]);
 
@@ -475,10 +655,36 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
     )
       return 'RenderProfile.volumetricFog requires quality low/high, depth 48/64 and tileSize 4/16';
   }
+  if (
+    profile.featureReadOnlyDepthBatching !== undefined &&
+    typeof profile.featureReadOnlyDepthBatching !== 'boolean'
+  )
+    return 'RenderProfile.featureReadOnlyDepthBatching must be boolean';
+  if (
+    profile.featureReadOnlyDepthBatchDiagnostic !== undefined &&
+    typeof profile.featureReadOnlyDepthBatchDiagnostic !== 'boolean'
+  )
+    return 'RenderProfile.featureReadOnlyDepthBatchDiagnostic must be boolean';
   if (profile.visibleSurface !== undefined && typeof profile.visibleSurface !== 'boolean')
     return 'RenderProfile.visibleSurface must be boolean';
   if (profile.gpuOcclusion !== undefined && typeof profile.gpuOcclusion !== 'boolean')
     return 'RenderProfile.gpuOcclusion must be boolean';
+  if (profile.gbufferBatchOrderDiagnostic !== undefined) {
+    const diagnostic = profile.gbufferBatchOrderDiagnostic;
+    if (
+      typeof diagnostic !== 'object' ||
+      diagnostic === null ||
+      Array.isArray(diagnostic) ||
+      Object.keys(diagnostic).some((key) => key !== 'order' && key !== 'programDigests') ||
+      (diagnostic.order !== 'near' && diagnostic.order !== 'far') ||
+      !Array.isArray(diagnostic.programDigests) ||
+      diagnostic.programDigests.length > 128 ||
+      !diagnostic.programDigests.every(
+        (digest) => typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(digest),
+      )
+    )
+      return 'RenderProfile.gbufferBatchOrderDiagnostic requires near/far order and up to 128 audited SHA-256 programDigests';
+  }
   if (profile.visibleSurface === true && profile.renderPath !== 'deferred')
     return 'Visible surfaces require the Standard deferred path';
   if (profile.probePlacement !== undefined) {
@@ -578,6 +784,14 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
 export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
   return Object.freeze({
     ...profile,
+    ...(profile.gbufferBatchOrderDiagnostic === undefined
+      ? {}
+      : {
+          gbufferBatchOrderDiagnostic: Object.freeze({
+            order: profile.gbufferBatchOrderDiagnostic.order,
+            programDigests: Object.freeze([...profile.gbufferBatchOrderDiagnostic.programDigests]),
+          }),
+        }),
     ...(profile.probePlacement === undefined
       ? {}
       : {

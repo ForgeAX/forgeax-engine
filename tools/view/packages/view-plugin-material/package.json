@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "ForgeaX View product plugin: material asset editor page.",
+  "description": "ForgeaX View product plugin: material asset viewer page.",
   "exports": {
     ".": "./src/index.ts",
     "./frontend": "./src/frontend.ts",

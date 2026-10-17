@@ -22,6 +22,8 @@ export interface UnpackedMeshBin {
   readonly indices?: Uint16Array | Uint32Array;
   readonly submeshes: ReadonlyArray<Record<string, unknown>>;
   readonly cardLayout?: MeshCardLayout;
+  /** Raw attachment; the ordinary Mesh loader validates it against decoded geometry. */
+  readonly collision?: unknown;
   readonly materialSlots: readonly {
     readonly slotName: string;
     readonly sourceKey?: string;
@@ -182,6 +184,7 @@ export function unpackMeshBin(
   let meta: {
     submeshes?: ReadonlyArray<Record<string, unknown>>;
     cardLayout?: MeshCardLayout;
+    collision?: unknown;
     materialSlots?: readonly {
       readonly slotName: string;
       readonly sourceKey?: string;
@@ -432,6 +435,7 @@ export function unpackMeshBin(
     ...(indices === undefined ? {} : { indices }),
     submeshes: meta.submeshes,
     ...(meta.cardLayout === undefined ? {} : { cardLayout: meta.cardLayout }),
+    ...(meta.collision === undefined ? {} : { collision: meta.collision }),
     materialSlots: meta.materialSlots,
     ...(meta.aabb === undefined ? {} : { aabb: new Float32Array(meta.aabb) }),
     ...(morphTargets === undefined ? {} : { morphTargets }),

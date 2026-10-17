@@ -38,6 +38,40 @@ const release = (session: RenderFeatureGpuPrepareSession) => {
 };
 
 describe('feature GPU frame transactions', () => {
+  it('keeps a repeatedly resolved old binding until its own completion fence after replacement', async () => {
+    const { session, owner, destroyed } = await fixture();
+    const old = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();
+    const oldWork = compute(session, old);
+    const oldBuffer = session.resolveBuffer(old)?.buffer;
+    release(session);
+    session.beginFrame();
+    session.retainBindings([oldWork.bindings, oldWork.bindings]).unwrap();
+    const next = session.prepareBuffer('storage', { size: 64, usage: ['storage'] }).unwrap();
+    const nextWork = compute(session, next);
+    const nextBuffer = session.resolveBuffer(next)?.buffer;
+    for (const work of [oldWork, nextWork, oldWork])
+      expect(
+        session
+          .resolveComputePass('transaction', {
+            ...work,
+            dispatches: [...work.dispatches, ...work.dispatches],
+          })
+          .unwrap().dispatches,
+      ).toHaveLength(2);
+    release(session);
+    expect(destroyed).not.toHaveBeenCalled();
+    session.beginFrame();
+    session.retainBindings([nextWork.bindings]).unwrap();
+    const oldFence = session.commitFrame();
+    expect(destroyed).not.toHaveBeenCalled();
+    for (const lease of oldFence) lease.release().unwrap();
+    expect(destroyed).toHaveBeenCalledExactlyOnceWith(oldBuffer);
+    expect(session.resolveBuffer(old)).toBeUndefined();
+    expect(session.resolveBuffer(next)?.buffer).toBe(nextBuffer);
+    owner.dispose().unwrap();
+    expect(destroyed).toHaveBeenCalledTimes(2);
+  });
+
   it('restores accepted active-name order and first values after repeated overwrites and new names', async () => {
     const { session, owner, destroyed } = await fixture();
     const accepted = ['a', 'b', 'c'].map((name) =>

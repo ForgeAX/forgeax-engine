@@ -76,6 +76,7 @@ import {
   type TextureAsset,
   type TextureShape,
   type MeshAsset as TypesMeshAsset,
+  toShared,
 } from '@forgeax/engine-types';
 import { GpuBuffer, GpuTexture } from '../gpu-resource';
 import {
@@ -800,7 +801,7 @@ export class GpuResidencyCache {
   }
 
   /**
-   * Compose a cache key from the raw handle slot and its owning RenderResourceScope. The
+   * Compose a cache key from the complete handle and its owning RenderResourceScope. The
    * draw-time world index is only a position in one frame's `worlds[]`; it is
    * not an asset identity and can be reused by a later RenderResourceScope. RenderResourceScope objects
    * therefore receive a renderer-local namespace, while numeric callers keep
@@ -809,9 +810,9 @@ export class GpuResidencyCache {
   private readonly worldNamespaces = new WeakMap<RenderResourceScope, string>();
   private nextWorldNamespace = 1;
 
-  private worldKey(slot: number, world: RenderResourceScope | number): string | number {
+  private worldKey(handle: number, world: RenderResourceScope | number): string | number {
     if (typeof world === 'number') {
-      return world === 0 ? slot : world * 0x1000000 + slot;
+      return world === 0 ? handle : `numeric-world:${world}:${handle}`;
     }
     let namespace = this.worldNamespaces.get(world);
     if (namespace === undefined) {
@@ -819,7 +820,7 @@ export class GpuResidencyCache {
       this.nextWorldNamespace += 1;
       this.worldNamespaces.set(world, namespace);
     }
-    return `${namespace}${slot}`;
+    return `${namespace}${handle}`;
   }
 
   /**
@@ -1010,7 +1011,7 @@ export class GpuResidencyCache {
     handle: Handle<'TextureAsset', 'shared'>,
     worldId: RenderResourceScope | number = 0,
   ): { freed: number; errors: RhiError[] } {
-    const id = this.worldKey(handleSlot(handle), worldId);
+    const id = this.worldKey(Number(handle), worldId);
     const entry = this.textureGpuHandles.get(id);
     if (entry === undefined) return { freed: 0, errors: [] };
     if (this.textureLifetimes.get(entry)?.inUse) return { freed: 0, errors: [] };
@@ -1088,11 +1089,10 @@ export class GpuResidencyCache {
     let freed = 0;
     const errors: RhiError[] = [];
     let materialResidencyChanged = false;
-    const liveSlots = new Set([...liveSet].map((slot) => String(slot)));
+    const liveHandles = new Set([...liveSet].map(String));
     const isLiveKey = (key: string | number): boolean => {
-      const slot =
-        typeof key === 'number' ? String(key % 0x1000000) : key.slice(key.lastIndexOf(':') + 1);
-      return liveSlots.has(slot);
+      const handle = typeof key === 'number' ? String(key) : key.slice(key.lastIndexOf(':') + 1);
+      return liveHandles.has(handle);
     };
 
     for (const key of this.textureGpuHandles.keys()) {
@@ -1121,8 +1121,12 @@ export class GpuResidencyCache {
       }
     }
 
+    // Cubemap projections use source slots; ordinary residency uses full handles.
+    const liveCubemapSlots = new Set(
+      [...liveSet].map((handle) => handleSlot(toShared<'EquirectAsset'>(handle))),
+    );
     for (const key of this.cubemapGpuHandles.keys()) {
-      if (!liveSlots.has(String(key))) {
+      if (!liveCubemapSlots.has(key)) {
         const entry = this.cubemapGpuHandles.get(key);
         if (entry !== undefined) {
           // A 'failed' entry holds no GPU texture (texture:null) — nothing to free.
@@ -1202,7 +1206,7 @@ export class GpuResidencyCache {
     handle: Handle<'TextureAsset', 'shared'>,
     worldId: RenderResourceScope | number = 0,
   ): GpuTexture | undefined {
-    return this.textureGpuHandles.get(this.worldKey(handleSlot(handle), worldId))?.texture;
+    return this.textureGpuHandles.get(this.worldKey(Number(handle), worldId))?.texture;
   }
 
   /**
@@ -1213,7 +1217,7 @@ export class GpuResidencyCache {
     handle: Handle<'TextureAsset', 'shared'>,
     worldId: RenderResourceScope | number = 0,
   ): TextureView | undefined {
-    return this.textureGpuHandles.get(this.worldKey(handleSlot(handle), worldId))?.view;
+    return this.textureGpuHandles.get(this.worldKey(Number(handle), worldId))?.view;
   }
 
   /**
@@ -1226,7 +1230,7 @@ export class GpuResidencyCache {
     pod: SamplerAsset,
     worldId: RenderResourceScope | number = 0,
   ): Result<Sampler, RhiError> {
-    const key = this.worldKey(handleSlot(handle), worldId);
+    const key = this.worldKey(Number(handle), worldId);
     const existing = this.samplerGpuHandles.get(key);
     if (existing?.source === pod) return existing.result;
     const device = this.gpuDevice;
@@ -1324,7 +1328,7 @@ export class GpuResidencyCache {
     handle: Handle<'TextureAsset', 'shared'>,
     worldId: RenderResourceScope | number = 0,
   ): ResidencyLease | undefined {
-    const key = this.worldKey(handleSlot(handle), worldId);
+    const key = this.worldKey(Number(handle), worldId);
     const entry = this.textureGpuHandles.get(key);
     return entry === undefined
       ? undefined
@@ -1343,7 +1347,7 @@ export class GpuResidencyCache {
     handle: Handle<'TextureAsset', 'shared'>,
     worldId: RenderResourceScope | number = 0,
   ): void {
-    const key = this.worldKey(handleSlot(handle), worldId);
+    const key = this.worldKey(Number(handle), worldId);
     const entry = this.textureGpuHandles.get(key);
     if (entry !== undefined) this.retireTextureEntry(key, entry);
   }
@@ -1365,7 +1369,7 @@ export class GpuResidencyCache {
           hint: 'Configure the Renderer residency store before preparing graph textures.',
         }),
       );
-    const key = this.worldKey(handleSlot(handle), worldId);
+    const key = this.worldKey(Number(handle), worldId);
     const existing = this.textureGpuHandles.get(key);
     let entry = existing;
     let needsMipmaps = false;
@@ -1466,7 +1470,7 @@ export class GpuResidencyCache {
     lodMeshes: readonly (TypesMeshAsset | undefined)[] = EMPTY_LOD_MESHES,
     profilePhase?: RecordProfileRunner,
   ): Result<TextureGpuEntry | MeshGpuHandles, RhiError | AssetError | ImageError> {
-    const id = handleSlot(handle);
+    const id = Number(handle);
     // Hit: O(1) cache lookup, never re-projects (AC-09 -- deriveRenderData*
     // runs only on a miss). The miss arms below dispatch on `pod.kind` with NO
     // default: only the two GPU-resource kinds reachable here (mesh / texture)
@@ -1553,7 +1557,7 @@ export class GpuResidencyCache {
     pod: TypesMeshAsset | TextureAsset,
     worldId: RenderResourceScope | number = 0,
   ): Result<RecoveryResidencyPreparation, RhiError | AssetError | ImageError> {
-    const id = handleSlot(handle);
+    const id = Number(handle);
     if (pod.kind === 'mesh') {
       const key = this.worldKey(Number(handle), worldId);
       if (this.meshGpuHandles.has(key)) return ok({});
@@ -1644,7 +1648,7 @@ export class GpuResidencyCache {
     if (!prepared.ok) return prepared;
     if (device === undefined) return ok(undefined);
     const { tex, levels, gpuTexture } = prepared.value;
-    const cacheKey = this.worldKey(handleSlot(handle), worldId);
+    const cacheKey = this.worldKey(Number(handle), worldId);
     if (gpuTexture === undefined) return ok(undefined);
 
     if (!projected.value.compressed && tex.mips.kind === 'generate' && levels > 1) {
@@ -1722,7 +1726,7 @@ export class GpuResidencyCache {
       );
     }
     const { tex, levels, gpuTexture } = prepared.value;
-    const cacheKey = this.worldKey(handleSlot(handle), worldId);
+    const cacheKey = this.worldKey(Number(handle), worldId);
 
     if (!renderData.compressed && tex.mips.kind === 'generate' && levels > 1) {
       const blitRes = blitMipmapsSync(device, gpuTexture, {
@@ -1787,7 +1791,7 @@ export class GpuResidencyCache {
     { id: number; tex: TextureAsset; levels: number; gpuTexture: Texture | undefined },
     AssetError | ImageError | RhiError
   > {
-    const id = handleSlot(handle);
+    const id = Number(handle);
     // The store does not hold the registry (D-2); the caller-provided POD is
     // the GPU-format SSOT and `renderData` is its projection (format / usage /
     // mipLevelCount). `decoded` supplies the pixel bytes + colorSpace; the
@@ -2636,7 +2640,7 @@ export class GpuResidencyCache {
     worldId: RenderResourceScope | number = 0,
     submeshes?: readonly Submesh[],
   ): void {
-    const id = this.worldKey(handleSlot(handle), worldId);
+    const id = this.worldKey(Number(handle), worldId);
     this.updateMeshById(id, newVertices, newIndices, submeshes);
   }
 }

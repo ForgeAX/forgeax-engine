@@ -170,7 +170,7 @@ export function retainedDerivedGeometryCurrent(
   world: NativeWorld,
   bodyHandle: number | undefined,
 ): boolean {
-  const retained = record.retainedGeometry;
+  const retained = record.retainedGeometry ?? record.sharedGeometry?.owner;
   return (
     retained === undefined ||
     (retained === active &&
@@ -185,8 +185,9 @@ export function candidateNativeColliders(
   record: DerivedCandidateRecord,
 ): readonly { readonly handle: number }[] {
   return (
-    record.retainedGeometry?.shapes.map((shape) => ({ handle: shape.colliderHandle })) ??
-    record.nativeColliders
+    (record.retainedGeometry?.shapes ?? record.sharedGeometry?.shapes)?.map((shape) => ({
+      handle: shape.colliderHandle,
+    })) ?? record.nativeColliders
   );
 }
 
@@ -195,6 +196,7 @@ export function candidateShapeRecords(
 ): readonly DerivedShapeRecord[] {
   return (
     record.retainedGeometry?.shapes ??
+    record.sharedGeometry?.shapes ??
     record.input.shapes.map((input, index) => ({
       input: input as DerivedShapeRecord['input'],
       colliderHandle: record.nativeColliders[index]?.handle as number,

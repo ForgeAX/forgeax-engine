@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
 
-export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
+export async function verifyScenePlay({ page, live, sameRun, cycles = 10 }) {
   const workspace = live.pageWorkspace;
-  const editor = workspace.snapshot().editorPreview ?? workspace.snapshot().preview;
+  const scene = workspace.snapshot().scenePreview ?? workspace.snapshot().preview;
   let previousPlayTargetId;
   for (let cycle = 0; cycle < cycles; cycle++) {
-    console.error('starting Editor Play', cycle + 1);
+    console.error('starting Play', cycle + 1);
     const opened = await workspace.invoke('play.start', { projectId: workspace.snapshot().project.id });
     assert.equal(opened.targetBinding, 'play');
-    assert.equal(opened.editorPreview.target.targetId, editor.target.targetId);
+    assert.equal(opened.scenePreview.target.targetId, scene.target.targetId);
     const target = opened.play.target;
     const args = { targetId: target.targetId, targetGeneration: target.generation };
-    assert.notEqual(target.targetId, editor.target.targetId);
+    assert.notEqual(target.targetId, scene.target.targetId);
     assert.notEqual(target.targetId, previousPlayTargetId, 'each Play starts a fresh Engine target');
     previousPlayTargetId = target.targetId;
-    await page.locator('iframe[data-forgeax-editor-play]').waitFor({ state: 'attached' });
+    await page.locator('iframe[data-forgeax-scene-play]').waitFor({ state: 'attached' });
     const frame = page.frames().find(value => value.url().includes(target.targetId));
     const waitingSince = performance.now();
     let ready;
@@ -42,7 +42,7 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
 
     assert.equal(await game.locator('#forgeax-view-root').count(), 0, 'game projection excludes the View shell');
     assert.equal(await game.locator('canvas').count(), 1);
-    assert.equal(await page.locator('iframe[data-forgeax-editor-play]').count(), 1);
+    assert.equal(await page.locator('iframe[data-forgeax-scene-play]').count(), 1);
     const tree = await workspace.getSceneTree(args);
     assert.equal(tree.targetId, target.targetId);
     const clock = tree.nodes.find(node => node.name === 'Runtime clock');
@@ -55,7 +55,7 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
     await page.waitForFunction(id => document.querySelector('[data-testid="panel-inspector"]')?.getAttribute('data-entity-id') === id, entity.entityId);
     const inspected = await workspace.invoke('entity.inspect', { ...args, entityId: entity.entityId });
     assert.ok(inspected.components.length > 0);
-    await assert.rejects(workspace.invoke('entity.inspect', { ...args, entityId: entity.entityId.replace(target.targetId, editor.target.targetId) }));
+    await assert.rejects(workspace.invoke('entity.inspect', { ...args, entityId: entity.entityId.replace(target.targetId, scene.target.targetId) }));
     const observed = await workspace.invoke('target.control', { ...args, mode: 'observer' });
     assert.equal(observed.mode, 'observer');
     assert.equal((await workspace.getCamera(args)).camera.control, 'observer');
@@ -64,8 +64,8 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
     await workspace.invoke('entity.focus', { ...args, entityId: entity.entityId });
     const beforeCamera = await workspace.getCamera(args);
     const before = await game.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted));
-    await workspace.selectTarget({ targetId: editor.target.targetId });
-    assert.equal(workspace.snapshot().preview.target.targetId, editor.target.targetId);
+    await workspace.selectTarget({ targetId: scene.target.targetId });
+    assert.equal(workspace.snapshot().preview.target.targetId, scene.target.targetId);
     await workspace.selectTarget({ targetId: target.targetId });
     await game.waitForFunction(value => Number(document.documentElement.dataset.forgeaxFrameSubmitted) > value, before);
     assert.equal((await workspace.getSceneTree(args)).worldId, tree.worldId);
@@ -89,8 +89,8 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
       for (const type of ['pointerdown', 'mousedown', 'contextmenu', 'keydown', 'keyup', 'pointerup', 'blur']) window.addEventListener(type, event => globalThis.__inputProof.push({ type, code: event.code, button: event.button, x: event.clientX, y: event.clientY, prevented: event.defaultPrevented, target: event.target?.tagName }), { capture: true, signal: controller.signal });
     });
     // A target command commits Engine state before the consuming UI paints it.
-    // An arbitrary iframe at this point can still be the previous Editor.
-    await page.waitForFunction(({ x, y, targetId }) => document.elementFromPoint(x, y)?.getAttribute('data-forgeax-editor-play') === targetId,
+    // An arbitrary iframe at this point can still be the previous Scene.
+    await page.waitForFunction(({ x, y, targetId }) => document.elementFromPoint(x, y)?.getAttribute('data-forgeax-scene-play') === targetId,
       { x: box.x + box.width / 2, y: box.y + box.height / 2, targetId: target.targetId });
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down({ button: 'right' });
@@ -124,12 +124,12 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
     const possessed = await workspace.invoke('target.control', { ...args, mode: 'player' });
     assert.equal(possessed.camera.control, 'game');
     assert.ok(await frames() > gameFramesBefore, 'game systems continue through observer control');
-    const toolbar = page.getByRole('toolbar', { name: 'Editor execution' });
-    await toolbar.locator('[data-action="editor.eject"]').click();
-    await toolbar.locator('[data-action="editor.possess"]').waitFor();
+    const toolbar = page.getByRole('toolbar', { name: 'Scene execution' });
+    await toolbar.locator('[data-action="scene.eject"]').click();
+    await toolbar.locator('[data-action="scene.possess"]').waitFor();
     assert.equal((await workspace.getCamera(args)).camera.control, 'observer');
-    await toolbar.locator('[data-action="editor.possess"]').click();
-    await toolbar.locator('[data-action="editor.eject"]').waitFor();
+    await toolbar.locator('[data-action="scene.possess"]').click();
+    await toolbar.locator('[data-action="scene.eject"]').waitFor();
     assert.equal((await workspace.getCamera(args)).camera.control, 'game');
 
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'toolbar-complete', at: new Date().toISOString() });
@@ -161,7 +161,7 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
       });
       assert.equal(await page.locator('#play-owned-hud').count(), 0);
       assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), outerColor);
-      await page.screenshot({ path: '/tmp/view-editor-play.png' });
+      await page.screenshot({ path: '/tmp/view-scene-play.png' });
     }
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'independent-status-start', at: new Date().toISOString() });
     await sameRun();
@@ -179,18 +179,18 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
       assert.equal(await capture.locator('input').count(), 0);
       assert.equal(await capture.getByRole('button', { name: /View project run|Reconnect current run/ }).isVisible(), false);
       await page.screenshot({ path: '/tmp/view-runtime-capture-play.png' });
-      await page.locator('[data-page-id="page-editor"]').click();
+      await page.locator('[data-page-id="page-scene"]').click();
       lastPlayImage = await image.getAttribute('src');
       assert.ok(lastPlayImage?.startsWith('data:image/png;base64,'));
     }
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'stop-start', at: new Date().toISOString() });
     await workspace.invoke('play.stop', args);
     console.error('Play lifecycle stage', { cycle: cycle + 1, stage: 'stop-complete', at: new Date().toISOString() });
-    await page.waitForFunction(() => !document.querySelector('iframe[data-forgeax-editor-play]'));
-    assert.equal(workspace.snapshot().preview.target.targetId, editor.target.targetId);
+    await page.waitForFunction(() => !document.querySelector('iframe[data-forgeax-scene-play]'));
+    assert.equal(workspace.snapshot().preview.target.targetId, scene.target.targetId);
     assert.equal(workspace.snapshot().play, null);
     await assert.rejects(workspace.getSceneTree(args));
-    assert.equal(workspace.snapshot().workspaceTargetLost, false, 'a stopped Play target must not disconnect the editor');
+    assert.equal(workspace.snapshot().workspaceTargetLost, false, 'a stopped Play target must not disconnect the scene');
     assert.equal(await page.locator('.fx-view-header__recovery').count(), 0);
     assert.deepEqual(await page.locator('.fx-error-notice').allTextContents(), [], `Play cycle ${cycle + 1} must not report retired panel queries`);
     if (cycle === 0) {
@@ -199,16 +199,16 @@ export async function verifyEditorPlay({ page, live, sameRun, cycles = 10 }) {
       await capture.getByRole('status').filter({ hasText: 'Run ended' }).waitFor();
       assert.equal(await capture.getByRole('img', { name: 'Latest Engine run capture' }).getAttribute('src'), lastPlayImage);
       await page.screenshot({ path: '/tmp/view-runtime-capture-play-stopped.png' });
-      await page.locator('[data-page-id="page-editor"]').click();
+      await page.locator('[data-page-id="page-scene"]').click();
     }
-    console.error('editor Play lifecycle passed', cycle + 1, tree.worldId);
+    console.error('scene Play lifecycle passed', cycle + 1, tree.worldId);
   }
 }
 
-export async function verifyEditorPlayFailure({ page, live, sameRun }) {
+export async function verifyScenePlayFailure({ page, live, sameRun }) {
   assert.deepEqual(await page.locator('.fx-error-notice').allTextContents(), [], 'Normal Play cycles must leave no command errors');
   const workspace = live.pageWorkspace;
-  const editor = workspace.snapshot().editorPreview ?? workspace.snapshot().preview;
+  const scene = workspace.snapshot().scenePreview ?? workspace.snapshot().preview;
   const opened = await workspace.invoke('play.start', { projectId: workspace.snapshot().project.id });
   const target = opened.play.target;
   const args = { targetId: target.targetId, targetGeneration: target.generation };
@@ -226,14 +226,14 @@ export async function verifyEditorPlayFailure({ page, live, sameRun }) {
   assert.equal(workspace.snapshot().play?.phase, 'failed', 'the real App failure must reach the workspace state');
   await game.evaluate(() => { globalThis.__workspaceProofControl?.close(); delete globalThis.__workspaceProofControl; });
   await assert.rejects(workspace.getSceneTree(args));
-  const editorArgs = { targetId: editor.target.targetId, targetGeneration: editor.target.generation };
-  assert.equal((await workspace.getSceneTree(editorArgs)).worldId, editor.target.worldId);
-  const capture = await workspace.capture(editorArgs);
+  const sceneArgs = { targetId: scene.target.targetId, targetGeneration: scene.target.generation };
+  assert.equal((await workspace.getSceneTree(sceneArgs)).worldId, scene.target.worldId);
+  const capture = await workspace.capture(sceneArgs);
   assert.ok(capture.png.startsWith('data:image/png'));
   await workspace.invoke('play.stop', args);
-  await page.waitForFunction(() => !document.querySelector('iframe[data-forgeax-editor-play]'));
+  await page.waitForFunction(() => !document.querySelector('iframe[data-forgeax-scene-play]'));
   assert.equal(workspace.snapshot().play, null);
-  assert.equal(workspace.snapshot().preview.target.targetId, editor.target.targetId);
+  assert.equal(workspace.snapshot().preview.target.targetId, scene.target.targetId);
   assert.equal(workspace.snapshot().workspaceTargetLost, false);
   assert.equal(await page.locator('.fx-view-header__recovery').count(), 0);
   await sameRun();
@@ -248,12 +248,12 @@ export async function verifyEditorPlayFailure({ page, live, sameRun }) {
     assert.match(diagnostic, /world\.update\(deltaSeconds\) completes successfully/);
   }
   if (await notices.count()) {
-    await page.screenshot({ path: '/tmp/view-editor-play-intentional-failure.png' });
+    await page.screenshot({ path: '/tmp/view-scene-play-intentional-failure.png' });
     const count = await notices.count();
     for (let index = 0; index < count; index++) {
       await notices.first().getByRole('button', { name: 'Dismiss error', exact: true }).click();
     }
   }
   assert.equal(await notices.count(), 0);
-  console.error('poisoned game reports failure, rejects tools, stops, and preserves the editor');
+  console.error('poisoned game reports failure, rejects tools, stops, and preserves the scene');
 }

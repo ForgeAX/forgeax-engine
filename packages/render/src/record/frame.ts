@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import {
   type FrameRecording,
   profileFrameRecording,
@@ -134,6 +135,7 @@ import type {
   SkyboxSnapshot,
   SkylightSnapshot,
 } from '../render-system-extract';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import { emptyProbeBlendRecord } from '../scene/probe-blend-record';
 import type {
   PersistentGpuDrivenState,
@@ -597,15 +599,6 @@ function shadowViewPlanesByView(
   return views;
 }
 
-function halfFloatToNumber(bits: number): number {
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits >>> 10) & 0x1f;
-  const fraction = bits & 0x03ff;
-  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
-  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
-}
-
 function createReflectionFallbackReadbackRequest(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -692,10 +685,10 @@ async function mapReflectionFallbackReadback(
         const blue = view.getUint16(offset + 4, true);
         if ((red & 0x7fff) !== 0 || (green & 0x7fff) !== 0 || (blue & 0x7fff) !== 0) {
           linearHdr = [
-            halfFloatToNumber(red),
-            halfFloatToNumber(green),
-            halfFloatToNumber(blue),
-            halfFloatToNumber(view.getUint16(offset + 6, true)),
+            halfFloat.f16ToF32(red),
+            halfFloat.f16ToF32(green),
+            halfFloat.f16ToF32(blue),
+            halfFloat.f16ToF32(view.getUint16(offset + 6, true)),
           ];
           y = request.height;
           break;
@@ -2239,6 +2232,7 @@ export function* prepareFrameRecording(
           const prepared = frameGpuDriven.owner.prepare({
             scene: frameGpuDriven.scene,
             geometryLane: frameGpuDriven.geometryLane ?? 'automatic',
+            gbufferBatchOrderDiagnostic: internals.standardProfile?.gbufferBatchOrderDiagnostic,
             ...(visibleSurface === undefined ? {} : { visibleSurface }),
             ...(camera.antialias !== 'taa' &&
             camera.motionBlur === undefined &&
@@ -3421,6 +3415,9 @@ export function* prepareFrameRecording(
       ...(shadowDispatch === undefined ? {} : { shadowDispatch }),
     };
     const passCtx: _InternalRenderPipelineContext = {
+      ...(frameGpuDriven === undefined
+        ? {}
+        : { gpuDrivenGeometryLane: frameGpuDriven.geometryLane ?? 'automatic' }),
       pipelinePreparationEntries: validatedProjection.filter(
         (entry) => entry.source.pipelinePreparation !== undefined,
       ),
@@ -3580,14 +3577,18 @@ export function* prepareFrameRecording(
       ...(shadowCasterWorldKeys === undefined ? {} : { shadowCasterWorldKeys }),
       ...(profilePhase !== undefined ? { profilePhase } : {}),
     };
+    frameState.candidatePipelinePreparations?.process(passCtx, hasShadowViews);
     if (
       frameState.compiledFrameGraph?.graph === preflightGraph &&
       frameState.compiledFrameGraph.prepareGpuDrivenPipelines?.(
         passCtx.pipelinePreparationEntries,
         acceptedMaterialArtifacts,
+        (reason) => {
+          frameState.pipelinePreparationPendingReason ??= Object.freeze(reason);
+        },
       ) === false
     ) {
-      frameState.pipelinePreparationPending = true;
+      markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
     }
     if (hasShadowViews)
       prepareShadowMaterialPipelines(

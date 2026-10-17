@@ -1,7 +1,9 @@
 import type { PlatformEvent } from '@forgeax/engine-platform';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ExecutionDiagnosticEvent } from '../execution/diagnostic-events';
 import type { EngineToHostMessage, ExecutionFrameMessage } from '../execution/protocol';
+import { FrameCreditLedger } from '../execution/protocol';
 import { workerSelection } from './execution-fixtures';
 
 type SessionListener = (message: EngineToHostMessage) => void;
@@ -148,13 +150,21 @@ function makeCanvas(): HTMLCanvasElement {
   } as unknown as HTMLCanvasElement;
 }
 
-async function createRunningApp(tier: 'engine-worker' | 'render-worker' = 'engine-worker') {
+async function createRunningApp(
+  tier: 'engine-worker' | 'render-worker' = 'engine-worker',
+  renderPipelineCapacity: 2 | 3 | 4 = 2,
+) {
   const { callbacks, raf } = makeRaf();
   vi.stubGlobal('requestAnimationFrame', raf);
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   const result = await createWorkerExecutionApp({
     canvas: makeCanvas(),
-    appOptions: { execution: { bootstrap: 'https://example.test/game.js' } } as never,
+    appOptions: {
+      execution: {
+        bootstrap: 'https://example.test/game.js',
+        diagnostics: { renderPipelineCapacity },
+      },
+    } as never,
     capabilities,
     selection: workerSelection({ render: tier === 'render-worker', kernels: false }),
   });
@@ -374,7 +384,17 @@ describe('Worker frame admission watchdog', () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(app.lastError).toBeUndefined();
     expect(callbacks).toHaveLength(requestedTicks);
-    const picture = completeMessage(frame) as never;
+    const pendingReason = {
+      code: 'draw-terrain-missing',
+      worldId: 0,
+      entity: 42,
+      section: 3,
+    } as const;
+    const picture = {
+      ...completeMessage(frame),
+      presentation: 'pending',
+      presentationPendingReason: pendingReason,
+    } as never;
     emit({ kind: 'render-submitted', epoch: 1, frame: picture });
     emit({ kind: 'render-complete', epoch: 0, frame: picture });
     emit({ kind: 'render-ready', epoch: 1 }); // Duplicate readiness cannot reopen a full source.
@@ -393,7 +413,47 @@ describe('Worker frame admission watchdog', () => {
     emit({ kind: 'render-complete', epoch: 1, frame: picture });
     expect(frames()).toHaveLength(3); // A duplicate picture completion returns no second credit.
     expect(probes.browserCompleted).toHaveBeenCalledTimes(1);
+    expect(probes.browserCompleted).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        presentation: 'pending',
+        presentationPendingReason: pendingReason,
+      }),
+    );
     await app.dispose();
+  });
+
+  it.each([
+    3, 4,
+  ] as const)('admits exactly %i sealed publications while keeping one simulation credit and real completion retirement', async (capacity) => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', capacity);
+    const emit = listener();
+    try {
+      for (let id = 1; id <= capacity; id++) {
+        const current = frames().at(-1);
+        if (current === undefined) throw new Error('Missing simulation');
+        expect(current.frameId).toBe(id);
+        callbacks.at(-1)?.(id * 16 - 1);
+        expect(frames()).toHaveLength(id); // Still only one World update in flight.
+        emit({ ...completeMessage(current), kind: 'simulation-complete' } as EngineToHostMessage);
+        if (id < capacity) expect(frames()).toHaveLength(id + 1);
+      }
+      expect(frames()).toHaveLength(capacity);
+      callbacks.at(-1)?.(64);
+      expect(frames()).toHaveLength(capacity);
+      const picture = completeMessage(frame) as never;
+      emit({ kind: 'render-submitted', epoch: 1, frame: picture });
+      emit({ kind: 'render-complete', epoch: 0, frame: picture });
+      expect(frames()).toHaveLength(capacity); // No source credit for submit or stale epoch.
+      probes.now = 65;
+      emit({ kind: 'render-complete', epoch: 1, frame: picture });
+      expect(frames()).toHaveLength(capacity + 1);
+      expect(frames().at(-1)?.frameId).toBe(capacity + 1);
+      emit({ kind: 'render-complete', epoch: 1, frame: picture });
+      expect(frames()).toHaveLength(capacity + 1);
+    } finally {
+      await app.dispose();
+    }
   });
 
   it('retains a resume reset while publication capacity is full', async () => {
@@ -481,8 +541,10 @@ describe('Worker frame admission watchdog', () => {
     await app.dispose();
   });
 
-  it('reopens source admission only after the replacement renderer is ready', async () => {
-    const { app, callbacks, frame } = await createRunningApp('render-worker');
+  it.each([
+    2, 3,
+  ] as const)('reopens capacity %s admission only after the replacement renderer is ready', async (capacity) => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', capacity);
     const emit = listener();
     emit({
       ...completeMessage(frame),
@@ -513,10 +575,10 @@ describe('Worker frame admission watchdog', () => {
     emit({ ...completeMessage(successor), kind: 'simulation-complete' } as EngineToHostMessage);
     callbacks.at(-1)?.(3072);
     emit({ kind: 'render-ready', epoch: 2 });
-    expect(frames()).toHaveLength(3);
+    expect(frames()).toHaveLength(capacity + 1);
     await app.dispose();
     emit({ kind: 'render-complete', epoch: 2, frame: completeMessage(resumed) as never });
-    expect(frames()).toHaveLength(3);
+    expect(frames()).toHaveLength(capacity + 1);
   });
 
   it('projects the actual Render Worker backend and storage-buffer limit into the report', async () => {
@@ -634,6 +696,137 @@ describe('Worker frame admission watchdog', () => {
       expect(app.execution.report().render?.completedFrame).toBe(1);
       expect(app.execution.report().frame).toMatchObject({ completed: 1, inFlight: 1 });
       expect(frames()).toHaveLength(3);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('does not inspect the ledger or read the callback for a disabled diagnostic tick', async () => {
+    vi.stubGlobal('__forgeaxFramePhaseDiagnostics', {
+      execution: {
+        enabled: false,
+        get emit() {
+          throw new Error('disabled callback read');
+        },
+      },
+    });
+    const { app, callbacks } = await createRunningApp('render-worker');
+    const inspect = vi.spyOn(FrameCreditLedger.prototype, 'inspect');
+    try {
+      callbacks.at(-1)?.(16); // Existing in-flight guard returns without inspect().
+      expect(inspect).not.toHaveBeenCalled();
+      expect(frames()).toHaveLength(1);
+    } finally {
+      inspect.mockRestore();
+      await app.dispose();
+    }
+  });
+
+  it('observes actual tick, ACK and admission identities without retaining a stale device or ledger', async () => {
+    const events: ExecutionDiagnosticEvent[] = [];
+    const execution = {
+      enabled: true,
+      failures: 0,
+      emit: (event: ExecutionDiagnosticEvent) => events.push(event),
+    };
+    vi.stubGlobal('__forgeaxFramePhaseDiagnostics', { enabled: false, execution });
+    const { app, callbacks, frame } = await createRunningApp('render-worker');
+    const emit = listener();
+    try {
+      callbacks.at(-1)?.(15);
+      expect(events.at(-1)).toMatchObject({
+        event: 'host-admission',
+        outcome: 'simulation-in-flight',
+        frameId: null,
+        deviceGeneration: null,
+        frameDue: true,
+        ledger: { submitted: 1, completed: 0, inFlight: 1 },
+      });
+      const blocked = events.at(-1);
+      const simulation = {
+        kind: 'simulation-complete',
+        worldIdentity: frame.worldIdentity,
+        frameId: frame.frameId,
+        engineUpdateMs: 2,
+        kernelWaitMs: 0,
+      } as const;
+      emit(simulation);
+      expect(frames()).toHaveLength(2);
+      const second = frames().at(-1);
+      if (second === undefined) throw new Error('Missing admitted successor');
+      emit({ ...simulation, frameId: second.frameId });
+      callbacks.at(-1)?.(31);
+      expect(events.at(-1)).toMatchObject({
+        event: 'host-admission',
+        outcome: 'render-credit',
+        frameId: null,
+        deviceGeneration: null,
+        frameDue: true,
+        capacity: 2,
+        renderCompletedFrame: 0,
+        ledger: { submitted: 2, completed: 2, inFlight: 0 },
+      });
+      const picture = { ...completeMessage(frame), deviceGeneration: 9 } as never;
+      emit({ kind: 'render-complete', epoch: 0, frame: picture });
+      expect(events.at(-1)).toMatchObject({
+        event: 'host-ack-entry',
+        frameId: 1,
+        deviceGeneration: 9,
+        messageRenderEpoch: 0,
+        renderEpoch: 1,
+      });
+      expect(frames()).toHaveLength(2);
+      emit({ kind: 'render-complete', epoch: 1, frame: picture });
+      expect(frames()).toHaveLength(3);
+      expect(events.at(-2)).toMatchObject({
+        event: 'host-ack-accepted',
+        frameId: 1,
+        deviceGeneration: 9,
+        renderCompletedFrame: 1,
+      });
+      expect(events.at(-1)).toMatchObject({
+        event: 'host-admission',
+        outcome: 'issued',
+        frameId: 3,
+        deviceGeneration: null,
+        frameDue: false,
+        ledger: { submitted: 3, completed: 2, inFlight: 1 },
+      });
+      expect(blocked).toMatchObject({ ledger: { submitted: 1, completed: 0, inFlight: 1 } });
+      const accepted = events.filter((event) => event.event === 'host-ack-accepted').length;
+      emit({ kind: 'render-complete', epoch: 1, frame: picture });
+      emit({ ...simulation, frameId: 99, worldIdentity: 'foreign-world' });
+      expect(events.at(-1)).toMatchObject({
+        event: 'host-ack-entry',
+        frameId: 99,
+        worldIdentity: 'worker-world',
+        messageWorldIdentity: 'foreign-world',
+        deviceGeneration: null,
+      });
+      expect(events.filter((event) => event.event === 'host-ack-accepted')).toHaveLength(accepted);
+      expect(execution.failures).toBe(0);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('retains observer failure while leaving the existing due tick and source credit behavior intact', async () => {
+    const execution = {
+      enabled: true,
+      failures: 0,
+      emit: () => {
+        throw new Error('collector failed');
+      },
+    };
+    vi.stubGlobal('__forgeaxFramePhaseDiagnostics', { execution });
+    const { app, callbacks, frame } = await createRunningApp();
+    try {
+      callbacks.at(-1)?.(16);
+      listener()(completeMessage(frame));
+      expect(frames()).toHaveLength(2);
+      expect(frames().at(-1)).toMatchObject({ frameId: 2, deltaSeconds: 0.016 });
+      expect(execution.failures).toBeGreaterThan(0);
+      expect(app.lastError).toBeUndefined();
     } finally {
       await app.dispose();
     }

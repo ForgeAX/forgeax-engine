@@ -69,6 +69,8 @@ export type PreparedGraphicsResolvedResource =
       readonly handle: Buffer;
       readonly size: number;
       readonly physicalUsage: number;
+      readonly byteOffset?: number;
+      readonly byteLength?: number;
     };
 
 export interface PreparedGraphicsResolverInput {
@@ -432,12 +434,36 @@ export function createPreparedGraphicsResolver(
           preparationFailure(item, input, reference.kind, item.name, 'GPU buffer is unavailable'),
         );
       }
+      const offset = descriptor.offset ?? 0;
+      const size = descriptor.size ?? handle.size - offset;
+      const alignment = descriptor.kind === 'index-data' && descriptor.format === 'uint16' ? 2 : 4;
+      if (
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        offset % alignment !== 0 ||
+        !Number.isSafeInteger(size) ||
+        size <= 0 ||
+        size % alignment !== 0 ||
+        size > handle.size - offset
+      ) {
+        return err(
+          preparationFailure(item, input, reference.kind, item.name, 'GPU buffer range is invalid'),
+        );
+      }
       const resource: PreparedGraphicsResolvedResource = {
         kind: reference.kind,
         reference,
         handle: handle.buffer,
+        // Graph imports retain the complete underlying allocation. Binding
+        // ranges never hide aliases from dependency and lifetime analysis.
         size: handle.size,
         physicalUsage: handle.physicalUsage,
+        ...(descriptor.offset === undefined && descriptor.size === undefined
+          ? {}
+          : {
+              byteOffset: offset,
+              byteLength: size,
+            }),
       };
       resolved.set(reference, resource);
       return ok(resource);

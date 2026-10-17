@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { compareProfileCaptures } from '../compare.js';
+import { buildProfileModel } from '../model.js';
 
 function readFixture(name: string): unknown {
   return JSON.parse(
@@ -97,6 +98,56 @@ function capture(variant: 'left' | 'right'): Record<string, unknown> {
 }
 
 describe('ProfileCapture comparison', () => {
+  it('keeps delimiter-bearing phase identities distinct in models and comparisons', () => {
+    const input = {
+      ...capture('left'),
+      phaseCatalog: { app: ['prepare:mesh', 'prepare', 'mesh:upload', 'upload'], render: [] },
+      records: [
+        {
+          kind: 'phase',
+          source: 'app',
+          frameId: 1,
+          parentSource: 'app',
+          parentPhase: 'prepare:mesh',
+          phase: 'upload',
+          startMicros: 0,
+          endMicros: 10,
+          durationMicros: 10,
+        },
+        {
+          kind: 'phase',
+          source: 'app',
+          frameId: 1,
+          parentSource: 'app',
+          parentPhase: 'prepare',
+          phase: 'mesh:upload',
+          startMicros: 10,
+          endMicros: 30,
+          durationMicros: 20,
+        },
+      ],
+      completeness: { status: 'complete', retainedEventCount: 2, droppedEventCount: 0 },
+    };
+    const model = buildProfileModel(input);
+    expect(model.ok).toBe(true);
+    if (!model.ok) throw new Error(model.error.code);
+    expect(
+      model.value.phases.map(({ phase, count, p95DurationMicros }) => ({
+        phase,
+        count,
+        p95DurationMicros,
+      })),
+    ).toEqual([
+      { phase: 'upload', count: 1, p95DurationMicros: 10 },
+      { phase: 'mesh:upload', count: 1, p95DurationMicros: 20 },
+    ]);
+    const compared = compareProfileCaptures(input, input);
+    expect(compared.ok).toBe(true);
+    if (!compared.ok) throw new Error(compared.error.code);
+    expect(compared.value.phases).toHaveLength(2);
+    expect(compared.value.phases.every((row) => row.delta?.count === 0)).toBe(true);
+  });
+
   it('preserves both summaries and compares a union of full phase identities', () => {
     const result = compareProfileCaptures(capture('left'), capture('right'));
 

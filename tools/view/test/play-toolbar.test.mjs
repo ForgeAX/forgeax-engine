@@ -78,7 +78,7 @@ it('uses the same button to stop the exact running target and returns to Play', 
   const view = fixture({ state, call(operation, args) {
     assert.equal(operation, 'play.stop');
     assert.deepEqual(args, { targetId: 'play-target', targetGeneration: 7 });
-    return new Promise(resolve => { stop = () => { state.play = null; state.targetBinding = 'editor'; resolve(); }; });
+    return new Promise(resolve => { stop = () => { state.play = null; state.targetBinding = 'scene'; resolve(); }; });
   } });
   const toggle = view.button('Stop');
   assert.equal(view.button('Play'), undefined);
@@ -87,7 +87,7 @@ it('uses the same button to stop the exact running target and returns to Play', 
   stop();
   await stopping;
   assert.equal(view.button('Play'), toggle);
-  assert.equal(toggle.attributes['data-action'], 'editor.play');
+  assert.equal(toggle.attributes['data-action'], 'scene.play');
   assert.equal(toggle.disabled, false);
   view.mounted.dispose();
 });
@@ -95,7 +95,7 @@ it('uses the same button to stop the exact running target and returns to Play', 
 it('shows only the actions available for the current Play view', () => {
   const state = {
     project: { id: 'project' },
-    editorPreview: { target: { targetId: 'editor-target' } },
+    scenePreview: { target: { targetId: 'scene-target' } },
     play: { phase: 'running', target: { targetId: 'play-target', generation: 7 } },
     targetBinding: 'play',
     preview: { camera: { control: 'player' } },
@@ -105,7 +105,7 @@ it('shows only the actions available for the current Play view', () => {
   assert.ok(view.button('Stop'));
   assert.ok(view.button('Eject'));
   assert.equal(view.button('Possess'), undefined);
-  assert.ok(view.button('Editor'));
+  assert.ok(view.button('Scene'));
   assert.equal(view.button('Game'), undefined);
   view.mounted.dispose();
 });

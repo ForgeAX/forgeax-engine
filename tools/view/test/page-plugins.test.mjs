@@ -24,7 +24,7 @@ it('waits for browser retirement before creating Play and retains an existing fr
     subscribe(listener) { publish = listener; return () => { publish = undefined; }; },
   });
   const target = { targetId: 'old-play', url: 'http://play.invalid/', width: 640, height: 480 };
-  const update = (projectPhase, play) => publish({ revision: ++revision, projectPhase, play, targetBinding: 'editor' });
+  const update = (projectPhase, play) => publish({ revision: ++revision, projectPhase, play, targetBinding: 'scene' });
   try {
     const fiber = context.plugin(playPresentation, { document });
     await fiber.await();
@@ -78,7 +78,7 @@ it('keeps connection-owned Play alive when the Scene Fiber and its dependent pan
     await restored.await();
     await panel.await();
     assert.equal(panels, 1);
-    assert.deepEqual([...types], ['editor']);
+    assert.deepEqual([...types], ['scene']);
   } finally { await context.fiber.dispose(); }
   assert.equal(panels, 0);
   assert.deepEqual([...types], []);
@@ -133,7 +133,7 @@ it('reports unavailable inspection instead of substituting sample plugins', asyn
 });
 
 it('omits whole page contributions without disabling backend services or unrelated pages', () => {
-  const plan = createViewProductPlan({ disabledPages: ['editor', 'plugins'] });
+  const plan = createViewProductPlan({ disabledPages: ['scene', 'plugins'] });
   const defaultPlan = createViewProductPlan();
   assert.deepEqual(defaultPlan.frontend.filter(item => !plan.frontend.some(active => active.id === item.id))
     .map(item => item.id).sort(), [

@@ -692,7 +692,7 @@ export function ViewerShell({
     if (existing) selectLocalPage(existing.id);
     else openPageRef.current(claim.pageType);
     await onSelectPageType?.(claim.pageType, signal);
-    // The Editor page and Dock are registered after its frontend modules mount.
+    // The Scene page and Dock are registered after its frontend modules mount.
     // A reveal from another initial page must wait for that real registration.
     for (let attempt = 0; attempt < 80; attempt++) {
       if (signal?.aborted) return false;
@@ -946,7 +946,7 @@ export function ViewerShell({
             active={page.id === activePageId}
             responsiveAutoTuck={responsiveAutoTuck}
             hideWhenInactive={pageTypes.some(type => type.typeId === page.typeId && type.hideWhenInactive)}
-            layoutHostId={page.typeId === VIEW_PAGE_TYPES.editor ? VIEW_LAYOUT_HOST_ID : undefined}
+            layoutHostId={page.typeId === VIEW_PAGE_TYPES.scene ? VIEW_LAYOUT_HOST_ID : undefined}
           />
         ))}
         {openSurfacePageTypes.map((pageType) => (

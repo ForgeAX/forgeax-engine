@@ -24,7 +24,7 @@ function Example() {
     <p>Hide the panel, wait, and show it again. Its counter retains its value and resumes from it.</p>
   </div>;
 }
-export default { title: 'Editor Patterns/Panel observation', component: PanelVisibilityProvider,
+export default { title: 'Workspace Patterns/Panel observation', component: PanelVisibilityProvider,
   parameters: { docs: { description: { component:
     'Panel activity derives from DOM visibility and document visibility. Hidden panels retain presentation state while active observation queries stop. This does not suspend Engine execution or the shared Host transport.' } } },
 } satisfies Meta<typeof PanelVisibilityProvider>;

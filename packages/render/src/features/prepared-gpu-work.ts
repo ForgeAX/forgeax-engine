@@ -18,6 +18,13 @@ import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope'
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { SceneDataTarget } from '../temporal/scene-data';
+import type {
+  RenderFeaturePassDeclaration,
+  RenderFeaturePlan,
+  RenderFeatureResourceDeclaration,
+  RenderFeatureWork,
+  RenderFeatureWorkScope,
+} from './plan';
 import type { RenderFeatureTargetHandle } from './targets';
 import type { RenderFeatureShaderModuleMode } from './types';
 
@@ -80,13 +87,24 @@ export interface RenderFeatureGpuBufferDescriptor {
   readonly size: number;
   readonly usage: readonly RenderFeatureGpuBufferUsage[];
   readonly data?: ArrayBufferView;
+  readonly uploads?: readonly { readonly offset: number; readonly data: ArrayBufferView }[];
 }
 
 export interface RenderFeatureGpuBindingsDescriptor {
   readonly program: RenderFeatureGpuProgramRef;
   readonly entries: readonly (
-    | { readonly binding: number; readonly buffer: RenderFeatureGpuBufferRef }
-    | { readonly binding: number; readonly resource: RenderFeatureGpuPreparedResourceRef }
+    | {
+        readonly binding: number;
+        readonly buffer: RenderFeatureGpuBufferRef;
+        readonly offset?: number;
+        readonly size?: number;
+      }
+    | {
+        readonly binding: number;
+        readonly resource: RenderFeatureGpuPreparedResourceRef;
+        readonly offset?: number;
+        readonly size?: number;
+      }
   )[];
 }
 
@@ -219,7 +237,43 @@ export function encodeRenderFeatureGpuComputePass(
   }
 }
 
+type NamedBindingEntries = Extract<
+  RenderFeatureResourceDeclaration,
+  { readonly kind: 'compute-bindings' }
+>['entries'];
+
+interface NamedBindingResources {
+  readonly buffers: ReadonlyMap<string, RenderFeatureGpuBufferRef>;
+  readonly resources: ReadonlyMap<string, RenderFeatureGpuPreparedResourceRef>;
+}
+
+declare const RenderFeatureGpuResourceDomainBrand: unique symbol;
+export interface RenderFeatureGpuResourceDomain {
+  readonly [RenderFeatureGpuResourceDomainBrand]: void;
+}
+
 export interface RenderFeatureGpuPrepareSession extends RenderFeatureGpuPrepare {
+  /** Programs must pass current preparation before a captured domain is retained. */
+  captureResourceDomain(input: {
+    readonly programs: readonly RenderFeatureGpuProgramRef[];
+    readonly buffers: readonly RenderFeatureGpuBufferRef[];
+    readonly bindings: readonly RenderFeatureGpuBindingsRef[];
+  }): Result<RenderFeatureGpuResourceDomain, RenderError>;
+  retainResourceDomain(domain: RenderFeatureGpuResourceDomain): Result<boolean, RenderError>;
+  writeBuffer(
+    reference: RenderFeatureGpuBufferRef,
+    offset: number,
+    data: ArrayBufferView,
+  ): Result<void, RenderError>;
+  /** Host-private native work resolves names inside the existing validation walk. */
+  prepareNamedBindings(
+    name: string,
+    descriptor: {
+      readonly program: RenderFeatureGpuProgramRef;
+      readonly entries: NamedBindingEntries;
+    },
+    resources: NamedBindingResources,
+  ): Result<RenderFeatureGpuBindingsRef, RenderError>;
   beginFrame(): void;
   readonly changedResourceNames: ReadonlySet<string>;
   retainResources(matches: (name: string) => boolean): void;
@@ -246,7 +300,10 @@ interface ProgramItem {
   readonly module: ShaderModule;
   readonly pipelines: ReadonlyMap<string, ComputePipeline>;
   readonly bindGroupLayout?: BindGroupLayout;
-  readonly bindingLayouts: ReadonlyMap<number, GPUBufferBindingType>;
+  readonly bindingLayouts: ReadonlyMap<
+    number,
+    { readonly type: GPUBufferBindingType; readonly minBindingSize: number }
+  >;
   readonly textureBindings: ReadonlyMap<
     number,
     'sampled' | 'storage-write' | 'storage-read' | 'storage-read-write'
@@ -278,6 +335,8 @@ interface SamplerItem {
 
 interface BindingResourceItem {
   readonly binding: number;
+  readonly offset?: number;
+  readonly size?: number;
   readonly resource?: RhiBindingResource;
   readonly buffer?: BufferItem;
   readonly textureView?: TextureViewItem;
@@ -475,6 +534,203 @@ export function isOwnedRenderFeatureProgramData(value: unknown): boolean {
   return value !== null && typeof value === 'object' && ownedProgramData.has(value);
 }
 
+declare const RenderFeatureNativePlanBrand: unique symbol;
+export interface RenderFeatureNativePlanToken {
+  readonly [RenderFeatureNativePlanBrand]: void;
+}
+
+export interface RenderFeatureNativePlanOwner {
+  readonly transaction: object;
+  readonly featureIdentity: string;
+  readonly frameNumber: number;
+  readonly generation: number;
+  readonly views: readonly { readonly identity: string; readonly render: boolean }[];
+}
+
+export interface RenderFeatureNativeScopeWork {
+  scope: RenderFeatureWorkScope;
+  resources: RenderFeatureResourceDeclaration[];
+  passes: RenderFeaturePassDeclaration[];
+}
+
+declare const RenderFeatureNativeResourceDomainBrand: unique symbol;
+export interface RenderFeatureNativeResourceDomain {
+  readonly [RenderFeatureNativeResourceDomainBrand]: void;
+}
+
+export interface RenderFeatureNativeResourceAdmission {
+  program(
+    scope: RenderFeatureWorkScope,
+    name: string,
+    descriptor: RenderFeatureGpuProgramDescriptor,
+    waitForCompletion?: boolean,
+  ): void;
+  retain(scope: RenderFeatureWorkScope, domain: RenderFeatureNativeResourceDomain): boolean;
+  admit(
+    scope: RenderFeatureWorkScope,
+    resources: readonly RenderFeatureResourceDeclaration[],
+  ): RenderFeatureNativeResourceDomain;
+  upload(scope: RenderFeatureWorkScope, name: string, offset: number, data: ArrayBufferView): void;
+}
+
+export interface RenderFeatureNativePlanBuilder {
+  scope(scope: RenderFeatureWorkScope): RenderFeatureNativeScopeWork;
+  readonly resourceAdmission?: RenderFeatureNativeResourceAdmission;
+  finish(
+    finalWork: readonly RenderFeatureWork[],
+    sourceFeedback?: unknown,
+    // The producer permits adjacent view raster draws to share their usage
+    // scope; no storage/provider ordering barrier depends on the pass boundary.
+    // Host still proves current non-writing pipeline state and actual readiness.
+    options?: { readonly batchReadOnlyDepthRaster?: true },
+  ): RenderFeaturePlan;
+}
+
+interface NativePlanPublication extends RenderFeatureNativePlanOwner {
+  readonly batchReadOnlyDepthRaster?: true;
+  readonly work: readonly RenderFeatureWork[];
+  readonly resourceAdmission?: RenderFeatureNativeResourceAdmission;
+  consumed: boolean;
+}
+
+const nativePlanPublications = new WeakMap<object, NativePlanPublication>();
+
+/**
+ * @internal Host-bound creator of the primary private work, never an adapter for
+ * borrowed declarations. Finish transfers the exact work; the creator must stop
+ * mutating it. Only bounded owner facts are detached, never declaration trees.
+ */
+export function createRenderFeatureNativePlanBuilder(
+  input: RenderFeatureNativePlanOwner,
+  resourceAdmission?: RenderFeatureNativeResourceAdmission,
+): RenderFeatureNativePlanBuilder {
+  const { transaction, featureIdentity, frameNumber, generation } = input;
+  const views = input.views.map(({ identity, render }) => ({ identity, render }));
+  const viewNames = new Set(views.map((view) => view.identity));
+  if (viewNames.size !== views.length) throw new Error('Duplicate native plan view');
+  const scopes = new Map<string, RenderFeatureNativeScopeWork>();
+  let closed = false;
+  const scopeKey = (scope: RenderFeatureWorkScope): string => {
+    if (scope === 'frame') return 'frame';
+    if (scope === null || typeof scope !== 'object' || !viewNames.has(scope.view))
+      throw new Error('Unknown native plan scope');
+    return `view:${scope.view}`;
+  };
+  const guardedAdmission =
+    resourceAdmission === undefined
+      ? undefined
+      : (Object.fromEntries(
+          Object.entries(resourceAdmission).map(([name, method]) => [
+            name,
+            (scope: RenderFeatureWorkScope, ...args: unknown[]) => {
+              if (closed) throw new Error('Native plan builder is closed');
+              scopeKey(scope);
+              return (method as (scope: RenderFeatureWorkScope, ...args: unknown[]) => unknown)(
+                scope,
+                ...args,
+              );
+            },
+          ]),
+        ) as unknown as RenderFeatureNativeResourceAdmission);
+  return {
+    ...(guardedAdmission === undefined ? {} : { resourceAdmission: guardedAdmission }),
+    scope: (scope) => {
+      if (closed) throw new Error('Native plan builder is closed');
+      const key = scopeKey(scope);
+      let work = scopes.get(key);
+      if (work === undefined) {
+        work = {
+          scope: scope === 'frame' ? 'frame' : { view: scope.view },
+          resources: [],
+          passes: [],
+        };
+        scopes.set(key, work);
+      }
+      return work;
+    },
+    finish: (finalWork, sourceFeedback, options) => {
+      if (closed) throw new Error('Native plan builder is closed');
+      closed = true;
+      const admitted = new Set<string>();
+      for (const work of finalWork) {
+        const key = scopeKey(work.scope);
+        if (
+          !scopes.has(key) ||
+          admitted.has(key) ||
+          !Array.isArray(work.resources) ||
+          !Array.isArray(work.passes)
+        )
+          throw new Error('Native plan work must use each created scope at most once');
+        admitted.add(key);
+      }
+      const native = {} as RenderFeatureNativePlanToken;
+      const planned: RenderFeaturePlan = {
+        work: [],
+        native,
+        ...(sourceFeedback === undefined ? {} : { sourceFeedback }),
+      };
+      nativePlanPublications.set(planned, {
+        transaction,
+        featureIdentity,
+        frameNumber,
+        generation,
+        views,
+        ...(options?.batchReadOnlyDepthRaster === true ? { batchReadOnlyDepthRaster: true } : {}),
+        work: finalWork,
+        ...(guardedAdmission === undefined ? {} : { resourceAdmission: guardedAdmission }),
+        consumed: false,
+      });
+      return planned;
+    },
+  };
+}
+
+/** @internal Match an issued wrapper without observing any borrowed properties. */
+export function isRenderFeatureNativePlan(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && nativePlanPublications.has(value);
+}
+
+/** @internal The admission is recovered only from the consumed Host publication. */
+export function renderFeatureNativeResourceAdmission(
+  planned: object,
+): RenderFeatureNativeResourceAdmission | undefined {
+  const publication = nativePlanPublications.get(planned);
+  return publication?.consumed === true ? publication.resourceAdmission : undefined;
+}
+
+/** @internal Producer permission only; current prepared pipeline authority still
+ * proves read-only state and actual readiness before any pass is combined. */
+export function renderFeatureNativeDepthBatchPermission(planned: object): boolean {
+  const publication = nativePlanPublications.get(planned);
+  return publication?.consumed === true && publication.batchReadOnlyDepthRaster === true;
+}
+
+/** @internal A successful Host consumption closes this exact publication. */
+export function consumeRenderFeatureNativePlan(
+  planned: unknown,
+  expected: RenderFeatureNativePlanOwner,
+): readonly RenderFeatureWork[] | undefined {
+  if (planned === null || typeof planned !== 'object') return undefined;
+  const publication = nativePlanPublications.get(planned);
+  if (
+    publication === undefined ||
+    publication.consumed ||
+    publication.transaction !== expected.transaction ||
+    publication.featureIdentity !== expected.featureIdentity ||
+    publication.frameNumber !== expected.frameNumber ||
+    publication.generation !== expected.generation ||
+    publication.views.length !== expected.views.length ||
+    !publication.views.every(
+      (view, index) =>
+        view.identity === expected.views[index]?.identity &&
+        view.render === expected.views[index]?.render,
+    )
+  )
+    return undefined;
+  publication.consumed = true;
+  return publication.work;
+}
+
 function rhiReason(error: unknown): string {
   if (error === null || typeof error !== 'object') return String(error);
   const code = 'code' in error ? String(error.code) : 'webgpu-runtime-error';
@@ -515,6 +771,14 @@ function createRenderFeatureGpuWorkSession(input: {
   const bindings = new Map<string, BindingsItem>();
   const parkedBindings = new Map<string, { readonly item: BindingsItem; readonly frame: number }>();
   const bindingRefs = new Map<object, BindingsItem>();
+  const resourceDomains = new WeakMap<
+    RenderFeatureGpuResourceDomain,
+    {
+      readonly programs: readonly ProgramItem[];
+      readonly buffers: readonly BufferItem[];
+      readonly bindings: readonly BindingsItem[];
+    }
+  >();
   const touchedPrograms = new Set<ProgramItem>();
   const touchedBuffers = new Set<BufferItem>();
   const touchedTextureViews = new Set<TextureViewItem>();
@@ -642,12 +906,15 @@ function createRenderFeatureGpuWorkSession(input: {
       setCandidateName(buffers, candidate?.buffers, item.name, item);
     }
   };
-  const activateBindings = (item: BindingsItem): void => {
+  const activateBindingName = (item: BindingsItem): void => {
     const current = bindings.get(item.name);
     if (current === undefined) {
       parkedBindings.delete(item.name);
       setCandidateName(bindings, candidate?.bindings, item.name, item);
     }
+  };
+  const activateBindings = (item: BindingsItem): void => {
+    activateBindingName(item);
     activateProgram(item.program);
     for (const entry of item.buffers) activateBuffer(entry.item);
   };
@@ -668,9 +935,14 @@ function createRenderFeatureGpuWorkSession(input: {
     retiring.delete(item.reference);
     touchedSamplers.add(item);
   };
-  const touchBindings = (item: BindingsItem): void => {
+  const touchBindingName = (item: BindingsItem): void => {
     retiring.delete(item.reference);
     touchedBindings.add(item);
+  };
+  const touchBindings = (item: BindingsItem): void => {
+    // A binding's immutable closure is touched together, including domains.
+    if (touchedBindings.has(item)) return;
+    touchBindingName(item);
     touchProgram(item.program);
     for (const entry of item.entries) {
       if (entry.buffer !== undefined) touchBuffer(entry.buffer);
@@ -678,6 +950,19 @@ function createRenderFeatureGpuWorkSession(input: {
       if (entry.sampler !== undefined) touchSampler(entry.sampler);
     }
   };
+
+  const currentProgram = (item: ProgramItem): boolean =>
+    programRefs.get(item.reference) === item &&
+    item.reference.generation === input.generation &&
+    (programs.get(item.name) ?? parkedPrograms.get(item.name)?.item) === item;
+  const currentBuffer = (item: BufferItem): boolean =>
+    bufferRefs.get(item.reference) === item &&
+    item.reference.generation === input.generation &&
+    (buffers.get(item.name) ?? parkedBuffers.get(item.name)?.item) === item;
+  const currentBindings = (item: BindingsItem): boolean =>
+    bindingRefs.get(item.reference) === item &&
+    item.reference.generation === input.generation &&
+    (bindings.get(item.name) ?? parkedBindings.get(item.name)?.item) === item;
 
   const prepareProgram: RenderFeatureGpuPrepare['prepareProgram'] = (
     name,
@@ -721,6 +1006,9 @@ function createRenderFeatureGpuWorkSession(input: {
       const item = {
         ...compiled,
         name,
+        // Equivalent recipes share native programs, but an admitted immutable
+        // alias keeps its own detached descriptor for the existing identity check.
+        descriptor: isOwnedRenderFeatureProgramData(descriptor) ? descriptor : compiled.descriptor,
         reference: Object.freeze({ generation: input.generation }) as RenderFeatureGpuProgramRef,
       };
       parkedPrograms.delete(name);
@@ -863,17 +1151,20 @@ function createRenderFeatureGpuWorkSession(input: {
             compute: { module: module.value, entryPoint },
           });
           // forgeax-async-whitelist: dom-native - observe actual backend compute compilation completion.
-          void completion.then(
-            (result) => settle(entryPoint, result),
-            (cause) => settle(entryPoint, err(cause)),
-          );
+          if ('ok' in completion) settle(entryPoint, completion);
+          else
+            void completion.then(
+              (result) => settle(entryPoint, result),
+              (cause) => settle(entryPoint, err(cause)),
+            );
         } catch (cause) {
           settle(entryPoint, err(cause));
         }
       }
-      return err(preparationFailure('rhi-not-available:pipeline-pending'));
+      if (state.pending > 0) return err(preparationFailure('rhi-not-available:pipeline-pending'));
+      if (state.error !== undefined) return err(state.error);
     }
-    if (preparing === undefined)
+    if (preparing === undefined && createAsync === undefined)
       for (const entryPoint of descriptor.entryPoints) {
         const pipeline = input.device.createComputePipeline({
           label: `${name}.${entryPoint}`,
@@ -905,7 +1196,7 @@ function createRenderFeatureGpuWorkSession(input: {
     }
     const item = {
       name,
-      completionQualified: preparing !== undefined,
+      completionQualified: preparing !== undefined || createAsync !== undefined,
       descriptor: cloneProgramDescriptor(descriptor),
       reference,
       module: module.value,
@@ -914,7 +1205,15 @@ function createRenderFeatureGpuWorkSession(input: {
         (descriptor.bindings?.[0]?.entries ?? []).flatMap((entry) =>
           entry.buffer === undefined
             ? []
-            : [[entry.binding, entry.buffer.type ?? 'uniform'] as const],
+            : [
+                [
+                  entry.binding,
+                  {
+                    type: entry.buffer.type ?? 'uniform',
+                    minBindingSize: entry.buffer.minBindingSize ?? 0,
+                  },
+                ] as const,
+              ],
         ),
       ),
       textureBindings,
@@ -936,8 +1235,9 @@ function createRenderFeatureGpuWorkSession(input: {
 
   const prepareBuffer: RenderFeatureGpuPrepare['prepareBuffer'] = (name, descriptor) => {
     if (
-      !Number.isInteger(descriptor.size) ||
+      !Number.isSafeInteger(descriptor.size) ||
       descriptor.size <= 0 ||
+      !Number.isSafeInteger(alignedSize(descriptor.size)) ||
       descriptor.usage.length === 0
     ) {
       return err(
@@ -949,6 +1249,25 @@ function createRenderFeatureGpuWorkSession(input: {
           'descriptor-invalid',
         ),
       );
+    }
+    const uploadFailure = (reason: string) =>
+      err(failure(input.featureIdentity, 'write-gpu-buffer', 'vertex-data', name, reason));
+    if (descriptor.uploads !== undefined) {
+      if (!Array.isArray(descriptor.uploads)) return uploadFailure('uploads-invalid');
+      for (const upload of descriptor.uploads) {
+        if (
+          upload === null ||
+          typeof upload !== 'object' ||
+          !ArrayBuffer.isView(upload.data) ||
+          !Number.isSafeInteger(upload.offset) ||
+          upload.offset < 0 ||
+          upload.offset % 4 !== 0 ||
+          upload.data.byteLength % 4 !== 0 ||
+          upload.offset > descriptor.size ||
+          upload.data.byteLength > descriptor.size - upload.offset
+        )
+          return uploadFailure('upload-range-invalid');
+      }
     }
     const signature = stable({ size: descriptor.size, usage: [...descriptor.usage].sort() });
     let item = buffers.get(name) ?? parkedBuffers.get(name)?.item;
@@ -993,17 +1312,7 @@ function createRenderFeatureGpuWorkSession(input: {
     activateBuffer(item);
     touchBuffer(item);
     if (descriptor.data !== undefined) {
-      if (descriptor.data.byteLength > descriptor.size) {
-        return err(
-          failure(
-            input.featureIdentity,
-            'write-gpu-buffer',
-            'vertex-data',
-            name,
-            'data-exceeds-size',
-          ),
-        );
-      }
+      if (descriptor.data.byteLength > descriptor.size) return uploadFailure('data-exceeds-size');
       const written = input.device.queue.writeBuffer(item.buffer, 0, bytes(descriptor.data));
       if (!written.ok) {
         return err(
@@ -1017,6 +1326,14 @@ function createRenderFeatureGpuWorkSession(input: {
         );
       }
     }
+    for (const upload of descriptor.uploads ?? []) {
+      const written = input.device.queue.writeBuffer(
+        item.buffer,
+        upload.offset,
+        bytes(upload.data),
+      );
+      if (!written.ok) return uploadFailure(written.error.code);
+    }
     return ok(item.reference);
   };
 
@@ -1027,8 +1344,9 @@ function createRenderFeatureGpuWorkSession(input: {
   ) => {
     if (
       name.length === 0 ||
-      !Number.isInteger(descriptor.size) ||
+      !Number.isSafeInteger(descriptor.size) ||
       descriptor.size <= 0 ||
+      !Number.isSafeInteger(alignedSize(descriptor.size)) ||
       descriptor.usage.length === 0
     ) {
       return err(
@@ -1149,7 +1467,16 @@ function createRenderFeatureGpuWorkSession(input: {
     return ok(reference);
   };
 
-  const prepareBindings: RenderFeatureGpuPrepare['prepareBindings'] = (name, descriptor) => {
+  const prepareBindings = (
+    name: string,
+    descriptor:
+      | RenderFeatureGpuBindingsDescriptor
+      | {
+          readonly program: RenderFeatureGpuProgramRef;
+          readonly entries: NamedBindingEntries;
+        },
+    named?: NamedBindingResources,
+  ): Result<RenderFeatureGpuBindingsRef, RenderError> => {
     const program = programRefs.get(descriptor.program as object);
     if (program === undefined || descriptor.program.generation !== input.generation) {
       return err(
@@ -1162,11 +1489,85 @@ function createRenderFeatureGpuWorkSession(input: {
         ),
       );
     }
+    const prior = bindings.get(name) ?? parkedBindings.get(name)?.item;
     const entryItems: BindingResourceItem[] = [];
+    const previousEntry = (binding: number): BindingResourceItem | undefined => {
+      const entry = prior?.program === program ? prior.entries[entryItems.length] : undefined;
+      return entry?.binding === binding ? entry : undefined;
+    };
+    const bufferEntry = (
+      entry: Pick<
+        RenderFeatureGpuBindingsDescriptor['entries'][number],
+        'binding' | 'offset' | 'size'
+      >,
+      item: BufferItem,
+    ): Result<BindingResourceItem, RenderError> => {
+      const offset = entry.offset ?? 0;
+      const size = entry.size ?? item.size - offset;
+      const layout = program.bindingLayouts.get(entry.binding);
+      const reject = (reason: string) =>
+        err(
+          failure(
+            input.featureIdentity,
+            'prepare-gpu-bindings',
+            'bindings',
+            name,
+            `${reason}:${entry.binding}`,
+          ),
+        );
+      if (
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        !Number.isSafeInteger(size) ||
+        size <= 0 ||
+        offset > item.size ||
+        size > item.size - offset ||
+        (layout?.type !== 'uniform' && size % 4 !== 0)
+      )
+        return reject('buffer-range-invalid');
+      const alignment =
+        layout?.type === 'uniform'
+          ? (input.device.limits.minUniformBufferOffsetAlignment ?? 256)
+          : (input.device.limits.minStorageBufferOffsetAlignment ?? 256);
+      if (offset % alignment !== 0) return reject('buffer-offset-unaligned');
+      if (
+        layout !== undefined &&
+        (!Number.isSafeInteger(layout.minBindingSize) ||
+          layout.minBindingSize < 0 ||
+          size < layout.minBindingSize)
+      )
+        return reject('buffer-binding-too-small');
+      const previous = previousEntry(entry.binding);
+      if (previous?.buffer === item && previous.offset === offset && previous.size === size)
+        return ok(previous);
+      return ok({
+        binding: entry.binding,
+        offset,
+        size,
+        resource: {
+          kind: 'buffer',
+          value: {
+            buffer: item.buffer,
+            ...(entry.offset === undefined ? {} : { offset }),
+            ...(entry.size === undefined ? {} : { size }),
+          },
+        },
+        buffer: item,
+      });
+    };
     for (const entry of descriptor.entries) {
-      if ('buffer' in entry) {
-        const item = bufferRefs.get(entry.buffer as object);
-        if (item === undefined || entry.buffer.generation !== input.generation) {
+      const namedBuffer = named?.buffers.get((entry as NamedBindingEntries[number]).resource);
+      if (named === undefined ? 'buffer' in entry : namedBuffer !== undefined) {
+        const raw = entry as Extract<
+          RenderFeatureGpuBindingsDescriptor['entries'][number],
+          { readonly buffer: RenderFeatureGpuBufferRef }
+        >;
+        const item = bufferRefs.get((named === undefined ? raw.buffer : namedBuffer) as object);
+        if (
+          item === undefined ||
+          (named === undefined ? raw.buffer : (namedBuffer as RenderFeatureGpuBufferRef))
+            .generation !== input.generation
+        ) {
           return err(
             failure(
               input.featureIdentity,
@@ -1177,14 +1578,32 @@ function createRenderFeatureGpuWorkSession(input: {
             ),
           );
         }
-        entryItems.push({
-          binding: entry.binding,
-          resource: { kind: 'buffer', value: { buffer: item.buffer } },
-          buffer: item,
-        });
+        const ranged = bufferEntry(entry, item);
+        if (!ranged.ok) return ranged;
+        entryItems.push(ranged.value);
         continue;
       }
-      const prepared = entry.resource;
+      const prepared = (
+        named === undefined
+          ? (
+              entry as Extract<
+                RenderFeatureGpuBindingsDescriptor['entries'][number],
+                { readonly resource: RenderFeatureGpuPreparedResourceRef }
+              >
+            ).resource
+          : named.resources.get((entry as NamedBindingEntries[number]).resource)
+      ) as RenderFeatureGpuPreparedResourceRef;
+      if (named !== undefined && prepared === undefined) {
+        return err(
+          failure(
+            input.featureIdentity,
+            'prepare-gpu-bindings',
+            'bindings',
+            name,
+            `resource-unavailable:${entry.binding}`,
+          ),
+        );
+      }
       if (prepared.reference.generation !== input.generation) {
         return err(
           failure(
@@ -1209,13 +1628,21 @@ function createRenderFeatureGpuWorkSession(input: {
             ),
           );
         }
-        entryItems.push({
-          binding: entry.binding,
-          resource: { kind: 'buffer', value: { buffer: item.buffer } },
-          buffer: item,
-        });
+        const ranged = bufferEntry(entry, item);
+        if (!ranged.ok) return ranged;
+        entryItems.push(ranged.value);
         continue;
       }
+      if (entry.offset !== undefined || entry.size !== undefined)
+        return err(
+          failure(
+            input.featureIdentity,
+            'prepare-gpu-bindings',
+            'bindings',
+            name,
+            `buffer-range-on-non-buffer:${entry.binding}`,
+          ),
+        );
       if (prepared.kind === 'texture-view') {
         const item = textureViewRefs.get(prepared.reference as object);
         if (item === undefined) {
@@ -1228,6 +1655,11 @@ function createRenderFeatureGpuWorkSession(input: {
               'texture-view-unavailable',
             ),
           );
+        }
+        const previous = previousEntry(entry.binding);
+        if (previous?.textureView === item) {
+          entryItems.push(previous);
+          continue;
         }
         entryItems.push({
           binding: entry.binding,
@@ -1250,13 +1682,17 @@ function createRenderFeatureGpuWorkSession(input: {
           ),
         );
       }
+      const previous = previousEntry(entry.binding);
+      if (previous?.sampler === item) {
+        entryItems.push(previous);
+        continue;
+      }
       entryItems.push({
         binding: entry.binding,
         resource: { kind: 'sampler', value: item.resource },
         sampler: item,
       });
     }
-    const prior = bindings.get(name) ?? parkedBindings.get(name)?.item;
     if (
       prior !== undefined &&
       prior.program === program &&
@@ -1266,6 +1702,8 @@ function createRenderFeatureGpuWorkSession(input: {
         return (
           next !== undefined &&
           entry.binding === next.binding &&
+          entry.offset === next.offset &&
+          entry.size === next.size &&
           entry.buffer === next.buffer &&
           entry.textureView === next.textureView &&
           entry.sampler === next.sampler
@@ -1352,8 +1790,119 @@ function createRenderFeatureGpuWorkSession(input: {
     return ok(reference);
   };
 
+  const captureResourceDomain: RenderFeatureGpuPrepareSession['captureResourceDomain'] = (
+    source,
+  ) => {
+    const reject = (reason: string) =>
+      err(
+        failure(
+          input.featureIdentity,
+          'capture-gpu-resources',
+          'bindings',
+          'resource-domain',
+          reason,
+        ),
+      );
+    if (disposed || candidate === undefined) return reject('frame-unavailable');
+    const domainPrograms = new Set<ProgramItem>();
+    const domainBuffers = new Set<BufferItem>();
+    const domainBindings = new Set<BindingsItem>();
+    for (const reference of source.programs) {
+      const item = programRefs.get(reference);
+      if (item === undefined || !currentProgram(item)) return reject('program-unavailable');
+      domainPrograms.add(item);
+    }
+    for (const reference of source.buffers) {
+      const item = bufferRefs.get(reference);
+      if (item === undefined || !item.owned || !currentBuffer(item))
+        return reject('buffer-unavailable');
+      domainBuffers.add(item);
+    }
+    for (const reference of source.bindings) {
+      const item = bindingRefs.get(reference);
+      if (item === undefined || !currentBindings(item) || !currentProgram(item.program))
+        return reject('bindings-unavailable');
+      domainBindings.add(item);
+      domainPrograms.add(item.program);
+      for (const entry of item.entries) {
+        if (entry.textureView !== undefined || entry.sampler !== undefined)
+          return reject('borrowed-resource');
+        if (entry.buffer === undefined) continue;
+        if (!entry.buffer.owned || !currentBuffer(entry.buffer))
+          return reject('buffer-unavailable');
+        domainBuffers.add(entry.buffer);
+      }
+    }
+    const domain = Object.freeze({}) as RenderFeatureGpuResourceDomain;
+    resourceDomains.set(domain, {
+      programs: [...domainPrograms],
+      buffers: [...domainBuffers],
+      bindings: [...domainBindings],
+    });
+    return ok(domain);
+  };
+  const retainResourceDomain: RenderFeatureGpuPrepareSession['retainResourceDomain'] = (domain) => {
+    const retained = resourceDomains.get(domain);
+    if (
+      disposed ||
+      candidate === undefined ||
+      retained === undefined ||
+      !retained.programs.every(currentProgram) ||
+      !retained.buffers.every(currentBuffer) ||
+      !retained.bindings.every(currentBindings)
+    )
+      return ok(false);
+    // Validate the complete closure before publishing any revived names.
+    for (const item of retained.programs) {
+      activateProgram(item);
+      touchProgram(item);
+    }
+    for (const item of retained.buffers) {
+      activateBuffer(item);
+      touchBuffer(item);
+    }
+    for (const item of retained.bindings) {
+      activateBindingName(item);
+      touchBindingName(item);
+    }
+    return ok(true);
+  };
+  const writeBuffer: RenderFeatureGpuPrepareSession['writeBuffer'] = (reference, offset, data) => {
+    const item = bufferRefs.get(reference);
+    const reject = (reason: string) =>
+      err(
+        failure(
+          input.featureIdentity,
+          'write-gpu-buffer',
+          'vertex-data',
+          item?.name ?? 'buffer',
+          reason,
+        ),
+      );
+    if (disposed || candidate === undefined || item === undefined || !currentBuffer(item))
+      return reject('buffer-unavailable');
+    if (
+      !ArrayBuffer.isView(data) ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      offset % 4 !== 0 ||
+      data.byteLength % 4 !== 0 ||
+      offset > item.size ||
+      data.byteLength > item.size - offset ||
+      (item.physicalUsage & COPY_DST) === 0
+    )
+      return reject('upload-range-invalid');
+    activateBuffer(item);
+    touchBuffer(item);
+    const written = input.device.queue.writeBuffer(item.buffer, offset, bytes(data));
+    return written.ok ? ok(undefined) : reject(written.error.code);
+  };
+
   return {
     changedResourceNames,
+    captureResourceDomain,
+    retainResourceDomain,
+    writeBuffer,
     beginFrame: () => {
       if (candidate !== undefined)
         throw new Error('Feature GPU frame must commit or abort before beginning another frame');
@@ -1397,6 +1946,8 @@ function createRenderFeatureGpuWorkSession(input: {
     prepareTextureView,
     prepareSampler,
     prepareBindings,
+    prepareNamedBindings: (name, descriptor, resources) =>
+      prepareBindings(name, descriptor, resources),
     resolveComputePass: (featureIdentity, descriptor) => {
       const program = programRefs.get(descriptor.program as object);
       const binding = bindingRefs.get(descriptor.bindings as object);
@@ -1573,7 +2124,7 @@ function createRenderFeatureGpuWorkSession(input: {
               ),
             );
           }
-          const derived = graphAccess(access);
+          const derived = graphAccess(access.type);
           const prior = resolvedBuffers.get(entry.item) ?? new Set<GraphBufferAccess>();
           if (prior.size > 0 && !prior.has(derived)) {
             if (prior.has('storage-read-write') || derived === 'storage-read-write') {
@@ -1685,24 +2236,22 @@ function createRenderFeatureGpuWorkSession(input: {
       evict(parkedBindings, () => {});
       // References used by a retained graph remain resolvable until its queue fence.
       // Touching an old dependency preserves it without replacing a newer named descriptor.
-      const active = <T>(
-        named: ReadonlyMap<string, T>,
-        parked: ReadonlyMap<string, { readonly item: T }>,
-        touched: ReadonlySet<T>,
-      ) =>
-        new Set([
-          ...named.values(),
-          ...[...parked.values()].map((entry) => entry.item),
-          ...touched,
-        ]);
       const releases: (() => BufferItem | undefined)[] = [];
-      const retire = <T extends { readonly reference: object }>(
+      const retire = <T extends { readonly name: string; readonly reference: object }>(
         index: Map<object, T>,
-        live: ReadonlySet<T>,
+        named: ReadonlyMap<string, T>,
+        parked: ReadonlyMap<string, { readonly item: T }> | undefined,
+        touched: ReadonlySet<T>,
         buffer?: (item: T) => BufferItem,
       ): void => {
         for (const [reference, item] of index) {
-          if (live.has(item) || retiring.has(reference)) continue;
+          if (
+            touched.has(item) ||
+            named.get(item.name) === item ||
+            parked?.get(item.name)?.item === item ||
+            retiring.has(reference)
+          )
+            continue;
           const ticket = {};
           retiring.set(reference, ticket);
           releases.push(() => {
@@ -1713,11 +2262,11 @@ function createRenderFeatureGpuWorkSession(input: {
           });
         }
       };
-      retire(programRefs, active(programs, parkedPrograms, touchedPrograms));
-      retire(bufferRefs, active(buffers, parkedBuffers, touchedBuffers), (item) => item);
-      retire(bindingRefs, active(bindings, parkedBindings, touchedBindings));
-      retire(textureViewRefs, new Set([...textureViews.values(), ...touchedTextureViews]));
-      retire(samplerRefs, new Set([...samplers.values(), ...touchedSamplers]));
+      retire(programRefs, programs, parkedPrograms, touchedPrograms);
+      retire(bufferRefs, buffers, parkedBuffers, touchedBuffers, (item) => item);
+      retire(bindingRefs, bindings, parkedBindings, touchedBindings);
+      retire(textureViewRefs, textureViews, undefined, touchedTextureViews);
+      retire(samplerRefs, samplers, undefined, touchedSamplers);
       if (releases.length === 0) return [];
       let released = false;
       return [

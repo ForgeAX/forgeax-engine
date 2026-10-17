@@ -499,6 +499,7 @@ export interface RenderPipelineGpuDrivenProjection {
   readonly preparePipelines?: (
     entries?: readonly import('./record/frame-snapshot').ValidatedRenderable[],
     artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
+    onPending?: (reason: import('./render-contract').FramePresentationPendingReason) => void,
   ) => boolean;
   /** Live CPU eligibility, before material/view culling; false proves no indirect work. */
   hasWork(filter?: RenderPipelineGpuDrivenFilter, fragmentEntryPoint?: string): boolean;

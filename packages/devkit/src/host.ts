@@ -735,7 +735,7 @@ import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
 import { createRuntimePackOptions${target === 'tauri' ? '' : ', createRuntimePackDeliveryClient'} } from './runtime-packs';
 import { createGameVfx } from './game-vfx';
 export default async function executionBootstrap(data) {
-const vfx = createGameVfx();
+const vfx = createGameVfx({ isolateViewGraph: data?.isolateVfxViewGraph === true, instanceArenas: data?.vfxInstanceArenas !== false, nativePlanning: data?.vfxNativePlanning !== false, retainedResources: data?.vfxRetainedResources !== false });
 ${target === 'tauri' ? '' : `let prepareDelivery: ReturnType<typeof createRuntimePackDeliveryClient> = async () => ({ error: 'Runtime Pack page bridge is not ready' });`}
 const bridge = {
   name: 'forgeax:worker-game-host', inject: ['world', 'assets', 'executionBootstrapHost'],
@@ -826,7 +826,7 @@ function hostSource(
     facts.startupTimeoutMs === undefined
       ? '(import.meta.env.DEV ? 120_000 : 30_000)'
       : JSON.stringify(facts.startupTimeoutMs);
-  return `import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+  return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
 import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
@@ -883,7 +883,12 @@ const frontendPlatform = preparedPlatform ?? createBrowserFrontendPlatform();
 const location = frontendPlatform.window.location;
 const bootstrapRoot = ${JSON.stringify(bootstrapRoot)};
 const canonicalEnvironmentGuid = ${JSON.stringify(canonicalEnvironmentGuid ?? null)};
-const resourceValue = new URLSearchParams(location.search).get('forgeax-resource-preview');
+const query = new URLSearchParams(location.search);
+const isolateVfxViewGraph = query.get('forgeax-vfx-view-graph') !== 'monolithic';
+const vfxInstanceArenas = query.get('forgeax-vfx-instance-arena') !== 'individual';
+const vfxNativePlanning = query.get('forgeax-vfx-planning') !== 'raw';
+const vfxRetainedResources = query.get('forgeax-vfx-resources') !== 'declarations';
+const resourceValue = query.get('forgeax-resource-preview');
 const resource = resourceValue === null ? undefined : JSON.parse(resourceValue);
 const executionWorkers = ${JSON.stringify(bootstrapRoot === 'resource-bootstrap' || binding !== undefined ? null : environmentExecutionWorkers())};
 const animation = ${JSON.stringify(animation)};
@@ -898,6 +903,10 @@ function ensureVfxRuntimeHost() {
 }
 function makeVfxRuntimeHost() {
   return createVfxRuntimeHost({
+    instanceArenas: vfxInstanceArenas,
+    nativePlanning: vfxNativePlanning,
+    retainedResources: vfxRetainedResources,
+    ...(isolateVfxViewGraph ? { isolateViewGraph: true } : {}),
     camera: {
       read(world) {
         const cameraEntity = previewCameraEntities.get(world);
@@ -1600,9 +1609,29 @@ if (resource === undefined) return;
 preparedResourceOwner = await prepareResourcePreview(app, resource);
 return preparedResourceOwner.facts;
 }
-const query = new URLSearchParams(location.search);
 const gpuPassTiming = query.get('forgeax-gpu-pass-timing') === '1' ? {} : undefined;
 const geometryLane = query.get('forgeax-geometry-lane') === 'direct' ? 'direct' : undefined;
+const featureReadOnlyDepthBatchDiagnostic = (() => {
+  const values = query.getAll('forgeax-feature-read-only-depth-batch');
+  if (values.length === 0) return undefined;
+  if (values.length !== 1 || (values[0] !== '0' && values[0] !== '1'))
+    throw new Error('Read-only depth batching diagnostic requires exactly one 0 or 1');
+  return values[0] === '1';
+})();
+const gbufferBatchOrderDiagnostic = (() => {
+  const order = query.get('forgeax-gbuffer-order');
+  const encoded = query.get('forgeax-gbuffer-program-digests');
+  if (order === null && encoded === null) return undefined;
+  if ((order !== 'near' && order !== 'far') || encoded === null)
+    throw new Error('GBuffer ordering diagnostic requires near/far order and audited program digests');
+  const programDigests = JSON.parse(encoded);
+  if (!Array.isArray(programDigests) || programDigests.length > 128 ||
+      !programDigests.every(digest => typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(digest)))
+    throw new Error('GBuffer ordering diagnostic program digests must be SHA-256 values');
+  return { order, programDigests };
+})();
+const renderTaskYield = query.get('forgeax-render-task-yield') === 'features' ? 'features' : query.get('forgeax-render-task-yield') === 'completion' ? 'completion' : 'none';
+const renderPipelineCapacity = query.get('forgeax-render-pipeline-capacity') === '4' ? 4 : query.get('forgeax-render-pipeline-capacity') === '2' ? 2 : 3;
 const dynamicGeometryMeshBudgetBytes = query.has('forgeax-dynamic-mesh-budget-bytes')
   ? Number(query.get('forgeax-dynamic-mesh-budget-bytes')) : ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)};
 const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
@@ -1708,8 +1737,15 @@ const appBootstrapPlugin = {
     const runtimePacks = workerExecution ? undefined : await createRuntimePackOptions(runtimeScopeBinding.scopeId${target === 'tauri' ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"});
     const pluginPrograms = workerExecution ? undefined : enginePrograms(crypto.randomUUID(), 'engine-main', initialAssembly.sessionGeneration, runtimePacks.programHost);
     const gameVfx = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null
-      ? createGameVfx() : undefined;
+      ? createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources }) : undefined;
     let hostAudio: ReturnType<typeof createHostAudioConsumer> | undefined;
+    ${
+      appOptions.pipelineLibrary === undefined
+        ? ''
+        : `const pipelineLibraryResponse = await fetch(pipelineLibraryUrl);
+    if (!pipelineLibraryResponse.ok) throw new Error('Pipeline library load failed: ' + pipelineLibraryResponse.status);
+    const pipelineLibrary = await pipelineLibraryResponse.json();`
+    }
     const result = await createApp(
       canvas,
       workerExecution
@@ -1717,13 +1753,14 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
             execution: {
               createHostAudio: () => {
                 hostAudio = (ctx.get('executionHostAudioFactory') ?? createHostAudioConsumer)();
                 return hostAudio;
               },
               workers: executionWorkers,
-              bootstrapData: ${target === 'tauri' ? '{}' : '{ programDeliveryChannel }'},
+              bootstrapData: ${target === 'tauri' ? '{ isolateVfxViewGraph, vfxInstanceArenas, vfxNativePlanning, vfxRetainedResources }' : '{ programDeliveryChannel, isolateVfxViewGraph, vfxInstanceArenas, vfxNativePlanning, vfxRetainedResources }'},
               ...(gameChannel === undefined ? {} : { bootstrapPort: gameChannel.port2 }),
               // Development includes cold Vite compilation before the native Worker handshake.
               startupTimeoutMs: ${startupTimeout},
@@ -1744,6 +1781,10 @@ const appBootstrapPlugin = {
                 rhiCapture: rhiCaptureRequested,
                 ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
                 ...(geometryLane === undefined ? {} : { geometryLane }),
+                ...(gbufferBatchOrderDiagnostic === undefined ? {} : { gbufferBatchOrderDiagnostic }),
+                ...(featureReadOnlyDepthBatchDiagnostic === undefined ? {} : { featureReadOnlyDepthBatchDiagnostic }),
+                renderTaskYield,
+                renderPipelineCapacity,
               },
             },
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
@@ -1752,6 +1793,7 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
             standardProfile: ${JSON.stringify(appOptions.standardProfile)},
             context: ctx.root,
             ${ssrIdentity === undefined ? '' : `ssrIdentity: ${JSON.stringify(ssrIdentity)},`}
@@ -1770,6 +1812,10 @@ const appBootstrapPlugin = {
     );
     if (!result.ok) throw result.error;
     const app = result.value;
+    if (!workerExecution && (gbufferBatchOrderDiagnostic !== undefined || featureReadOnlyDepthBatchDiagnostic !== undefined)) {
+      const selected = app.renderer.setProfile({ ...app.renderer.inspect().profile, ...(gbufferBatchOrderDiagnostic === undefined ? {} : { gbufferBatchOrderDiagnostic }), ...(featureReadOnlyDepthBatchDiagnostic === undefined ? {} : { featureReadOnlyDepthBatchDiagnostic }) });
+      if (!selected.ok) throw selected.error;
+    }
     appState.current = app;
     ctx.effect(() => async () => {
       (await app.dispose()).unwrap();
@@ -2746,6 +2792,14 @@ export async function createViteConfig(
       appOptions: cookerSession.appOptions,
     });
     await Promise.all([
+      ...(cookerSession.appOptions.pipelineLibrary === undefined
+        ? []
+        : [
+            writeFile(
+              resolve(generated, 'pipeline-library.json'),
+              JSON.stringify(cookerSession.appOptions.pipelineLibrary),
+            ),
+          ]),
       writeFile(
         resolve(generated, 'index.html'),
         htmlSource(facts.name, bootstrapRoot === 'project-bootstrap'),

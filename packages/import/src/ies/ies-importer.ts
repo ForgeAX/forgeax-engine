@@ -15,20 +15,10 @@ import {
   ok,
 } from '@forgeax/engine-types';
 import { parseLm63TypeC } from './parse-lm63.js';
-import { resampleTypeC } from './resample-type-c.js';
+import { readFloat16LE, resampleTypeC } from './resample-type-c.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function decodeFloat16(bytes: Uint8Array, offset: number): number {
-  const bits = (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits >>> 10) & 0x1f;
-  const fraction = bits & 0x03ff;
-  if (exponent === 0) return sign * 2 ** -14 * (fraction / 2 ** 10);
-  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + fraction / 2 ** 10);
 }
 
 export function validateIesProfilePayload(value: unknown): Result<IesProfileAsset, Error> {
@@ -44,7 +34,7 @@ export function validateIesProfilePayload(value: unknown): Result<IesProfileAsse
     );
   }
   for (let offset = 0; offset < data.byteLength; offset += 2) {
-    if (!Number.isFinite(decodeFloat16(data, offset))) {
+    if (!Number.isFinite(readFloat16LE(data, offset))) {
       return err(new Error('IES payload contains a non-finite f16 sample'));
     }
   }

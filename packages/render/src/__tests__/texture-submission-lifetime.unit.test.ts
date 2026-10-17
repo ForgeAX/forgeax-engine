@@ -142,3 +142,74 @@ it('rejects competing cache publication and retires cancelled cold inputs withou
   scope.retire();
   expect(scope.resourceDelta()).toBe(0);
 });
+
+it.each([
+  'direct',
+  'graph',
+  'recovery',
+] as const)('isolates recycled texture generations through %s publication and stale retirement', async (mode) => {
+  const { store, scope, world } = await setup();
+  const source = texture();
+  const first = world.allocSharedRef('TextureAsset', source);
+  const original = store.ensureResident(first, source, world).unwrap();
+  const lease = store.retainTextureResidency(first, world);
+  assert(lease);
+  let finish!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  lease.track(completed);
+  world.sharedRefs.release(first).unwrap();
+  const next = { ...source, data: new Uint8Array(64) };
+  const second = world.allocSharedRef('TextureAsset', next);
+  expect(Number(second) & 0xffffff).toBe(Number(first) & 0xffffff);
+  expect(second).not.toBe(first);
+  expect(store.getTextureGpuView(second, world)).toBeUndefined();
+  let candidate: ReturnType<GpuResidencyCache['prepareTextureResidencyForGraph']> | undefined;
+  if (mode === 'graph') {
+    candidate = store.prepareTextureResidencyForGraph(second, next, world);
+    expect(candidate.unwrap().commit()).toBe(true);
+  } else if (mode === 'recovery') store.prepareResidentForRecovery(second, next, world).unwrap();
+  else store.ensureResident(second, next, world).unwrap();
+  const replacement = store.ensureResident(second, next, world).unwrap();
+  expect(replacement.view).not.toBe(original.view);
+  expect(replacement.receipt.generation).toBeGreaterThan(original.receipt.generation);
+  store.invalidateTexture(first, world);
+  const released = lease.release(true);
+  expect(original.texture.isDestroyed).toBe(false);
+  expect(store.getTextureGpuView(second, world)).toBe(replacement.view);
+  finish();
+  await completed;
+  await released;
+  expect(original.texture.isDestroyed).toBe(true);
+  expect(replacement.texture.isDestroyed).toBe(false);
+  expect(store.evictTexture(first, world).freed).toBe(0);
+  if (candidate) await candidate.unwrap().lease.release(false);
+  world.sharedRefs.release(second).unwrap();
+  store.destroyAll();
+  scope.retire();
+  expect(scope.resourceDelta()).toBe(0);
+});
+
+it('keeps numeric scopes separate from handle generations and sweeps exact identities', async () => {
+  const { store, scope, world } = await setup();
+  const source = texture(),
+    first = world.allocSharedRef('TextureAsset', source);
+  const otherWorld = store.ensureResident(first, source, 1).unwrap();
+  const original = store.ensureResident(first, source, 0).unwrap();
+  world.sharedRefs.release(first).unwrap();
+  const next = { ...source, data: new Uint8Array(64) },
+    second = world.allocSharedRef('TextureAsset', next);
+  const replacement = store.ensureResident(second, next, 0).unwrap();
+  expect(replacement.view).not.toBe(original.view);
+  expect(replacement.view).not.toBe(otherWorld.view);
+  expect(store.getTextureGpuView(first, 1)).toBe(otherWorld.view);
+  store.releaseUnreferenced(new Set([Number(second)]));
+  expect(store.getTextureGpuView(first, 0)).toBeUndefined();
+  expect(store.getTextureGpuView(first, 1)).toBeUndefined();
+  expect(store.getTextureGpuView(second, 0)).toBe(replacement.view);
+  world.sharedRefs.release(second).unwrap();
+  store.destroyAll();
+  scope.retire();
+  expect(scope.resourceDelta()).toBe(0);
+});

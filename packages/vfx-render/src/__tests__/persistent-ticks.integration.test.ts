@@ -170,8 +170,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         .unwrap(),
     );
     consumer.onFrameSubmitted?.(retry.extracted);
-    // Initial spawn + fused update/compact, then one billboard projection.
-    // Event emitters retain their event and fused second compaction.
+    // One-workgroup emitters fuse update/compaction and post-event scan/compaction.
+    // The initial spawn, ordered event work and billboard projection still execute.
     expect(consumer.inspect().dispatches).toBe(events ? 5 : 3);
     const successor = consumer
       .plan(

@@ -210,17 +210,16 @@ it.each([
       .map((resource) => resource.name);
     const projections = planPasses(initial).flatMap((pass) =>
       pass.kind === 'compute'
-        ? pass.dispatches
-            .filter((dispatch) => dispatch.entryPoint === 'forgeax_vfx_mesh_main')
-            .map((dispatch) => ({
-              program: pass.program,
-              bindings: dispatch.bindings ?? pass.bindings,
-            }))
+        ? pass.dispatches.flatMap((dispatch) =>
+            dispatch.entryPoint === 'forgeax_vfx_mesh_main'
+              ? [{ program: pass.program, bindings: dispatch.bindings ?? pass.bindings }]
+              : [],
+          )
         : [],
     );
-    expect(projections).toHaveLength(2);
-    expect(new Set(projections.map((projection) => projection.bindings)).size).toBe(2);
     const projectPrograms = projections.map((projection) => projection.program);
+    expect(projectPrograms).toHaveLength(2);
+    expect(new Set(projections.map((projection) => projection.bindings)).size).toBe(2);
     expect(projectPrograms.every((name) => programNames.includes(name))).toBe(true);
     expect(projectPrograms[0] === projectPrograms[1]).toBe(programSource === 'loaded');
     expect(freezeVfxPlan(f.host.feature.identity, initial, f.targets).ok).toBe(true);

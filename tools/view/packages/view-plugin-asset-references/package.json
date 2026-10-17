@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Resident read-only asset reference queries for the View Editor.",
+  "description": "Resident read-only asset reference queries for the View Scene.",
   "exports": {
     "./identity": "./src/identity.ts",
     "./frontend": "./src/frontend.ts",

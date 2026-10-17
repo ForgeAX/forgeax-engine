@@ -22,7 +22,7 @@ const removedComponents = new Set<string>();
 const calls: { operation: string; args: Record<string, unknown>; aborted: boolean }[] = [];
 let sceneTreeRequests = 0;
 const listeners = new Set<(state: ReturnType<typeof state>) => void>();
-const target = () => ({ targetId: 'editor', generation });
+const target = () => ({ targetId: 'scene', generation });
 const state = () => ({ revision, project: { id: projectId, name: 'Inspector fixture', root: '/fixture' }, preview: { target: target() }, sceneSelection: { primary: { entityId: selected }, entityIds: selectedIds }, assets: [
   { guid: 'mesh-guid', kind: 'mesh', name: meshName, path: 'assets/farm.pack.ts', previewable: true },
   { guid: 'ground-material', kind: 'material', name: 'Farm Ground', path: 'assets/farm.pack.ts', previewable: true },
@@ -59,7 +59,7 @@ function inspect(id: string) {
     component('CustomHealth', { health: { type: 'f32' } }, { health: 7 }),
   ];
   return {
-    entityId: id, entity: node.entity, name: node.name, targetId: 'editor', worldId: 'world', sampledAt: Date.now(),
+    entityId: id, entity: node.entity, name: node.name, targetId: 'scene', worldId: 'world', sampledAt: Date.now(),
     components: components.filter(component => !removedComponents.has(component.name)),
   };
 }

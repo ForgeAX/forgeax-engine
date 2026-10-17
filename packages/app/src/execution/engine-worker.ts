@@ -19,21 +19,10 @@ export interface EngineWorkerSession {
   dispose(): Promise<Result<void, AppErrorType>>;
 }
 
-export interface StartEngineWorkerOptions {
+export interface StartEngineWorkerOptions
+  extends Omit<ExecutionInitMessage, 'kind' | 'startupTimeoutMs' | 'canvas'> {
   readonly canvas: HTMLCanvasElement;
-  readonly bootstrapUrl: string;
-  readonly bootstrapData?: import('./types').ExecutionBootstrapValue;
-  readonly bootstrapPort?: MessagePort;
-  readonly assetCatalog?: import('./types').ExecutionAssetCatalog;
-  readonly shaderManifestUrl?: string;
-  readonly build?: string;
-  readonly time?: import('@forgeax/engine-ecs').TimePolicy;
-  readonly animation?: import('@forgeax/engine-animation').AnimationPlaybackOptions;
-  readonly diagnostics?: import('./types').ExecutionDiagnosticsOptions;
-  readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
-  readonly dynamicGeometryMeshBudgetBytes?: number;
-  readonly timeoutMs: number | null;
-  readonly workers: import('./types').ExecutionSelection;
+  readonly timeoutMs: ExecutionInitMessage['startupTimeoutMs'];
   readonly workerFactory?: () => Worker;
 }
 
@@ -242,6 +231,7 @@ export async function startEngineWorker(
     ...(options.time !== undefined ? { time: options.time } : {}),
     ...(options.animation === undefined ? {} : { animation: options.animation }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+    ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
     ...(options.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: options.outputColorSpace }),
@@ -250,7 +240,7 @@ export async function startEngineWorker(
       : { dynamicGeometryMeshBudgetBytes: options.dynamicGeometryMeshBudgetBytes }),
     workers: options.workers,
   };
-  worker.postMessage(init as ExecutionInitMessage, [
+  worker.postMessage(init, [
     offscreen,
     ...(options.bootstrapPort === undefined ? [] : [options.bootstrapPort]),
   ]);

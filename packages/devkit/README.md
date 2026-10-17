@@ -2014,3 +2014,25 @@ use the backend's current public owner. View operations similarly appear as
 `forgeax view workspace pack reveal` and `forgeax view workspace summary get`.
 Use `--input` for the operation argument object. Stopped or unreachable backends
 leave offline built-ins discoverable; reading help never starts a backend.
+
+## Collect and prepare gameplay pipelines
+
+Run the real gameplay/settings routes through a live dev instance, read its current
+revision with `forgeax dev status --json`, then export the observed device library:
+
+```sh
+forgeax dev pipelines export --revision <revision> --output assets/pipeline-library.json --json
+```
+
+The command uses the existing revision-fenced live inspection channel and writes JSON
+recipes plus an adjacent `.receipt.json` containing source revision, digest, size, frame
+and compilation counters. Missing coverage and failed exports are explicit. Export
+outside a performance timing window because shader text serialization is diagnostic work.
+
+Read that JSON in the project's build-root plugin and provide it as
+`devkitAppOptions.pipelineLibrary`. The generated host emits a separate URL asset, loads
+it before `createApp`, and carries it through either execution placement. Renderer
+readiness awaits native asynchronous preparation. Inspect `pipelineLibrary` after loading
+and gameplay to compare prepared work with newly encountered pipelines. See the
+[WebGPU library contract](../rhi-webgpu/README.md#device-pipeline-library) for invalidation,
+device compatibility, memory limits and driver-cache constraints.

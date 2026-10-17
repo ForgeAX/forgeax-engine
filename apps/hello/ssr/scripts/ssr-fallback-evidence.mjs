@@ -1,5 +1,7 @@
 import { composeSsrReflection } from '@forgeax/engine-render';
 
+export const REFLECTION_PROBE_SETTLE_FRAMES = 64;
+
 export const REFLECTION_FALLBACK_EXPECTATION_IDS = Object.freeze([
   'local-probe',
   'skylight',
@@ -72,6 +74,46 @@ const identityMatchesReadback = (row, readback) =>
   readback !== undefined &&
   row?.frameId === readback.frameId &&
   row?.deviceGeneration === readback.deviceGeneration;
+
+/**
+ * Probe promotion happens after that frame's fallback publication. Recovery
+ * therefore needs a completed consumer receipt, not just an active resource.
+ * @param {import('@forgeax/engine-render').RenderInspection} inspection
+ * @param {number} beforeDeviceGeneration
+ */
+export function deriveReflectionProbeRecoveryEvidence(inspection, beforeDeviceGeneration) {
+  const afterDeviceGeneration = inspection.frame.deviceGeneration;
+  const generationChanged = afterDeviceGeneration > beforeDeviceGeneration;
+  const replacementRow = inspection.reflectionProbes.reflectionFallbacks?.find(
+    (row) => row.source === 'probe',
+  );
+  const readback = inspection.reflectionProbes.reflectionFallbackReadback;
+  const matchingReplacement =
+    generationChanged &&
+    replacementRow?.state === 'active' &&
+    replacementRow.candidateVisible === false &&
+    replacementRow.deviceGeneration === afterDeviceGeneration &&
+    readback?.readbackStatus === 'complete' &&
+    identityMatchesReadback(replacementRow, readback);
+  const afterSsr = inspection.ssr;
+  const replacementTemporal = inspection.ssrDependencies.temporal;
+  const replacementSsrReady =
+    afterSsr.status === 'admitted' &&
+    afterSsr.history.state === 'stable' &&
+    afterSsr.history.bytes > 0 &&
+    replacementTemporal.successfulSubmit === true &&
+    replacementTemporal.generation === afterDeviceGeneration;
+  return {
+    afterDeviceGeneration,
+    generationChanged,
+    replacementRow,
+    readback,
+    matchingReplacement,
+    afterSsr,
+    replacementTemporal,
+    replacementSsrReady,
+  };
+}
 
 const nonZeroReadback = (readback) =>
   readback?.readbackStatus === 'complete' &&

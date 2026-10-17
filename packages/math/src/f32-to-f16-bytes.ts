@@ -69,3 +69,13 @@ export function f32ToF16Bytes(src: Uint8Array): Uint8Array {
   }
   return out;
 }
+
+/** Decode one IEEE 754 binary16 bit pattern, preserving signed zero, subnormals and infinities. */
+export function f16ToF32(bits: number): number {
+  const sign = (bits & 0x8000) === 0 ? 1 : -1;
+  const exponent = (bits >>> 10) & 0x1f;
+  const fraction = bits & 0x03ff;
+  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
+  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
+  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
+}

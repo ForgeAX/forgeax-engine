@@ -31,7 +31,7 @@ type InputControllerOptions = {
   targetId: string;
   targetGeneration?: number;
   tabId: string;
-  bindings?: 'editor' | 'orbit';
+  bindings?: 'scene' | 'orbit';
   shouldCapture: (event: Event) => boolean;
   onFocusSelection?: () => unknown;
   document?: Document;
@@ -66,7 +66,7 @@ export function MeshPreviewPanel({
 
 function PreviewEmpty({ title, description }: { title: string; description: string }) {
   return (
-    <div className="fx-asset-editor fx-asset-preview fx-ui" data-testid="panel-mesh-preview">
+    <div className="fx-asset-viewer fx-asset-preview fx-ui" data-testid="panel-mesh-preview">
       <EmptyState title={title} description={description} />
     </div>
   );
@@ -116,7 +116,7 @@ function LivePreview({
       container,
       owner,
       api: client,
-      editorTargetId: workspace?.editorPreview?.target?.targetId,
+      sceneTargetId: workspace?.scenePreview?.target?.targetId,
     });
     if (!bound.ok) {
       setFailure(bound.error);
@@ -221,7 +221,7 @@ function LivePreview({
     targetId,
     targetGeneration,
     preview?.target?.surfaceId,
-    workspace?.editorPreview?.target?.targetId,
+    workspace?.scenePreview?.target?.targetId,
     client,
     reader,
     inputControllerFactory,
@@ -259,7 +259,7 @@ function LivePreview({
     );
   }
   return (
-    <div className="fx-asset-editor fx-asset-preview fx-mesh-preview fx-ui" data-testid="panel-mesh-preview">
+    <div className="fx-asset-viewer fx-asset-preview fx-mesh-preview fx-ui" data-testid="panel-mesh-preview">
       <div className="fx-mesh-preview-toolbar">
         <Button
           size="compact"

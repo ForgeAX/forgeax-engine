@@ -40,16 +40,16 @@
     },
     "projectRecovery": {
       "restoringTitle": "Restoring project workspace",
-      "restoringDescription": "Creating a fresh Editor target. The project will open automatically when it is ready.",
+      "restoringDescription": "Creating a fresh Scene target. The project will open automatically when it is ready.",
       "title": "Engine workspace needs reconnect",
       "short": "Workspace needs reconnect",
-      "description": "This page has no usable Editor target. Reconnect to create a new workspace target.",
+      "description": "This page has no usable Scene target. Reconnect to create a new workspace target.",
       "action": "Reconnect",
       "busy": "Reconnecting…"
     },
     "projectOpen": {
       "title": "Open project",
-      "description": "View needs a project directory before the editor can load. Enter an absolute path to continue.",
+      "description": "View needs a project directory before the scene can load. Enter an absolute path to continue.",
       "pathLabel": "Project path",
       "pathPlaceholder": "Absolute project directory",
       "action": "Open project",
@@ -82,7 +82,7 @@
       }
     },
     "pages": {
-      "editor": "Scene",
+      "scene": "Scene",
       "display": "Runtime observation",
       "plugins": "Plugins",
       "material": "Material",

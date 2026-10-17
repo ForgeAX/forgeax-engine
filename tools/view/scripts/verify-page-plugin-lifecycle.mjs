@@ -47,7 +47,7 @@ try {
   const opened = await live.workspaceCore.openAsset({ projectId, guid: scene.guid });
   const target = opened.preview.target;
   await live.workspaceCore.capture({ targetId: target.targetId, targetGeneration: target.generation });
-  await page.locator('[role="tab"][data-page-id="page-editor"]').waitFor();
+  await page.locator('[role="tab"][data-page-id="page-scene"]').waitFor();
   await verifyPagePlugins({ page, backendHost: live.backendHost });
   await live.dispose();
   const disabledPages = [...pages.map(([, type]) => type), 'html'];
@@ -64,7 +64,7 @@ try {
   assert.ok(capture.width > 0 && capture.height > 0, 'Engine stays callable without View pages');
   await live.dispose();
   live = await startViewLiveIntegration({ page, projectRoot: root, config: { readyTimeout: 60_000 } });
-  await page.locator('[role="tab"][data-page-id="page-editor"]').waitFor();
+  await page.locator('[role="tab"][data-page-id="page-scene"]').waitFor();
   assert.deepEqual(live.backendHost.assembly.current.root.config.disabledPages, []);
   for (const [, type, title] of pages) {
     if (await page.locator(`[role="tab"][data-page-id="page-${type}"]`).count()) continue;

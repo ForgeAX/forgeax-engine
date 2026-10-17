@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 
-function typePreview(state, asset, editorTargetId) {
+function typePreview(state, asset, sceneTargetId) {
   const extras = Array.isArray(state.previews) ? state.previews : [];
   return extras.find((entry) =>
     entry?.asset?.guid === asset.guid &&
     entry?.target?.targetId &&
-    entry.target.targetId !== editorTargetId,
+    entry.target.targetId !== sceneTargetId,
   ) ?? (
     state.preview?.asset?.guid === asset.guid &&
-    state.preview.target.targetId !== editorTargetId
+    state.preview.target.targetId !== sceneTargetId
       ? state.preview
       : state.openRequest?.preview
   );
@@ -31,17 +31,17 @@ export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }
     }
   };
   const initial = workspace.snapshot();
-  const editor = initial.editorPreview;
+  const scene = initial.scenePreview;
   const assets = ['mesh', 'material'].map(kind => initial.assets.find(asset => asset.kind === kind));
   assert.ok(assets.every(Boolean), 'the probe must exercise real mesh and material previews');
   const opened = [];
   for (const asset of assets) {
     const state = await workspace.openAsset({ projectId: initial.project.id, guid: asset.guid, width: 320, height: 240 });
-    assert.equal(state.editorPreview.target.targetId, editor.target.targetId);
-    const preview = typePreview(state, asset, editor.target.targetId);
+    assert.equal(state.scenePreview.target.targetId, scene.target.targetId);
+    const preview = typePreview(state, asset, scene.target.targetId);
     assert.ok(preview?.target, `Engine must expose a type-preview target for ${asset.kind}`);
-    assert.notEqual(preview.target.targetId, editor.target.targetId);
-    assert.notEqual(preview.target.worldId, editor.target.worldId);
+    assert.notEqual(preview.target.targetId, scene.target.targetId);
+    assert.notEqual(preview.target.worldId, scene.target.worldId);
     const args = { targetId: preview.target.targetId, targetGeneration: preview.target.generation };
     const assetPage = page.locator(`[data-page-id="page-${asset.kind}"][aria-selected="true"]`);
     await assetPage.waitFor();
@@ -89,18 +89,18 @@ export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }
     await page.screenshot({ path: `/tmp/view-asset-${asset.kind}.png` });
     opened.push({ args, kind: asset.kind, dimensions, worldId: tree.worldId, frameId: capture.frameId });
   }
-  await page.locator('[data-page-id="page-editor"]').click();
+  await page.locator('[data-page-id="page-scene"]').click();
   await page.locator('[data-forgeax-view-mount-host="viewport"]').waitFor();
   assert.equal(await page.locator('[aria-label="Asset previews"]').count(), 0);
   assert.equal(await page.locator('iframe').count(), 0);
   assert.equal(workspace.snapshot().previews.length, 3);
-  await workspace.selectTarget({ targetId: editor.target.targetId });
-  const editorCapture = await workspace.capture({ targetId: editor.target.targetId, targetGeneration: editor.target.generation });
-  assert.match(editorCapture.png, /^data:image\/png/);
+  await workspace.selectTarget({ targetId: scene.target.targetId });
+  const sceneCapture = await workspace.capture({ targetId: scene.target.targetId, targetGeneration: scene.target.generation });
+  assert.match(sceneCapture.png, /^data:image\/png/);
   await page.screenshot({ path: '/tmp/view-inline-previews.png' });
   console.error('asset tabs host exact Engine preview canvases; independent Worlds, panel sizing and capture passed');
   return async () => {
-    await page.locator('[data-page-id="page-editor"]').click();
+    await page.locator('[data-page-id="page-scene"]').click();
     for (const { args, kind, dimensions, worldId, frameId } of opened) {
       assert.equal((await workspace.getSceneTree(args)).worldId, worldId);
       const captured = await capturePreview(args, worldId);
@@ -125,8 +125,8 @@ export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }
       await workspace.closePreview(args).catch(error => assert.match(error.code, /target-mismatch/));
     }
     assert.equal(workspace.snapshot().previews.length, 1);
-    assert.equal(workspace.snapshot().preview.target.targetId, editor.target.targetId);
-    assert.equal(workspace.snapshot().workspaceTargetLost, false, 'closed asset targets must not disconnect the editor');
+    assert.equal(workspace.snapshot().preview.target.targetId, scene.target.targetId);
+    assert.equal(workspace.snapshot().workspaceTargetLost, false, 'closed asset targets must not disconnect the scene');
     await page.waitForFunction(() => document.querySelectorAll('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').length >= 1);
     console.error('UI removal preserves asset resize and capture; targets released independently and the editing World remains intact');
   };

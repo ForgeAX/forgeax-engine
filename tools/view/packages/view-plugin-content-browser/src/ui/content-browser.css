@@ -93,7 +93,7 @@
 }
 .cb-source-row {
   gap: var(--fx-ref-space-4);
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding-top: var(--fx-ref-space-4);
   padding-right: var(--fx-ref-space-12);
   padding-bottom: var(--fx-ref-space-4);
@@ -537,7 +537,7 @@
   position: sticky;
   z-index: var(--fx-layer-sticky);
   top: 0;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   border-bottom: var(--fx-border-width) solid var(--fx-color-border-default);
   background: var(--fx-color-surface-canvas);
   color: var(--fx-color-text-muted);
@@ -582,8 +582,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex: 0 0 var(--fx-component-editor-row-height);
-  min-height: var(--fx-component-editor-row-height);
+  flex: 0 0 var(--fx-component-control-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   border-top: var(--fx-border-width) solid var(--fx-color-border-subtle);
   color: var(--fx-color-text-muted);
@@ -884,7 +884,7 @@
   align-items: center;
   gap: var(--fx-ref-space-8);
   width: 100%;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   padding: var(--fx-ref-space-4) var(--fx-ref-space-8);
   border: 0;
   border-radius: var(--fx-radius-control);

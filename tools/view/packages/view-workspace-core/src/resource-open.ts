@@ -5,8 +5,8 @@ import { traceView } from './view-trace.ts';
 
 const LOG_PREFIX = '[forgeax.view.resource-open]';
 
-/** Editor viewport hosts the scene world. Other kinds never acquire scene ownership. */
-export const EDITOR_ASSET_KIND = 'scene';
+/** Scene viewport hosts the scene world. Other kinds never acquire scene ownership. */
+export const SCENE_ASSET_KIND = 'scene';
 export const TYPE_PREVIEW_KINDS = Object.freeze(['material', 'mesh', 'texture']);
 
 export function summarizeResourceAsset(asset: WorkspaceAsset | null | undefined) {
@@ -17,8 +17,8 @@ export function summarizeResourceAsset(asset: WorkspaceAsset | null | undefined)
   };
 }
 
-export function isEditorWorkspaceAsset(asset: WorkspaceAsset | null | undefined) {
-  return asset?.kind === EDITOR_ASSET_KIND;
+export function isSceneWorkspaceAsset(asset: WorkspaceAsset | null | undefined) {
+  return asset?.kind === SCENE_ASSET_KIND;
 }
 
 export function isTypePreviewAsset(asset: WorkspaceAsset | null | undefined) {
@@ -26,11 +26,11 @@ export function isTypePreviewAsset(asset: WorkspaceAsset | null | undefined) {
 }
 
 /**
- * Editor identity is the scene world, never Engine array order.
- * A pinned editor target wins even when Engine omits kind on the live preview.
- * Otherwise only an explicitly classified scene or one unclassified target can be the editor.
+ * Scene identity is the scene world, never Engine array order.
+ * A pinned scene target wins even when Engine omits kind on the live preview.
+ * Otherwise only an explicitly classified scene or one unclassified target can be the scene.
  */
-export function selectEditorWorkspacePreview(previews: readonly WorkspacePreview[] | null | undefined, preferredTargetId?: string) {
+export function selectSceneWorkspacePreview(previews: readonly WorkspacePreview[] | null | undefined, preferredTargetId?: string) {
   const list = (Array.isArray(previews) ? previews : []).filter(
     (entry) => entry?.target?.targetId != null,
   );
@@ -38,35 +38,35 @@ export function selectEditorWorkspacePreview(previews: readonly WorkspacePreview
     const preferred = list.find(
       (entry) => String(entry.target.targetId) === String(preferredTargetId),
     );
-    if (preferred && (!preferred.asset || isEditorWorkspaceAsset(preferred.asset))) return preferred;
+    if (preferred && (!preferred.asset || isSceneWorkspaceAsset(preferred.asset))) return preferred;
   }
-  const scenes = list.filter((entry) => isEditorWorkspaceAsset(entry.asset));
+  const scenes = list.filter((entry) => isSceneWorkspaceAsset(entry.asset));
   if (scenes.length === 1) return scenes[0];
-  const editorWorlds = list.filter((entry) => !entry.asset);
-  return editorWorlds.length === 1 ? editorWorlds[0] : undefined;
+  const sceneWorlds = list.filter((entry) => !entry.asset);
+  return sceneWorlds.length === 1 ? sceneWorlds[0] : undefined;
 }
 
 /**
- * Viewport overlay target. Dock claim can render before editorPreview is
- * classified; only an Editor-bound preview can supply the scene world.
+ * Viewport overlay target. Dock claim can render before scenePreview is
+ * classified; only a Scene-bound preview can supply the scene world.
  */
-export function selectWorkspaceEditorSurfaceTarget(state: WorkspaceState | null | undefined) {
-  if (state?.editorPreview?.target) return state.editorPreview.target;
+export function selectWorkspaceSceneSurfaceTarget(state: WorkspaceState | null | undefined) {
+  if (state?.scenePreview?.target) return state.scenePreview.target;
   if (state?.targetBinding === 'play') return null;
   const preview = state?.preview;
-  if (preview?.target && (!preview.asset || isEditorWorkspaceAsset(preview.asset))) return preview.target;
+  if (preview?.target && (!preview.asset || isSceneWorkspaceAsset(preview.asset))) return preview.target;
   return null;
 }
 
-export function editorSceneTargetIds(previews: readonly WorkspacePreview[] | null | undefined, editorPreview: WorkspacePreview | null | undefined) {
+export function sceneTargetIds(previews: readonly WorkspacePreview[] | null | undefined, scenePreview: WorkspacePreview | null | undefined) {
   const ids = new Set<string>();
   const add = (entry: WorkspacePreview | null | undefined) => {
     if (entry?.target?.targetId == null) return;
     ids.add(String(entry.target.targetId));
   };
-  add(editorPreview);
+  add(scenePreview);
   for (const entry of Array.isArray(previews) ? previews : []) {
-    if (isEditorWorkspaceAsset(entry?.asset)) add(entry);
+    if (isSceneWorkspaceAsset(entry?.asset)) add(entry);
   }
   return ids;
 }
@@ -87,11 +87,11 @@ function isKind(asset: WorkspaceAsset | null | undefined, kinds: readonly string
 }
 
 function extraPreviewEntries(snapshot: WorkspaceState | null | undefined) {
-  const editorIds = editorSceneTargetIds(snapshot?.previews, snapshot?.editorPreview);
+  const sceneIds = sceneTargetIds(snapshot?.previews, snapshot?.scenePreview);
   return (Array.isArray(snapshot?.previews) ? snapshot.previews : []).filter((entry) => {
     if (!entry?.asset || entry.target?.targetId == null) return false;
-    if (isEditorWorkspaceAsset(entry.asset)) return false;
-    if (editorIds.has(String(entry.target.targetId))) return false;
+    if (isSceneWorkspaceAsset(entry.asset)) return false;
+    if (sceneIds.has(String(entry.target.targetId))) return false;
     return true;
   });
 }
@@ -110,7 +110,7 @@ export function selectWorkspaceFallbackSubject(snapshot: WorkspaceState | null |
 }
 
 /**
- * Each asset editor page keeps the last matching asset after later opens.
+ * Each asset viewer page keeps the last matching asset after later opens.
  * `openRequest` is only the most recent open, so material/mesh tabs must
  * fall back to live extras and per-kind resourceOpens.
  */
@@ -143,7 +143,7 @@ export function selectMeshPreviewCameraTarget(snapshot: WorkspaceState | null | 
 
 export function selectWorkspaceResourcePreview(snapshot: WorkspaceState | null | undefined, guid: string | undefined) {
   if (typeof guid !== 'string' || guid === '') return undefined;
-  // Open requests retain the last asset for each editor page. Only Engine's
+  // Open requests retain the last asset for each scene page. Only Engine's
   // current preview projection proves that a target is still alive.
   const live = extraPreviewEntries(snapshot).filter(entry => entry.asset?.guid === guid);
   const request = snapshot?.openRequest?.asset?.guid === guid

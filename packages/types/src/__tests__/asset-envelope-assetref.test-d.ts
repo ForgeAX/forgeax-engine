@@ -26,6 +26,8 @@ describe('AssetEnvelope + AssetRef type-level contract (w2)', () => {
       payload: { kind: 'mesh' } as Asset,
       refs: [ref],
     };
+    expectTypeOf(envelope.refs).toEqualTypeOf<readonly AssetRef[] | undefined>();
+    if (envelope.refs === undefined) throw new Error('expected an explicit reference table');
     expectTypeOf(envelope.refs).toMatchTypeOf<readonly AssetRef[]>();
   });
 

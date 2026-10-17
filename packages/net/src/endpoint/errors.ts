@@ -7,11 +7,11 @@
 import type { PeerId } from './endpoint';
 
 // ---------------------------------------------------------------------------
-// EndpointErrorCode -- closed 5-member union derived from endpointErrorPolicy
+// EndpointErrorCode -- closed 5-member union derived from the detail contract
 // ---------------------------------------------------------------------------
 
 /** Transport-level endpoint error codes (requirements AC-02, AC-13). */
-export type EndpointErrorCode = keyof typeof endpointErrorPolicy;
+export type EndpointErrorCode = keyof EndpointErrorDetailByCode;
 
 // ---------------------------------------------------------------------------
 // Per-code detail payloads
@@ -39,21 +39,25 @@ export interface EndpointDetailConnectionFailed {
   readonly cause: string;
 }
 
-// ---------------------------------------------------------------------------
-// Conditional resolver
-// ---------------------------------------------------------------------------
+/** The code-to-detail contract also closes the runtime policy table. */
+interface EndpointErrorDetailByCode {
+  'peer-not-found': EndpointDetailPeerNotFound;
+  'connection-closed': EndpointDetailConnectionClosed;
+  'send-failed': EndpointDetailSendFailed;
+  'already-closed': EndpointDetailAlreadyClosed;
+  'connection-failed': EndpointDetailConnectionFailed;
+}
 
-export type EndpointErrorDetailFor<C extends EndpointErrorCode> = C extends 'peer-not-found'
-  ? EndpointDetailPeerNotFound
-  : C extends 'connection-closed'
-    ? EndpointDetailConnectionClosed
-    : C extends 'send-failed'
-      ? EndpointDetailSendFailed
-      : C extends 'already-closed'
-        ? EndpointDetailAlreadyClosed
-        : C extends 'connection-failed'
-          ? EndpointDetailConnectionFailed
-          : never;
+export type EndpointErrorDetailFor<C extends EndpointErrorCode> = EndpointErrorDetailByCode[C];
+
+type EndpointErrorArgs<C extends EndpointErrorCode = EndpointErrorCode> = {
+  [Code in C]: {
+    code: Code;
+    expected: string;
+    hint: string;
+    detail: EndpointErrorDetailFor<Code>;
+  };
+}[C];
 
 /** Tagged union of all endpoint error detail variants. */
 export type EndpointErrorDetail = EndpointErrorDetailFor<EndpointErrorCode>;
@@ -68,28 +72,18 @@ class EndpointErrorClass extends Error {
   readonly hint: string;
   readonly detail: EndpointErrorDetail;
 
-  constructor(args: {
-    code: EndpointErrorCode;
-    expected: string;
-    hint: string;
-    detail: EndpointErrorDetail;
-  }) {
+  constructor(args: EndpointErrorArgs) {
     let suffix = '';
     if (args.code === 'peer-not-found') {
-      const d = args.detail as EndpointDetailPeerNotFound;
-      suffix = ` (peerId=${d.peerId})`;
+      suffix = ` (peerId=${args.detail.peerId})`;
     } else if (args.code === 'connection-closed') {
-      const d = args.detail as EndpointDetailConnectionClosed;
-      suffix = ` (peerId=${d.peerId})`;
+      suffix = ` (peerId=${args.detail.peerId})`;
     } else if (args.code === 'send-failed') {
-      const d = args.detail as EndpointDetailSendFailed;
-      suffix = ` (peerId=${d.peerId}, cause=${d.cause})`;
+      suffix = ` (peerId=${args.detail.peerId}, cause=${args.detail.cause})`;
     } else if (args.code === 'already-closed') {
-      const d = args.detail as EndpointDetailAlreadyClosed;
-      suffix = ` (cause=${d.cause})`;
+      suffix = ` (cause=${args.detail.cause})`;
     } else if (args.code === 'connection-failed') {
-      const d = args.detail as EndpointDetailConnectionFailed;
-      suffix = ` (address=${d.address}, cause=${d.cause})`;
+      suffix = ` (address=${args.detail.address}, cause=${args.detail.cause})`;
     }
     super(`[EndpointError ${args.code}] expected: ${args.expected}; hint: ${args.hint}${suffix}`);
     this.name = 'EndpointError';
@@ -110,12 +104,7 @@ export type EndpointError = {
 }[EndpointErrorCode];
 
 interface EndpointErrorConstructor {
-  new <C extends EndpointErrorCode>(args: {
-    code: C;
-    expected: string;
-    hint: string;
-    detail: EndpointErrorDetailFor<C>;
-  }): EndpointErrorVariant<C>;
+  new <C extends EndpointErrorCode>(args: EndpointErrorArgs<C>): EndpointErrorVariant<C>;
   readonly prototype: EndpointErrorClass;
 }
 
@@ -146,7 +135,7 @@ const endpointErrorPolicy = {
       'the endpoint factory must successfully establish a connection or bind to the listen address',
     hint: 'the initial connection or bind failed; verify the address is reachable and the port is not in use, then retry',
   },
-} satisfies Record<string, EndpointErrorPolicy>;
+} satisfies Record<EndpointErrorCode, EndpointErrorPolicy>;
 
 /** Expected-invariant table per error code. */
 export const ENDPOINT_EXPECTED: Readonly<Record<EndpointErrorCode, string>> = Object.fromEntries(

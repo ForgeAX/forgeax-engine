@@ -20,6 +20,8 @@ export {
 export {
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
+  type RenderFeatureNativePlanBuilder,
+  type RenderFeatureNativePlanToken,
 } from './features/prepared-gpu-work';
 export {
   deriveLtcResourcePlan,
@@ -39,6 +41,8 @@ export {
   promoteExtendedLightingCandidate,
   recordExtendedLightingFailure,
 } from './prepare/extended-lighting/state';
+export type { MeshPipelinePreparation } from './publication/contract';
+export { captureMeshPipelinePreparation } from './publication/mesh-pipeline-preparation';
 export {
   buildRaySurfaceScene,
   type RaySurfaceInstance,

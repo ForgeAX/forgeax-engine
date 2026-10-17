@@ -5,7 +5,7 @@
     "running": "运行中 {{service}}:{{run}}",
     "error": "View 连接错误：{{message}}",
     "source": "截图来源",
-    "play": "Editor Play",
+    "play": "Play",
     "independent": "独立 Engine 运行",
     "noProject": "未打开项目",
     "connect": "查看当前项目运行",

@@ -59,12 +59,13 @@ async function fixture() {
   const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap();
   async function build(
     options: {
-      antialias?: 'none' | 'fxaa';
+      antialias?: 'none' | 'fxaa' | 'taa';
       observed?: boolean;
       outline?: boolean;
       rawOnly?: boolean;
       topology?: boolean;
       width?: number;
+      extent?: NonNullable<RenderPipelineTopology['extent']>;
       strength?: number;
       format?: 'bgra8unorm' | 'rgba16float';
       scope?: DeviceScope;
@@ -84,13 +85,50 @@ async function fixture() {
       size: 'surface',
       format: options.format ?? 'bgra8unorm',
     }).unwrap();
+    const temporal =
+      options.antialias === 'taa'
+        ? createRenderPipelineTarget(graph, 'scene-temporal', {
+            size: 'surface',
+            format: 'rgba16float',
+          }).unwrap()
+        : undefined;
+    const historyTarget = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+      const texture = graph
+        .importTexture(
+          label,
+          { size: 'surface', format, usage: 0x17 },
+          (frame) => frame.currentTexture,
+        )
+        .unwrap();
+      const view = graph
+        .importView(texture, { label: `${label}.view` }, (frame) => frame.view)
+        .unwrap();
+      return { texture, view, format, sampleCount: 1 as const };
+    };
+    const taaHistory =
+      temporal === undefined
+        ? undefined
+        : {
+            currentColor: historyTarget('taa-current-color'),
+            previousColor: historyTarget('taa-previous-color'),
+            currentTemporal: historyTarget('taa-current-temporal'),
+            previousTemporal: historyTarget('taa-previous-temporal'),
+            currentStability: historyTarget('taa-current-stability', 'r8unorm'),
+            previousStability: historyTarget('taa-previous-stability', 'r8unorm'),
+          };
     graph
       .addRasterPass('input', {
         accesses: [
           { resource: input.view, usage: 'color-attachment' },
           { resource: depth.view, usage: 'depth-stencil-write' },
+          ...(temporal ? [{ resource: temporal.view, usage: 'color-attachment' as const }] : []),
         ],
-        colorAttachments: [{ view: input.view, loadOp: 'clear', storeOp: 'store' }],
+        colorAttachments: [
+          { view: input.view, loadOp: 'clear', storeOp: 'store' },
+          ...(temporal
+            ? [{ view: temporal.view, loadOp: 'clear' as const, storeOp: 'store' as const }]
+            : []),
+        ],
         depthStencilAttachment: {
           view: depth.view,
           depthLoadOp: 'clear',
@@ -136,6 +174,7 @@ async function fixture() {
           graph,
           ...(options.observed ? { observationCaptureDomains: ['linear-ldr'] } : {}),
           standardOutput: { colorLut: lut },
+          ...(taaHistory ? { taaHistory } : {}),
           contributeFeatures: () => ok(undefined),
           capabilities: { rgba16floatRenderable: true },
         } as unknown as RenderPipelineBuildContext<RenderPipelineFrame>,
@@ -155,10 +194,12 @@ async function fixture() {
           },
           lane: { compute: true, storageBuffer: true },
           output: { colorLut: true },
+          ...(options.extent ? { extent: options.extent } : {}),
         } as unknown as RenderPipelineTopology,
         input,
         depth,
         { storage: output },
+        temporal,
       ).unwrap();
     } else addStandardToneLutPass(graph, input, output, lut, false).unwrap();
     const compiled = graph
@@ -193,11 +234,22 @@ async function fixture() {
   return { device, scope, factory, modules, lutLayout, build, draw };
 }
 
-it('removes only the two unobserved adjacent intermediates and retains the full AA/observer/outline/raw chains', async () => {
+it('removes only the two unobserved adjacent intermediates and retains spatial AA/observer/outline/raw chains', async () => {
   const f = await fixture();
   for (const options of [
     {},
     { antialias: 'fxaa' as const },
+    {
+      antialias: 'taa' as const,
+      extent: {
+        outputWidth: 8,
+        outputHeight: 8,
+        internalWidth: 4,
+        internalHeight: 4,
+        scale: 0.5,
+        generation: 1,
+      },
+    },
     { observed: true },
     { outline: true },
     { rawOnly: true },
@@ -212,6 +264,65 @@ it('removes only the two unobserved adjacent intermediates and retains the full 
     expect(info.resources.some((resource) => resource.label === 'standard-color-lut')).toBe(!fused);
     expect(info.passes.some((pass) => pass.name === 'standard-output-encoding')).toBe(!fused);
     (await compiled.retire()).unwrap();
+  }
+  f.scope.retire();
+});
+
+it.each([
+  undefined,
+  {
+    outputWidth: 8,
+    outputHeight: 8,
+    internalWidth: 8,
+    internalHeight: 8,
+    scale: 1,
+    generation: 1,
+  },
+])('fuses native TAA output while preserving histories and observed boundaries (extent %j)', async (extent) => {
+  const f = await fixture();
+  for (const observed of [false, true]) {
+    const { compiled } = await f.build({
+      antialias: 'taa',
+      topology: true,
+      observed,
+      ...(extent ? { extent } : {}),
+    });
+    try {
+      const info = compiled.inspect();
+      const names = info.passes.map((pass) => pass.name);
+      expect(names).toContain('taa-resolve');
+      expect(names.includes('standard-tone-lut-output')).toBe(!observed);
+      expect(
+        names.indexOf(observed ? 'standard-tone' : 'standard-tone-lut-output'),
+      ).toBeGreaterThan(names.indexOf('taa-resolve'));
+      expect(info.resources.some((resource) => resource.label === 'standard-tone-output')).toBe(
+        observed,
+      );
+      expect(info.resources.some((resource) => resource.label === 'standard-color-lut')).toBe(
+        observed,
+      );
+      expect(names.includes('standard-output-encoding')).toBe(observed);
+      const resolve = info.passes.find((pass) => pass.name === 'taa-resolve');
+      const output = info.passes.find(
+        (pass) => pass.name === (observed ? 'standard-tone' : 'standard-tone-lut-output'),
+      );
+      expect(resolve?.accesses.some((access) => access.resource === 'taa-current-color')).toBe(
+        true,
+      );
+      expect(output?.accesses.some((access) => access.resource === 'taa-current-color')).toBe(true);
+      for (const label of [
+        'taa-current-color',
+        'taa-previous-color',
+        'taa-current-temporal',
+        'taa-previous-temporal',
+        'taa-current-stability',
+        'taa-previous-stability',
+      ]) {
+        expect(info.resources.some((resource) => resource.label === label)).toBe(true);
+      }
+    } finally {
+      (await compiled.retire()).unwrap();
+    }
   }
   f.scope.retire();
 });

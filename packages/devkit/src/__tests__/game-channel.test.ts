@@ -6,6 +6,7 @@ import { transformWithOxc } from 'vite';
 import { expect, it, vi } from 'vitest';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
+import { generatedPlayerQueries } from './generated-player-queries.js';
 
 async function evaluate(source: string, values: Record<string, unknown>, dev: boolean) {
   const transformed = await transformWithOxc(
@@ -71,25 +72,20 @@ it('connects isolated frontend/source ports through the generated App options an
         });
         const removeListener = vi.spyOn(document, 'removeEventListener');
         const { options, controlMode } = await evaluate(
-          `(async () => { ${generated.slice(applyStart, callEnd)} return { options: result, controlMode }; })()`,
+          `(async () => { ${generatedPlayerQueries(generated)} ${generated.slice(applyStart, callEnd)} return { options: result, controlMode }; })()`,
           {
             crypto: globalThis.crypto,
             serveRuntimePackDelivery: () => () => {},
-            query: new URLSearchParams(),
+            URLSearchParams,
+            location: { search: '' },
             bootstrapRoot: 'project-bootstrap',
             resource: undefined,
             recipeValue: null,
-            profiler: undefined,
             workerExecution: true,
             executionWorkers: { engine },
             animation: JSON.parse(/const animation = (\{[^\n]+\});/.exec(generated)?.[1] ?? 'null'),
             canvas: presentationCanvas,
-            gpuPassTiming: undefined,
-            geometryLane: undefined,
-            dynamicGeometryMeshBudgetBytes: undefined,
             bundler: {},
-            cpuProfileRequested: false,
-            rhiCaptureRequested: false,
             runtimeScopeBinding: { catalogUrl: 'https://game.test/catalog.json' },
             document,
             window: {

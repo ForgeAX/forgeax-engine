@@ -9,7 +9,7 @@ Install `physicsPlugin('rapier-3d')` in the World; game code consumes the option
 | Load | Package-local patched WASM loading and native Cordis Physics service readiness. |
 | Fixed sync | Ordinary ECS Transform / RigidBody / Collider projection after fixed Scene propagation. Shapes consume resolved world scale; dynamic bodies own their pose after creation. |
 | Native step | Exactly one `FixedTime.delta` step per World fixed iteration; World owns host clock, bounded catch-up and discarded time. |
-| Derived geometry | Convex point sets and heightfields become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
+| Derived geometry | Convex point sets, heightfields and voxel regions become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
 | Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform; sleeping unchanged bodies avoid redundant writes. |
 | Managed joint group | Fixed joints or `JointData.revoluteWithAxes` hinges with body-local anchors and separate unit axes. All inputs/endpoints validate first; staged handles retire on preparation failure. |
 | Handoff | Detached body motion, explicit world pose/velocity writes and dynamic impulses use structured Results. Pose writes queue ordinary writeback; animation/visual blend stays upstream. |
@@ -227,3 +227,59 @@ Contact observation walks the native contact graph. Completed-step manifold quer
 reuse the owner-admitted native Body instead of resolving its parent twice;
 compound collision retirement inspects native adjacent pairs rather than every
 collider combination. Manifold, sensor and entity/generation checks remain authoritative.
+## Compact voxel inputs
+
+Unchanged normalized shapes retain their native collider through a complete
+replacement transaction. Equality includes geometry, pose, sensor and contact
+policy; producer revisions alone never authorize reuse. Cancellation removes
+only newly staged colliders, and admission validates the borrowed owner again.
+
+Small changes to an existing voxel shape copy its native occupied storage and
+apply the exact region-union difference to that independent copy. Preparation
+never edits the committed collider. The ordinary candidate admission, paired
+rollback, mass policy and snapshot contracts still apply. The difference is
+bounded to 4,096 cells and 100,000 region/cell visits; larger changes use full
+construction. This copies the whole native chunk store, not only dirty pages.
+
+The native module exposes `World.createColliderFromVoxelEdits(desc, source,
+removedXYZ, addedXYZ, parent)`: geometry comes from the source plus the edits,
+while the descriptor supplies pose/contact/mass policy. The result owns its
+storage and survives source removal. Tiny BVHs retain external leaf identities
+even when their one or two leaves arrive in a different order.
+
+Voxel CCD uses relative velocity in the grid's local frame and preserves
+nonzero substep positions. Rotating grids use occupied-cell nonlinear casts;
+rotating cast shapes use a conservative bound over their whole orientation arc.
+This preserves collisions at extra cost for large rotating voxel bodies.
+
+The module returned by `loadRapier3D()` accepts
+`ColliderDesc.voxelRegions(regions, voxelSize)`. `regions` is an `Int32Array`
+of half-open `[minX, minY, minZ, maxX, maxY, maxZ]` grid bounds. Regions form
+a union; overlaps do not add mass. Construction fills native chunks directly
+without expanding a JavaScript XYZ array. The compact descriptor retains its
+input in `shape.regions`; `shape.data` is empty until the collider's shape cache
+is cleared and its live shape is read back.
+
+`collider.setVoxels(xyz, filled)` applies one batch and returns the number of
+cells that changed. Duplicate/no-op coordinates do not count twice. Malformed
+or overflowing coordinate arrays are rejected before mutation. Changes become
+visible to simulation through the usual `World.step()`; mass, query and shape
+cache invalidation follow the existing single-voxel edit contract. The raw
+batch API does not itself establish an ECS/render publication transaction.
+
+Voxel/ball contact regeneration now invalidates solver references even though
+this specialized dispatcher has no query workspace. Empty voxel shapes have
+finite zero mass and bounds, allowing removal/refill without NaN propagation.
+Game owners should still retire fully destroyed debris according to their
+normal lifecycle.
+
+The public derived-physics path accepts `kind: 'voxels'`, an `Int32Array`
+`regions` buffer and a positive three-component `voxelSize`. It stages disabled
+native colliders through the same prepare/admit/cancel and paired rollback as
+convex inputs. Original and public candidate buffers are detached from private
+native preparation. Portable snapshots retain compact regions. Source IDs,
+revisions, explicit mass, dynamic admission and query ownership are unchanged.
+The conservative preparation budget accounts for expanded native chunks as well
+as the compact transfer bytes; a tiny encoded box cannot request an unbounded
+native allocation. Direct `setVoxels` is still a low-level native primitive,
+not a replacement for the Engine publication transaction.

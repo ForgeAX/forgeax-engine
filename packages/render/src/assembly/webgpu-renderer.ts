@@ -14,7 +14,6 @@ import {
 } from '@forgeax/engine-geometry';
 import type {
   BindGroupLayout,
-  PipelineLayout,
   RenderPipeline,
   Result,
   RhiCanvasTarget,
@@ -32,14 +31,13 @@ import {
 } from '@forgeax/engine-shader';
 import type {
   MaterialRenderState,
-  ParamSchemaEntry,
   PassKind,
   PrimitiveTopology,
   VertexAttributeMap,
 } from '@forgeax/engine-types';
 import { isStripTopology } from '@forgeax/engine-types';
 import { ProjectedDecalInvalidError } from '../decals/component';
-import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
+import { unavailableGeometry } from '../geometry-observation';
 import {
   isOutputColorSpace,
   OUTPUT_COLOR_SPACES,
@@ -50,6 +48,7 @@ import {
   projectPointShadowInspection,
 } from '../point-shadow-inspection';
 import { type PublishedRenderFrameInput, RenderPublicationError } from '../publication/contract';
+import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { type PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
 import { encodeFrameObservationCapture } from '../record/observation-capture';
 import {
@@ -63,7 +62,12 @@ import { createTerrainReceiptOwner } from '../terrain/submitted.js';
 import { prepareVolumePrograms } from '../volume/programs';
 import { createCameraViews } from './camera-views';
 import { inspectDeviceCapabilities } from './device-feature-admission';
-import { type FrameRecording, submitFrameRecordings } from './frame-recording';
+import {
+  drainFramePreparation,
+  type FramePreparation,
+  type FrameRecording,
+  prepareFrameSubmission,
+} from './frame-recording';
 import { createMaterialLayoutCache } from './material/layout-cache';
 import {
   MaterialPipelineRequestCache,
@@ -122,7 +126,6 @@ import type { ExtendedLightingResourceCandidate } from '../prepare/extended-ligh
 import {
   COOKIE_MATRIX_BYTES,
   COOKIE_SLICE_MIP_CHAIN_BYTES,
-  deriveExtendedLightingCapability,
   EXTENDED_LIGHTING_TOPOLOGY,
   IES_SLICE_HEIGHT,
   IES_SLICE_WIDTH,
@@ -185,8 +188,12 @@ import { createRendererDynamicGeometryController } from './dynamic-geometry-host
 import { createExternalTextureHost } from './external-texture-host';
 import { registerFxaaPostProcess } from './fxaa-registration';
 import type { RendererAssemblyImplementation } from './host-contract';
-import type { LodObservationCaptureValidity } from './lod-observation';
 import {
+  type LodObservationCaptureValidity,
+  lodObservationCaptureFailure,
+} from './lod-observation';
+import {
+  findStandardPbrEntry,
   isEngineOwnedMaterialShader,
   resolveMaterialPipelineGroup2Contract,
   resolveMaterialPipelineShaderId,
@@ -197,18 +204,15 @@ import {
   allowsUnlitPreparedFallback,
   invokeDeviceCreateShaderModule,
   type LayoutKind,
-  type MaterialShaderBindingContract,
   makeShaderDeviceAdapter,
   normalizeMaterialShaderVariantSet,
   prepareLowLimitMaterialShaderEntry,
   prepareMaterialShaders,
   requiresPreparedMaterialShader,
   resolveMaterialShaderBackendArtifactKey,
-  resolveMaterialShaderBindingContract,
   resolveMaterialShaderVariantSet,
   resolveMaterialShaderVertexInputContract,
   type ShaderDeviceAdapterInternal,
-  selectNoColorPbrVariant,
   selectPipelineLayoutForVariant,
   viewAndSceneDepthLayoutEntries,
 } from './material-shader-policy';
@@ -263,11 +267,8 @@ import { derivedPhysicsFrameError, dynamicGeometryFrameError } from './webgpu-re
 
 export type { RecoveryFailureLocation } from './recovery/failure-location';
 
-import {
-  ADMIT_EVERY_VARIANT,
-  STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
-} from './shader-prewarm-policy';
-import { buildReadyWebGPU } from './webgpu-ready';
+import { ADMIT_EVERY_VARIANT } from './shader-prewarm-policy';
+import { buildReadyWebGPU, prepareDevicePipelineLibrary } from './webgpu-ready';
 import { DEPTH_TEXTURE_FORMAT, HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
 import { adaptMipmapShaderModuleFactory } from './webgpu-ready-mipmap';
 import {
@@ -872,117 +873,25 @@ async function makeWebGPURenderer(
     candidateMaterialShaderUvSetCounts ?? materialShaderUvSetCounts;
   const currentEmptyPostProcessBgl = (): BindGroupLayout | null =>
     candidateEmptyPostProcessBgl === undefined ? emptyPostProcessBgl : candidateEmptyPostProcessBgl;
-  const getMaterialShaderBindingContract = (
-    materialShaderId: string,
-  ): MaterialShaderBindingContract => {
-    const lookup = getShader().findMaterialArtifact(materialShaderId);
-    return resolveMaterialShaderBindingContract(lookup.ok ? lookup.value.receipt : undefined);
-  };
-  const getOrBuildGroup0MaterialLayout = (): {
-    materialBgl: BindGroupLayout;
-    pipelineLayout: PipelineLayout;
-  } | null => {
-    const cacheState = currentPipelineCacheState();
-    if (cacheState.group0MaterialLayout !== null) return cacheState.group0MaterialLayout;
-    if (currentPipelineState() === null) return null;
-    const bglRes = currentBuildDevice().createBindGroupLayout({ entries: [] });
-    if (!bglRes.ok) {
-      internals.errorRegistry.fire(bglRes.error);
-      return null;
-    }
-    const plRes = currentBuildDevice().createPipelineLayout({
-      label: 'material-group-0-pipeline-layout',
-      bindGroupLayouts: [bglRes.value],
-    });
-    if (!plRes.ok) {
-      internals.errorRegistry.fire(plRes.error);
-      return null;
-    }
-    cacheState.group0MaterialLayout = { materialBgl: bglRes.value, pipelineLayout: plRes.value };
-    return cacheState.group0MaterialLayout;
-  };
-  const getOrBuildViewOnlyMaterialPipelineLayout = (): PipelineLayout | null => {
-    const cacheState = currentPipelineCacheState();
-    if (cacheState.viewOnlyMaterialPipelineLayout !== null) {
-      return cacheState.viewOnlyMaterialPipelineLayout;
-    }
-    const currentState = currentPipelineState();
-    if (currentState === null) return null;
-    const plRes = currentBuildDevice().createPipelineLayout({
-      label: 'material-view-only-pipeline-layout',
-      bindGroupLayouts: [currentState.viewBindGroupLayout],
-    });
-    if (!plRes.ok) {
-      internals.errorRegistry.fire(plRes.error);
-      return null;
-    }
-    cacheState.viewOnlyMaterialPipelineLayout = plRes.value;
-    return cacheState.viewOnlyMaterialPipelineLayout;
-  };
-  const getOrBuildViewAndSceneDepthMaterialPipelineLayout = (): PipelineLayout | null => {
-    const cacheState = currentPipelineCacheState();
-    if (cacheState.viewAndSceneDepthMaterialPipelineLayout !== null) {
-      return cacheState.viewAndSceneDepthMaterialPipelineLayout;
-    }
-    const bglRes = currentBuildDevice().createBindGroupLayout({
-      label: 'material-view-scene-depth-bgl',
-      entries: viewAndSceneDepthLayoutEntries(currentPipelineState()?.atmosphereAvailable === true),
-    });
-    if (!bglRes.ok) {
-      internals.errorRegistry.fire(bglRes.error);
-      return null;
-    }
-    const plRes = currentBuildDevice().createPipelineLayout({
-      label: 'material-view-scene-depth-pipeline-layout',
-      bindGroupLayouts: [bglRes.value],
-    });
-    if (!plRes.ok) {
-      internals.errorRegistry.fire(plRes.error);
-      return null;
-    }
-    cacheState.viewAndSceneDepthMaterialPipelineLayout = plRes.value;
-    return cacheState.viewAndSceneDepthMaterialPipelineLayout;
-  };
-  const getOrBuildGroup0ResourceLayout = (
-    materialShaderId: string,
-  ): { materialBgl: BindGroupLayout; pipelineLayout: PipelineLayout } | null => {
-    const cacheState = currentPipelineCacheState();
-    const cached = cacheState.group0ResourceLayouts.get(materialShaderId);
-    if (cached !== undefined) return cached;
-    const lookup = getShader().findMaterialArtifact(materialShaderId);
-    if (!lookup.ok || lookup.value.receipt?.bindings !== 'group-0-resource') {
-      return null;
-    }
-    const bgl = currentBuildDevice().createBindGroupLayout({
-      label: `material-group-0-resource-${materialShaderId}`,
-      entries: [
-        {
-          binding: 0,
-          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
-          texture: { sampleType: 'depth', viewDimension: '2d', multisampled: false },
-        },
-      ],
-    });
-    if (!bgl.ok) return null;
-    const pipelineLayout = currentBuildDevice().createPipelineLayout({
-      label: `material-group-0-resource-pl-${materialShaderId}`,
-      bindGroupLayouts: [bgl.value],
-    });
-    if (!pipelineLayout.ok) return null;
-    const built = { materialBgl: bgl.value, pipelineLayout: pipelineLayout.value };
-    cacheState.group0ResourceLayouts.set(materialShaderId, built);
-    return built;
-  };
-  const { getOrBuildPreparedMaterialPipelineLayout, getOrBuildPerShaderMaterialLayout } =
-    createMaterialLayoutCache({
-      currentPipelineCacheState,
-      currentPipelineState,
-      currentBuildDevice,
-      getShader,
-      viewAndSceneDepthLayoutEntries: () =>
-        viewAndSceneDepthLayoutEntries(currentPipelineState()?.atmosphereAvailable === true),
-      reportError: (error) => internals.errorRegistry.fire(error),
-    });
+  const {
+    getMaterialShaderBindingContract,
+    getOrBuildGroup0MaterialLayout,
+    getOrBuildViewOnlyMaterialPipelineLayout,
+    getOrBuildViewAndSceneDepthMaterialPipelineLayout,
+    getOrBuildGroup0ResourceLayout,
+    getOrBuildPreparedMaterialPipelineLayout,
+    getOrBuildPerShaderMaterialLayout,
+    getParamSchema,
+    getMaterialBindGroupLayout,
+  } = createMaterialLayoutCache({
+    currentPipelineCacheState,
+    currentPipelineState,
+    currentBuildDevice,
+    getShader,
+    viewAndSceneDepthLayoutEntries: () =>
+      viewAndSceneDepthLayoutEntries(currentPipelineState()?.atmosphereAvailable === true),
+    reportError: (error) => internals.errorRegistry.fire(error),
+  });
   const resolveCachedMaterialShaderVariantSet = (
     requestedVariantSet: string | undefined,
     manifestEntry: MaterialShaderManifestEntry | undefined,
@@ -1050,12 +959,14 @@ async function makeWebGPURenderer(
   const drewWithModule = (label: string): boolean =>
     activeShaderState.sharedShaderModuleAdapter?.hasModule(label) === true ||
     activeShaderState.sharedImmediateShaderModuleAdapter?.hasModule(label) === true;
-  const buildPipeline = (
+  const buildPipeline = async (
     scope: DeviceScope = activeDeviceScope,
     device: RhiDevice = currentBuildDevice(),
     residencyStore: GpuResidencyCache = gpuStore,
-  ): Promise<PipelineState> =>
-    buildReadyWebGPU(
+  ): Promise<PipelineState> => {
+    if (internals.options?.pipelineLibrary !== undefined)
+      await prepareDevicePipelineLibrary(device, internals.options.pipelineLibrary);
+    return buildReadyWebGPU(
       device,
       scope,
       getShader,
@@ -1158,6 +1069,7 @@ async function makeWebGPURenderer(
       await renderSystem.initializeSsr(device);
       return state;
     });
+  };
   const ready: Promise<Result<void, RhiError>> = Promise.resolve()
     .then(async () => {
       await prepareMaterialShaders(internals.device, getShader, assets, materialShaderUvSetCounts);
@@ -1184,46 +1096,6 @@ async function makeWebGPURenderer(
         return err(rendererInitializationError(e));
       },
     );
-  /**
-   * bug-20260527-renderstate-pipeline-dispatch-gap D-3:
-   * finds the engine-shipped PBR manifest entry from the shader registry
-   * by content marker (f_schlick BRDF helper call, same marker
-   * buildReadyWebGPU uses). Returns undefined when the manifest is
-   * empty (Camera-only path) or the pbr entry is not found.
-   */
-  const findStandardPbrEntry = (
-    variantSet?: string,
-  ): import('@forgeax/engine-types').ManifestEntry | undefined => {
-    const device = currentBuildDevice();
-    let standardEntry: import('@forgeax/engine-types').ManifestEntry | undefined;
-    for (const entry of getShader().entries()) {
-      if (entry.wgsl.includes('f_schlick')) {
-        standardEntry = entry;
-        break;
-      }
-    }
-    if (standardEntry === undefined) return undefined;
-    const pbrManifestEntry = [...getShader().materialShaderManifestEntries()].find(
-      (entry) => entry.identifier === 'forgeax::default-standard-pbr',
-    );
-    const noColorVariant = selectNoColorPbrVariant(
-      pbrManifestEntry,
-      device.caps.storageBuffer,
-      variantSet,
-      deriveExtendedLightingCapability(device).admitted,
-      device.caps.backendKind === 'webgpu' || device.caps.backendKind === 'wgpu-native',
-      (device.limits.maxSampledTexturesPerShaderStage ?? 0) >=
-        STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
-    );
-    if (noColorVariant !== undefined && noColorVariant.composedWgsl !== standardEntry.wgsl) {
-      return { ...standardEntry, wgsl: noColorVariant.composedWgsl };
-    }
-    const runtimePbr = getShader().findMaterialArtifact('forgeax::default-standard-pbr');
-    if (runtimePbr.ok && runtimePbr.value.source !== standardEntry.wgsl) {
-      return { ...standardEntry, wgsl: runtimePbr.value.source };
-    }
-    return standardEntry;
-  };
   const buildPipelineContext = (
     variantSet?: string,
     materialShaderId?: string,
@@ -1511,6 +1383,7 @@ async function makeWebGPURenderer(
         sampleCount,
       );
     if (!built.ok) {
+      if (candidatePipelineErrorScope && prepared?.isPending(built) !== true) throw built.error;
       if (built.error.code !== 'rhi-not-available') {
         internals.errorRegistry.fire(built.error);
       }
@@ -1519,6 +1392,16 @@ async function makeWebGPURenderer(
     currentPipelineCacheState().materialShaderPipelineCache.set(cacheKey, built.value);
     materialShaderPipelineGroup2Contracts.set(built.value as object, group2Contract);
     return built.value;
+  };
+  let candidatePipelineErrorScope = false;
+  const withPipelinePreparationErrors = (action: () => void): void => {
+    const previous = candidatePipelineErrorScope;
+    candidatePipelineErrorScope = true;
+    try {
+      action();
+    } finally {
+      candidatePipelineErrorScope = previous;
+    }
   };
   const buildMaterialShaderPipeline = (
     materialShaderId: string,
@@ -1770,7 +1653,7 @@ async function makeWebGPURenderer(
           prepare,
         );
       }
-      const pbrEntry = findStandardPbrEntry(effectiveVariantSet);
+      const pbrEntry = findStandardPbrEntry(getShader(), currentBuildDevice(), effectiveVariantSet);
       if (pbrEntry === undefined) return null;
       // Reuse readiness only for byte-identical WGSL. A fallback can select a
       // different capability variant, so one shared fallback label is unsafe.
@@ -2061,33 +1944,6 @@ async function makeWebGPURenderer(
     request[22] = true;
     return getMaterialShaderPipelineEntry(...request);
   };
-  const getParamSchema = (materialShaderId: string) => {
-    const lookup = getShader().findMaterialArtifact(materialShaderId);
-    return lookup.ok ? lookup.value.paramSchema : undefined;
-  };
-  // feat-20260621-learn-render-5-5-parallax M2 / w6 (D-1): expose the per-shader
-  // material BGL so the record stage creates the material bind group against
-  // the matching paramSchema-derived layout. Returns undefined only for
-  // group-0 / view-only contracts or an unavailable shader layout; built-in
-  // material IDs continue to resolve through the shared layout path.
-  const getMaterialBindGroupLayout = (
-    materialShaderId: string,
-    materialParamSchema?: readonly ParamSchemaEntry[],
-  ): BindGroupLayout | undefined => {
-    if (isEngineOwnedMaterialShader(materialShaderId)) return undefined;
-    const contract = getMaterialShaderBindingContract(materialShaderId).bindings;
-    if (contract === 'group-0') {
-      return getOrBuildGroup0MaterialLayout()?.materialBgl;
-    }
-    if (contract === 'group-0-resource') {
-      return getOrBuildGroup0ResourceLayout(materialShaderId)?.materialBgl;
-    }
-    if (contract === 'view-and-scene-depth') return undefined;
-    return (
-      getOrBuildPerShaderMaterialLayout(materialShaderId, materialParamSchema)?.materialBgl ??
-      undefined
-    );
-  };
   // Post-process modules share the async shader adapter: pending compilation
   // returns null; subsequent frames consume the cached pipeline. Group 0 is
   // reserved for View, group 1 holds inputs; vs_main/fs_main draw a fullscreen
@@ -2286,6 +2142,7 @@ async function makeWebGPURenderer(
     getMaterialShaderPipelineEntry,
     prepareMaterialShaderPipeline,
     prepareMaterialShaderPipelineEntry,
+    withPipelinePreparationErrors,
     getMaterialShaderBindingContract: getMaterialShaderBindingContract,
     getFeatureShaderSource: (identifier) =>
       resolveFeatureShaderSource(getShader(), internals.device, identifier),
@@ -2465,6 +2322,15 @@ async function makeWebGPURenderer(
         getGpuStore: () => gpuStore,
         currentGeneration: () => activeDeviceScope.generation,
         renderSystem: cameraViews,
+        capturePipelinePreparation: (input) =>
+          captureMeshPipelinePreparation({
+            ...input,
+            assets,
+            capabilities: internals.device.caps,
+            limits: internals.device.limits,
+          }),
+        prepareCandidatePipelines: (input, signal) =>
+          cameraViews.prepareCandidatePipelines(input, signal),
       },
       internals.options?.dynamicGeometryMeshBudgetBytes,
     );
@@ -2536,6 +2402,613 @@ async function makeWebGPURenderer(
     },
   });
   let surfaceReleased = false;
+  let preparationActive = false;
+  const preparationRejected = () =>
+    err(
+      new RendererContractFailureError(
+        'draw',
+        'one active Renderer preparation operation without interleaved resource mutation',
+      ),
+    );
+  function* prepareDraw(
+    worldsOrRequest: readonly World[] | RenderFrameInput | PublishedRenderFrameInput,
+    options?: DrawOwnerOptions,
+    isCurrent?: () => boolean,
+  ): FramePreparation<Result<void | FrameReceipt, RhiError | RenderError>> {
+    const isFrameRequest = !Array.isArray(worldsOrRequest);
+    const publicationRequest =
+      isFrameRequest && 'publication' in worldsOrRequest
+        ? (worldsOrRequest as PublishedRenderFrameInput)
+        : undefined;
+    const frameRequest =
+      isFrameRequest && publicationRequest === undefined
+        ? (worldsOrRequest as RenderFrameInput)
+        : undefined;
+    const sceneAbsent = frameRequest?.camera === null;
+    if (
+      sceneAbsent &&
+      (frameRequest.leases.length !== 0 || frameRequest.environment !== null || ui === undefined)
+    ) {
+      return err(
+        new RendererOperationError('frame-input-invalid', {
+          operation: 'draw',
+          cause: new RendererContractFailureError(
+            'draw',
+            'a scene-free frame requires empty leases, null camera/environment and configured screen UI',
+          ),
+        }),
+      );
+    }
+    let publication: PreparedRenderPublication | undefined;
+    if (publicationRequest !== undefined) {
+      if (publicationReceiver === undefined)
+        return err(
+          new RenderPublicationError({
+            reason: 'identity',
+            subject: 'RendererOptions.publicationSource',
+          }),
+        );
+    } else if (publicationReceiver !== undefined && !sceneAbsent) {
+      return err(
+        new RenderPublicationError({
+          reason: 'identity',
+          subject: 'a publication-bound renderer cannot consume local World leases',
+        }),
+      );
+    }
+    const worlds: readonly World[] =
+      frameRequest !== undefined
+        ? frameRequest.leases
+            .map((lease) => attachedLeases.get(lease))
+            .filter((world): world is World => world !== undefined)
+        : publicationRequest === undefined
+          ? (worldsOrRequest as readonly World[])
+          : [];
+    const localLeases = worlds.map(
+      (world) => [...attachedLeases].reverse().find(([, source]) => source === world)?.[0],
+    );
+    const readLeases: readonly RenderReadLease[] | undefined =
+      frameRequest?.leases ??
+      (localLeases.every((lease): lease is RenderReadLease => lease !== undefined)
+        ? localLeases
+        : undefined);
+    const physicsFrameError = derivedPhysicsFrameError(worlds);
+    if (physicsFrameError !== undefined) return err(physicsFrameError);
+    const geometryFrameError = dynamicGeometryFrameError(worlds, (world) =>
+      dynamicGeometryHost.dynamicGeometryFault(world),
+    );
+    if (geometryFrameError !== undefined) return err(geometryFrameError);
+    if (frameRequest !== undefined && worlds.length !== frameRequest.leases.length) {
+      return err(
+        new RendererOperationError('world-lease-invalid', {
+          operation: 'draw',
+          cause: new RendererContractFailureError(
+            'draw',
+            'every RenderFrameInput lease must be attached to this Renderer',
+          ),
+        }),
+      );
+    }
+    const cameraOwner =
+      frameRequest?.camera == null ? -1 : frameRequest.leases.indexOf(frameRequest.camera.lease);
+    const resourceOwner =
+      frameRequest?.environment == null
+        ? -1
+        : frameRequest.leases.indexOf(frameRequest.environment.lease);
+    if (frameRequest !== undefined && !sceneAbsent && (cameraOwner < 0 || resourceOwner < 0)) {
+      return err(
+        new RendererOperationError('frame-input-invalid', {
+          operation: 'draw',
+          cause: new RendererContractFailureError(
+            'draw',
+            cameraOwner < 0
+              ? 'camera lease must be present in RenderFrameInput.leases'
+              : 'environment lease must be present in RenderFrameInput.leases',
+          ),
+        }),
+      );
+    }
+    const drawOptions: DrawOwnerOptions =
+      frameRequest !== undefined
+        ? {
+            cameraOwner,
+            resourceOwner,
+            ...(frameRequest.camera?.entityKey === undefined
+              ? {}
+              : { cameraEntityKey: frameRequest.camera.entityKey }),
+            ...motionBlurDrawOptions(frameRequest),
+            ...(frameRequest.profileFrame === undefined
+              ? {}
+              : { profileFrame: frameRequest.profileFrame }),
+            ...(frameRequest.geometryObservation === true
+              ? { geometryObservation: true as const }
+              : {}),
+            ...(frameRequest.geometryLane === undefined
+              ? {}
+              : { geometryLane: frameRequest.geometryLane }),
+          }
+        : publicationRequest === undefined
+          ? (options ?? { cameraOwner: 0, resourceOwner: 0 })
+          : {
+              cameraOwner: 0,
+              resourceOwner: 0,
+              sampleTimeSeconds: publicationRequest.publication.sampleTimeSeconds,
+              temporalReset: publicationRequest.publication.temporalReset,
+              ...(publicationRequest.geometryObservation === true
+                ? {
+                    geometryObservation: true as const,
+                    ...(publicationRequest.geometryObservationSourceWorldIdentity === undefined
+                      ? {}
+                      : {
+                          geometryObservationSourceWorldIdentity:
+                            publicationRequest.geometryObservationSourceWorldIdentity,
+                        }),
+                  }
+                : {}),
+              ...(publicationRequest.geometryLane === undefined
+                ? {}
+                : { geometryLane: publicationRequest.geometryLane }),
+            };
+    // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M5 / w21
+    // (plan-strategy D-1, D-8): post-dispose the renderer is dead. AI
+    // users observing `result.ok === false && err.code === 'rhi-not-
+    // available'` know to rebuild the renderer (mirrors the "ready not
+    // settled" + "pipelineState null" fail-fast paths below; reuses the
+    // existing closed-union member, no new ErrorCode introduced).
+    if (disposed) {
+      const e = new RhiError({
+        code: 'rhi-not-available',
+        expected:
+          'renderer not disposed before calling renderer.draw(worlds, { cameraOwner, resourceOwner })',
+        hint: 'renderer.dispose() flipped the lifecycle latch; rebuild via createRenderer / Engine.create',
+      });
+      internals.errorRegistry.fire(e);
+      return err(e);
+    }
+    if (surfaceReleased) {
+      return err(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: 'renderer surface restored before drawing',
+          hint: 'call renderer.restoreSurface() after the temporary surface owner stops',
+        }),
+      );
+    }
+    const canvasSizeError = rejectZeroCanvasSize(internals.canvas.width, internals.canvas.height);
+    if (canvasSizeError !== undefined) return err(canvasSizeError);
+    // Health owns admission for the legacy Host entry as well as the public
+    // Renderer. The initiating failure was already reported; do not fire it
+    // again for every attempted frame while the Host chooses recovery/rebuild.
+    const health = internals.healthRegistry.getLastSnapshot();
+    if (health.reason !== 'alive') {
+      return err(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: 'renderer generation is healthy before submitting another frame',
+          hint:
+            health.reason === 'device-lost'
+              ? 'call renderer.recover() after a host-chosen delay; camera holds previous frame'
+              : 'dispose and recreate the faulted Renderer; submitted GPU completion is unknown',
+        }),
+      );
+    }
+    // D-S4: ready not settled => fire onError + skip frame. Uses
+    // 'rhi-not-available' (closed union placeholder semantics; charter
+    // proposition 4 explicit failure - AI users observe through onError
+    // and decide whether to retry).
+    if (!readySettled && ui === undefined) {
+      const e = new RhiError({
+        code: 'rhi-not-available',
+        expected:
+          'await renderer.initialization before calling renderer.draw(worlds, { cameraOwner, resourceOwner })',
+        hint: 'await renderer.initialization resolves once the manifest / pipeline / asset upload chain completes',
+      });
+      internals.errorRegistry.fire(e);
+      return err(e);
+    }
+    // pipeline build rejected: ready Promise has already surfaced the
+    // structured error to AI users through `await renderer.initialization`. Skip
+    // to keep draw(world) idempotent; a transient retry next frame is
+    // the responsibility of the AI user (charter proposition 9).
+    if (pipelineState === null && ui === undefined) {
+      const e = new RhiError({
+        code: 'rhi-not-available',
+        expected: 'pipelineState built during Renderer.initialization',
+        hint: 'await renderer.initialization resolved successfully; rebuild renderer or fix the upstream RhiError',
+      });
+      internals.errorRegistry.fire(e);
+      return err(e);
+    }
+    // feat-20260708-composited-multi-world-rendering M3 / D-5: draw-args
+    // entry validation runs before each extract or context configuration.
+    // Empty worlds / owner out of range returns a structured Result.err
+    // (never silent, charter P3) without touching GPU state. The two codes
+    // are non-exclusive: an empty array short-circuits to empty-worlds. The
+    // check is defensive against JS callers passing a non-array despite the
+    // compile-time World[] type (red-window migration safety).
+    const worldCount =
+      publicationRequest === undefined ? (Array.isArray(worlds) ? worlds.length : 0) : 1;
+    if (!sceneAbsent && worldCount === 0 && internals.device.caps.backendKind === 'null') {
+      return ok(undefined);
+    }
+    // Validate both owner indices (cameraOwner before resourceOwner, first
+    // offender wins). The empty object only protects the JS boundary; it is
+    // rejected by the same validation and never becomes another draw shape.
+    const drawOwners = drawOptions;
+    const argsCheck = sceneAbsent ? ok(undefined) : validateDrawArgs(worldCount, drawOwners);
+    if (!argsCheck.ok) {
+      internals.errorRegistry.fire(argsCheck.error);
+      return argsCheck;
+    }
+    // Configure context lazily on first draw (D-S1 single-point
+    // exemption): GPUCanvasContext.configure({device}) needs a raw
+    // The canvas context is configured through the RHI device scope.
+    const contextConfigured =
+      pipelineState === null
+        ? ok(undefined)
+        : ensureContextConfigured(internals, pipelineState, internals.errorRegistry);
+    if (!contextConfigured.ok) return contextConfigured;
+    // w24 — facade-level try/catch produces Result.err on unexpected throw
+    // (D-P6 dual-channel preserved: per-stage RhiError continues to fan out
+    // through onError separately; the facade Result is the synchronous
+    // summary AI users can ignore or branch on).
+    try {
+      if (publicationRequest !== undefined && publicationReceiver !== undefined) {
+        const accepted = publicationReceiver.accept(publicationRequest.publication, assets);
+        if (!accepted.ok) return accepted;
+        publication = {
+          ...accepted.value,
+          ...(publicationRequest.onFeatureSourceSubmitted === undefined
+            ? {}
+            : {
+                onFeatureSourceSubmitted: publicationRequest.onFeatureSourceSubmitted,
+              }),
+        };
+      }
+      renderTargetHost.beginFrame();
+      externalTextureHost.beginFrame();
+
+      const timingHost = internals;
+      const timingRequested =
+        isFrameRequest &&
+        (frameRequest?.profileFrame !== undefined || internals.options?.captureGpuTimings === true);
+      let volumeTimingCapture: GpuTimingCapture | undefined;
+      const volumeTimingUnavailableReason = timingRequested
+        ? 'timestamp capture is unavailable on this device'
+        : 'timestamp capture was not requested for this frame';
+      if (timingRequested && gpuPassTimingOptions === undefined) {
+        const createdTiming = GpuTimingCapture.create(internals.device);
+        if (createdTiming.ok) volumeTimingCapture = createdTiming.value;
+      }
+      if (isFrameRequest) {
+        timingHost.observationFrameId = frameId + 1;
+        timingHost.observationGraphGeneration = undefined;
+        timingHost.observationCaptureDomains = pendingObservationDomains;
+        timingHost.gpuPassTimingFrameIdentity = {
+          frameId: frameId + 1,
+          deviceGeneration: activeDeviceScope.generation,
+          graphGeneration: 0,
+        };
+      }
+      uiOnlyFrame = ui !== undefined && (sceneAbsent || !readySettled || pipelineState === null);
+      ui?.prepare(
+        (drawOptions.sampleTimeSeconds ?? 0) * 1000,
+        internals.canvas.width,
+        internals.canvas.height,
+        uiOnlyFrame,
+        internals.outputColorSpace.report.effective,
+        uiFormats.storage === uiFormats.view &&
+          pendingObservationDomains?.includes('final-display') === true,
+      );
+      const recordUi = function* (): FrameRecording {
+        const encoded = internals.device.createCommandEncoder({ label: 'screen-ui-frame' });
+        if (!encoded.ok) throw encoded.error;
+        const generation = activeDeviceScope.generation;
+        const submitted = yield {
+          encoder: encoded.value,
+          device: internals.device,
+          beforeSubmit: renderInternals.beforeSubmit,
+          isCurrent: () => !disposed && activeDeviceScope.generation === generation,
+          reportError: (error: RhiError) => internals.errorRegistry.fire(error),
+        };
+        return submitted.ok;
+      };
+      const submitted = uiOnlyFrame
+        ? yield* prepareFrameSubmission([recordUi()], undefined, renderInternals, isCurrent)
+        : yield* cameraViews.prepareSubmission(
+            worlds,
+            drawOptions,
+            readLeases,
+            volumeTimingCapture,
+            publication === undefined || publicationReceiver === undefined
+              ? undefined
+              : { publication, receiver: publicationReceiver },
+            isCurrent,
+          );
+      timingHost.observationFrameId = undefined;
+      timingHost.observationCaptureDomains = undefined;
+      timingHost.gpuPassTimingFrameIdentity = undefined;
+      if (!submitted) {
+        const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
+        volumeTimingCapture?.discard();
+        if (cleanupFailure !== undefined) return err(cleanupFailure);
+        const invalidMotionBlur = cameraViews.currentSystem.motionBlurInvalidParams;
+        if (invalidMotionBlur !== undefined) return err(invalidMotionBlur);
+        return err(
+          new RendererContractFailureError(
+            'draw',
+            'the Standard render owner did not submit a command buffer; inspect Renderer error events and recover the owning frame path',
+          ),
+        );
+      }
+      const timingCompletion = timingHost.gpuPassTimingSubmittedWork;
+      timingHost.gpuPassTimingSubmittedWork = undefined;
+      const reflectionFallbackCompletion = uiOnlyFrame
+        ? undefined
+        : cameraViews.currentSystem.reflectionFallbackCompletion;
+      const receiptFrameId = isFrameRequest ? ++frameId : undefined;
+      const receiptGeneration = activeDeviceScope.generation;
+      const queueCompletion = timingCompletion ?? internals.device.queue.onSubmittedWorkDone();
+      // Submission succeeded, so a rejected completion leaves this generation's
+      // GPU work unconfirmed. Do not retire the device scope here: a completion
+      // failure is not proof of device loss. Health and continuations own admission.
+      void Promise.resolve(queueCompletion).catch((cause: unknown) => {
+        if (
+          disposed ||
+          receiptGeneration !== activeDeviceScope.generation ||
+          internals.healthRegistry.getLastSnapshot().reason !== 'alive'
+        )
+          return;
+        const failure = new RendererOperationError(
+          'device-operation-failed',
+          {
+            operation: 'complete-frame',
+            ...(receiptFrameId === undefined ? {} : { frameId: receiptFrameId }),
+            deviceGeneration: receiptGeneration,
+            cause: structuredRendererCause(cause, 'complete-frame'),
+          },
+          { cause },
+        );
+        // Seal the first cause before a health listener can dispose/rebuild.
+        for (const [continuation, pending] of frameContinuations) {
+          if (pending.deviceGeneration === receiptGeneration)
+            continuation.terminate({ code: 'internal-fault', detail: failure });
+        }
+        internals.healthRegistry.fire({
+          reason: 'internal-fault',
+          recoverable: false,
+          detail: {
+            message: 'submitted queue completion failed; dispose and recreate this Renderer',
+          },
+        });
+        internals.errorRegistry.fire(failure);
+      });
+      ui?.submitted(queueCompletion);
+      gpuStore.trackMeshSubmission(queueCompletion);
+      internals.pack.instrumentation?.onFrameBoundary?.();
+      if (receiptFrameId === undefined) {
+        const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
+        renderTargetHost.onFrameSubmitted(
+          queueCompletion.then(() => ({ ok: true, value: undefined }) as const),
+        );
+        if (cleanupFailure !== undefined) return err(cleanupFailure);
+        return ok(undefined);
+      }
+      const completion: FrameReceipt['completed'] = Promise.all([
+        queueCompletion,
+        reflectionFallbackCompletion ?? Promise.resolve(),
+      ])
+        .then(() => ok(undefined))
+        .catch((cause: unknown) =>
+          err(
+            new RendererOperationError(
+              'device-operation-failed',
+              {
+                operation: 'complete-frame',
+                frameId: receiptFrameId,
+                deviceGeneration: receiptGeneration,
+                cause: structuredRendererCause(cause, 'complete-frame'),
+              },
+              { cause },
+            ),
+          ),
+        );
+      const continuation = createContinuationTerminator();
+      const receiptPresentation = uiOnlyFrame
+        ? 'pending'
+        : (cameraViews.presentation ?? renderSystem.presentation);
+      const presentationPendingReason =
+        receiptPresentation === 'ready'
+          ? undefined
+          : uiOnlyFrame
+            ? Object.freeze({ code: 'ui-only' as const })
+            : cameraViews.active
+              ? cameraViews.presentationPendingReason
+              : renderSystem.presentationPendingReason;
+      frameContinuations.set(continuation, {
+        frameId: receiptFrameId,
+        deviceGeneration: receiptGeneration,
+        presentation: receiptPresentation,
+        stages: observeFrameCompletionStages(queueCompletion, reflectionFallbackCompletion),
+      });
+      const guardedCompletion = guardFrameCompletion(
+        completion,
+        () => continuation.guard('queue-completion'),
+        () =>
+          new RendererOperationError('device-operation-failed', {
+            operation: 'complete-frame',
+            frameId: receiptFrameId,
+            deviceGeneration: receiptGeneration,
+            cause: structuredRendererCause(
+              {
+                code: 'stale-generation',
+                expected: 'frame completion belongs to its device generation',
+                hint: 'discard the stale receipt',
+              },
+              'complete-frame',
+            ),
+          }),
+        (cause: unknown) =>
+          new RendererOperationError('device-operation-failed', {
+            operation: 'complete-frame',
+            frameId: receiptFrameId,
+            deviceGeneration: receiptGeneration,
+            cause: structuredRendererCause(cause, 'complete-frame'),
+          }),
+      );
+      const terminated = continuation.promise().then((reason) =>
+        err(
+          new RendererOperationError(
+            'device-operation-failed',
+            {
+              operation: 'complete-frame',
+              frameId: receiptFrameId,
+              deviceGeneration: receiptGeneration,
+              cause: structuredRendererCause(
+                reason.code === 'internal-fault'
+                  ? reason.detail
+                  : {
+                      code: reason.code,
+                      expected: 'a frame continuation completes before device loss or disposal',
+                      hint: 'discard the stale receipt and inspect the current renderer generation',
+                      detail: reason,
+                    },
+                'complete-frame',
+              ),
+            },
+            reason.code === 'internal-fault' ? { cause: reason.detail.cause } : undefined,
+          ),
+        ),
+      );
+      const completed: FrameReceipt['completed'] = Promise.race([
+        guardedCompletion,
+        terminated,
+      ]).finally(() => {
+        frameContinuations.delete(continuation);
+      });
+      const captures = observationCaptureOwner.consume(receiptFrameId);
+      pendingObservationDomains = undefined;
+      const receiptGraphGeneration =
+        timingHost.observationGraphGeneration ??
+        (uiOnlyFrame ? 0 : (cameraViews.currentSystem.perFrameGraphInfo?.generation ?? 0));
+      const receipt = Object.freeze({
+        frameId: receiptFrameId,
+        deviceGeneration: receiptGeneration,
+        presentation: receiptPresentation,
+        ...(presentationPendingReason === undefined ? {} : { presentationPendingReason }),
+        backendId: internals.device.caps.backendKind,
+        graphGeneration: receiptGraphGeneration,
+        ...(uiOnlyFrame ||
+        cameraViews.active ||
+        renderSystem.lastSuccessfulBarrelDistortion === undefined
+          ? {}
+          : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
+        completed,
+      });
+      renderTargetHost.onFrameSubmitted(completed, receipt);
+      latestReceipt = receipt;
+      latestPublicationRevision = publicationReceiver?.acceptedRevision ?? 0;
+      latestLodObservation = {
+        receipt,
+        capture: cameraViews.lastLodObservationCapture,
+        draws: captureMaterialDraws(cameraViews.lastLodObservationCapture),
+      };
+      if (captures.length > 0) {
+        const captureRead: ObservationCaptureRead = async () => {
+          const completion = await completed;
+          if (!completion.ok) {
+            const cleanupFailure = disposeObservationCaptures(captures);
+            return cleanupFailure === undefined ? completion : err(cleanupFailure);
+          }
+          const read = [];
+          for (const capture of captures) {
+            const bytes = await readObservationCapture(capture);
+            if (!bytes.ok) {
+              const cleanupFailure = disposeObservationCaptures(captures);
+              return cleanupFailure === undefined ? bytes : err(cleanupFailure);
+            }
+            read.push({ capture, bytes: bytes.value });
+          }
+          return ok(read);
+        };
+        receiptObservationBuffers.set(receipt, captures);
+        receiptObservationCaptures.set(receipt, captureRead);
+      }
+      const passTimingCapture = uiOnlyFrame ? undefined : timingHost.gpuPassTimingCapture;
+      const timingBeginReason = uiOnlyFrame ? undefined : timingHost.gpuPassTimingBeginReason;
+      const timingSource =
+        passTimingCapture === undefined
+          ? gpuPassTimingUnavailable === undefined && timingBeginReason === undefined
+            ? undefined
+            : async (): Promise<GpuPassTimingObservation> =>
+                gpuPassTimingUnavailable ??
+                failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingReason)
+          : async (): Promise<GpuPassTimingObservation> => {
+              const observed = await passTimingCapture.observe();
+              if (!observed.ok) return failedGpuPassTimingObservation(observed.error);
+              const frame = observed.value;
+              const unmeasured = frame.passes.find((pass) => pass.status === 'unmeasured');
+              if (unmeasured !== undefined) {
+                return { status: 'partial', frame, reason: unmeasured.reason };
+              }
+              if (frame.droppedPassCount > 0) {
+                return {
+                  status: 'partial',
+                  frame,
+                  reason: {
+                    code: 'query-budget-exceeded',
+                    expected: 'all executed passes fit within the bounded query budget',
+                    hint: 'increase maxPassesPerFrame or simplify the pass graph',
+                    detail: { droppedPassCount: frame.droppedPassCount },
+                  },
+                };
+              }
+              return { status: 'complete', frame };
+            };
+      timingObservationStore?.register(receipt, timingSource);
+      if (timingRequested && gpuPassTimingOptions === undefined) {
+        receiptTimings.set(
+          receipt,
+          volumeTimingCapture?.observation() ??
+            Promise.resolve({
+              status: 'unavailable',
+              reason: volumeTimingUnavailableReason,
+            }),
+        );
+      }
+      issuedReceipts.add(receipt);
+      terrainReceipts.register(receipt, uiOnlyFrame ? [] : cameraViews.terrainSections());
+      if (!uiOnlyFrame)
+        dynamicGeometryHost.publishDynamicGeometry(receipt, worlds, frameRequest?.fixedStep);
+      return ok(receipt);
+    } catch (cause) {
+      internals.observationFrameId = undefined;
+      internals.observationCaptureDomains = undefined;
+      internals.gpuPassTimingFrameIdentity = undefined;
+      const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
+      if (cleanupFailure !== undefined) return err(cleanupFailure);
+      if (cause instanceof RendererOperationError) return err(cause);
+      if (cause instanceof CameraViewInvalidError) return err(cause);
+      if (cause instanceof ProjectedDecalInvalidError) return err(cause);
+      const error =
+        cause instanceof Error
+          ? { code: 'unknown' as const, message: cause.message, name: cause.name }
+          : { code: 'unknown' as const, message: String(cause) };
+      const e = new RhiError({
+        code: 'webgpu-runtime-error',
+        expected:
+          'renderSystem.draw(worlds, { cameraOwner, resourceOwner }) completes without throwing',
+        hint: `RenderSystem internal error: ${error.message}`,
+        detail: { error },
+      });
+      internals.errorRegistry.fire(e);
+      return err(e);
+    } finally {
+      // Native video pixels have been consumed by synchronous queue copy calls.
+      // Release them on every success/failure path, including direct publication users.
+      publicationReceiver?.releaseVideoFrames();
+    }
+  }
   const renderer: RendererAssemblyImplementation = {
     setSurfaceDynamicInput(frame) {
       cameraViews.setSurfaceDynamicInput(frame);
@@ -2564,6 +3037,9 @@ async function makeWebGPURenderer(
     },
     ...dynamicGeometryHost,
     preparePublishedMeshResidency: createPublishedMeshResidencyHost({
+      assets,
+      prepareCandidatePipelines: (input, signal) =>
+        cameraViews.prepareCandidatePipelines(input, signal),
       receiver: publicationReceiver,
       getGpuStore: () => gpuStore,
       currentGeneration: () => activeDeviceScope.generation,
@@ -2646,7 +3122,16 @@ async function makeWebGPURenderer(
     },
     bounds: (world, entity) => (disposed ? undefined : cameraViews.bounds(world, entity)),
     currentDeviceGeneration: () => activeDeviceScope.generation,
-    inspect(): RenderInspection {
+    inspect(options): RenderInspection {
+      const library = internals.device.pipelineLibrary;
+      const exported = options?.pipelineLibrary === true ? library?.export() : undefined;
+      if (options?.pipelineLibrary === true && exported === undefined)
+        throw new RhiError({
+          code: 'feature-not-enabled',
+          expected: 'backend pipeline library support',
+          hint: 'select WebGPU for pipeline recipe collection',
+        });
+      if (exported?.ok === false) throw exported.error;
       const inspectedSystem = cameraViews.currentSystem;
       const health = internals.healthRegistry.getLastSnapshot();
       const deviceLost = health.reason === 'device-lost';
@@ -2692,6 +3177,8 @@ async function makeWebGPURenderer(
         materialShadersSamplePointShadows(getShader().materialShaderManifestEntries()),
       );
       return Object.freeze({
+        ...(library === undefined ? {} : { pipelineLibrary: library.inspect() }),
+        ...(exported?.ok === true ? { pipelineLibraryManifest: exported.value } : {}),
         state,
         views: cameraViews.inspect(),
         recovery: recoveryInspection,
@@ -3122,576 +3609,120 @@ async function makeWebGPURenderer(
       worldsOrRequest: readonly World[] | RenderFrameInput | PublishedRenderFrameInput,
       options?: DrawOwnerOptions,
     ): Result<void | FrameReceipt, RhiError | RenderError> {
-      const isFrameRequest = !Array.isArray(worldsOrRequest);
-      const publicationRequest =
-        isFrameRequest && 'publication' in worldsOrRequest
-          ? (worldsOrRequest as PublishedRenderFrameInput)
-          : undefined;
-      const frameRequest =
-        isFrameRequest && publicationRequest === undefined
-          ? (worldsOrRequest as RenderFrameInput)
-          : undefined;
-      const sceneAbsent = frameRequest?.camera === null;
-      if (
-        sceneAbsent &&
-        (frameRequest.leases.length !== 0 || frameRequest.environment !== null || ui === undefined)
-      ) {
-        return err(
-          new RendererOperationError('frame-input-invalid', {
-            operation: 'draw',
-            cause: new RendererContractFailureError(
-              'draw',
-              'a scene-free frame requires empty leases, null camera/environment and configured screen UI',
-            ),
-          }),
-        );
-      }
-      let publication: PreparedRenderPublication | undefined;
-      if (publicationRequest !== undefined) {
-        if (publicationReceiver === undefined)
-          return err(
-            new RenderPublicationError({
-              reason: 'identity',
-              subject: 'RendererOptions.publicationSource',
-            }),
-          );
-      } else if (publicationReceiver !== undefined && !sceneAbsent) {
-        return err(
-          new RenderPublicationError({
-            reason: 'identity',
-            subject: 'a publication-bound renderer cannot consume local World leases',
-          }),
-        );
-      }
-      const worlds: readonly World[] =
-        frameRequest !== undefined
-          ? frameRequest.leases
-              .map((lease) => attachedLeases.get(lease))
-              .filter((world): world is World => world !== undefined)
-          : publicationRequest === undefined
-            ? (worldsOrRequest as readonly World[])
-            : [];
-      const localLeases = worlds.map(
-        (world) => [...attachedLeases].reverse().find(([, source]) => source === world)?.[0],
-      );
-      const readLeases: readonly RenderReadLease[] | undefined =
-        frameRequest?.leases ??
-        (localLeases.every((lease): lease is RenderReadLease => lease !== undefined)
-          ? localLeases
-          : undefined);
-      const physicsFrameError = derivedPhysicsFrameError(worlds);
-      if (physicsFrameError !== undefined) return err(physicsFrameError);
-      const geometryFrameError = dynamicGeometryFrameError(worlds, (world) =>
-        dynamicGeometryHost.dynamicGeometryFault(world),
-      );
-      if (geometryFrameError !== undefined) return err(geometryFrameError);
-      if (frameRequest !== undefined && worlds.length !== frameRequest.leases.length) {
-        return err(
-          new RendererOperationError('world-lease-invalid', {
-            operation: 'draw',
-            cause: new RendererContractFailureError(
-              'draw',
-              'every RenderFrameInput lease must be attached to this Renderer',
-            ),
-          }),
-        );
-      }
-      const cameraOwner =
-        frameRequest?.camera == null ? -1 : frameRequest.leases.indexOf(frameRequest.camera.lease);
-      const resourceOwner =
-        frameRequest?.environment == null
-          ? -1
-          : frameRequest.leases.indexOf(frameRequest.environment.lease);
-      if (frameRequest !== undefined && !sceneAbsent && (cameraOwner < 0 || resourceOwner < 0)) {
-        return err(
-          new RendererOperationError('frame-input-invalid', {
-            operation: 'draw',
-            cause: new RendererContractFailureError(
-              'draw',
-              cameraOwner < 0
-                ? 'camera lease must be present in RenderFrameInput.leases'
-                : 'environment lease must be present in RenderFrameInput.leases',
-            ),
-          }),
-        );
-      }
-      const drawOptions: DrawOwnerOptions =
-        frameRequest !== undefined
-          ? {
-              cameraOwner,
-              resourceOwner,
-              ...(frameRequest.camera?.entityKey === undefined
-                ? {}
-                : { cameraEntityKey: frameRequest.camera.entityKey }),
-              ...motionBlurDrawOptions(frameRequest),
-              ...(frameRequest.profileFrame === undefined
-                ? {}
-                : { profileFrame: frameRequest.profileFrame }),
-              ...(frameRequest.geometryLane === undefined
-                ? {}
-                : { geometryLane: frameRequest.geometryLane }),
-            }
-          : publicationRequest === undefined
-            ? (options ?? { cameraOwner: 0, resourceOwner: 0 })
-            : {
-                cameraOwner: 0,
-                resourceOwner: 0,
-                sampleTimeSeconds: publicationRequest.publication.sampleTimeSeconds,
-                temporalReset: publicationRequest.publication.temporalReset,
-                ...(publicationRequest.geometryLane === undefined
-                  ? {}
-                  : { geometryLane: publicationRequest.geometryLane }),
-              };
-      // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M5 / w21
-      // (plan-strategy D-1, D-8): post-dispose the renderer is dead. AI
-      // users observing `result.ok === false && err.code === 'rhi-not-
-      // available'` know to rebuild the renderer (mirrors the "ready not
-      // settled" + "pipelineState null" fail-fast paths below; reuses the
-      // existing closed-union member, no new ErrorCode introduced).
-      if (disposed) {
-        const e = new RhiError({
-          code: 'rhi-not-available',
-          expected:
-            'renderer not disposed before calling renderer.draw(worlds, { cameraOwner, resourceOwner })',
-          hint: 'renderer.dispose() flipped the lifecycle latch; rebuild via createRenderer / Engine.create',
-        });
-        internals.errorRegistry.fire(e);
-        return err(e);
-      }
-      if (surfaceReleased) {
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'renderer surface restored before drawing',
-            hint: 'call renderer.restoreSurface() after the temporary surface owner stops',
-          }),
-        );
-      }
-      const canvasSizeError = rejectZeroCanvasSize(internals.canvas.width, internals.canvas.height);
-      if (canvasSizeError !== undefined) return err(canvasSizeError);
-      // Health owns admission for the legacy Host entry as well as the public
-      // Renderer. The initiating failure was already reported; do not fire it
-      // again for every attempted frame while the Host chooses recovery/rebuild.
-      const health = internals.healthRegistry.getLastSnapshot();
-      if (health.reason !== 'alive') {
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'renderer generation is healthy before submitting another frame',
-            hint:
-              health.reason === 'device-lost'
-                ? 'call renderer.recover() after a host-chosen delay; camera holds previous frame'
-                : 'dispose and recreate the faulted Renderer; submitted GPU completion is unknown',
-          }),
-        );
-      }
-      // D-S4: ready not settled => fire onError + skip frame. Uses
-      // 'rhi-not-available' (closed union placeholder semantics; charter
-      // proposition 4 explicit failure - AI users observe through onError
-      // and decide whether to retry).
-      if (!readySettled && ui === undefined) {
-        const e = new RhiError({
-          code: 'rhi-not-available',
-          expected:
-            'await renderer.initialization before calling renderer.draw(worlds, { cameraOwner, resourceOwner })',
-          hint: 'await renderer.initialization resolves once the manifest / pipeline / asset upload chain completes',
-        });
-        internals.errorRegistry.fire(e);
-        return err(e);
-      }
-      // pipeline build rejected: ready Promise has already surfaced the
-      // structured error to AI users through `await renderer.initialization`. Skip
-      // to keep draw(world) idempotent; a transient retry next frame is
-      // the responsibility of the AI user (charter proposition 9).
-      if (pipelineState === null && ui === undefined) {
-        const e = new RhiError({
-          code: 'rhi-not-available',
-          expected: 'pipelineState built during Renderer.initialization',
-          hint: 'await renderer.initialization resolved successfully; rebuild renderer or fix the upstream RhiError',
-        });
-        internals.errorRegistry.fire(e);
-        return err(e);
-      }
-      // feat-20260708-composited-multi-world-rendering M3 / D-5: draw-args
-      // entry validation runs before each extract or context configuration.
-      // Empty worlds / owner out of range returns a structured Result.err
-      // (never silent, charter P3) without touching GPU state. The two codes
-      // are non-exclusive: an empty array short-circuits to empty-worlds. The
-      // check is defensive against JS callers passing a non-array despite the
-      // compile-time World[] type (red-window migration safety).
-      const worldCount =
-        publicationRequest === undefined ? (Array.isArray(worlds) ? worlds.length : 0) : 1;
-      if (!sceneAbsent && worldCount === 0 && internals.device.caps.backendKind === 'null') {
-        return ok(undefined);
-      }
-      // Validate both owner indices (cameraOwner before resourceOwner, first
-      // offender wins). The empty object only protects the JS boundary; it is
-      // rejected by the same validation and never becomes another draw shape.
-      const drawOwners = drawOptions;
-      const argsCheck = sceneAbsent ? ok(undefined) : validateDrawArgs(worldCount, drawOwners);
-      if (!argsCheck.ok) {
-        internals.errorRegistry.fire(argsCheck.error);
-        return argsCheck;
-      }
-      // Configure context lazily on first draw (D-S1 single-point
-      // exemption): GPUCanvasContext.configure({device}) needs a raw
-      // The canvas context is configured through the RHI device scope.
-      const contextConfigured =
-        pipelineState === null
-          ? ok(undefined)
-          : ensureContextConfigured(internals, pipelineState, internals.errorRegistry);
-      if (!contextConfigured.ok) return contextConfigured;
-      // w24 — facade-level try/catch produces Result.err on unexpected throw
-      // (D-P6 dual-channel preserved: per-stage RhiError continues to fan out
-      // through onError separately; the facade Result is the synchronous
-      // summary AI users can ignore or branch on).
+      if (preparationActive) return preparationRejected();
+      preparationActive = true;
       try {
-        if (publicationRequest !== undefined && publicationReceiver !== undefined) {
-          const accepted = publicationReceiver.accept(publicationRequest.publication, assets);
-          if (!accepted.ok) return accepted;
-          publication = {
-            ...accepted.value,
-            ...(publicationRequest.onFeatureSourceSubmitted === undefined
-              ? {}
-              : {
-                  onFeatureSourceSubmitted: publicationRequest.onFeatureSourceSubmitted,
-                }),
-          };
-        }
-        renderTargetHost.beginFrame();
-        externalTextureHost.beginFrame();
-
-        const timingHost = internals;
-        const timingRequested =
-          isFrameRequest &&
-          (frameRequest?.profileFrame !== undefined ||
-            internals.options?.captureGpuTimings === true);
-        let volumeTimingCapture: GpuTimingCapture | undefined;
-        const volumeTimingUnavailableReason = timingRequested
-          ? 'timestamp capture is unavailable on this device'
-          : 'timestamp capture was not requested for this frame';
-        if (timingRequested && gpuPassTimingOptions === undefined) {
-          const createdTiming = GpuTimingCapture.create(internals.device);
-          if (createdTiming.ok) volumeTimingCapture = createdTiming.value;
-        }
-        if (isFrameRequest) {
-          timingHost.observationFrameId = frameId + 1;
-          timingHost.observationGraphGeneration = undefined;
-          timingHost.observationCaptureDomains = pendingObservationDomains;
-          timingHost.gpuPassTimingFrameIdentity = {
-            frameId: frameId + 1,
-            deviceGeneration: activeDeviceScope.generation,
-            graphGeneration: 0,
-          };
-        }
-        uiOnlyFrame = ui !== undefined && (sceneAbsent || !readySettled || pipelineState === null);
-        ui?.prepare(
-          (drawOptions.sampleTimeSeconds ?? 0) * 1000,
-          internals.canvas.width,
-          internals.canvas.height,
-          uiOnlyFrame,
-          internals.outputColorSpace.report.effective,
-          uiFormats.storage === uiFormats.view &&
-            pendingObservationDomains?.includes('final-display') === true,
-        );
-        const recordUi = function* (): FrameRecording {
-          const encoded = internals.device.createCommandEncoder({ label: 'screen-ui-frame' });
-          if (!encoded.ok) throw encoded.error;
-          const generation = activeDeviceScope.generation;
-          const submitted = yield {
-            encoder: encoded.value,
-            device: internals.device,
-            beforeSubmit: renderInternals.beforeSubmit,
-            isCurrent: () => !disposed && activeDeviceScope.generation === generation,
-            reportError: (error: RhiError) => internals.errorRegistry.fire(error),
-          };
-          return submitted.ok;
-        };
-        const submitted = uiOnlyFrame
-          ? submitFrameRecordings([recordUi()], undefined, renderInternals)
-          : cameraViews.draw(
-              worlds,
-              drawOptions,
-              readLeases,
-              volumeTimingCapture,
-              publication === undefined || publicationReceiver === undefined
-                ? undefined
-                : { publication, receiver: publicationReceiver },
-            );
-        timingHost.observationFrameId = undefined;
-        timingHost.observationCaptureDomains = undefined;
-        timingHost.gpuPassTimingFrameIdentity = undefined;
-        if (!submitted) {
-          const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
-          volumeTimingCapture?.discard();
-          if (cleanupFailure !== undefined) return err(cleanupFailure);
-          const invalidMotionBlur = cameraViews.currentSystem.motionBlurInvalidParams;
-          if (invalidMotionBlur !== undefined) return err(invalidMotionBlur);
-          return err(
-            new RendererContractFailureError(
-              'draw',
-              'the Standard render owner did not submit a command buffer; inspect Renderer error events and recover the owning frame path',
-            ),
-          );
-        }
-        const timingCompletion = timingHost.gpuPassTimingSubmittedWork;
-        timingHost.gpuPassTimingSubmittedWork = undefined;
-        const reflectionFallbackCompletion = uiOnlyFrame
-          ? undefined
-          : cameraViews.currentSystem.reflectionFallbackCompletion;
-        const receiptFrameId = isFrameRequest ? ++frameId : undefined;
-        const receiptGeneration = activeDeviceScope.generation;
-        const queueCompletion = timingCompletion ?? internals.device.queue.onSubmittedWorkDone();
-        // Submission succeeded, so a rejected completion leaves this generation's
-        // GPU work unconfirmed. Do not retire the device scope here: a completion
-        // failure is not proof of device loss. Health and continuations own admission.
-        void Promise.resolve(queueCompletion).catch((cause: unknown) => {
-          if (
-            disposed ||
-            receiptGeneration !== activeDeviceScope.generation ||
-            internals.healthRegistry.getLastSnapshot().reason !== 'alive'
-          )
-            return;
-          const failure = new RendererOperationError(
-            'device-operation-failed',
-            {
-              operation: 'complete-frame',
-              ...(receiptFrameId === undefined ? {} : { frameId: receiptFrameId }),
-              deviceGeneration: receiptGeneration,
-              cause: structuredRendererCause(cause, 'complete-frame'),
-            },
-            { cause },
-          );
-          // Seal the first cause before a health listener can dispose/rebuild.
-          for (const [continuation, pending] of frameContinuations) {
-            if (pending.deviceGeneration === receiptGeneration)
-              continuation.terminate({ code: 'internal-fault', detail: failure });
-          }
-          internals.healthRegistry.fire({
-            reason: 'internal-fault',
-            recoverable: false,
-            detail: {
-              message: 'submitted queue completion failed; dispose and recreate this Renderer',
-            },
-          });
-          internals.errorRegistry.fire(failure);
-        });
-        ui?.submitted(queueCompletion);
-        gpuStore.trackMeshSubmission(queueCompletion);
-        internals.pack.instrumentation?.onFrameBoundary?.();
-        if (receiptFrameId === undefined) {
-          const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
-          renderTargetHost.onFrameSubmitted(
-            queueCompletion.then(() => ({ ok: true, value: undefined }) as const),
-          );
-          if (cleanupFailure !== undefined) return err(cleanupFailure);
-          return ok(undefined);
-        }
-        const completion: FrameReceipt['completed'] = Promise.all([
-          queueCompletion,
-          reflectionFallbackCompletion ?? Promise.resolve(),
-        ])
-          .then(() => ok(undefined))
-          .catch((cause: unknown) =>
-            err(
-              new RendererOperationError(
-                'device-operation-failed',
-                {
-                  operation: 'complete-frame',
-                  frameId: receiptFrameId,
-                  deviceGeneration: receiptGeneration,
-                  cause: structuredRendererCause(cause, 'complete-frame'),
-                },
-                { cause },
-              ),
-            ),
-          );
-        const continuation = createContinuationTerminator();
-        const receiptPresentation = uiOnlyFrame
-          ? 'pending'
-          : (cameraViews.presentation ?? renderSystem.presentation);
-        frameContinuations.set(continuation, {
-          frameId: receiptFrameId,
-          deviceGeneration: receiptGeneration,
-          presentation: receiptPresentation,
-          stages: observeFrameCompletionStages(queueCompletion, reflectionFallbackCompletion),
-        });
-        const guardedCompletion = guardFrameCompletion(
-          completion,
-          () => continuation.guard('queue-completion'),
-          () =>
-            new RendererOperationError('device-operation-failed', {
-              operation: 'complete-frame',
-              frameId: receiptFrameId,
-              deviceGeneration: receiptGeneration,
-              cause: structuredRendererCause(
-                {
-                  code: 'stale-generation',
-                  expected: 'frame completion belongs to its device generation',
-                  hint: 'discard the stale receipt',
-                },
-                'complete-frame',
-              ),
-            }),
-          (cause: unknown) =>
-            new RendererOperationError('device-operation-failed', {
-              operation: 'complete-frame',
-              frameId: receiptFrameId,
-              deviceGeneration: receiptGeneration,
-              cause: structuredRendererCause(cause, 'complete-frame'),
-            }),
-        );
-        const terminated = continuation.promise().then((reason) =>
-          err(
-            new RendererOperationError(
-              'device-operation-failed',
-              {
-                operation: 'complete-frame',
-                frameId: receiptFrameId,
-                deviceGeneration: receiptGeneration,
-                cause: structuredRendererCause(
-                  reason.code === 'internal-fault'
-                    ? reason.detail
-                    : {
-                        code: reason.code,
-                        expected: 'a frame continuation completes before device loss or disposal',
-                        hint: 'discard the stale receipt and inspect the current renderer generation',
-                        detail: reason,
-                      },
-                  'complete-frame',
-                ),
-              },
-              reason.code === 'internal-fault' ? { cause: reason.detail.cause } : undefined,
-            ),
-          ),
-        );
-        const completed: FrameReceipt['completed'] = Promise.race([
-          guardedCompletion,
-          terminated,
-        ]).finally(() => {
-          frameContinuations.delete(continuation);
-        });
-        const captures = observationCaptureOwner.consume(receiptFrameId);
-        pendingObservationDomains = undefined;
-        const receiptGraphGeneration =
-          timingHost.observationGraphGeneration ??
-          (uiOnlyFrame ? 0 : (cameraViews.currentSystem.perFrameGraphInfo?.generation ?? 0));
-        const receipt = Object.freeze({
-          frameId: receiptFrameId,
-          deviceGeneration: receiptGeneration,
-          presentation: receiptPresentation,
-          backendId: internals.device.caps.backendKind,
-          graphGeneration: receiptGraphGeneration,
-          ...(uiOnlyFrame ||
-          cameraViews.active ||
-          renderSystem.lastSuccessfulBarrelDistortion === undefined
-            ? {}
-            : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
-          completed,
-        });
-        renderTargetHost.onFrameSubmitted(completed, receipt);
-        latestReceipt = receipt;
-        latestPublicationRevision = publicationReceiver?.acceptedRevision ?? 0;
-        latestLodObservation = {
-          receipt,
-          capture: cameraViews.lastLodObservationCapture,
-          draws: captureMaterialDraws(cameraViews.lastLodObservationCapture),
-        };
-        if (captures.length > 0) {
-          const captureRead: ObservationCaptureRead = async () => {
-            const completion = await completed;
-            if (!completion.ok) {
-              const cleanupFailure = disposeObservationCaptures(captures);
-              return cleanupFailure === undefined ? completion : err(cleanupFailure);
-            }
-            const read = [];
-            for (const capture of captures) {
-              const bytes = await readObservationCapture(capture);
-              if (!bytes.ok) {
-                const cleanupFailure = disposeObservationCaptures(captures);
-                return cleanupFailure === undefined ? bytes : err(cleanupFailure);
-              }
-              read.push({ capture, bytes: bytes.value });
-            }
-            return ok(read);
-          };
-          receiptObservationBuffers.set(receipt, captures);
-          receiptObservationCaptures.set(receipt, captureRead);
-        }
-        const passTimingCapture = uiOnlyFrame ? undefined : timingHost.gpuPassTimingCapture;
-        const timingBeginReason = uiOnlyFrame ? undefined : timingHost.gpuPassTimingBeginReason;
-        const timingSource =
-          passTimingCapture === undefined
-            ? gpuPassTimingUnavailable === undefined && timingBeginReason === undefined
-              ? undefined
-              : async (): Promise<GpuPassTimingObservation> =>
-                  gpuPassTimingUnavailable ??
-                  failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingReason)
-            : async (): Promise<GpuPassTimingObservation> => {
-                const observed = await passTimingCapture.observe();
-                if (!observed.ok) return failedGpuPassTimingObservation(observed.error);
-                const frame = observed.value;
-                const unmeasured = frame.passes.find((pass) => pass.status === 'unmeasured');
-                if (unmeasured !== undefined) {
-                  return { status: 'partial', frame, reason: unmeasured.reason };
-                }
-                if (frame.droppedPassCount > 0) {
-                  return {
-                    status: 'partial',
-                    frame,
-                    reason: {
-                      code: 'query-budget-exceeded',
-                      expected: 'all executed passes fit within the bounded query budget',
-                      hint: 'increase maxPassesPerFrame or simplify the pass graph',
-                      detail: { droppedPassCount: frame.droppedPassCount },
-                    },
-                  };
-                }
-                return { status: 'complete', frame };
-              };
-        timingObservationStore?.register(receipt, timingSource);
-        if (timingRequested && gpuPassTimingOptions === undefined) {
-          receiptTimings.set(
-            receipt,
-            volumeTimingCapture?.observation() ??
-              Promise.resolve({
-                status: 'unavailable',
-                reason: volumeTimingUnavailableReason,
-              }),
-          );
-        }
-        issuedReceipts.add(receipt);
-        terrainReceipts.register(receipt, uiOnlyFrame ? [] : cameraViews.terrainSections());
-        if (!uiOnlyFrame)
-          dynamicGeometryHost.publishDynamicGeometry(receipt, worlds, frameRequest?.fixedStep);
-        return ok(receipt);
-      } catch (cause) {
-        internals.observationFrameId = undefined;
-        internals.observationCaptureDomains = undefined;
-        internals.gpuPassTimingFrameIdentity = undefined;
-        const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
-        if (cleanupFailure !== undefined) return err(cleanupFailure);
-        if (cause instanceof RendererOperationError) return err(cause);
-        if (cause instanceof CameraViewInvalidError) return err(cause);
-        if (cause instanceof ProjectedDecalInvalidError) return err(cause);
-        const error =
-          cause instanceof Error
-            ? { code: 'unknown' as const, message: cause.message, name: cause.name }
-            : { code: 'unknown' as const, message: String(cause) };
-        const e = new RhiError({
-          code: 'webgpu-runtime-error',
-          expected:
-            'renderSystem.draw(worlds, { cameraOwner, resourceOwner }) completes without throwing',
-          hint: `RenderSystem internal error: ${error.message}`,
-          detail: { error },
-        });
-        internals.errorRegistry.fire(e);
-        return err(e);
+        return drainFramePreparation(prepareDraw(worldsOrRequest, options));
       } finally {
-        // Native video pixels have been consumed by synchronous queue copy calls.
-        // Release them on every success/failure path, including direct publication users.
-        publicationReceiver?.releaseVideoFrames();
+        preparationActive = false;
       }
+    },
+    async drawFrameScheduled(request, schedule) {
+      if (preparationActive) return preparationRejected();
+      preparationActive = true;
+      try {
+        const scope = activeDeviceScope;
+        const device = internals.device;
+        const generation = scope.generation;
+        const width = internals.canvas.width;
+        const height = internals.canvas.height;
+        const { source, epoch, revision } = request.publication;
+        const current = () =>
+          !disposed &&
+          !surfaceReleased &&
+          !schedule.signal?.aborted &&
+          activeDeviceScope === scope &&
+          internals.device === device &&
+          scope.generation === generation &&
+          internals.healthRegistry.getLastSnapshot().reason === 'alive' &&
+          internals.canvas.width === width &&
+          internals.canvas.height === height &&
+          request.publication.source === source &&
+          request.publication.epoch === epoch &&
+          request.publication.revision === revision &&
+          (publicationReceiver?.acceptedRevision ?? revision) === revision &&
+          (schedule.isCurrent?.() ?? true);
+        // A pre-cancelled operation must not even admit its publication.
+        if (schedule.signal?.aborted || schedule.isCurrent?.() === false)
+          return preparationRejected();
+        const operation = prepareDraw(request, undefined, current);
+        let settled = false;
+        try {
+          let next = operation.next();
+          while (!next.done) {
+            try {
+              if (!schedule.signal?.aborted) {
+                let cancel = () => {};
+                try {
+                  const cancelled = new Promise<void>((resolve) => {
+                    cancel = resolve;
+                  });
+                  schedule.signal?.addEventListener('abort', cancel, { once: true });
+                  await Promise.race([schedule.checkpoint(), cancelled]);
+                } finally {
+                  schedule.signal?.removeEventListener('abort', cancel);
+                }
+              }
+              next = operation.next();
+            } catch (cause) {
+              next = operation.throw(cause);
+            }
+          }
+          settled = true;
+          const result = next.value;
+          if (!result.ok) return result;
+          return result.value === undefined ? preparationRejected() : ok(result.value);
+        } finally {
+          // Abnormal driver exit must enter the existing catch/abort cleanup,
+          // including receipt-bound timing and observation candidates.
+          if (!settled) {
+            try {
+              operation.throw(
+                new RendererContractFailureError('draw', 'scheduled preparation cancelled'),
+              );
+            } catch {
+              /* The original failure remains the caller's authority. */
+            }
+          }
+        }
+      } finally {
+        preparationActive = false;
+      }
+    },
+    async observeGeometry(receipt: FrameReceipt) {
+      const state = latestLodObservation;
+      const view = state?.capture?.views.find((view) => view.system === cameraViews.currentSystem);
+      const valid = () =>
+        state !== undefined &&
+        view !== undefined &&
+        state.receipt === receipt &&
+        latestReceipt === receipt &&
+        staleObservationReceipt(receipt) === undefined &&
+        lodObservationCaptureFailure(state.capture, lodObservationValidity(state, receipt)) ===
+          undefined;
+      if (!valid() || view === undefined)
+        return unavailableGeometry(
+          'receipt-or-source-unavailable',
+          receipt.frameId,
+          receipt.deviceGeneration,
+        );
+      const completed = await receipt.completed;
+      if (!completed.ok || !valid())
+        return unavailableGeometry(
+          'superseded-or-incomplete',
+          receipt.frameId,
+          receipt.deviceGeneration,
+        );
+      const observed = await view.system.observeGeometry(receipt);
+      if (!valid())
+        return unavailableGeometry('superseded', receipt.frameId, receipt.deviceGeneration);
+      return {
+        ...observed,
+        viewKey: view.viewKey,
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+      };
     },
     observe(receipt: FrameReceipt, request: FrameObservationRequest) {
       return observeRendererReceipt(receipt, request, {
@@ -3753,6 +3784,7 @@ async function makeWebGPURenderer(
      * destruction. See Renderer.dispose in the package contract.
      */
     dispose(): RenderResult<void, RenderError> {
+      if (preparationActive) return preparationRejected();
       if (disposed) return ok(undefined);
       disposed = true;
       terrainReceipts.clear();
@@ -3927,6 +3959,8 @@ async function makeWebGPURenderer(
       return internals.healthRegistry.getLastSnapshot();
     },
     recover(): Promise<Result<void, RecoverFailure>> {
+      if (preparationActive)
+        return Promise.resolve(err(new RecoverError('recover-device-unavailable')));
       const observationCleanupFailure = disposeReceiptObservationCaptures();
       if (observationCleanupFailure !== undefined) {
         return Promise.resolve(err(new RecoverError('recover-device-unavailable')));

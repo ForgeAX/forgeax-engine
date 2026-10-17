@@ -1,9 +1,11 @@
 // @forgeax/engine-assets-runtime -- keyed SceneAsset instantiate coverage.
 
-import { defineComponent, World } from '@forgeax/engine-ecs';
+import { type ComponentSchema, defineComponent, World } from '@forgeax/engine-ecs';
+import { componentSchema } from '@forgeax/engine-ecs/internal';
 import {
   ChildOf,
   Children,
+  externalizeSceneAsset,
   worldDespawnScene,
   worldGetSceneInstanceState,
   worldRemoveSceneOverride,
@@ -15,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import type { PostSpawnHook } from '../registry/instantiate';
 import { resolveAssetHandle } from '../resolve-asset-handle';
+import { parseScenePayload } from '../scene-payload';
 import { defined } from './assert-defined.js';
 
 const T709Tag = defineComponent('T709Tag', { value: 'f32' });
@@ -79,6 +82,417 @@ function material(): Asset {
 }
 
 describe('AssetRegistry.instantiate', () => {
+  it('preserves native shared handles in a catalogued Scene without a wire table', () => {
+    const reg = makeRegistry();
+    const world = makeWorld();
+    const Native = defineComponent('ReflectedNativeHandles', {
+      arbitrary: 'shared<MaterialAsset>',
+      empty: 'shared<MaterialAsset>',
+      fixed: 'array<shared<MaterialAsset>, 2>',
+    });
+    world.components.register(Native).unwrap();
+    const payload = material();
+    const materialHandle = world.allocSharedRef('MaterialAsset', payload);
+    const scene = reg
+      .catalog(PARENT_GUID, {
+        kind: 'scene',
+        entities: {
+          root: {
+            components: {
+              [Native.name]: {
+                arbitrary: materialHandle,
+                empty: 0,
+                fixed: new Uint32Array([0, materialHandle]),
+              },
+            },
+          },
+        },
+      } as SceneAsset)
+      .unwrap();
+    expect(reg.assetCatalog.get(PARENT_GUID)?.refs).toBeUndefined();
+    const handle = world.allocSharedRef('SceneAsset', scene);
+    const root = reg.instantiate(handle, world).unwrap();
+    const entity = defined(
+      [...world.iterDescendants(root)].find((e) => world.hasComponent(e, Native)),
+    );
+    const row = world.get(entity, Native).unwrap();
+    expect(resolveAssetHandle(world, row.arbitrary).unwrap()).toBe(payload);
+    expect(row.empty).toBe(0);
+    expect(Array.from(row.fixed)).toEqual([0, materialHandle]);
+    worldDespawnScene(world, root).unwrap();
+    world.sharedRefs.release(handle).unwrap();
+    world.sharedRefs.release(materialHandle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+  });
+
+  it('rejects an explicit wire index zero against an empty table before spawning', () => {
+    const reg = makeRegistry();
+    const world = makeWorld();
+    const Carrier = defineComponent('ReflectedEmptyWireTable', { arbitrary: 'shared<MeshAsset>' });
+    world.components.register(Carrier).unwrap();
+    const scene = reg
+      .catalog(
+        PARENT_GUID,
+        {
+          kind: 'scene',
+          entities: { root: { components: { [Carrier.name]: { arbitrary: 0 } } } },
+        } as SceneAsset,
+        [],
+      )
+      .unwrap();
+    const handle = world.allocSharedRef('SceneAsset', scene);
+    expect(reg.instantiate(handle, world)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-parse-failed',
+        detail: {
+          entityKey: 'root',
+          component: Carrier.name,
+          field: 'arbitrary',
+          index: 0,
+          refsLength: 0,
+        },
+      },
+    });
+    expect(world.inspect().entityCount).toBe(0);
+    expect(world.execution.fault).toBeNull();
+    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+  });
+
+  it.each([
+    () => new Float32Array([1, -2]),
+    () => new Uint16Array([1000, 2000, 3000]).subarray(1),
+    () => new DataView(new Uint8Array([9, 3, 2, 8]).buffer, 1, 2),
+    () => new Uint8Array([0, 255]).buffer,
+    () => new SharedArrayBuffer(3),
+  ])('round-trips the exact byte window of every native buffer input', (makeBuffer) => {
+    const input = makeBuffer();
+    const expected = Array.from(
+      ArrayBuffer.isView(input)
+        ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+        : new Uint8Array(input),
+    );
+    const BufferCarrier = defineComponent('ReflectedByteWindow', {
+      bytes: 'buffer',
+      fixed: `buffer<${expected.length}>`,
+    });
+    const world = makeWorld();
+    world.components.register(BufferCarrier).unwrap();
+    const cooked = externalizeSceneAsset(
+      {
+        kind: 'scene',
+        entities: {
+          root: { components: { [BufferCarrier.name]: { bytes: input, fixed: input } } },
+        },
+      },
+      () => componentSchema(BufferCarrier),
+    ).unwrap();
+    const parsed = parseScenePayload(JSON.parse(JSON.stringify(cooked.payload)), []);
+    if (!parsed) throw new Error('expected Scene payload');
+    const reg = makeRegistry();
+    const handle = world.allocSharedRef('SceneAsset', parsed);
+    const root = reg.instantiate(handle, world).unwrap();
+    const entity = defined(
+      [...world.iterDescendants(root)].find((e) => world.hasComponent(e, BufferCarrier)),
+    );
+    const row = world.get(entity, BufferCarrier).unwrap();
+    expect(Array.from(row.bytes)).toEqual(expected);
+    expect(Array.from(row.fixed)).toEqual(expected);
+    worldDespawnScene(world, root).unwrap();
+    world.sharedRefs.release(handle).unwrap();
+  });
+
+  it('uses each nested Scene reference table and the parent table for instance overrides', () => {
+    const reg = makeRegistry();
+    const world = makeWorld();
+    world.components.register(ChildOf).unwrap();
+    world.components.register(Children).unwrap();
+    const Carrier = defineComponent('ReflectedNestedCarrier', {
+      arbitrary: 'shared<MaterialAsset>',
+      choices: 'array<shared<MaterialAsset>, 2>',
+      density: 'f32',
+    });
+    world.components.register(Carrier).unwrap();
+    const otherGuid = '44444444-4444-4444-8444-444444444444';
+    const a = material(),
+      b = material();
+    reg.catalog(MATERIAL_GUID, a).unwrap();
+    reg.catalog(otherGuid, b).unwrap();
+    const publish = (guid: string, source: SceneAsset) => {
+      const cooked = externalizeSceneAsset(source, (name) => {
+        const token = world.components.resolve(name);
+        return token === undefined ? undefined : componentSchema(token);
+      }).unwrap();
+      const parsed = parseScenePayload(
+        cooked.payload,
+        cooked.refs.map((ref) => ref.guid),
+      );
+      if (!parsed || !('kind' in parsed)) throw new Error('expected Scene');
+      return reg.catalog(guid, parsed, cooked.refs).unwrap();
+    };
+    const child = publish(CHILD_GUID, {
+      kind: 'scene',
+      entities: {
+        body: {
+          components: {
+            [Carrier.name]: { arbitrary: otherGuid, choices: [0, otherGuid], density: 1 },
+          },
+        },
+      },
+    });
+    const parent = publish(PARENT_GUID, {
+      kind: 'scene',
+      entities: {
+        child: {
+          components: {},
+          instance: {
+            source: CHILD_GUID,
+            overrides: [
+              {
+                target: ['body'],
+                components: {
+                  [Carrier.name]: { arbitrary: MATERIAL_GUID, choices: [MATERIAL_GUID, 0] },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    for (const [scene, expected, index] of [
+      [parent, a, 0],
+      [child, b, 1],
+    ] as const) {
+      const handle = world.allocSharedRef('SceneAsset', scene);
+      const root = reg.instantiate(handle, world).unwrap();
+      const entity = defined(
+        [...world.iterDescendants(root)].find((e) => world.hasComponent(e, Carrier)),
+      );
+      const row = world.get(entity, Carrier).unwrap();
+      expect(resolveAssetHandle(world, row.arbitrary as never).unwrap()).toBe(expected);
+      expect(resolveAssetHandle(world, row.choices[index] as never).unwrap()).toBe(expected);
+      expect(row.choices[1 - index]).toBe(0);
+      expect(row.density).toBe(1);
+      worldDespawnScene(world, root).unwrap();
+      world.sharedRefs.release(handle).unwrap();
+      expect(world.sharedRefs._liveCount()).toBe(0);
+    }
+  });
+
+  it.each([
+    -1,
+    1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects a malformed custom shared reference %s before any entity survives', (index) => {
+    const reg = makeRegistry();
+    const world = makeWorld();
+    const Custom = defineComponent('ReflectedInvalidIndex', { custom: 'shared<MaterialAsset>' });
+    world.components.register(Custom).unwrap();
+    reg.catalog(MATERIAL_GUID, material()).unwrap();
+    const scene = reg
+      .catalog(
+        PARENT_GUID,
+        {
+          kind: 'scene',
+          entities: {
+            root: {
+              components: {
+                T709MaterialCarrier: { materials: [MATERIAL_GUID] },
+                [Custom.name]: { custom: index },
+              },
+            },
+          },
+        } as SceneAsset,
+        [{ guid: MATERIAL_GUID }],
+      )
+      .unwrap();
+    const handle = world.allocSharedRef('SceneAsset', scene);
+    const result = reg.instantiate(handle, world);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected rejected reference');
+    expect(result.error).toMatchObject({
+      code: 'asset-parse-failed',
+      detail: {
+        entityKey: 'root',
+        component: Custom.name,
+        field: 'custom',
+        index,
+        refsLength: 1,
+      },
+    });
+    expect(world.inspect().entityCount).toBe(0);
+    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+  });
+
+  it.each([
+    ['bytes', [-1]],
+    ['bytes', [256]],
+    ['bytes', [1.5]],
+    ['bytes', 'bad'],
+    ['fixedBytes', [1, 2]],
+    ['fixedBytes', [1, 2, 3, 4]],
+    ['vector', [1, 2]],
+    ['fixedRefs', []],
+    ['fixedEntities', ['target']],
+  ])('rejects invalid reflected %s input without spawning', (field, value) => {
+    const reg = makeRegistry();
+    const world = makeWorld();
+    const Custom = defineComponent('ReflectedInvalidArray', {
+      bytes: 'buffer',
+      fixedBytes: 'buffer<3>',
+      vector: 'array<f32, 3>',
+      fixedRefs: 'array<shared<MaterialAsset>, 2>',
+      fixedEntities: 'array<entity, 2>',
+    });
+    world.components.register(Custom).unwrap();
+    const handle = world.allocSharedRef('SceneAsset', {
+      kind: 'scene',
+      entities: {
+        source: { components: { [Custom.name]: { [field as string]: value } } },
+        target: { components: { T709Tag: { value: 1 } } },
+      },
+    } as SceneAsset);
+    expect(reg.instantiate(handle, world).ok).toBe(false);
+    expect(world.inspect().entityCount).toBe(0);
+    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+  });
+
+  it('round-trips every ECS storage family using custom component schema reflection', () => {
+    const reg = makeRegistry();
+    const world = makeWorld();
+    const scalars = {
+      f32: 0.25,
+      f64: 0.5,
+      i32: -3,
+      u32: 3,
+      i16: -2,
+      u16: 2,
+      i8: -1,
+      u8: 1,
+      bool: true,
+      enum: 2,
+      ref: 7,
+    } as const;
+    const schema: ComponentSchema = {};
+    const values: Record<string, unknown> = {};
+    for (const [type, value] of Object.entries(scalars)) {
+      schema[`scalar_${type}`] = type as keyof typeof scalars;
+      schema[`variable_${type}`] = `array<${type as keyof typeof scalars}>`;
+      schema[`fixed_${type}`] = `array<${type as keyof typeof scalars}, 2>`;
+      values[`scalar_${type}`] = value;
+      const item = Number(value);
+      values[`variable_${type}`] = new Float64Array([item, item]);
+      values[`fixed_${type}`] = [item, item];
+    }
+    const All = defineComponent('ReflectedSceneAllStorage', {
+      ...schema,
+      text: 'string',
+      bytes: 'buffer',
+      fixedBytes: 'buffer<3>',
+      owned: { type: 'unique<SceneNestedFixture>', shape: 'nested' },
+      target: 'entity',
+      optionalTarget: { type: 'entity', shape: 'optional', default: null },
+      targets: 'array<entity>',
+      fixedTargets: 'array<entity, 2>',
+      arbitraryAsset: 'shared<MaterialAsset>',
+      arbitraryAssets: 'array<shared<MaterialAsset>>',
+      fixedAssets: 'array<shared<MaterialAsset>, 2>',
+      emptyAssets: 'array<shared<MaterialAsset>, 2>',
+      vector: { type: 'array<f32, 3>', shape: 'vector' },
+      quaternion: { type: 'array<f32, 4>', shape: 'quaternion' },
+    });
+    world.components.register(All).unwrap();
+    const payload = material();
+    reg.catalog(MATERIAL_GUID, payload).unwrap();
+    const nested = { count: 3, values: [1, 2] };
+    const owned = world.allocUniqueRef('SceneNestedFixture', nested);
+    Object.assign(values, {
+      text: MATERIAL_GUID,
+      bytes: new Uint8Array([0, 1, 255]),
+      fixedBytes: [3, 2, 1],
+      owned,
+      target: 'target',
+      optionalTarget: null,
+      targets: ['target'],
+      fixedTargets: ['target', 'target'],
+      arbitraryAsset: MATERIAL_GUID,
+      arbitraryAssets: [MATERIAL_GUID, 0],
+      fixedAssets: [0, MATERIAL_GUID],
+      emptyAssets: new Uint32Array(2),
+      vector: [1, 2, 3],
+      quaternion: [0, 0, 0, 1],
+    });
+    const authored: SceneAsset = {
+      kind: 'scene',
+      entities: {
+        source: { components: { [All.name]: values } },
+        target: { components: { T709Tag: { value: 42 } } },
+      },
+    };
+    const cooked = externalizeSceneAsset(authored, (name) => {
+      const token = world.components.resolve(name);
+      return token === undefined ? undefined : componentSchema(token);
+    }).unwrap();
+    expect(cooked.payload.entities).toMatchObject({
+      source: {
+        components: { [All.name]: { emptyAssets: [null, null], variable_f32: [0.25, 0.25] } },
+      },
+    });
+    const wire = JSON.parse(
+      JSON.stringify(cooked.payload, (_key, value) =>
+        ArrayBuffer.isView(value) && 'length' in value
+          ? Array.from(value as unknown as ArrayLike<number>)
+          : value,
+      ),
+    );
+    const parsed = parseScenePayload(
+      wire,
+      cooked.refs.map((ref) => ref.guid),
+    );
+    if (!parsed || !('kind' in parsed)) throw new Error('expected a structural Scene payload');
+    // The loader owns no World and must not guess component reference fields.
+    expect(parsed.entities.source?.components[All.name]?.arbitraryAsset).toBe(0);
+    reg.catalog(PARENT_GUID, parsed, cooked.refs).unwrap();
+    const handle = world.allocSharedRef('SceneAsset', reg.lookup(PARENT_GUID) as SceneAsset);
+    const root = reg.instantiate(handle, world).unwrap();
+    const members = [...world.iterDescendants(root)];
+    const source = defined(members.find((entity) => world.hasComponent(entity, All)));
+    const target = defined(members.find((entity) => world.hasComponent(entity, T709Tag)));
+    const data = world.get(source, All).unwrap() as Record<string, unknown>;
+    for (const [type, value] of Object.entries(scalars)) {
+      expect(data[`scalar_${type}`]).toBe(value);
+      expect(Array.from(data[`variable_${type}`] as ArrayLike<number>)).toEqual([
+        type === 'bool' ? 1 : value,
+        type === 'bool' ? 1 : value,
+      ]);
+      expect(Array.from(data[`fixed_${type}`] as ArrayLike<number>)).toEqual([
+        type === 'bool' ? 1 : value,
+        type === 'bool' ? 1 : value,
+      ]);
+    }
+    expect(data.text).toBe(MATERIAL_GUID);
+    expect(Array.from(data.bytes as Uint8Array)).toEqual([0, 1, 255]);
+    expect(Array.from(data.fixedBytes as Uint8Array)).toEqual([3, 2, 1]);
+    expect(world.resolveUniqueRef(data.owned as never).unwrap()).toBe(nested);
+    expect(data.target).toBe(target);
+    expect(data.optionalTarget).toBeNull();
+    expect(Array.from(data.targets as Uint32Array)).toEqual([target]);
+    expect(Array.from(data.fixedTargets as Uint32Array)).toEqual([target, target]);
+    expect(resolveAssetHandle(world, data.arbitraryAsset as never).unwrap()).toBe(payload);
+    expect(Array.from(data.arbitraryAssets as Uint32Array)).toEqual([data.arbitraryAsset, 0]);
+    expect(Array.from(data.fixedAssets as Uint32Array)).toEqual([0, data.arbitraryAsset]);
+    expect(Array.from(data.emptyAssets as Uint32Array)).toEqual([0, 0]);
+    expect(Array.from(data.vector as Float32Array)).toEqual([1, 2, 3]);
+    expect(Array.from(data.quaternion as Float32Array)).toEqual([0, 0, 0, 1]);
+    worldDespawnScene(world, root).unwrap();
+    world.sharedRefs.release(handle).unwrap();
+    expect(world.sharedRefs._liveCount()).toBe(0);
+  });
   it.each([
     'anchor',
     'flat',

@@ -15,6 +15,8 @@ describe('AssetRef vocabulary characterization', () => {
       refs: [reference],
     };
 
+    expectTypeOf(envelope.refs).toEqualTypeOf<readonly AssetRef[] | undefined>();
+    if (envelope.refs === undefined) throw new Error('expected an explicit reference table');
     expectTypeOf(envelope.refs).toMatchTypeOf<readonly AssetRef[]>();
     expectTypeOf(reference.sourceField).toMatchTypeOf<
       | {

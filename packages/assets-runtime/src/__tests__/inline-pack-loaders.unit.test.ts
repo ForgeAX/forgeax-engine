@@ -4,7 +4,7 @@
 // wireDefaultLoaders / createDefaultLoaderRegistry seed-table helpers.
 
 import { createHash } from 'node:crypto';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { buildMeshCollision, createBoxGeometry } from '@forgeax/engine-geometry';
 import { cookMeshDistanceFieldProduct, packMeshBin } from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { LoadContext, MaterialAsset } from '@forgeax/engine-types';
@@ -26,6 +26,40 @@ import { createDefaultLoaderRegistry, wireDefaultLoaders } from '../wire-default
 const emptyCtx = {} as LoadContext;
 
 describe('meshLoader', () => {
+  it('retains checked collision geometry through the cooked binary runtime loader', async () => {
+    const source = createBoxGeometry(1, 2, 3).unwrap();
+    const collision = buildMeshCollision(source).unwrap();
+    const mesh = { ...source, collision };
+    const bytes = packMeshBin(mesh, 'collision/box', []).unwrap();
+    const registry = new LoaderRegistry();
+    registry.register(meshLoader);
+    const loaded = await registry.loadPack(
+      {
+        guid: 'collision/box',
+        kind: 'mesh',
+        payload: {},
+        refs: [],
+        artifacts: {
+          body: {
+            bytes,
+            descriptor: {
+              path: 'box.mesh',
+              mediaType: 'application/x-forgeax-mesh',
+              assetCodec: { name: 'mesh-binary', version: '5' },
+            },
+          },
+        },
+      },
+      emptyCtx,
+    );
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) throw loaded.error;
+    expect(loaded.value).toMatchObject({ kind: 'mesh', collision });
+    expect(
+      meshLoader.load({ ...mesh, collision: { positions: [], indices: [] } }, [], emptyCtx),
+    ).toBeUndefined();
+  });
+
   it.each([
     0.5,
     { resolution: 12 },
@@ -342,13 +376,18 @@ describe('sceneLoader', () => {
     expect(sceneLoader.load({ entities: 'bad' }, undefined, emptyCtx)).toBeUndefined();
   });
 
-  it('routes an out-of-bounds ref error inline as { ok:false, error }', () => {
+  it('defers component reference interpretation until the World supplies its schema', () => {
     const out = sceneLoader.load(
       { entities: { 'entity-0': { components: { MeshFilter: { assetHandle: 9 } } } } },
       ['only-one-guid'],
       emptyCtx,
     );
-    expect(out).toMatchObject({ ok: false });
+    expect(out).toMatchObject({
+      kind: 'scene',
+      entities: {
+        'entity-0': { components: { MeshFilter: { assetHandle: 9 } } },
+      },
+    });
   });
 });
 

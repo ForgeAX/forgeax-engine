@@ -73,9 +73,9 @@ const embeddedShell: Plugin = {
               responsiveAutoTuck={config.layout?.responsiveAutoTuck}
               hostConnection={hostConnection}
               workspaceClient={client}
-              selectedPageType={selectedTabId === VIEW_DISPLAY_TAB_ID ? 'display' : 'editor'}
+              selectedPageType={selectedTabId === VIEW_DISPLAY_TAB_ID ? 'display' : 'scene'}
               onSelectPageType={(typeId, signal) => {
-                if (typeId === 'display' || typeId === 'editor') {
+                if (typeId === 'display' || typeId === 'scene') {
                   return client.selectTab(typeId === 'display' ? VIEW_DISPLAY_TAB_ID : VIEW_WORKSPACE_TAB_ID, { signal });
                 }
               }} />

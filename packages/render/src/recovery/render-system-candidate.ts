@@ -201,11 +201,37 @@ export function materialTextureHandlesForResidency(
   return overflow === undefined ? (occupied ? [firstValue] : []) : [...overflow.values()];
 }
 
+const EMPTY_TEXTURE_HANDLES: readonly Handle<'TextureAsset', 'shared'>[] = Object.freeze([]);
+const EMPTY_SAMPLER_HANDLES: readonly Handle<'SamplerAsset', 'shared'>[] = Object.freeze([]);
+
 export function materialTextureHandles(
   material: MaterialSnapshot,
 ): readonly Handle<'TextureAsset', 'shared'>[] {
+  const textureHandles = material.textureHandles;
+  if (textureHandles === undefined || textureHandles.size === 0) {
+    const baseColor = material.baseColorTexture;
+    const metallicRoughness = material.metallicRoughnessTexture;
+    const normal = material.normalTexture;
+    const emissive = material.emissiveTexture;
+    const occlusion = material.occlusionTexture;
+    if (
+      (baseColor === undefined || baseColor === 0) &&
+      (metallicRoughness === undefined || metallicRoughness === 0) &&
+      (normal === undefined || normal === 0) &&
+      (emissive === undefined || emissive === 0) &&
+      (occlusion === undefined || occlusion === 0)
+    )
+      return EMPTY_TEXTURE_HANDLES;
+    return materialTextureHandlesForResidency([
+      baseColor,
+      metallicRoughness,
+      normal,
+      emissive,
+      occlusion,
+    ]);
+  }
   return materialTextureHandlesForResidency([
-    ...(material.textureHandles?.values() ?? []),
+    ...textureHandles.values(),
     material.baseColorTexture,
     material.metallicRoughnessTexture,
     material.normalTexture,
@@ -217,8 +243,11 @@ export function materialTextureHandles(
 export function materialSamplerHandles(
   material: MaterialSnapshot,
 ): readonly Handle<'SamplerAsset', 'shared'>[] {
+  const candidates = material.samplerHandles;
+  if (candidates === undefined || candidates.size === 0) return EMPTY_SAMPLER_HANDLES;
+  if (candidates.size === 1) return [...candidates.values()];
   const handles = new Map<number, Handle<'SamplerAsset', 'shared'>>();
-  for (const handle of material.samplerHandles?.values() ?? []) {
+  for (const handle of candidates.values()) {
     handles.set(Number(handle), handle);
   }
   return [...handles.values()];
@@ -793,6 +822,9 @@ export function createRenderSystemRecovery(
             targets: featureTargets,
             generation: runtime.internals.deviceScope.generation,
             caps: runtime.internals.device.caps,
+            featureReadOnlyDepthBatchDiagnostic:
+              (runtime.internals.standardProfile?.featureReadOnlyDepthBatchDiagnostic ??
+                runtime.internals.standardProfile?.featureReadOnlyDepthBatching) === true,
             ...(runtime.internals.getMaterialShaderBindingContract === undefined
               ? {}
               : {

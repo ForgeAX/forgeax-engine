@@ -30,6 +30,10 @@ export class PreparedRenderPipelineOwner {
     private readonly onStart: () => void = () => undefined,
   ) {}
 
+  isPending(result: Result<RenderPipeline, RhiError>): boolean {
+    return result === this.pending;
+  }
+
   has(key: string): boolean {
     return this.flights.has(key);
   }
@@ -66,7 +70,12 @@ export class PreparedRenderPipelineOwner {
     };
     try {
       // forgeax-async-whitelist: dom-native - backend pipeline compilation completion.
-      void create.call(this.device, descriptor).then(complete, (cause: unknown) =>
+      const completion = create.call(this.device, descriptor);
+      if ('ok' in completion) {
+        complete(completion);
+        return flight.result ?? this.pending;
+      }
+      void completion.then(complete, (cause: unknown) =>
         complete(
           err(
             cause instanceof RhiError

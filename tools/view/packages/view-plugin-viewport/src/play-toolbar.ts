@@ -18,7 +18,7 @@ const iconMarkup = (name: IconName) => `<svg xmlns="http://www.w3.org/2000/svg" 
 export function mountPlayToolbar({ document, element, client }: { document: Document; element: HTMLElement; client: ViewWorkspaceClient }) {
   const toolbar = document.createElement('div');
   toolbar.setAttribute('role', 'toolbar');
-  toolbar.setAttribute('aria-label', 'Editor execution');
+  toolbar.setAttribute('aria-label', 'Scene execution');
   Object.assign(toolbar.style, { display: 'flex', gap: '6px', padding: '6px', alignItems: 'center', flexShrink: '0' });
   const surface = document.createElement('div');
   Object.assign(surface.style, { position: 'relative', flex: '1', minHeight: '0' });
@@ -53,7 +53,7 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'fx-button fx-button--compact fx-button--icon';
-    button.setAttribute('data-action', `editor.${label().toLowerCase()}`);
+    button.setAttribute('data-action', `scene.${label().toLowerCase()}`);
     button.setAttribute('aria-label', label());
     button.title = label();
     button.innerHTML = iconMarkup(icon());
@@ -107,7 +107,7 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
   }, () => !!state?.project || !!state?.play || pending.has('Play'), () => true);
   add('Eject', () => 'log-out', () => client.call('target.control', { ...args(), mode: 'observer' }), () => running() && control() !== 'observer');
   add('Possess', () => 'gamepad2', () => client.call('target.control', { ...args(), mode: 'player' }), () => running() && control() === 'observer');
-  add('Editor', () => 'mouse-pointer2', () => client.call('target.select', { targetId: state!.editorPreview!.target.targetId }), () => !!state?.editorPreview && state?.targetBinding === 'play');
+  add('Scene', () => 'mouse-pointer2', () => client.call('target.select', { targetId: state!.scenePreview!.target.targetId }), () => !!state?.scenePreview && state?.targetBinding === 'play');
   add('Game', () => 'monitor-play', async () => {
     await client.call('target.select', { targetId: state!.play!.target.targetId });
     await client.call('camera.get', args());
@@ -120,13 +120,13 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
         button.setAttribute('aria-label', action);
         button.title = action;
         button.innerHTML = iconMarkup(icon());
-        button.setAttribute('data-action', `editor.${action.toLowerCase()}`);
+        button.setAttribute('data-action', `scene.${action.toLowerCase()}`);
       }
       button.style.display = visible() ? '' : 'none';
       const disabled = pending.has(action) || (pending.size > 0 && action !== 'Stop') || !available();
       if (button.disabled !== disabled) button.disabled = disabled;
     }
-    const target = state?.targetBinding ?? 'editor';
+    const target = state?.targetBinding ?? 'scene';
     if (surface.dataset.forgeaxToolTarget !== target) surface.dataset.forgeaxToolTarget = target;
     const nextStatus = errorText || (pending.has('Stop') ? 'Stopping…'
       : pending.has('Play') ? (playStage || 'Preparing Play…')

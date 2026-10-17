@@ -5,7 +5,10 @@ import {
   type DynamicGeometryReceipt,
   type RenderPublicationIdentity,
 } from '@forgeax/engine-render';
-import type { DynamicGeometryResidencyPort } from '@forgeax/engine-render/internal';
+import type {
+  DynamicGeometryResidencyPort,
+  MeshPipelinePreparation,
+} from '@forgeax/engine-render/internal';
 import { err, ok } from '@forgeax/engine-types';
 import {
   type CompletedMeshConsumption,
@@ -21,6 +24,7 @@ type DynamicGeometryRecordStageLane = NonNullable<DynamicGeometryReceipt['record
 type Session = RenderPublicationIdentity & {
   readonly generation: number;
   post(message: MeshResidencyRequest, transfers?: readonly ArrayBuffer[]): void;
+  acknowledgePrograms?(programs: MeshPipelinePreparation['programs']): void;
 };
 interface Request {
   readonly session: Session;
@@ -190,8 +194,21 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       signal?.removeEventListener('abort', cancel);
       resolve();
     };
-    const finish = (result: Prepared) => settle(() => resolve(result));
-    const fail = (cause: unknown) => settle(() => reject(cause));
+    let programs = input.pipelinePreparation?.programs;
+    const finish = (result: Prepared) =>
+      settle(() => {
+        const delivered = programs;
+        programs = undefined;
+        // receive() admits success only after checking this exact session and
+        // device generation; cancelled and failed requests never reach this ACK.
+        if (result.ok && delivered !== undefined) session.acknowledgePrograms?.(delivered);
+        resolve(result);
+      });
+    const fail = (cause: unknown) =>
+      settle(() => {
+        programs = undefined;
+        reject(cause);
+      });
     const cancel = () => {
       // Cancellation still drains the receiver allocation; its request ID is
       // retained until release ACK, including ready arriving after cancellation.
@@ -226,6 +243,9 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
             epoch: session.epoch,
             meshHandle: input.meshHandle,
             mesh: input.mesh,
+            ...(input.pipelinePreparation === undefined
+              ? {}
+              : { pipelinePreparation: input.pipelinePreparation }),
           },
           ...(input.entity === undefined ? {} : { entity: input.entity }),
         },

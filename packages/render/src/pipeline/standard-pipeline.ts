@@ -492,9 +492,8 @@ function buildStandardDeferredLane(
       ...(visibleSurfaceEnabled ? [[0, 0, 0, 0] as const] : []),
       ...(deferredTemporal ? [[0, 0, -1, 1] as const] : []),
     ],
-    ...(gpuDriven.value === undefined
-      ? {}
-      : { gpuDriven: gpuDriven.value, gpuDrivenFilter: 'deferred-opaque' as const }),
+    gpuDrivenFilter: 'deferred-opaque',
+    ...(gpuDriven.value === undefined ? {} : { gpuDriven: gpuDriven.value }),
     depth: depth.value,
     selector: DEFERRED_PASS_SELECTOR,
     // The G-buffer only admits opaque Standard materials. Medium Surface
@@ -786,7 +785,7 @@ function buildStandardDeferredLane(
     excludeSelector: DEFERRED_PASS_SELECTOR,
     // Keep the deferred opaque lane separate from Surface medium passes.
     recordMode: 'opaque' as const,
-    ...(gpuDriven.value === undefined ? {} : { gpuDrivenFilter: 'forward-only-opaque' as const }),
+    gpuDrivenFilter: 'forward-only-opaque',
   });
   if (!forward.ok) return forward;
 

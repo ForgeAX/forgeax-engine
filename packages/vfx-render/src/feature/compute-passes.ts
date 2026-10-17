@@ -22,7 +22,7 @@ export function coalesceVfxComputePasses(
   interface Batch {
     readonly program: string;
     readonly passes: Compute[];
-    readonly resources: Set<string>;
+    readonly resources: string[];
   }
   const output: Pass[] = [];
   const pending = new Map<string, Batch>();
@@ -36,23 +36,24 @@ export function coalesceVfxComputePasses(
       output.push(first);
       return;
     }
+    const dispatches: Compute['dispatches'][number][] = [];
+    for (const pass of batch.passes)
+      for (const dispatch of pass.dispatches) {
+        if (dispatch.kind !== 'direct') throw new Error('Only direct stock work may be batched');
+        dispatches.push({
+          ...dispatch,
+          bindings: pass.bindings,
+          workgroups:
+            pass.enabled === false
+              ? ([0, dispatch.workgroups[1] ?? 1, dispatch.workgroups[2] ?? 1] as const)
+              : dispatch.workgroups,
+        });
+      }
     output.push({
       ...first,
       name: `${first.name}.batch`,
       enabled: batch.passes.some((pass) => pass.enabled !== false),
-      dispatches: batch.passes.flatMap((pass) =>
-        pass.dispatches.map((dispatch) => {
-          if (dispatch.kind !== 'direct') throw new Error('Only direct stock work may be batched');
-          return {
-            ...dispatch,
-            bindings: pass.bindings,
-            workgroups:
-              pass.enabled === false
-                ? ([0, dispatch.workgroups[1] ?? 1, dispatch.workgroups[2] ?? 1] as const)
-                : dispatch.workgroups,
-          };
-        }),
-      ),
+      dispatches,
     });
   };
   const flushAll = () => {
@@ -82,20 +83,21 @@ export function coalesceVfxComputePasses(
       output.push(pass);
       continue;
     }
+    const previous = pending.get(pass.program);
+    const batch = previous ?? { program: pass.program, passes: [], resources: [] };
     for (const entry of declared.entries) {
       const prior = resourceOwners.get(entry.resource);
       if (prior !== undefined && prior.program !== pass.program) flush(prior);
+      // Repeated spawn/update dispatches share these exact current resources.
+      // Keep the existing owner rather than inserting it again for every pass.
+      if (prior !== batch) {
+        batch.resources.push(entry.resource);
+        resourceOwners.set(entry.resource, batch);
+      }
     }
-    let batch = pending.get(pass.program);
-    if (batch === undefined) {
-      batch = { program: pass.program, passes: [], resources: new Set() };
-      pending.set(pass.program, batch);
-    }
+    // Preserve pending insertion order after every conflicting owner is flushed.
+    if (previous === undefined) pending.set(pass.program, batch);
     batch.passes.push(pass);
-    for (const entry of declared.entries) {
-      batch.resources.add(entry.resource);
-      resourceOwners.set(entry.resource, batch);
-    }
   }
   flushAll();
   return output;
@@ -111,24 +113,21 @@ export function coalesceVfxCopyPasses(passes: readonly Pass[]): readonly Pass[] 
   const flush = (): void => {
     const first = pending[0];
     if (first === undefined) return;
-    output.push(
-      pending.length === 1
-        ? first
-        : {
-            ...first,
-            name: `${first.name}.batch`,
-            enabled: pending.some(
-              (pass) =>
-                pass.enabled !== false && pass.copies.some((copy) => copy.enabled !== false),
-            ),
-            copies: pending.flatMap((pass) =>
-              pass.copies.map((copy) => ({
-                ...copy,
-                enabled: pass.enabled !== false && copy.enabled !== false,
-              })),
-            ),
-          },
-    );
+    if (pending.length === 1) output.push(first);
+    else {
+      const copies: Extract<Pass, { readonly kind: 'copy' }>['copies'][number][] = [];
+      for (const pass of pending)
+        for (const copy of pass.copies)
+          copies.push({ ...copy, enabled: pass.enabled !== false && copy.enabled !== false });
+      output.push({
+        ...first,
+        name: `${first.name}.batch`,
+        enabled: pending.some(
+          (pass) => pass.enabled !== false && pass.copies.some((copy) => copy.enabled !== false),
+        ),
+        copies,
+      });
+    }
     pending = [];
     sources.clear();
     destinations.clear();

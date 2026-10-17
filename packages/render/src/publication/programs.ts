@@ -1,8 +1,22 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
-import type { MaterialSnapshot } from '../render-system-extract';
+import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
+
+/** The same complete program closure feeds scene publication and candidate preparation. */
+export function publicationMaterialProgramKeys(material: MaterialSnapshot): ReadonlySet<string> {
+  return new Set([
+    ...Object.values(material.materialProgramKeys ?? {}),
+    ...Object.values(material.materialSurfacePrograms ?? {}).map((program) => program.programKey),
+    ...Object.values(material.materialSceneIndexProgramKeys ?? {}).map(
+      (program) => program.specializationKey,
+    ),
+    ...(material.materialShaderId === undefined || material.materialShaderId.startsWith('forgeax::')
+      ? []
+      : [material.materialShaderId]),
+  ]);
+}
 
 function sameSchemaValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
@@ -31,11 +45,7 @@ function sameSchemaValue(left: unknown, right: unknown): boolean {
 }
 
 /** Native clones lose realm-local schema admission; the selected program remains its owner. */
-export function rebindPublicationMaterialSchemas(
-  registry: ShaderRegistry,
-  input: PreparedRenderPublication,
-): PreparedRenderPublication {
-  if (input.frame.renderables.length === 0) return input;
+export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
   const materials = new Map<MaterialSnapshot, MaterialSnapshot>();
   const rebind = (material: MaterialSnapshot): MaterialSnapshot => {
     const known = materials.get(material);
@@ -57,12 +67,20 @@ export function rebindPublicationMaterialSchemas(
     materials.set(material, rebound);
     return rebound;
   };
-  const snapshots = new Map(
-    input.frame.renderables.map((row) => [
-      row,
-      { ...row, material: rebind(row.material), materials: row.materials.map(rebind) },
-    ]),
-  );
+  return <T extends Pick<RenderableSnapshot, 'material' | 'materials'>>(row: T): T => ({
+    ...row,
+    material: rebind(row.material),
+    materials: row.materials.map(rebind),
+  });
+}
+
+export function rebindPublicationMaterialSchemas(
+  registry: ShaderRegistry,
+  input: PreparedRenderPublication,
+): PreparedRenderPublication {
+  if (input.frame.renderables.length === 0) return input;
+  const rebind = publicationMaterialSchemaRebinder(registry);
+  const snapshots = new Map(input.frame.renderables.map((row) => [row, rebind(row)]));
   return {
     ...input,
     frame: { ...input.frame, renderables: [...snapshots.values()] },

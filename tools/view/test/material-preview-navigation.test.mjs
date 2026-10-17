@@ -68,7 +68,7 @@ describe('material preview navigation', () => {
     assert.equal(materialPreviewShouldCapture({ type: 'keydown', key: 'w', target: surface }, surface), true);
     assert.equal(materialPreviewShouldCapture({ type: 'pointerdown', button: 0, target: child }, surface), true);
     assert.equal(materialPreviewShouldCapture({ type: 'pointerdown', button: 0, target: button }, surface), false);
-    surface.ownerDocument.documentElement.dataset.forgeaxViewActivePage = 'editor';
+    surface.ownerDocument.documentElement.dataset.forgeaxViewActivePage = 'scene';
     assert.equal(materialPreviewShouldCapture({ type: 'keydown', key: 'w', target: surface }, surface), false);
   });
 

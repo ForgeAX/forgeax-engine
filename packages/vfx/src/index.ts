@@ -105,6 +105,7 @@ export type {
   VfxGpuEmitterProgram,
   VfxGpuEmitterProgramAny,
   VfxGpuEmitterProgramV3,
+  VfxGpuInstanceComputeProgram,
   VfxGpuProgram,
   VfxGpuProgramReflection,
   VfxGpuProgramReflectionV3,

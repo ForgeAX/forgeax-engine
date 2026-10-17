@@ -3,6 +3,7 @@ import {
   cubicValueEnvelope,
   deriveConservativeAnimatedBounds,
 } from '@forgeax/engine-animation/animated-bounds';
+import { groupMeshPrimitives } from './mesh-primitives';
 import { buildNodeParentMap, resolveNamedNodePath } from './node-path';
 import type { GltfDoc } from './parse-gltf';
 
@@ -38,12 +39,7 @@ export function deriveGltfAnimatedBounds(doc: GltfDoc): GltfDoc {
           ],
     ),
   );
-  const primitiveStarts: number[] = [];
-  let offset = 0;
-  for (const count of doc.meshPrimitiveCount?.values() ?? doc.meshes.map(() => 1)) {
-    primitiveStarts.push(offset);
-    offset += count;
-  }
+  const primitivesByMesh = groupMeshPrimitives(doc.meshes);
   const skeletons = doc.skeletons.map((skeleton, skinIndex) => {
     if (skeleton.bounds !== undefined) return skeleton;
     const meshes: AnimatedBoundsMesh[] = [];
@@ -51,12 +47,9 @@ export function deriveGltfAnimatedBounds(doc: GltfDoc): GltfDoc {
       const node = doc.nodes[index];
       if (node === undefined) return skeleton;
       if (node.skinIndex !== skinIndex || node.meshIndex === null) continue;
-      const start = primitiveStarts[node.meshIndex];
-      if (start === undefined) return skeleton;
-      for (const mesh of doc.meshes.slice(
-        start,
-        start + (doc.meshPrimitiveCount?.get(node.meshIndex) ?? 1),
-      )) {
+      const primitives = primitivesByMesh.get(node.meshIndex);
+      if (primitives === undefined) return skeleton;
+      for (const mesh of primitives) {
         if (mesh.joints0 === undefined || mesh.weights0 === undefined) return skeleton;
         let maxMorphWeight = Math.max(
           0,

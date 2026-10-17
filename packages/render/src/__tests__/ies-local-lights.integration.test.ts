@@ -1,7 +1,11 @@
-import { AssetRegistry, parseScenePayload } from '@forgeax/engine-assets-runtime';
+import {
+  AssetRegistry,
+  parseScenePayload,
+  resolveAssetHandle,
+} from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { externalizeSceneAsset, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { IesProfileAsset } from '@forgeax/engine-types';
+import type { Handle, IesProfileAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { PointLight, RectAreaLight, SpotLight } from '../components';
 import { packDirectLightSlot } from '../light-buffer-layout';
@@ -71,7 +75,22 @@ describe('IES on local lights', () => {
         sceneEntityKey: 'lamp',
       },
     ]);
-    expect(parseScenePayload(cooked.payload, [guid])).toEqual(scene);
+    const parsed = parseScenePayload(JSON.parse(JSON.stringify(cooked.payload)), [guid]);
+    if (parsed === undefined) throw new Error('expected a structural Scene payload');
+    const world = new World();
+    world.components.register(component).unwrap();
+    const registry = new AssetRegistry({} as never);
+    const asset = profile();
+    registry.catalog(guid, asset).unwrap();
+    const sceneGuid = '019ffa97-4000-7000-8000-000000000004';
+    registry.catalog(sceneGuid, parsed, cooked.refs).unwrap();
+    const bound = registry._resolveSceneGuids(parsed, world, sceneGuid).unwrap();
+    const handle = bound.entities.lamp?.components[component.name]?.iesProfile as Handle<
+      'IesProfileAsset',
+      'shared'
+    >;
+    expect(resolveAssetHandle(world, handle).unwrap()).toBe(asset);
+    world.sharedRefs.release(handle).unwrap();
   });
 
   it('keeps equal handle slots from different Worlds in distinct GPU layers', () => {

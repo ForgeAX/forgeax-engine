@@ -73,8 +73,8 @@ export const viewPlayPresentationPlugin = {
           targetId = target.targetId;
           const handle = createFrame(target.url);
           frame = handle.element;
-          frame.title = 'Editor Play';
-          frame.dataset.forgeaxEditorPlay = targetId;
+          frame.title = 'Play';
+          frame.dataset.forgeaxScenePlay = targetId;
           Object.assign(frame.style, { position: 'fixed', border: '0', zIndex: '2' });
           if (!frame.isConnected) document.body.append(frame);
           void handle.ready.catch(error => ctx.logger.error(error));

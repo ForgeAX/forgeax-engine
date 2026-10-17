@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { verifyPluginFilters } from './verify-plugin-filters.mjs';
 
 export const pages = [
-  ['scene', 'editor', 'Scene'],
+  ['scene', 'scene', 'Scene'],
   ['ai-display', 'display', 'Runtime observation'],
   ['history', 'history', 'Operation history'],
   ['plugin-browser', 'plugins', 'Plugins'],
@@ -67,7 +67,7 @@ export async function verifyPagePlugins({ page, backendHost }) {
   const before = await callWorkspace();
   assert.ok(before.connectionId);
   assert.ok(before.workspace.project?.id);
-  assert.equal(before.pages.find(row => row.typeId === 'editor')?.resource?.asset?.kind, 'scene');
+  assert.equal(before.pages.find(row => row.typeId === 'scene')?.resource?.asset?.kind, 'scene');
   assert.equal('assets' in before.workspace, false);
   assert.deepEqual(before.pages.map(row => row.id), await page.locator('[role="tab"][data-page-id]').evaluateAll(nodes => nodes.map(node => node.dataset.pageId)));
   const selected = await callWorkspace('presentation.page.select', { pageId: 'page-display' });
@@ -79,7 +79,7 @@ export async function verifyPagePlugins({ page, backendHost }) {
   const reopened = await callWorkspace('presentation.page.open', { typeId: 'plugins' });
   assert.equal(reopened.activePageId, 'page-plugins');
   await tab('plugins').and(page.locator('[aria-selected="true"]')).waitFor();
-  const required = await backendHost.context.get('toolApi').run('view.workspace.call', { operation: 'presentation.page.close', args: { pageId: 'page-editor' } }, { sourceId: 'view-workspace' }).terminal;
+  const required = await backendHost.context.get('toolApi').run('view.workspace.call', { operation: 'presentation.page.close', args: { pageId: 'page-scene' } }, { sourceId: 'view-workspace' }).terminal;
   assert.equal(required.outcome, 'failed');
   assert.match(JSON.stringify(required.failure), /view-presentation-page-required/);
   // A tab is presentation, not plugin removal.
@@ -104,24 +104,24 @@ export async function verifyPagePlugins({ page, backendHost }) {
   const services = ['viewWorkspaceCore', 'viewInspector', 'viewBroker']
     .map(name => [name, backendHost.context.get(name, false)]);
 
-  await open('editor', 'Scene');
+  await open('scene', 'Scene');
   await page.screenshot({ path: resolve(output, 'scene.png') });
   await open('display', 'Runtime observation');
   await page.screenshot({ path: resolve(output, 'ai-display.png') });
 
   for (const [name, service] of services) assert.equal(backendHost.context.get(name, false), service, name);
   for (const [, type] of pages) assert.equal(await tab(type).count(), 1, type);
-  await open('editor', 'Scene');
-  const editor = await callWorkspace();
-  assert.equal(editor.activePageId, 'page-editor', 'the public query must observe pointer-driven page changes');
-  const content = editor.panels.find(panel => panel.id === 'content-browser');
+  await open('scene', 'Scene');
+  const scene = await callWorkspace();
+  assert.equal(scene.activePageId, 'page-scene', 'the public query must observe pointer-driven page changes');
+  const content = scene.panels.find(panel => panel.id === 'content-browser');
   assert.ok(content?.mounted, 'panel facts must come from the actual Dock owner');
   const revealed = await callWorkspace('presentation.panel.reveal', { panelId: content.id });
   assert.equal(revealed.panels.find(panel => panel.id === content.id).visible, true);
   await page.locator('[data-forgeax-view="content-browser-root"]').waitFor({ state: 'visible' });
   if (!content.visible) {
     await callWorkspace('presentation.page.select', { pageId: 'page-display' });
-    await callWorkspace('presentation.page.select', { pageId: 'page-editor' });
+    await callWorkspace('presentation.page.select', { pageId: 'page-scene' });
   }
   console.error('independent page plugins: tab close, search and service isolation passed', output);
 }

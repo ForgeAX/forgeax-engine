@@ -13,9 +13,9 @@ export function assetReferenceScope(state: WorkspaceState | null): AssetReferenc
   const project = state?.project;
   const target = state?.projectTarget;
   if (!project || !target?.worldId || target.worldId.startsWith('pending:') || state.workspaceTargetLost) return;
-  const editor = state.editorPreview?.target ?? state.preview?.target;
+  const scene = state.scenePreview?.target ?? state.preview?.target;
   return { projectId: project.id, targetId: target.targetId, worldId: target.worldId,
-    targetGeneration: editor?.targetId === target.targetId ? editor.generation : target.generation,
+    targetGeneration: scene?.targetId === target.targetId ? scene.generation : target.generation,
     browserGeneration: state.browserGeneration ?? 0 };
 }
 
@@ -117,7 +117,7 @@ export function createAssetReferenceSession({ client, api, program }: { client: 
     async query(entityId: string, { signal }: { signal?: AbortSignal } = {}): Promise<EntityAssetReferences> {
       if (snapshot && ['failed', 'unavailable'].includes(state.phase)) activate(snapshot, true);
       const entry = binding;
-      if (!entry) throw new Error('asset-reference-editor-unavailable');
+      if (!entry) throw new Error('asset-reference-scene-unavailable');
       signal?.throwIfAborted();
       await new Promise<void>((resolve, reject) => {
         const release = () => { signal?.removeEventListener('abort', cancel); entry.controller.signal.removeEventListener('abort', cancel); };

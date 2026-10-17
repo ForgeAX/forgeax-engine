@@ -59,7 +59,7 @@ const implementations = new Map<string, Plugin.Object<ViewFrontendConfig>>([
 // Asset type-preview pages borrow the App-owned surface. Starting them before
 // the App publishes its presentation would leave required descendants pending
 // and prevent Engine's native frontend root from activating.
-// Viewport is not in this set: its fill dock is claimed with the other editor
+// Viewport is not in this set: its fill dock is claimed with the other scene
 // panels as soon as the scene page exists. Play/Engine only delay DOM inside
 // that already-claimed slot, and must not inject engineWorkspacePresentation
 // on the viewport plugin itself.

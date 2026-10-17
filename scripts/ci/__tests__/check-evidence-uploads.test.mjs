@@ -82,6 +82,32 @@ test('the CI entrypoint rejects a committed capture and accepts an ordinary sour
     assert.equal(rejected.status, 1, rejected.stdout);
     assert.match(rejected.stderr, /artifacts\/browser\/frame\.png/);
 
+    const targetBase = git(['rev-parse', 'HEAD']);
+    writeFileSync(join(root, 'src.ts'), 'export const ready = true;\n');
+    git(['add', 'src.ts']);
+    git(['commit', '--quiet', '-m', 'source on target branch']);
+    const targetAccepted = spawnSync(process.execPath, [checkScript], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, FORGEAX_EVIDENCE_GUARD_BASE: targetBase },
+    });
+    assert.equal(targetAccepted.status, 0, targetAccepted.stderr);
+    assert.match(targetAccepted.stdout, /No generated evidence files/);
+
+    const newCapturePath = join(root, 'artifacts', 'browser', 'new.png');
+    writeFileSync(newCapturePath, 'new capture');
+    git(['add', 'artifacts/browser/new.png']);
+    git(['commit', '--quiet', '-m', 'new capture after target base']);
+    const targetRejected = spawnSync(process.execPath, [checkScript], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, FORGEAX_EVIDENCE_GUARD_BASE: targetBase },
+    });
+    assert.equal(targetRejected.status, 1, targetRejected.stdout);
+    assert.match(targetRejected.stderr, /artifacts\/browser\/new\.png/);
+    assert.doesNotMatch(targetRejected.stderr, /artifacts\/browser\/frame\.png/);
+
+    git(['rm', '--quiet', 'artifacts/browser/new.png']);
     git(['rm', '--quiet', 'artifacts/browser/frame.png']);
     writeFileSync(join(root, 'src.ts'), 'export const ready = true;\n');
     git(['add', 'src.ts']);

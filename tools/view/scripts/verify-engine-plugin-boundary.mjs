@@ -12,7 +12,7 @@ import { chromium } from 'playwright';
 import { connectViewWorkspace } from '../packages/view-workspace-core/src/resident.ts';
 import { startViewLiveIntegration } from './workspace-fixture.mjs';
 import { VIEW_DISPLAY_TAB_ID, VIEW_WORKSPACE_TAB_ID } from '../dist/modules/workspace/contract.mjs';
-import { verifyEditorPlay, verifyEditorPlayFailure } from './verify-editor-play.mjs';
+import { verifyScenePlay, verifyScenePlayFailure } from './verify-scene-play.mjs';
 import { verifyRuntimeCapture } from './verify-runtime-capture.mjs';
 import { verifyPagePlugins } from './verify-page-plugins.mjs';
 import { writeProofGameAssets } from './fixtures/plugin-assets.mjs';
@@ -125,7 +125,7 @@ try {
     assert.equal(observed.observation?.status.runId, startedRun.runId);
     assert.match(observed.observation?.image?.png ?? '', /^data:image\/png/);
     assert.equal((await observer.getState()).project ?? null, null);
-    console.error('independent AI screenshot observed with no Editor project or View browser');
+    console.error('independent AI screenshot observed with no project or View browser');
   } finally { observer.close('empty observation complete'); }
   const stopped = await runUnifiedCli(['view', 'stop', '--root', root, '--json']);
   assert.equal(stopped.ok, true, JSON.stringify(stopped));
@@ -229,30 +229,30 @@ try {
   await page.locator('.fx-page-tab-btn--new').click();
   await page.getByRole('menuitem', { name: 'Asset', exact: true }).click();
   await page.getByTestId('panel-asset-properties').waitFor();
-  const editorBeforeRefocus = pageWorkspace().snapshot().editorPreview;
-  const editorCanvas = await page.locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').elementHandle();
-  assert.ok(editorCanvas, 'the Editor owns its original Engine canvas');
+  const sceneBeforeRefocus = pageWorkspace().snapshot().scenePreview;
+  const sceneCanvas = await page.locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').elementHandle();
+  assert.ok(sceneCanvas, 'the Scene owns its original Engine canvas');
   const refocused = await pageWorkspace().openAsset({ projectId: state.project.id, guid: scene.guid, tabId: VIEW_WORKSPACE_TAB_ID });
-  await page.locator('[data-page-id="page-editor"][aria-selected="true"]').waitFor();
-  const repeatedScene = refocused.editorPreview;
+  await page.locator('[data-page-id="page-scene"][aria-selected="true"]').waitFor();
+  const repeatedScene = refocused.scenePreview;
   assert.equal(repeatedScene.asset.kind, 'scene');
   assert.equal(repeatedScene.asset.guid, scene.guid);
-  assert.equal(refocused.preview.target.targetId, repeatedScene.target.targetId, 'asset.open binds the exact opened scene as Editor');
+  assert.equal(refocused.preview.target.targetId, repeatedScene.target.targetId, 'asset.open binds the exact opened scene as Scene');
   assert.equal(refocused.openRequest.preview, undefined, 'Scenes must not be published as asset-tab previews');
-  assert.equal(await page.locator('[data-page-id="page-scene"]').count(), 0, 'Scene opens focus the existing Editor page');
-  assert.equal(repeatedScene.target.targetId, editorBeforeRefocus.target.targetId);
+  assert.equal(await page.locator('[data-page-id="page-scene"]').count(), 1, 'Scene opens reuse the single Scene page');
+  assert.equal(repeatedScene.target.targetId, sceneBeforeRefocus.target.targetId);
   const opened = pageWorkspace().snapshot();
-  assert.equal(opened.editorPreview.target.targetId, editorBeforeRefocus.target.targetId);
-  assert.equal(opened.editorPreview.target.worldId, editorBeforeRefocus.target.worldId);
-  assert.equal(await editorCanvas.evaluate(canvas => canvas === document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')), true, 'closing the repeated scene preserves the original Editor owner canvas');
-  await editorCanvas.dispose();
+  assert.equal(opened.scenePreview.target.targetId, sceneBeforeRefocus.target.targetId);
+  assert.equal(opened.scenePreview.target.worldId, sceneBeforeRefocus.target.worldId);
+  assert.equal(await sceneCanvas.evaluate(canvas => canvas === document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')), true, 'closing the repeated scene preserves the original Scene owner canvas');
+  await sceneCanvas.dispose();
   assert.equal(opened.preview?.asset?.guid, scene.guid, 'UI activation must open the exact Engine asset');
   assert.equal(await contentBrowser.locator('[role="alert"]').count(), 0);
   console.error('live catalog navigation, search, selection, inspection, refresh and scene activation passed');
   const targetId = opened.preview.target.targetId;
   const targetGeneration = opened.preview.target.generation;
   assert.equal(await page.locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').count(), 1);
-  assert.equal(await page.locator('canvas:visible').count(), 1, 'only the Editor canvas may be visible');
+  assert.equal(await page.locator('canvas:visible').count(), 1, 'only the Scene canvas may be visible');
   assert.equal(page.frames().filter((frame) => frame.url() === page.url()).length, 1);
   console.error('native shared Host, asset discovery and exact single surface passed');
   const tree = await live.workspaceCore.getSceneTree({ targetId, targetGeneration });
@@ -298,7 +298,7 @@ try {
   for (const component of meshInspection.components) await meshInspector.getByTestId(`insp-section-${component.name}`).waitFor();
   await meshInspector.getByTestId('insp-field-MeshFilter-assetHandle').waitFor();
   await meshInspector.getByTestId('insp-group-common').click();
-  assert.equal(pageWorkspace().snapshot().editorPreview.target.targetId, targetId);
+  assert.equal(pageWorkspace().snapshot().scenePreview.target.targetId, targetId);
   await sameRun();
   console.error('real read-only mesh references and component Inspector passed without Engine changes');
   const closeInlinePreviews = process.env.FORGEAX_PROBE_MULTI_PREVIEWS === '0' ? async () => {} : await verifyInlinePreviews({ page, workspace: pageWorkspace(),
@@ -316,12 +316,12 @@ try {
         error: { name: error.name, message: error.message, code: error.code, detail: error.detail } }, null, 2));
     },
   });
-  await verifyEditorPlay({ page, live, root, sameRun, cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) });
-  await verifyEditorPlayFailure({ page, live, sameRun });
+  await verifyScenePlay({ page, live, root, sameRun, cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) });
+  await verifyScenePlayFailure({ page, live, sameRun });
   await closeInlinePreviews();
   assert.deepEqual(errors, [], 'combined target use and disposal must not emit browser errors');
 
-  if (playOnly) console.log(JSON.stringify({ passed: true, boundary: 'editor-play', cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) }));
+  if (playOnly) console.log(JSON.stringify({ passed: true, boundary: 'scene-play', cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) }));
   else {
   const frameProgress = setInterval(() => { void page.evaluate(() => ({ frame: document.documentElement.dataset.forgeaxFrameSubmitted, error: document.querySelector('#forgeax-fatal-details')?.textContent })).then(value => console.error('preview progress', JSON.stringify(value))).catch(() => {}); }, 10_000);
   frameProgress.unref();
@@ -373,7 +373,7 @@ try {
   await page.getByRole('menuitem', { name: 'Material', exact: true }).click();
   await page.getByTestId('panel-material-preview').getByText('Material preview unavailable', { exact: true }).waitFor();
   assert.equal(await page.getByTestId('panel-material-preview').locator('canvas').count(), 0);
-  await page.locator('[data-page-id="page-editor"]').click();
+  await page.locator('[data-page-id="page-scene"]').click();
   // Page activation restores the panel before ResizeObserver fits its surface.
   // Wait for the observable layout condition, not a fixed rendering delay.
   const fittedViewport = await page.waitForFunction(() => {
@@ -390,7 +390,7 @@ try {
   console.error('whole target fits the product viewport', JSON.stringify(await fittedViewport.jsonValue()));
   await fittedViewport.dispose();
   assert.equal(await page.locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').count(), 1);
-  assert.equal(await page.locator('canvas:visible').count(), 1, 'only the Editor canvas may be visible');
+  assert.equal(await page.locator('canvas:visible').count(), 1, 'only the Scene canvas may be visible');
   assert.equal(await page.locator('.fx-view-app[data-forgeax-view="shell"]').count(), 1);
   assert.equal(page.frames().filter((frame) => frame.url() === page.url()).length, 1);
   assert.deepEqual(errors, []);
@@ -411,7 +411,7 @@ try {
     await assert.rejects(call('engine.camera.begin', { ...interaction, baseVersion: beforeCamera.version }), /conflict/);
     const { frameId: afterCameraFrame, ...afterRunCamera } = await run('camera.get');
     assert.ok(afterCameraFrame >= beforeCameraFrame);
-    assert.deepEqual(afterRunCamera, beforeRunCamera, 'Editor camera must not change the AI camera');
+    assert.deepEqual(afterRunCamera, beforeRunCamera, 'Scene camera must not change the AI camera');
     const abandoned = live.backendHost.transport.connect({ kind: 'cli', sourceId: 'disconnect-proof' });
     await abandoned.request('engine.workspace.call', { operation: 'engine.camera.begin', args: { ...target, interactionId: 'abandoned-camera', baseVersion: committed.version } });
     abandoned.close();
@@ -425,7 +425,7 @@ try {
     for (const operation of ['start', 'stop', 'reload', 'eval', 'capture', 'camera.set']) {
       await assert.rejects(call(`engine.run.${operation}`, { root }));
     }
-    // Editor and AI use independent render loops; Editor progress cannot prove
+    // Scene and AI use independent render loops; Scene progress cannot prove
     // that the AI has submitted the required frames.
     const frameDeadline = Date.now() + 180_000;
     let aiProgress = await sameRun();
@@ -450,7 +450,7 @@ try {
     await updateUi(1);
     await page.evaluate(() => {
       const input = document.createElement('input');
-      input.id = 'continuous-editor-input';
+      input.id = 'continuous-scene-input';
       input.style.cssText = 'position:fixed;top:60px;right:20px;z-index:999999';
       document.body.append(input);
       input.focus();
@@ -467,7 +467,7 @@ try {
         }
       }, 16);
     });
-    const typing = page.keyboard.type('editor-input-remains-uninterrupted', { delay: 100 });
+    const typing = page.keyboard.type('scene-input-remains-uninterrupted', { delay: 100 });
     const runCapture = await run('capture', ['--revision', startedRun.revision, '--require-ui', 'true']);
     await typing;
     assert.equal(runCapture.pixels.rendered, true);
@@ -486,14 +486,14 @@ try {
     await cp(runCapture.screenshot.uri, '/tmp/view-plugin-ai-frame.png');
     const proof = await page.evaluate(() => {
       clearInterval(globalThis.inputProofTimer);
-      return { ...globalThis.inputProof, value: document.querySelector('#continuous-editor-input').value };
+      return { ...globalThis.inputProof, value: document.querySelector('#continuous-scene-input').value };
     });
     assert.ok(proof.samples > 10);
     assert.equal(proof.hidden, 0);
     if (process.env.FORGEAX_PROBE_SKIP_NATIVE_WINDOW !== '1') assert.equal(proof.blurred, 0);
-    assert.equal(proof.value, 'editor-input-remains-uninterrupted');
+    assert.equal(proof.value, 'scene-input-remains-uninterrupted');
     await writeFile('/tmp/view-independent-input-proof.json', JSON.stringify(proof, null, 2));
-    await page.locator('#continuous-editor-input').evaluate(input => input.remove());
+    await page.locator('#continuous-scene-input').evaluate(input => input.remove());
     await verifyRuntimeCapture({ page, root, runId: startedRun.runId, sameRun,
       updateImage: () => updateUi(2),
       bindExact: args => live.pageWorkspace.invoke('display.bind', args),
@@ -526,7 +526,7 @@ try {
         assert.equal(hiddenCapture.pixels.rendered, true);
       } finally { await nativeWindows('show'); }
     }
-    console.error('read-only observer, tab/resize isolation and uninterrupted Editor input passed', proof);
+    console.error('read-only observer, tab/resize isolation and uninterrupted Scene input passed', proof);
 
     await verifyPagePlugins({ page, backendHost: live.backendHost });
     await sameRun();

@@ -11,11 +11,12 @@ export async function indirectBundleRetirementFrames() {
     await createShaderModule(device, {
       code: `
 @group(0) @binding(0) var<uniform> tint: vec4<f32>;
+override GAIN: f32 = 1.0;
 @vertex fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
   var points = array<vec2<f32>,3>(vec2<f32>(-0.25,-0.3),vec2<f32>(0.25,-0.3),vec2<f32>(0.0,0.3));
   return vec4<f32>(points[index] + vec2<f32>(dot(tint.rgb,vec3<f32>(0.0,1.0,2.0))*0.6-0.6,0.0),0.0,1.0);
 }
-@fragment fn fragment() -> @location(0) vec4<f32> { return tint; }
+@fragment fn fragment() -> @location(0) vec4<f32> { return vec4<f32>(tint.rgb * GAIN, tint.a); }
 `,
     })
   ).unwrap();
@@ -25,16 +26,22 @@ export async function indirectBundleRetirementFrames() {
     })
     .unwrap();
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap();
-  const pipeline = () =>
+  const pipeline = (gain: number) =>
     device
       .createRenderPipeline({
         layout: pipelineLayout,
         vertex: { module, entryPoint: 'vertex', buffers: [] },
-        fragment: { module, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm' }] },
+        fragment: {
+          module,
+          entryPoint: 'fragment',
+          targets: [{ format: 'rgba8unorm' }],
+          constants: { GAIN: gain },
+        },
         primitive: { topology: 'triangle-list', cullMode: 'none' },
       })
       .unwrap();
-  const pipelines = [pipeline(), pipeline()];
+  const pipelines = [pipeline(1), pipeline(0.5)];
+  expect(pipelines[0]).not.toBe(pipelines[1]);
   const batches = [0, 1, 2].map((index) => {
     const uniform = device.createBuffer({ size: 16, usage: 64 | 8 }).unwrap();
     device.queue
@@ -71,6 +78,7 @@ export async function indirectBundleRetirementFrames() {
   const cache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
   let retired = false;
   let invalidUniformRetired = false;
+  let beforePipelineChange: Uint8Array | undefined;
   try {
     for (let frame = 0; frame < 60; frame++) {
       if (frame === 8) {
@@ -119,7 +127,12 @@ export async function indirectBundleRetirementFrames() {
       expect(await render(true)).toEqual(direct);
       expect(direct.some((value, index) => index % 4 !== 3 && value > 200)).toBe(true);
       if (frame === 8) expect(counters).toEqual({ hits: 2, misses: 0 });
-      if (frame === 24) expect(counters).toEqual({ hits: 1, misses: 1 });
+      if (frame === 23) beforePipelineChange = direct;
+      if (frame === 24) {
+        expect(counters).toEqual({ hits: 1, misses: 1 });
+        expect(beforePipelineChange).toBeDefined();
+        expect(direct).not.toEqual(beforePipelineChange);
+      }
     }
     expect(await native.popErrorScope()).toBeNull();
     const invalid = batches[1];

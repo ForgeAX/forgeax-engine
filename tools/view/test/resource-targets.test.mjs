@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ViewWorkspaceBroker } from '../packages/view-workspace-core/src/broker.ts';
-import { selectWorkspaceEditorSurfaceTarget, selectWorkspaceResourcePreview } from '../packages/view-workspace-core/src/resource-open.ts';
+import { selectWorkspaceSceneSurfaceTarget, selectWorkspaceResourcePreview } from '../packages/view-workspace-core/src/resource-open.ts';
 
-test('Play before opening a scene never lends the game document to the Editor', () => {
+test('Play before opening a scene never lends the game document to the Scene', () => {
   const game = { target: { targetId: 'game', generation: 1 } };
-  assert.equal(selectWorkspaceEditorSurfaceTarget({ targetBinding: 'play', preview: game }), null);
-  const editor = { target: { targetId: 'editor', generation: 1 } };
-  assert.equal(selectWorkspaceEditorSurfaceTarget({ targetBinding: 'play', preview: game, editorPreview: editor }), editor.target);
-  assert.equal(selectWorkspaceEditorSurfaceTarget({ targetBinding: 'editor', preview: editor }), editor.target);
+  assert.equal(selectWorkspaceSceneSurfaceTarget({ targetBinding: 'play', preview: game }), null);
+  const scene = { target: { targetId: 'scene', generation: 1 } };
+  assert.equal(selectWorkspaceSceneSurfaceTarget({ targetBinding: 'play', preview: game, scenePreview: scene }), scene.target);
+  assert.equal(selectWorkspaceSceneSurfaceTarget({ targetBinding: 'scene', preview: scene }), scene.target);
 });
 
 test('consumer binding facts survive broker serialization and selection of an older live preview', () => {
@@ -30,28 +30,28 @@ test('consumer binding facts survive broker serialization and selection of an ol
   assert.equal(broker.openRequest.preview.assetBinding, undefined, 'openRequest stores selection, not another binding snapshot');
 });
 
-test('the first Mesh preview is never mistaken for the Editor scene target', () => {
+test('the first Mesh preview is never mistaken for the Scene target', () => {
   const mesh = { asset: { guid: 'mesh-one', kind: 'mesh' }, target: { targetId: 'mesh-preview', worldId: 'mesh-world' } };
-  const editor = { asset: { guid: 'scene-one', kind: 'scene' }, target: { targetId: 'editor', worldId: 'editor-world' } };
+  const scene = { asset: { guid: 'scene-one', kind: 'scene' }, target: { targetId: 'scene', worldId: 'scene-world' } };
   const engine = {
-    project: { project: { id: 'p', root: '/p', name: 'P' }, target: editor.target },
+    project: { project: { id: 'p', root: '/p', name: 'P' }, target: scene.target },
     previews: [mesh],
   };
   const broker = new ViewWorkspaceBroker({ engine });
-  assert.equal(broker.snapshot().editorPreview, null);
+  assert.equal(broker.snapshot().scenePreview, null);
   broker.recordOpenRequest({ guid: mesh.asset.guid, result: { preview: mesh } });
   assert.equal(broker.snapshot().resourceOpens.mesh.preview.target.targetId, 'mesh-preview');
-  engine.previews.push(editor);
-  assert.equal(broker.snapshot().editorPreview.target.targetId, 'editor');
-  assert.equal(broker.snapshot().preview.target.targetId, 'editor');
+  engine.previews.push(scene);
+  assert.equal(broker.snapshot().scenePreview.target.targetId, 'scene');
+  assert.equal(broker.snapshot().preview.target.targetId, 'scene');
   assert.equal(broker.snapshot().resourceOpens.mesh.preview.target.targetId, 'mesh-preview');
 });
 
 for (const kind of ['ui', 'vfx', 'custom']) {
-  test(`${kind} resource targets never become the Editor scene, including when pinned`, () => {
+  test(`${kind} resource targets never become the Scene, including when pinned`, () => {
     const resource = { asset: { guid: 'resource', kind }, target: { targetId: 'resource-preview' } };
     const broker = new ViewWorkspaceBroker({ engine: { previews: [resource] } });
-    broker.editorTargetId = resource.target.targetId;
-    assert.equal(broker.snapshot().editorPreview, null);
+    broker.sceneTargetId = resource.target.targetId;
+    assert.equal(broker.snapshot().scenePreview, null);
   });
 }

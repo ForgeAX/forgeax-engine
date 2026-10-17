@@ -31,6 +31,7 @@ import type { PipelineState, RenderSystemInternals } from '../record/render-cont
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
 import type { GpuDrivenStandardPbrFrameResources } from '../render-pipeline';
 import { PROBE_BLEND_RECORD_BYTE_SIZE } from '../scene/probe-blend-record';
+import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type {
   DynamicInputRange,
   DynamicInputUploadReceipt,
@@ -40,6 +41,7 @@ import type {
 import type { GpuDrivenBatch } from './batch-topology';
 import type { GpuDrivenPbrProgram } from './pbr-program';
 import { resolveStandardPbrProgram } from './pbr-program';
+import type { FilteredProductionPlan } from './production-raster-prepare';
 import { gpuDrivenReflectionFallbackRenderState } from './reflection-fallback-output';
 import {
   GpuResourceAllocationLedger,
@@ -302,6 +304,13 @@ export function requestMaterialAbiRasterPipeline(
 }
 
 export class MaterialAbiRasterAdapter {
+  /** Effective fixed entry of this adapter, including its retained factory lane. */
+  diagnosticGBufferVertexEntry(artifact: MaterialShaderArtifact): string | undefined {
+    return this.pipelineFactory === undefined
+      ? (artifact.vertexEntry ?? artifact.receipt?.sceneIndexEntry)
+      : artifact.receipt?.sceneIndexEntry;
+  }
+
   private readonly pipelines = new Map<string, RenderPipeline>();
   private sceneMeshBinding:
     | {
@@ -1886,5 +1895,350 @@ export class MaterialAbiRasterAdapter {
 
   get kind(): 'rigid' | 'skin' {
     return this.deformation;
+  }
+}
+
+/**
+ * Renderer-owned join between the scene-index candidate rows and a Surface
+ * producer range. The user-facing range keeps its formal instance address;
+ * the frame row is assigned after the RenderScene plan has been filtered and
+ * its visible bases are known.
+ */
+interface ProjectedSurfaceFrameRange {
+  readonly frameIndex: number;
+  readonly range?: DynamicInputRange;
+  readonly directMember: {
+    readonly worldIdentity: string;
+    readonly worldId: number;
+    readonly entityKey: number;
+    readonly drawItemIndex: number;
+    readonly instanceOrdinal: number;
+  };
+}
+
+interface SurfaceFrameProjection {
+  readonly ranges: readonly ProjectedSurfaceFrameRange[];
+  readonly consumptionRanges: readonly DynamicInputRange[];
+  readonly capacity: number;
+}
+
+/**
+ * Join Surface ranges to the renderer-owned candidate rows in the visible
+ * stream. The GPU culler may assign atomic compact slots in any order, but
+ * each rigid member carries its view candidate row in `visibleItems.z`; frame
+ * rows are keyed by that row rather than by the compact slot or the GPU Scene
+ * instance row, which submeshes of one instance share. The producer's
+ * `instanceIndex` remains in the range and is copied into the frame record
+ * for the Surface ABI.
+ */
+function buildProjectedSurfaceFrameRanges(
+  filtered: FilteredProductionPlan,
+  ranges: readonly DynamicInputRange[],
+  scene: PersistentGpuDrivenState,
+): Result<readonly ProjectedSurfaceFrameRange[], RhiError> {
+  const surfaceMembers: Array<{
+    readonly frameIndex: number;
+    readonly identity: string;
+    readonly directMember: ProjectedSurfaceFrameRange['directMember'];
+  }> = [];
+  // Candidate rows follow the encoded plan: batches in order, then candidates.
+  let candidateRow = 0;
+  for (const prepared of filtered.batches) {
+    const firstRow = candidateRow;
+    candidateRow += prepared.batch.candidates.length;
+    if (prepared.artifact.receipt?.surface?.model !== 'single-layer-medium') continue;
+    for (const [index, candidate] of prepared.batch.candidates.entries()) {
+      const slot = scene.slotAt(candidate.primitiveIndex);
+      const worldIdentity = slot === undefined ? undefined : scene.worldIdentities?.[slot.worldId];
+      const frameIndex = firstRow + index;
+      if (slot === undefined || worldIdentity === undefined) {
+        return err(
+          new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected:
+              'every admitted medium draw member has a renderer slot and public World identity',
+            hint: `rebuild the persistent scene projection before publishing Surface ranges (primitive=${candidate.primitiveIndex})`,
+          }),
+        );
+      }
+      surfaceMembers.push({
+        frameIndex,
+        directMember: {
+          worldIdentity,
+          worldId: slot.worldId,
+          entityKey: slot.entityKey,
+          drawItemIndex: candidate.drawItemIndex,
+          instanceOrdinal: candidate.instanceOrdinal,
+        },
+        identity: JSON.stringify([
+          worldIdentity,
+          slot.entityKey,
+          candidate.drawItemIndex,
+          candidate.instanceOrdinal,
+        ]),
+      });
+    }
+  }
+  if (ranges.length === 0) {
+    return ok(
+      Object.freeze(
+        surfaceMembers.map(({ frameIndex, directMember }) => ({ frameIndex, directMember })),
+      ),
+    );
+  }
+  const rangeByIdentity = new Map<string, DynamicInputRange>();
+  for (const range of ranges) {
+    const identity = JSON.stringify([
+      range.member.worldIdentity,
+      range.member.entityKey,
+      range.member.drawItemIndex,
+      range.member.instanceOrdinal,
+    ]);
+    if (rangeByIdentity.has(identity)) {
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'at most one Surface dynamic range for each stable draw member',
+          hint: `remove the duplicate producer range for member ${identity}`,
+        }),
+      );
+    }
+    rangeByIdentity.set(identity, range);
+  }
+  if (ranges.length !== surfaceMembers.length) {
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'one stable-identity Surface dynamic range for every admitted medium draw member',
+        hint: `publish one range per admitted Surface member (ranges=${ranges.length}, members=${surfaceMembers.length})`,
+      }),
+    );
+  }
+  const frameRanges: ProjectedSurfaceFrameRange[] = [];
+  for (const member of surfaceMembers) {
+    const range = rangeByIdentity.get(member.identity);
+    if (range === undefined) {
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'every admitted medium draw member resolves one stable-identity Surface range',
+          hint: `publish the missing producer range for member ${member.identity}`,
+        }),
+      );
+    }
+    rangeByIdentity.delete(member.identity);
+    frameRanges.push({ frameIndex: member.frameIndex, range, directMember: member.directMember });
+  }
+  if (rangeByIdentity.size !== 0) {
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'every Surface range identifies an admitted medium draw member',
+        hint: `remove ranges for non-admitted members: ${[...rangeByIdentity.keys()].join(', ')}`,
+      }),
+    );
+  }
+  return ok(Object.freeze(frameRanges));
+}
+
+/** Retained Surface member rows and their producer upload acknowledgment. */
+export class SurfaceFrameProjectionOwner {
+  private surfaceFrameRangeCache:
+    | {
+        readonly filtered: FilteredProductionPlan;
+        readonly slots: PersistentGpuDrivenState['slots'];
+        readonly allocationRevision: number;
+        readonly page: ReadonlyDynamicInputPage | undefined;
+        readonly projectionRevision: number;
+        readonly value: SurfaceFrameProjection;
+      }
+    | undefined;
+  private consumedSurfaceInput:
+    | {
+        readonly page: ReadonlyDynamicInputPage;
+        readonly projectionRevision: number;
+        readonly contentRevision: number;
+        readonly bufferGeneration: number;
+        readonly deviceGeneration: number;
+      }
+    | undefined;
+  surfaceFrameRangeBuilds = 0;
+  surfaceFrameRangeMemberScans = 0;
+
+  resolve(
+    filtered: FilteredProductionPlan,
+    frame: SurfaceDynamicInputFrame | undefined,
+    scene: PersistentGpuDrivenState,
+  ): Result<SurfaceFrameProjection, RhiError> {
+    const ranges = frame?.ranges ?? [];
+    const projectionRevision = frame?.projectionRevision ?? 0;
+    if (!Number.isSafeInteger(projectionRevision) || projectionRevision < 0) {
+      return err(
+        surfaceDynamicInputError(
+          'the Surface projection revision is a non-negative safe integer',
+          'advance the producer-owned projection revision only when membership or addresses change',
+        ),
+      );
+    }
+    const cached = this.surfaceFrameRangeCache;
+    if (
+      cached?.filtered === filtered &&
+      cached.slots === scene.slots &&
+      cached.allocationRevision === scene.scene.allocationRevision &&
+      cached.page === frame?.page &&
+      cached.projectionRevision === projectionRevision
+    ) {
+      return ok(cached.value);
+    }
+    this.surfaceFrameRangeBuilds += 1;
+    for (const prepared of filtered.batches) {
+      if (prepared.artifact.receipt?.surface?.model !== 'single-layer-medium') continue;
+      this.surfaceFrameRangeMemberScans += prepared.batch.candidates.length;
+    }
+    const built = buildProjectedSurfaceFrameRanges(filtered, ranges, scene);
+    if (!built.ok) return built;
+    let capacity = 1;
+    const consumptionRanges: DynamicInputRange[] = [];
+    for (const entry of built.value) {
+      capacity = Math.max(capacity, entry.frameIndex + 1);
+      if (entry.range !== undefined) consumptionRanges.push(entry.range);
+    }
+    const value = {
+      ranges: built.value,
+      consumptionRanges: Object.freeze(consumptionRanges),
+      capacity,
+    };
+    return ok(value);
+  }
+
+  remember(
+    filtered: FilteredProductionPlan,
+    frame: SurfaceDynamicInputFrame | undefined,
+    scene: PersistentGpuDrivenState,
+    value: SurfaceFrameProjection,
+  ): void {
+    this.surfaceFrameRangeCache = {
+      filtered,
+      slots: scene.slots,
+      allocationRevision: scene.scene.allocationRevision,
+      page: frame?.page,
+      projectionRevision: frame?.projectionRevision ?? 0,
+      value,
+    };
+  }
+
+  private consumeSurfaceDynamicInput(
+    page: ReadonlyDynamicInputPage,
+    ranges: readonly DynamicInputRange[],
+    projectionRevision: number,
+    frameNumber: number,
+  ): Result<void, RhiError> {
+    const consumed = this.consumedSurfaceInput;
+    if (
+      consumed?.page === page &&
+      consumed.projectionRevision === projectionRevision &&
+      consumed.contentRevision === page.contentRevision &&
+      consumed.bufferGeneration === page.bufferGeneration &&
+      consumed.deviceGeneration === page.deviceGeneration
+    ) {
+      return ok(undefined);
+    }
+    for (const range of ranges) {
+      const receipt = page.consume(range, frameNumber);
+      if (!receipt.ok) {
+        return err(
+          surfaceDynamicInputError(
+            'each submitted Surface dynamic range was uploaded before graph consumption',
+            receipt.error.hint,
+          ),
+        );
+      }
+    }
+    this.consumedSurfaceInput = {
+      page,
+      projectionRevision,
+      contentRevision: page.contentRevision,
+      bufferGeneration: page.bufferGeneration,
+      deviceGeneration: page.deviceGeneration,
+    };
+    return ok(undefined);
+  }
+
+  directInstances(
+    materialRaster: MaterialAbiRasterAdapter,
+    directInput: Parameters<MaterialAbiRasterAdapter['directSurfaceInstances']>[0],
+  ): ReturnType<NonNullable<GpuDrivenStandardPbrFrameResources['surfaceDirectInstances']>> {
+    const resolved = materialRaster.directSurfaceInstances(directInput);
+    if (!resolved.ok) return resolved;
+    const firstInstanceOrdinal = directInput.firstInstanceOrdinal ?? 0;
+    const memberIds: string[] = [];
+    for (let index = 0; index < directInput.instanceCount; index += 1) {
+      const instanceOrdinal = firstInstanceOrdinal + index;
+      const memberId = this.memberId(
+        directInput.worldId,
+        directInput.entityKey,
+        directInput.drawItemIndex,
+        instanceOrdinal,
+      );
+      if (memberId === undefined) {
+        return err(
+          surfaceDynamicInputError(
+            'every direct Surface command resolves the retained public member identity',
+            `rebuild the Surface projection for world=${directInput.worldId}, entity=${directInput.entityKey}, draw=${directInput.drawItemIndex}, instance=${instanceOrdinal}`,
+          ),
+        );
+      }
+      memberIds.push(memberId);
+    }
+    return ok({ ...resolved.value, memberIds: Object.freeze(memberIds) });
+  }
+
+  consumer(
+    frame: SurfaceDynamicInputFrame | undefined,
+  ): ((frameNumber: number) => Result<void, RhiError>) | undefined {
+    const input =
+      frame === undefined
+        ? undefined
+        : {
+            page: frame.page,
+            ranges: this.surfaceFrameRangeCache?.value.consumptionRanges ?? [],
+            projectionRevision: frame.projectionRevision,
+          };
+    return input === undefined || input.ranges.length === 0
+      ? undefined
+      : (frameNumber) =>
+          this.consumeSurfaceDynamicInput(
+            input.page,
+            input.ranges,
+            input.projectionRevision,
+            frameNumber,
+          );
+  }
+
+  memberId(
+    worldId: number,
+    entityKey: number,
+    drawItemIndex: number,
+    instanceOrdinal: number,
+  ): string | undefined {
+    const frameRange = this.surfaceFrameRangeCache?.value.ranges.find(
+      ({ directMember }) =>
+        directMember.worldId === worldId &&
+        directMember.entityKey === entityKey &&
+        directMember.drawItemIndex === drawItemIndex &&
+        directMember.instanceOrdinal === instanceOrdinal,
+    );
+    if (frameRange === undefined) return undefined;
+    return JSON.stringify([
+      frameRange.directMember.worldIdentity,
+      frameRange.directMember.entityKey,
+      frameRange.directMember.drawItemIndex,
+      frameRange.directMember.instanceOrdinal,
+    ]);
+  }
+
+  clear(): void {
+    this.surfaceFrameRangeCache = undefined;
+    this.consumedSurfaceInput = undefined;
   }
 }

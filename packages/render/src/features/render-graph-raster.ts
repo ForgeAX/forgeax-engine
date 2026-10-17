@@ -7,15 +7,12 @@ import type {
   RasterDepthStencilAttachment,
   RenderGraphBuilder,
   RenderGraphFrame,
+  RenderGraphNativePass,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import type { BindGroup, RenderPipeline, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import {
-  type RenderError,
-  RenderFeatureDrawRecordingFailedError,
-  RenderFeatureStageFailedError,
-} from '../errors/render';
+import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import type {
   PreparedGraphicsResolvedResource,
   PreparedGraphicsResolvedSnapshot,
@@ -28,7 +25,8 @@ import type {
   RenderFeaturePreparedGraphicsState,
   RenderFeaturePreparedRef,
 } from './prepared-graphics';
-import { validateRenderFeatureGraphicsPass } from './prepared-graphics';
+import { validateOwnedRenderFeatureGraphicsPass } from './prepared-graphics';
+import { throwFeatureRecordingFailure } from './recording-failure';
 import {
   createRenderFeatureGraphBufferState,
   importRenderFeatureGraphBuffer,
@@ -94,6 +92,11 @@ function resolved(
   return snapshot.resolve(reference);
 }
 
+type DrawGpuBuffer = RenderFeatureResolvedGpuBuffer & {
+  readonly byteOffset?: number;
+  readonly byteLength?: number;
+};
+
 /** Physical draw inputs shared by readiness ordering and graph imports. */
 export function resolveRenderFeatureDrawBuffers(
   featureIdentity: string,
@@ -102,14 +105,14 @@ export function resolveRenderFeatureDrawBuffers(
   snapshot: PreparedGraphicsResolvedSnapshot,
 ): Result<
   {
-    vertex: Map<object, RenderFeatureResolvedGpuBuffer>;
-    index: Map<object, RenderFeatureResolvedGpuBuffer>;
+    vertex: Map<object, DrawGpuBuffer>;
+    index: Map<object, DrawGpuBuffer>;
     indirect: Map<object, RenderFeatureResolvedGpuBuffer>;
   },
   RenderError
 > {
-  const vertex = new Map<object, RenderFeatureResolvedGpuBuffer>();
-  const index = new Map<object, RenderFeatureResolvedGpuBuffer>();
+  const vertex = new Map<object, DrawGpuBuffer>();
+  const index = new Map<object, DrawGpuBuffer>();
   const indirect = new Map<object, RenderFeatureResolvedGpuBuffer>();
   for (const draw of descriptor.draws) {
     for (const binding of draw.vertexData) {
@@ -119,6 +122,8 @@ export function resolveRenderFeatureDrawBuffers(
         buffer: resource.handle,
         size: resource.size,
         physicalUsage: resource.physicalUsage,
+        ...(resource.byteOffset === undefined ? {} : { byteOffset: resource.byteOffset }),
+        ...(resource.byteLength === undefined ? {} : { byteLength: resource.byteLength }),
       });
     }
     if (draw.indexData !== undefined) {
@@ -128,6 +133,8 @@ export function resolveRenderFeatureDrawBuffers(
         buffer: resource.handle,
         size: resource.size,
         physicalUsage: resource.physicalUsage,
+        ...(resource.byteOffset === undefined ? {} : { byteOffset: resource.byteOffset }),
+        ...(resource.byteLength === undefined ? {} : { byteLength: resource.byteLength }),
       });
     }
     if (draw.kind === 'draw-indirect' || draw.kind === 'draw-indexed-indirect') {
@@ -164,7 +171,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     snapshot: PreparedGraphicsResolvedSnapshot,
     scope?: string,
   ): Result<RenderFeatureShadowDraws<FrameCtx>, RenderGraphError | RenderError> {
-    const validated = validateRenderFeatureGraphicsPass(featureIdentity, descriptor, state);
+    const validated = validateOwnedRenderFeatureGraphicsPass(featureIdentity, descriptor, state);
     if (!validated.ok) return validated;
     const imported = this.importDrawBuffers(name, featureIdentity, order, descriptor, snapshot);
     if (!imported.ok) return imported;
@@ -211,7 +218,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     enabled = true,
     scope?: string,
   ): Result<void, RenderGraphError | RenderError> {
-    const validated = validateRenderFeatureGraphicsPass(featureIdentity, descriptor, state);
+    const validated = validateOwnedRenderFeatureGraphicsPass(featureIdentity, descriptor, state);
     if (!validated.ok) return validated;
 
     const accesses = [...this.viewAccesses];
@@ -399,24 +406,106 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
                 },
           );
         } catch (failure) {
-          const error =
-            failure instanceof Error && typeof (failure as Partial<RenderError>).code === 'string'
-              ? (failure as RenderError)
-              : new RenderFeatureDrawRecordingFailedError(
-                  featureIdentity,
-                  order,
-                  name,
-                  'pipeline',
-                  'backend-recording-failed',
-                  failure instanceof Error ? failure.message : String(failure),
-                  'renderer-recover',
-                );
-          this.reportError?.(error);
-          // A partially encoded intent is not a submitted transaction.
-          throw error;
+          throwFeatureRecordingFailure(
+            failure,
+            featureIdentity,
+            order,
+            name,
+            'pipeline',
+            this.reportError,
+          );
         }
       },
     });
+  }
+
+  /** Current admitted work needs no graph buffer imports inside a private command segment. */
+  nativePass(
+    work: import('./host').RenderFeaturePlanExecutionPass,
+    frame: FrameCtx,
+    resources: GraphResourceResolver,
+    scope?: string,
+  ): RenderGraphNativePass {
+    const descriptor = work.graphics;
+    const snapshot = work.resolvedGraphics;
+    if (descriptor === undefined || snapshot === undefined)
+      throw missing(work.featureIdentity, work.order);
+    const colorAttachments = descriptor.attachments.colors.map((attachment) => {
+      const target = this.resolveTarget(attachment.resource);
+      if (target === undefined) throw missing(work.featureIdentity, work.order);
+      return {
+        view: resources.textureView(target.view).unwrap(),
+        ...(target.resolveTarget === undefined
+          ? {}
+          : { resolveTarget: resources.textureView(target.resolveTarget).unwrap() }),
+        loadOp: attachment.loadOp,
+        storeOp: attachment.storeOp,
+      };
+    });
+    const depth = descriptor.attachments.depthStencil;
+    let depthStencilAttachment:
+      | import('@forgeax/engine-rhi').RenderPassDepthStencilAttachment
+      | undefined;
+    if (depth !== undefined) {
+      const target = this.resolveTarget(depth.resource);
+      if (target === undefined) throw missing(work.featureIdentity, work.order);
+      const sampled = (descriptor.sampledTargets ?? []).some(
+        (sampled) => this.resolveTarget(sampled)?.texture === target.texture,
+      );
+      const writes = descriptor.draws.some((draw) => {
+        const pipeline = snapshot.resolve(draw.pipeline);
+        return pipeline?.kind === 'pipeline' && pipeline.writesDepth === true;
+      });
+      if (sampled && writes) throw missing(work.featureIdentity, work.order);
+      depthStencilAttachment = sampled
+        ? {
+            view: resources.textureView(target.view).unwrap(),
+            depthReadOnly: true,
+            stencilReadOnly: true,
+          }
+        : {
+            view: resources.textureView(target.view).unwrap(),
+            depthLoadOp: depth.depthLoadOp,
+            depthStoreOp: depth.depthStoreOp,
+            stencilLoadOp: depth.depthLoadOp,
+            stencilStoreOp: depth.depthStoreOp,
+          };
+    }
+    return {
+      name: work.name,
+      kind: 'raster',
+      descriptor: {
+        label: work.name,
+        colorAttachments,
+        ...(depthStencilAttachment === undefined ? {} : { depthStencilAttachment }),
+      },
+      encode: (pass) => {
+        try {
+          this.encode(
+            work.name,
+            work.featureIdentity,
+            work.order,
+            descriptor,
+            snapshot,
+            undefined,
+            pass,
+            frame,
+            resources,
+            undefined,
+            scope,
+          );
+        } catch (failure) {
+          throwFeatureRecordingFailure(
+            failure,
+            work.featureIdentity,
+            work.order,
+            work.name,
+            'pipeline',
+            this.reportError,
+          );
+        }
+      },
+    };
   }
 
   private importDrawBuffers(
@@ -462,7 +551,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     order: number,
     descriptor: RenderFeatureGraphicsPassDescriptor,
     snapshot: PreparedGraphicsResolvedSnapshot,
-    buffers: ResolvedDrawBuffers,
+    buffers: ResolvedDrawBuffers | undefined,
     pass: RhiRenderPassEncoder,
     frame: FrameCtx,
     resources: GraphResourceResolver,
@@ -530,19 +619,55 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             : binding.dynamicOffsets;
         pass.setBindGroup(targetGroup, handle, dynamicOffsets);
       }
-      for (const vertex of draw.vertexData) {
-        const handle = buffers.vertex.get(vertex.resource as object);
-        if (handle === undefined) throw missing(featureIdentity, order);
-        const physical = resources.buffer(handle);
+      for (const vertex of activeDraw.vertexData) {
+        const original = draw.vertexData.find((binding) => binding.slot === vertex.slot);
+        const currentVertex = resolved(activeSnapshot, vertex.resource);
+        if (currentVertex?.kind !== 'vertex-data') throw missing(featureIdentity, order);
+        const handle = original === undefined ? undefined : buffers?.vertex.get(original.resource);
+        const physical =
+          buffers === undefined
+            ? ok(currentVertex.handle)
+            : handle === undefined
+              ? undefined
+              : resources.buffer(handle);
+        if (physical === undefined) throw missing(featureIdentity, order);
         if (!physical.ok) throw physical.error;
-        pass.setVertexBuffer(vertex.slot, physical.value);
+        if (currentVertex.handle !== physical.value) throw missing(featureIdentity, order);
+        // Graph imports describe the complete physical dependency. The current
+        // prepared reference owns the range, including on a retained graph.
+        if (currentVertex.byteOffset === undefined && currentVertex.byteLength === undefined)
+          pass.setVertexBuffer(vertex.slot, physical.value);
+        else
+          pass.setVertexBuffer(
+            vertex.slot,
+            physical.value,
+            currentVertex.byteOffset ?? 0,
+            currentVertex.byteLength,
+          );
       }
-      if (draw.indexData !== undefined) {
-        const handle = buffers.index.get(draw.indexData.resource as object);
-        if (handle === undefined) throw missing(featureIdentity, order);
-        const physical = resources.buffer(handle);
+      if (activeDraw.indexData !== undefined) {
+        const currentIndex = resolved(activeSnapshot, activeDraw.indexData.resource);
+        if (currentIndex?.kind !== 'index-data') throw missing(featureIdentity, order);
+        const handle =
+          draw.indexData === undefined ? undefined : buffers?.index.get(draw.indexData.resource);
+        const physical =
+          buffers === undefined
+            ? ok(currentIndex.handle)
+            : handle === undefined
+              ? undefined
+              : resources.buffer(handle);
+        if (physical === undefined) throw missing(featureIdentity, order);
         if (!physical.ok) throw physical.error;
-        pass.setIndexBuffer(physical.value, draw.indexData.format);
+        if (currentIndex.handle !== physical.value) throw missing(featureIdentity, order);
+        if (currentIndex.byteOffset === undefined && currentIndex.byteLength === undefined)
+          pass.setIndexBuffer(physical.value, activeDraw.indexData.format);
+        else
+          pass.setIndexBuffer(
+            physical.value,
+            activeDraw.indexData.format,
+            currentIndex.byteOffset ?? 0,
+            currentIndex.byteLength,
+          );
       }
       switch (activeDraw.kind) {
         case 'draw':
@@ -564,9 +689,17 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           break;
         case 'draw-indirect':
         case 'draw-indexed-indirect': {
-          const handle = buffers.indirect.get(activeDraw.command.buffer as object);
-          if (handle === undefined) throw missing(featureIdentity, order);
-          const physical = resources.buffer(handle);
+          const handle = buffers?.indirect.get(activeDraw.command.buffer as object);
+          const currentBuffer = activeSnapshot.resolveGpuBuffer?.(activeDraw.command.buffer);
+          const physical =
+            buffers === undefined
+              ? currentBuffer === undefined
+                ? undefined
+                : ok(currentBuffer.buffer)
+              : handle === undefined
+                ? undefined
+                : resources.buffer(handle);
+          if (physical === undefined) throw missing(featureIdentity, order);
           if (!physical.ok) throw physical.error;
           if (activeDraw.kind === 'draw-indirect') {
             pass.drawIndirect(physical.value, activeDraw.command.offset ?? 0);

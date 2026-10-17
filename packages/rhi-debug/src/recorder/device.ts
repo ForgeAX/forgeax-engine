@@ -450,15 +450,20 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
     ...(realDevice.createRenderPipelineAsync === undefined
       ? {}
       : {
-          async createRenderPipelineAsync(desc: RenderPipelineDescriptor) {
-            const create = realDevice.createRenderPipelineAsync;
-            if (create === undefined) return realDevice.createRenderPipeline(desc);
-            // Capture the native call's descriptor before its completion permits caller mutation.
-            const completion = create.call(realDevice, desc);
-            const event = captureRenderPipeline(desc);
-            // forgeax-async-whitelist: dom-native - preserve backend pipeline completion through capture.
-            const result = await completion;
-            return result.ok ? recordRenderPipeline(result.value, event) : result;
+          createRenderPipelineAsync(desc: RenderPipelineDescriptor) {
+            try {
+              const create = realDevice.createRenderPipelineAsync;
+              if (create === undefined) return realDevice.createRenderPipeline(desc);
+              // Capture the native call's descriptor before its completion permits caller mutation.
+              const completion = create.call(realDevice, desc);
+              const event = captureRenderPipeline(desc);
+              // forgeax-async-whitelist: dom-native - preserve backend pipeline completion through capture.
+              const record = (result: Result<RenderPipeline, RhiError>) =>
+                result.ok ? recordRenderPipeline(result.value, event) : result;
+              return 'ok' in completion ? record(completion) : completion.then(record);
+            } catch (cause) {
+              return Promise.reject(cause);
+            }
           },
         }),
 
@@ -469,14 +474,19 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
     ...(realDevice.createComputePipelineAsync === undefined
       ? {}
       : {
-          async createComputePipelineAsync(desc: ComputePipelineDescriptor) {
-            const create = realDevice.createComputePipelineAsync;
-            if (create === undefined) return realDevice.createComputePipeline(desc);
-            const completion = create.call(realDevice, desc);
-            const event = captureComputePipeline(desc);
-            // forgeax-async-whitelist: dom-native - preserve native compute completion through capture.
-            const result = await completion;
-            return result.ok ? recordComputePipeline(result.value, event) : result;
+          createComputePipelineAsync(desc: ComputePipelineDescriptor) {
+            try {
+              const create = realDevice.createComputePipelineAsync;
+              if (create === undefined) return realDevice.createComputePipeline(desc);
+              const completion = create.call(realDevice, desc);
+              const event = captureComputePipeline(desc);
+              // forgeax-async-whitelist: dom-native - preserve native compute completion through capture.
+              const record = (result: Result<ComputePipeline, RhiError>) =>
+                result.ok ? recordComputePipeline(result.value, event) : result;
+              return 'ok' in completion ? record(completion) : completion.then(record);
+            } catch (cause) {
+              return Promise.reject(cause);
+            }
           },
         }),
 

@@ -11,6 +11,7 @@ import {
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
   PROCEDURAL_FLOATS_PER_VERTEX,
   prepareMeshData,
+  validateMeshCollisionAttachment,
 } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type {
@@ -28,7 +29,6 @@ import type {
   MaterialAsset,
   MaterialPass,
   MaterialTextureCoordinates,
-  ParseErrorDetail,
   ParticleEffectAsset,
   MeshAsset as TypesMeshAsset,
 } from '@forgeax/engine-types';
@@ -348,7 +348,7 @@ export const meshLoader: Loader = {
         !admitsMeshCardLayout({ submeshes, morphTargets, skinIndex: attributes.skinIndex }))
     )
       return undefined;
-    return {
+    const mesh: TypesMeshAsset = {
       kind: 'mesh',
       ...(cardLayout === undefined ? {} : { cardLayout }),
       vertices,
@@ -364,6 +364,9 @@ export const meshLoader: Loader = {
       submeshes,
       materialSlots,
     };
+    if (payload.collision === undefined) return mesh;
+    const collision = validateMeshCollisionAttachment(mesh, payload.collision);
+    return collision.ok ? { ...mesh, collision: collision.value } : undefined;
   },
   loadPack(input, ctx) {
     const distanceField = input.payload.distanceField;
@@ -449,6 +452,7 @@ export const meshLoader: Loader = {
           vertices: decoded.value.vertices,
           ...(decoded.value.indices !== undefined ? { indices: decoded.value.indices } : {}),
           submeshes: decoded.value.submeshes,
+          ...(decoded.value.collision === undefined ? {} : { collision: decoded.value.collision }),
           ...(decoded.value.cardLayout === undefined
             ? {}
             : { cardLayout: decoded.value.cardLayout }),
@@ -520,18 +524,12 @@ export const meshLoader: Loader = {
   },
 };
 
-/** scene loader — delegates to parseScenePayload; routes structured ref error via ctx. */
+/** Scene loading is structural; component references bind through World-local reflection. */
 export const sceneLoader: Loader = {
   kind: 'scene',
   load(payload, refs, _ctx: LoadContext) {
     const result = parseScenePayload(payload, refs === undefined ? undefined : [...refs]);
     if (result === undefined) return undefined;
-    // Structured ParseSceneError (has an `index` field absent on SceneAsset):
-    // return it inline through LoaderOutput so the caller (parseAndReturnAsset)
-    // can build a precise AssetError without a shared instance slot (F21).
-    if ('index' in result) {
-      return { ok: false, error: result as unknown as ParseErrorDetail };
-    }
     return result as Asset;
   },
 };

@@ -13,6 +13,7 @@ import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-deb
 import type {
   ExecutionFrameCompletion,
   ExecutionFrameSubmitted,
+  ExecutionInitMessage,
   RenderWorkerDiagnostics,
   SerializedRenderError,
 } from './protocol';
@@ -65,22 +66,36 @@ export interface CompletedMeshConsumption {
 }
 
 export type RenderWorkerInput =
-  | MeshResidencyRequest
   | {
-      readonly kind: 'init';
-      readonly bootstrapUrl: string;
-      readonly bootstrapData?: import('./types').ExecutionBootstrapValue;
-      readonly canvas: OffscreenCanvas;
+      readonly kind: 'geometry-observe-next';
+      readonly requestId: number;
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
-      readonly shaderManifestUrl?: string;
-      readonly build?: string;
+    }
+  | { readonly kind: 'geometry-observe-cancel'; readonly requestId: number }
+  | MeshResidencyRequest
+  | (Pick<
+      ExecutionInitMessage,
+      | 'bootstrapUrl'
+      | 'bootstrapData'
+      | 'canvas'
+      | 'shaderManifestUrl'
+      | 'build'
+      | 'outputColorSpace'
+      | 'pipelineLibrary'
+      | 'dynamicGeometryMeshBudgetBytes'
+    > & {
+      readonly kind: 'init';
+      readonly identity: RenderPublicationIdentity;
+      readonly worldIdentity: string;
       readonly rhiCapture?: boolean;
       readonly gpuPassTiming?: GpuPassTimingOptions;
       readonly geometryLane?: ExecutionDiagnosticsOptions['geometryLane'];
-      readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
-      readonly dynamicGeometryMeshBudgetBytes?: number;
-    }
+      readonly featureReadOnlyDepthBatchDiagnostic?: ExecutionDiagnosticsOptions['featureReadOnlyDepthBatchDiagnostic'];
+      readonly gbufferBatchOrderDiagnostic?: ExecutionDiagnosticsOptions['gbufferBatchOrderDiagnostic'];
+      readonly renderTaskYield?: ExecutionDiagnosticsOptions['renderTaskYield'];
+      readonly renderPipelineCapacity?: ExecutionDiagnosticsOptions['renderPipelineCapacity'];
+    })
   | {
       readonly kind: 'draw';
       readonly worldIdentity: string;
@@ -105,12 +120,20 @@ export type RenderWorkerInput =
   | { readonly kind: 'bounds'; readonly requestId: number; readonly entity: number }
   | {
       readonly kind: 'inspect';
+      readonly pipelineLibrary?: boolean;
       readonly requestId: number;
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
     }
   | { readonly kind: 'dispose' };
 export type RenderWorkerOutput =
+  | {
+      readonly kind: 'geometry-observation-result';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly worldIdentity: string;
+      readonly result: import('./types').ExecutionGeometryObservationResult;
+    }
   | MeshResidencyResponse
   | {
       readonly kind: 'inspect-result';

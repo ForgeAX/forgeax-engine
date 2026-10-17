@@ -7,6 +7,7 @@ import type {
   TerrainSource,
 } from '@forgeax/engine-types';
 import { resolveMaterialAsset } from '@forgeax/engine-types';
+import { terrainSourceHeightRange } from './height-bounds.js';
 import { cookTerrainIds } from './material-id.js';
 import { terrainSampleHeight } from './query.js';
 import { terrainTextureGuid } from './texture-binding.js';
@@ -165,13 +166,7 @@ export function terrainDerivedGeometryValid(
         return false;
     }
   }
-  let min = Infinity,
-    max = -Infinity;
-  for (const h of root.heights) {
-    min = Math.min(min, h);
-    max = Math.max(max, h);
-  }
-  const range = Math.max(max - min, 1e-6);
+  const { min, max, span: range } = terrainSourceHeightRange(root.heights);
   if (
     root.heightRange[0] !== min ||
     root.heightRange[1] !== terrainHeightRange(min, max)[1] ||

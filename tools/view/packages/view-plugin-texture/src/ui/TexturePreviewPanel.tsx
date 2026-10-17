@@ -31,7 +31,7 @@ export function TexturePreviewPanel({
 
 function PreviewEmpty({ title, description }: { title: string; description: string }) {
   return (
-    <div className="fx-asset-editor fx-asset-preview fx-ui" data-testid="panel-texture-preview">
+    <div className="fx-asset-viewer fx-asset-preview fx-ui" data-testid="panel-texture-preview">
       <EmptyState title={title} description={description} />
     </div>
   );
@@ -67,7 +67,7 @@ function LivePreview({
       container,
       owner,
       api: client,
-      editorTargetId: workspace?.editorPreview?.target?.targetId,
+      sceneTargetId: workspace?.scenePreview?.target?.targetId,
     });
     if (!bound.ok) {
       setFailure(bound.error);
@@ -82,7 +82,7 @@ function LivePreview({
     preview?.target?.targetId,
     preview?.target?.generation,
     preview?.target?.surfaceId,
-    workspace?.editorPreview?.target?.targetId,
+    workspace?.scenePreview?.target?.targetId,
     client,
   ]);
 
@@ -96,7 +96,7 @@ function LivePreview({
     );
   }
   return (
-    <div className="fx-asset-editor fx-asset-preview fx-ui" data-testid="panel-texture-preview">
+    <div className="fx-asset-viewer fx-asset-preview fx-ui" data-testid="panel-texture-preview">
       <div
         ref={containerRef}
         className="fx-asset-preview-surface"

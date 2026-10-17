@@ -682,7 +682,11 @@ describe('w19 — end-to-end round-trip value equivalence (AC-07)', () => {
       a0.payload as Record<string, unknown>,
       a0.refs as readonly string[] | undefined,
     );
-    reg.catalog(pgc(W19_SAVED), parsed as Asset);
+    reg.catalog(
+      pgc(W19_SAVED),
+      parsed as Asset,
+      (a0.refs as readonly string[] | undefined)?.map((guid) => ({ guid })),
+    );
     const inst2 = reg.instantiate(
       w.allocSharedRef('SceneAsset', parsed) as Handle<'SceneAsset', 'shared'>,
       w,

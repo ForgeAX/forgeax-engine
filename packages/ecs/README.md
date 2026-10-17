@@ -228,6 +228,19 @@ Queries are the only public data-plane API. A row is the flexible path; a span
 is the packed numeric path and includes entity handles for owner-side identity.
 Raw `Table`, `Archetype`, `Column`, and `FieldView` values are package-private.
 
+Each Query keeps its own iteration and observation state. Descriptor compilation borrows the component definition's field roster and
+allocates diagnostic role lists only on conflicts; temporal sets are built only
+for requested changed/added predicates. Dense queries match
+only tables; queries with sparse predicates match only archetypes. A World's
+storage rosters append without replacing their owners, so a retained Query
+checks only newly appended owners and keeps empty matches for later repopulation.
+Rows, spans and derived writers borrow the same matched table objects. Structural
+mutation still invalidates active iterators; `changed` and `added` observations
+remain independent between Query instances.
+
+The [storage matching allocation comparison](reports/query-storage-matching-20261017/README.md)
+records a source-qualified environment extraction fixture and its raw profiles.
+
 The row iterator reuses its borrowed row facade. Read each entity/value during
 iteration; for an entity snapshot use `Array.from(query, row => row.entity)`.
 Spreading row facades and reading them after iteration retains the same final

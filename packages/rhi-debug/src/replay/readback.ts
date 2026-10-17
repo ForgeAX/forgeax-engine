@@ -506,19 +506,19 @@ async function blitDepthTexture(
   }
 }
 
-async function copyBufferBytes(
+/** Own the staging lifetime through encoding, submission, mapping and detached output. */
+async function copyReadbackBytes(
   device: RhiDevice,
-  source: Buffer,
-  sourceOffset: number,
-  size: number,
+  bufferSize: number,
+  mappedSize: number,
+  kind: 'buffer' | 'texture',
+  encode: (encoder: RhiCommandEncoder, staging: Buffer) => void,
+  read: (mapped: Uint8Array) => Uint8Array,
 ): Promise<Result<Uint8Array, RhiDebugError>> {
   let staging: Buffer | undefined;
   let mapped: MappedBuffer | undefined;
   try {
-    const alignedSourceOffset = sourceOffset - (sourceOffset % 4);
-    const leadingBytes = sourceOffset - alignedSourceOffset;
-    const copySize = align4(leadingBytes + size);
-    const created = device.createBuffer({ size: Math.max(4, copySize), usage: COPY_DST_MAP_READ });
+    const created = device.createBuffer({ size: bufferSize, usage: COPY_DST_MAP_READ });
     if (!created.ok)
       return readbackFailure(`staging buffer creation failed: ${created.error.code}`);
     staging = created.value;
@@ -526,7 +526,7 @@ async function copyBufferBytes(
     if (!encoderResult.ok)
       return readbackFailure(`readback encoder creation failed: ${encoderResult.error.code}`);
     const encoder = encoderResult.value;
-    encoder.copyBufferToBuffer(source, alignedSourceOffset, staging, 0, copySize);
+    encode(encoder, staging);
     const finished = encoder.finish();
     if (!finished.ok)
       return readbackFailure(`readback encoder finish failed: ${finished.error.code}`);
@@ -536,18 +536,38 @@ async function copyBufferBytes(
     const mappedResult = await staging.mapAsync(GPU_MAP_MODE_READ);
     if (!mappedResult.ok) return readbackFailure(`readback map failed: ${mappedResult.error.code}`);
     mapped = mappedResult.value;
-    const range = mapped.getMappedRange(0, copySize);
+    const range = mapped.getMappedRange(0, mappedSize);
     if (!range.ok) return readbackFailure(`readback mapped range failed: ${range.error.code}`);
-    return ok(new Uint8Array(range.value).slice(leadingBytes, leadingBytes + size));
+    return ok(read(new Uint8Array(range.value)));
   } catch (cause) {
-    return readbackFailure(`buffer readback failed: ${messageOf(cause)}`);
+    return readbackFailure(`${kind} readback failed: ${messageOf(cause)}`);
   } finally {
     if (mapped !== undefined) mapped.unmap();
     if (staging !== undefined) device.destroyBuffer(staging);
   }
 }
 
-async function copyTextureBytes(
+function copyBufferBytes(
+  device: RhiDevice,
+  source: Buffer,
+  sourceOffset: number,
+  size: number,
+): Promise<Result<Uint8Array, RhiDebugError>> {
+  const alignedSourceOffset = sourceOffset - (sourceOffset % 4);
+  const leadingBytes = sourceOffset - alignedSourceOffset;
+  const copySize = align4(leadingBytes + size);
+  return copyReadbackBytes(
+    device,
+    Math.max(4, copySize),
+    copySize,
+    'buffer',
+    (encoder, staging) =>
+      encoder.copyBufferToBuffer(source, alignedSourceOffset, staging, 0, copySize),
+    (bytes) => bytes.slice(leadingBytes, leadingBytes + size),
+  );
+}
+
+function copyTextureBytes(
   device: RhiDevice,
   source: Texture,
   bufferSize: number,
@@ -561,58 +581,38 @@ async function copyTextureBytes(
     readonly rowBytes: number;
   },
 ): Promise<Result<Uint8Array, RhiDebugError>> {
-  let staging: Buffer | undefined;
-  let mapped: MappedBuffer | undefined;
-  try {
-    const created = device.createBuffer({ size: bufferSize, usage: COPY_DST_MAP_READ });
-    if (!created.ok)
-      return readbackFailure(`staging buffer creation failed: ${created.error.code}`);
-    staging = created.value;
-    const encoderResult = device.createCommandEncoder({});
-    if (!encoderResult.ok)
-      return readbackFailure(`readback encoder creation failed: ${encoderResult.error.code}`);
-    const encoder: RhiCommandEncoder = encoderResult.value;
-    encoder.copyTextureToBuffer(
-      {
-        texture: source,
-        mipLevel: copy.mipLevel,
-        origin: { x: 0, y: 0, z: copy.arrayLayer },
-        aspect: copy.aspect,
-      } as never,
-      {
-        buffer: staging,
-        offset: 0,
-        bytesPerRow: copy.bytesPerRow,
-        rowsPerImage: copy.height,
-      } as never,
-      { width: copy.width, height: copy.height, depthOrArrayLayers: 1 },
-    );
-    const finished = encoder.finish();
-    if (!finished.ok)
-      return readbackFailure(`readback encoder finish failed: ${finished.error.code}`);
-    const submitted = device.queue.submit([finished.value]);
-    if (!submitted.ok) return readbackFailure(`readback submit failed: ${submitted.error.code}`);
-    await device.queue.onSubmittedWorkDone();
-    const mappedResult = await staging.mapAsync(GPU_MAP_MODE_READ);
-    if (!mappedResult.ok) return readbackFailure(`readback map failed: ${mappedResult.error.code}`);
-    mapped = mappedResult.value;
-    const range = mapped.getMappedRange(0, bufferSize);
-    if (!range.ok) return readbackFailure(`readback mapped range failed: ${range.error.code}`);
-    const padded = new Uint8Array(range.value);
-    const bytes = new Uint8Array(copy.rowBytes * copy.height);
-    for (let row = 0; row < copy.height; row++) {
-      bytes.set(
-        padded.subarray(row * copy.bytesPerRow, row * copy.bytesPerRow + copy.rowBytes),
-        row * copy.rowBytes,
-      );
-    }
-    return ok(bytes);
-  } catch (cause) {
-    return readbackFailure(`texture readback failed: ${messageOf(cause)}`);
-  } finally {
-    if (mapped !== undefined) mapped.unmap();
-    if (staging !== undefined) device.destroyBuffer(staging);
-  }
+  return copyReadbackBytes(
+    device,
+    bufferSize,
+    bufferSize,
+    'texture',
+    (encoder, staging) =>
+      encoder.copyTextureToBuffer(
+        {
+          texture: source,
+          mipLevel: copy.mipLevel,
+          origin: { x: 0, y: 0, z: copy.arrayLayer },
+          aspect: copy.aspect,
+        } as never,
+        {
+          buffer: staging,
+          offset: 0,
+          bytesPerRow: copy.bytesPerRow,
+          rowsPerImage: copy.height,
+        } as never,
+        { width: copy.width, height: copy.height, depthOrArrayLayers: 1 },
+      ),
+    (padded) => {
+      const bytes = new Uint8Array(copy.rowBytes * copy.height);
+      for (let row = 0; row < copy.height; row++) {
+        bytes.set(
+          padded.subarray(row * copy.bytesPerRow, row * copy.bytesPerRow + copy.rowBytes),
+          row * copy.rowBytes,
+        );
+      }
+      return bytes;
+    },
+  );
 }
 
 function readbackFailure(cause: string): Result<never, RhiDebugError> {

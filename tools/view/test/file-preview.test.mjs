@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 describe('content-browser source file preview', () => {
-  it('classifies pack/json/ts as text the way editor /api/files does', () => {
+  it('classifies pack/json/ts as text the way scene /api/files does', () => {
     assert.equal(classifyFile('assets/materials.pack.json').kind, 'text');
     assert.equal(classifyFile('assets/world.pack.ts').kind, 'text');
     assert.equal(classifyFile('src/index.ts').kind, 'text');

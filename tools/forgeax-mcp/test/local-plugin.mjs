@@ -67,7 +67,7 @@ try {
     assert.ok(resource.contents[0].text.includes(`data-forgeax-app-version="${APP_VERSION}"`));
     assert.match(resource.contents[0].text, /<title>ForgeaX View<\/title>/);
     assert.match(await readFile(join(plugin, 'dist/full-view.html'), 'utf8'), /__FX_VIEW_CONFIG__/);
-    assert.match(await readFile(join(plugin, 'dist/editor-runtime.mjs'), 'utf8'), /preparePlatform/);
+    assert.match(await readFile(join(plugin, 'dist/preview-runtime.mjs'), 'utf8'), /preparePlatform/);
     // A packaged compiler must load outside the checkout and build real source.
     execFileSync(process.execPath, ['--input-type=module', '-e',
       `const {build}=await import(${JSON.stringify(join(plugin,'node_modules/vite/dist/node/index.js'))});

@@ -3,6 +3,7 @@ import { FixedTime, type World } from '@forgeax/engine-ecs';
 import {
   createDynamicGeometryLifecycle,
   createRenderPublisher,
+  DynamicGeometryError,
   type GpuPassTimingObservation,
   type RenderFeature,
   type RenderPublicationTargetOwner,
@@ -10,7 +11,10 @@ import {
   renderPublicationAssetTransfers,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
-import { createDynamicGeometrySourceHost } from '@forgeax/engine-render/internal';
+import {
+  captureMeshPipelinePreparation,
+  createDynamicGeometrySourceHost,
+} from '@forgeax/engine-render/internal';
 import {
   type CaptureFrameOptions,
   createRhiDebugError,
@@ -26,13 +30,16 @@ import {
 } from './render-worker-protocol';
 import { rendererInspectionFailure } from './renderer-inspection';
 import { SourceMeshResidency } from './source-mesh-residency';
-import type { ExecutionRendererInspectionResult } from './types';
+import type {
+  ExecutionGeometryObservationResult,
+  ExecutionRendererInspectionResult,
+} from './types';
 import { workerError } from './worker-error';
 import { shutdownWorker } from './worker-shutdown';
 
 type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
 
-/** Two sealed publications; Host admission bounds simulation to the same capacity. */
+/** Sealed publications bounded by the same finite capacity as Host admission. */
 export class SourceRenderWorker {
   private worker: Worker | undefined;
   private publisher: ReturnType<typeof createRenderPublisher> | undefined;
@@ -44,6 +51,7 @@ export class SourceRenderWorker {
     | { readonly kind: 'module'; readonly cause: string }
     | undefined;
   private readonly source = crypto.randomUUID();
+  private readonly publicationCapacity: 2 | 3 | 4;
   private disposed = false;
   private inspectionReady = false;
   private readonly inspectionRequests = new Map<
@@ -74,11 +82,17 @@ export class SourceRenderWorker {
       ): void;
     }
   >();
+  private geometryRequest:
+    | { id: number; finish(result: ExecutionGeometryObservationResult): void }
+    | undefined;
   private captureRequest: { id: number; finish(result: CaptureResult): void } | undefined;
   private latestGpuPassTiming:
     | { readonly frameId: number; readonly observation: GpuPassTimingObservation }
     | undefined;
   private deviceGeneration: number | undefined;
+  private captureCandidatePipelines:
+    | Parameters<typeof createDynamicGeometrySourceHost>[0]['capturePipelinePreparation']
+    | undefined;
   private readonly publishedFrames = new Map<number, { frameId: number; fixedStep: number }>();
   private readonly meshResidency: SourceMeshResidency;
   readonly dynamicGeometry: ReturnType<typeof createDynamicGeometrySourceHost>;
@@ -90,10 +104,17 @@ export class SourceRenderWorker {
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
   ) {
+    this.publicationCapacity =
+      init.diagnostics?.renderPipelineCapacity === 4
+        ? 4
+        : init.diagnostics?.renderPipelineCapacity === 3
+          ? 3
+          : 2;
     this.meshResidency = new SourceMeshResidency(world, () => {
       const worker = this.worker,
         epoch = this.epoch,
-        generation = this.deviceGeneration;
+        generation = this.deviceGeneration,
+        publisher = this.publisher;
       if (
         this.disposed ||
         !this.inspectionReady ||
@@ -105,6 +126,7 @@ export class SourceRenderWorker {
         source: this.source,
         epoch,
         generation,
+        acknowledgePrograms: (programs) => publisher?.acknowledgePrograms(programs),
         post: (message, transfers) => {
           if (this.worker !== worker || this.epoch !== epoch)
             throw new Error('Render mesh session ended');
@@ -121,6 +143,15 @@ export class SourceRenderWorker {
       attachedWorlds: new Set([world]),
       currentGeneration: () => this.deviceGeneration,
       residency: this.meshResidency,
+      capturePipelinePreparation: (input) =>
+        this.captureCandidatePipelines?.(input) ??
+        err(
+          new DynamicGeometryError(
+            'dynamic-geometry-gpu-not-ready',
+            'candidate pipelines use the active Render Worker capabilities',
+            'wait for Render readiness before preparing geometry',
+          ),
+        ),
       isConsumedByRenderFrame: (candidate) =>
         this.meshResidency.recordStageLane(candidate) !== undefined,
       recordStageLane: (candidate) => this.meshResidency.recordStageLane(candidate),
@@ -220,6 +251,16 @@ export class SourceRenderWorker {
           return;
         }
         if (this.disposed) return;
+        if (message.kind === 'geometry-observation-result') {
+          if (
+            message.identity.source === this.source &&
+            message.identity.epoch === epoch &&
+            message.worldIdentity === this.world.identity &&
+            this.geometryRequest?.id === message.requestId
+          )
+            this.geometryRequest.finish(message.result);
+          return;
+        }
         if (message.kind === 'inspect-result') {
           if (
             message.identity.source === this.source &&
@@ -276,6 +317,21 @@ export class SourceRenderWorker {
           if (ready) return;
           clearTimeout(this.deadline);
           this.deviceGeneration = message.deviceGeneration;
+          this.captureCandidatePipelines = (input) => {
+            const captured = captureMeshPipelinePreparation({
+              ...input,
+              assets: this.assets,
+              capabilities: message.capabilities,
+              ...(message.limits === undefined ? {} : { limits: message.limits }),
+            });
+            if (!captured.ok) return captured;
+            return ok({
+              ...captured.value,
+              programs:
+                this.publisher?.unpublishedPrograms(captured.value.programs) ??
+                captured.value.programs,
+            });
+          };
           this.publisher = createRenderPublisher(
             this.world,
             this.assets,
@@ -287,6 +343,7 @@ export class SourceRenderWorker {
             this.features,
             this.targets,
             message.limits,
+            this.publicationCapacity,
           );
           ready = true;
           this.inspectionReady = true;
@@ -396,9 +453,25 @@ export class SourceRenderWorker {
           ...(this.init.diagnostics?.gpuPassTiming === undefined
             ? {}
             : { gpuPassTiming: this.init.diagnostics.gpuPassTiming }),
+          ...(this.init.diagnostics?.featureReadOnlyDepthBatchDiagnostic === undefined
+            ? {}
+            : {
+                featureReadOnlyDepthBatchDiagnostic:
+                  this.init.diagnostics.featureReadOnlyDepthBatchDiagnostic,
+              }),
+          ...(this.init.diagnostics?.gbufferBatchOrderDiagnostic === undefined
+            ? {}
+            : { gbufferBatchOrderDiagnostic: this.init.diagnostics.gbufferBatchOrderDiagnostic }),
           ...(this.init.diagnostics?.geometryLane === undefined
             ? {}
             : { geometryLane: this.init.diagnostics.geometryLane }),
+          ...(this.init.diagnostics?.renderTaskYield === undefined
+            ? {}
+            : { renderTaskYield: this.init.diagnostics.renderTaskYield }),
+          renderPipelineCapacity: this.publicationCapacity,
+          ...(this.init.pipelineLibrary === undefined
+            ? {}
+            : { pipelineLibrary: this.init.pipelineLibrary }),
           ...(this.init.outputColorSpace === undefined
             ? {}
             : { outputColorSpace: this.init.outputColorSpace }),
@@ -430,7 +503,7 @@ export class SourceRenderWorker {
     return !this.disposed;
   }
   get hasPublicationCapacity(): boolean {
-    return this.publishedFrames.size < 2;
+    return this.publishedFrames.size < this.publicationCapacity;
   }
   publish(frame: ExecutionFrameMessage, sampleTimeSeconds: number): void {
     const publisher = this.publisher,
@@ -561,9 +634,66 @@ export class SourceRenderWorker {
       }
     });
   }
+  observeNextGeometry(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ExecutionGeometryObservationResult> {
+    const worker = this.worker,
+      epoch = this.epoch;
+    if (options.signal?.aborted) return Promise.resolve(rendererInspectionFailure('cancelled'));
+    if (this.disposed || !this.inspectionReady || worker === undefined)
+      return Promise.resolve(rendererInspectionFailure('not-ready'));
+    if (this.geometryRequest !== undefined)
+      return Promise.resolve(rendererInspectionFailure('request-limit'));
+    const id = ++this.nextRequestId;
+    return new Promise((resolve) => {
+      const finish = (result: ExecutionGeometryObservationResult) => {
+        if (this.geometryRequest?.id !== id) return;
+        this.geometryRequest = undefined;
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', cancel);
+        resolve(
+          this.worker === worker && this.epoch === epoch && !this.disposed
+            ? result
+            : rendererInspectionFailure('stale-session'),
+        );
+      };
+      const cancel = () => {
+        try {
+          worker.postMessage({
+            kind: 'geometry-observe-cancel',
+            requestId: id,
+          } satisfies RenderWorkerInput);
+        } finally {
+          finish(rendererInspectionFailure('cancelled'));
+        }
+      };
+      const timer = setTimeout(() => {
+        try {
+          worker.postMessage({
+            kind: 'geometry-observe-cancel',
+            requestId: id,
+          } satisfies RenderWorkerInput);
+        } finally {
+          finish(rendererInspectionFailure('timeout'));
+        }
+      }, 30000);
+      this.geometryRequest = { id, finish };
+      options.signal?.addEventListener('abort', cancel, { once: true });
+      try {
+        worker.postMessage({
+          kind: 'geometry-observe-next',
+          requestId: id,
+          identity: { source: this.source, epoch },
+          worldIdentity: this.world.identity,
+        } satisfies RenderWorkerInput);
+      } catch (error) {
+        finish(rendererInspectionFailure('transport', error));
+      }
+    });
+  }
   /** This read never consumes publication credit or starts another Renderer. */
   inspectRenderer(
-    options: { readonly signal?: AbortSignal } = {},
+    options: { readonly signal?: AbortSignal; readonly pipelineLibrary?: boolean } = {},
   ): Promise<ExecutionRendererInspectionResult> {
     const worker = this.worker,
       epoch = this.epoch,
@@ -595,6 +725,9 @@ export class SourceRenderWorker {
       try {
         worker.postMessage({
           kind: 'inspect',
+          ...(options.pipelineLibrary === undefined
+            ? {}
+            : { pipelineLibrary: options.pipelineLibrary }),
           requestId,
           identity: { source: this.source, epoch },
           worldIdentity,
@@ -667,8 +800,10 @@ export class SourceRenderWorker {
     await this.start(canvas);
   }
   private clear(): void {
+    this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
     this.inspectionReady = false;
     this.deviceGeneration = undefined;
+    this.captureCandidatePipelines = undefined;
     try {
       this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
     } finally {
@@ -709,8 +844,10 @@ export class SourceRenderWorker {
   dispose(): Promise<void> {
     if (this.disposal !== undefined) return this.disposal;
     this.disposed = true;
+    this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
     this.inspectionReady = false;
     this.deviceGeneration = undefined;
+    this.captureCandidatePipelines = undefined;
     this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
     for (const request of this.inspectionRequests.values())
       request.finish(rendererInspectionFailure('disposed'));

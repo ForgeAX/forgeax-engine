@@ -1,4 +1,5 @@
 import { cookMeshCollision } from '@forgeax/engine-import';
+import { groupMeshPrimitives } from './mesh-primitives';
 // gltf-importer.ts - the build-time gltfImporter (feat-20260603-asset-import-loader-injection M2 / w19,
 // extended in feat-20260608 M3 w14 with the texture pipeline: three image
 // source paths funnelled through the ImportContext decodeImage seam).
@@ -549,6 +550,7 @@ async function importGltf(
     if (sub.kind === 'skin') skinGuidBySourceIndex.set(sub.sourceIndex, sub.guid);
   }
 
+  const primitivesByMesh = groupMeshPrimitives(doc.meshes);
   const out: ImportedAsset<unknown>[] = [];
   const isMultiAsset = ctx.subAssets.length > 1;
   for (const sub of ctx.subAssets) {
@@ -560,7 +562,7 @@ async function importGltf(
       // bridge's positional materials[i] <-> submeshes[i] pairing aligns)
       // and let meshIrToMeshAsset interleave them into one MeshAsset with
       // N Submesh entries.
-      const prims = doc.meshes.filter((m) => m.meshIndex === sub.sourceIndex);
+      const prims = primitivesByMesh.get(sub.sourceIndex) ?? [];
       if (prims.length === 0) continue;
       const meshName = isMultiAsset ? prims[0]?.name : undefined;
       const materialNameByIndex = new Map<number, string>();

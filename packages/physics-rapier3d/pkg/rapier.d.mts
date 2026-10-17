@@ -56,6 +56,10 @@ declare class RawColliderSet {
     coContactSkin(handle: number): number;
     coContainsPoint(handle: number, point: RawVector): boolean;
     /**
+     * Copies occupied storage and applies a local edit without touching the source collider.
+     */
+    coCopyVoxels(handle: number, removed: Int32Array, added: Int32Array): RawShape;
+    /**
      * The density of this collider.
      */
     coDensity(handle: number): number;
@@ -217,6 +221,10 @@ declare class RawColliderSet {
     coSetTranslation(handle: number, x: number, y: number, z: number): void;
     coSetTranslationWrtParent(handle: number, x: number, y: number, z: number): void;
     coSetVoxel(handle: number, ix: number, iy: number, iz: number, filled: boolean): void;
+    /**
+     * Applies one homogeneous edit batch, returning the number of changed cells.
+     */
+    coSetVoxels(handle: number, coords: Int32Array, filled: boolean): number;
     coShape(handle: number): RawShape;
     /**
      * The type of the shape of this collider.
@@ -1333,6 +1341,7 @@ declare class RawShape {
      */
     vertices(): Float32Array | undefined;
     voxelData(): Int32Array | undefined;
+    static voxelRegions(voxel_size: RawVector, regions: Int32Array): RawShape;
     voxelSize(): RawVector | undefined;
     static voxels(voxel_size: RawVector, grid_coords: Int32Array): RawShape;
     static voxelsFromPoints(voxel_size: RawVector, points: Float32Array): RawShape;
@@ -2528,6 +2537,10 @@ declare class World {
      * @param parent - The rigid-body this collider is attached to.
      */
     createCollider(desc: ColliderDesc, parent?: RigidBody): Collider;
+    /** Creates independent voxel geometry from a source and local XYZ edits.
+     * Descriptor pose/contact/mass policy applies; its geometry is replaced by
+     * the copied voxel shape. The source is never mutated, even on cancellation. */
+    createColliderFromVoxelEdits(desc: ColliderDesc, source: Collider, removed: Int32Array, added: Int32Array, parent?: RigidBody): Collider;
     /**
      * Creates a new impulse joint from the given joint descriptor.
      *
@@ -3533,6 +3546,10 @@ declare class Voxels extends Shape {
      * @param voxelSize - The size of each voxel.
      */
     constructor(data: Float32Array | Int32Array, voxelSize: Vector);
+    /** Half-open [minX,minY,minZ,maxX,maxY,maxZ] regions, when constructed compactly. */
+    regions?: Int32Array;
+    /** Constructs a union of regions without allocating one XYZ triple per voxel. */
+    static fromRegions(regions: Int32Array, voxelSize: Vector): Voxels;
     intoRaw(): RawShape;
 }
 /**
@@ -4208,6 +4225,8 @@ declare class Collider {
      * will be grown automatically.
      */
     setVoxel(ix: number, iy: number, iz: number, filled: boolean): void;
+    /** Applies a homogeneous XYZ edit batch and returns the number of changed voxels. */
+    setVoxels(coords: Int32Array, filled: boolean): number;
     /**
      * If this and `voxels2` are voxel colliders, and a voxel from `this` was
      * modified with `setVoxel`, this will ensure that a
@@ -4509,6 +4528,8 @@ declare class ColliderDesc {
      * @param voxelSize - The size of each voxel.
      */
     static voxels(voxels: Float32Array | Int32Array, voxelSize: Vector): ColliderDesc;
+    /** Creates a voxel collider from the union of half-open integer grid regions. */
+    static voxelRegions(regions: Int32Array, voxelSize: Vector): ColliderDesc;
     /**
      * Creates a new collider descriptor with a triangle mesh shape.
      *
@@ -4796,7 +4817,11 @@ declare class ColliderSet {
      * @param desc - The collider's description.
      * @param parentHandle - The integer handle of the rigid-body this collider is attached to.
      */
-    createCollider(bodies: RigidBodySet, desc: ColliderDesc, parentHandle: RigidBodyHandle): Collider;
+    createCollider(bodies: RigidBodySet, desc: ColliderDesc, parentHandle: RigidBodyHandle, voxelEdits?: {
+        source: Collider;
+        removed: Int32Array;
+        added: Int32Array;
+    }): Collider;
     /**
      * Remove a collider from this set.
      *

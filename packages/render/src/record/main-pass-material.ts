@@ -1519,21 +1519,26 @@ export function buildPerSubmeshMaterialBg(
   );
   // Below the dedicated budget, the shared transmission variant reads its
   // transmission resources through the split scalar-map pairs it leaves unused.
-  const sharedTransmissionSlots =
+  const usesSharedTransmissionSlots =
     smShaderId !== undefined &&
     standardTransmissionAdmission(
-      { ...submeshMaterial, materialShaderId: smShaderId },
+      smShaderId === submeshMaterial.materialShaderId
+        ? submeshMaterial
+        : { ...submeshMaterial, materialShaderId: smShaderId },
       runtime.device.limits.maxSampledTexturesPerShaderStage,
-    )?.kind === 'shared'
-      ? new Map<string, string>(
-          STANDARD_SHARED_TRANSMISSION_SLOTS.map((entry) => [entry.host, entry.resource]),
-        )
-      : undefined;
+    )?.kind === 'shared';
   const smBglPairCount = smUserRegionFields.length;
   for (let fi = 0; fi < smBglPairCount; fi++) {
     const canonicalSlot = smUserRegionFields[fi];
-    const sharedResource =
-      canonicalSlot === undefined ? undefined : sharedTransmissionSlots?.get(canonicalSlot);
+    let sharedResource: string | undefined;
+    if (usesSharedTransmissionSlots) {
+      for (const slot of STANDARD_SHARED_TRANSMISSION_SLOTS) {
+        if (slot.host === canonicalSlot) {
+          sharedResource = slot.resource;
+          break;
+        }
+      }
+    }
     const samplerBinding = 1 + fi * 2;
     const textureBinding = samplerBinding + 1;
     if (sharedResource === 'transmissionBackdropTexture') {
@@ -1720,7 +1725,12 @@ export function buildPerSubmeshMaterialBg(
       : null,
     physicalTextureInjections,
     surfaceMediumResources,
-  ).filter((entry) => !omittedTransmissionBindings.has(entry.binding));
+  );
+  let retainedEntries = 0;
+  for (const entry of smMergedEntries) {
+    if (!omittedTransmissionBindings.has(entry.binding)) smMergedEntries[retainedEntries++] = entry;
+  }
+  smMergedEntries.length = retainedEntries;
   if (derivedSchema?.parameterTypes.get('directMultiscatteringLut') === 'u32') {
     const lut = getOrCreateDirectDfgLut(runtime.device, runtime.deviceScope).unwrap();
     smMergedEntries.push({

@@ -202,6 +202,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     rhiCapture: boolean,
   }),
   'dev.status': schema({ ...root }),
+  'dev.pipelines.export': schema({ ...root, ...liveIdentity, output: string }, ['revision']),
   'dev.reload': schema({ ...root }),
   'dev.stop': schema({ ...root }),
   'dev.eval': schema(
@@ -855,6 +856,20 @@ export function createUnifiedCommandContributions(
       'Stop live project',
       'Destroys the persistent page and project execution environment.',
       'stop',
+    ),
+    command(
+      'dev.pipelines.export',
+      'Export observed pipeline library',
+      'Writes the current device pipeline recipes and compilation receipt for startup preparation.',
+      async (args) => {
+        const { exportPipelineLibrary } = await import('../pipeline-library-export.js');
+        return exportPipelineLibrary(projectRoot, {
+          revision: args.revision as string,
+          ...(typeof args.output === 'string' ? { output: args.output } : {}),
+        });
+      },
+      'host',
+      { capabilities: ['live-instance', 'world-observation'] },
     ),
     live(
       'dev.eval',

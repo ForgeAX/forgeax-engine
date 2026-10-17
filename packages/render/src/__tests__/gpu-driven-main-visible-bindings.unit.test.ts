@@ -12,6 +12,7 @@ import { materialBindingKey } from '../gpu-driven/material-bindings';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
+import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import {
   getOpaqueResourceIdentity,
@@ -842,4 +843,65 @@ describe('Main GPU-driven prepared visible windows', () => {
       f.close();
     }
   });
+});
+
+it.each([
+  false,
+  true,
+])('captures actual production command metadata including cached bundles=%s without changing submission', async (bundles) => {
+  const f = await fixture(false, 3, 4),
+    initial = f.prepare(),
+    r = recorder(f, initial, true, bundles);
+  const read = vi.spyOn(GpuDrivenView.prototype, 'readGeometryCommands').mockResolvedValue({
+    commands: [],
+    viewConstants: {
+      scope: 'submitted-gpu-cull-view-constants' as const,
+      depthPyramid: 'unobserved' as const,
+      frustumPlanes: Array(24).fill(0),
+      occlusionEnabled: false,
+      occlusionHistoryValid: false,
+    },
+  });
+  try {
+    // The ordinary fixture never activates the collector.
+    r.record();
+    expect((await f.production.observeGeometry({ frameId: 17, deviceGeneration: 9 })).status).toBe(
+      'unavailable',
+    );
+    expect(read).not.toHaveBeenCalled();
+    f.production.beginGeometryObservation((slot) => ({
+      worldIdentity: 'published-world',
+      meshGuid: `mesh-${slot.snapshot.assetHandle}`,
+      sourceKey: 'scene-cluster',
+      sourceRevision: 45,
+    }));
+    r.record(f.prepare());
+    expect((await f.production.observeGeometry({ frameId: 17, deviceGeneration: 9 })).status).toBe(
+      'complete',
+    );
+    const commands = read.mock.calls[0]?.[0];
+    expect(commands).toHaveLength(36);
+    expect(commands?.some((c) => c.phase === 'late')).toBe(true);
+    expect(commands?.some((c) => c.level === 1)).toBe(true);
+    const members = commands?.flatMap((c) => [...c.sources.values()]);
+    expect(members?.some((m) => m.instanceOrdinal === 3)).toBe(true);
+    expect(members?.every((m) => m.sourceRevision === 45 && m.sourceKey === 'scene-cluster')).toBe(
+      true,
+    );
+    const submitted = vi.spyOn(f.device.queue, 'submit');
+    f.production.beginGeometryObservation(() => {
+      throw Error('controlled attribution failure');
+    });
+    expect(() => r.record(f.prepare())).not.toThrow();
+    expect(submitted).toHaveBeenCalledTimes(1);
+    expect(await f.production.observeGeometry({ frameId: 18, deviceGeneration: 9 })).toMatchObject({
+      status: 'unavailable',
+      reason: 'controlled attribution failure',
+    });
+    submitted.mockRestore();
+  } finally {
+    read.mockRestore();
+    await r.close();
+    f.close();
+  }
 });

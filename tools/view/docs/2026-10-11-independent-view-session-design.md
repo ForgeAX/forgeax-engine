@@ -41,7 +41,7 @@ through a private adapter path. The visible receipt and stale-page behavior
 remain owned by the View frontend connection.
 
 The Host resolver is an assembly capability over ordinary Engine runtimes,
-not an Editor/Play mode in App or World. Existing target-specific transport
+not a Scene/Play mode in App or World. Existing target-specific transport
 admission, command routing and reload retirement remain authoritative.
 
 The bounded summary takes a running project target's generation from its exact

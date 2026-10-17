@@ -16,11 +16,11 @@ import {
 } from './contract.ts';
 import { createWorkspaceId } from './id.ts';
 import {
-  editorSceneTargetIds,
-  isEditorWorkspaceAsset,
+  sceneTargetIds,
+  isSceneWorkspaceAsset,
   isTypePreviewAsset,
   logResourceOpen,
-  selectEditorWorkspacePreview,
+  selectSceneWorkspacePreview,
   summarizeResourceAsset,
 } from './resource-open.ts';
 import { readWorkspaceFilePreview, listWorkspaceHtmlFiles } from './file-preview.ts';
@@ -72,8 +72,8 @@ export class ViewWorkspaceBroker {
   declare readonly authorize: WorkspaceAuthorization | undefined;
   declare readonly packSources: BrokerOptions['packSources'];
   declare selectedTabId: string;
-  declare targetBinding: 'editor' | 'play';
-  declare editorTargetId: string | undefined;
+  declare targetBinding: 'scene' | 'play';
+  declare sceneTargetId: string | undefined;
   declare previewTargetId: string | undefined;
   declare playOwner: EngineWorkspacePlay | undefined;
   declare projectOwner: EngineWorkspaceProjectHandle | undefined;
@@ -108,8 +108,8 @@ export class ViewWorkspaceBroker {
     this.authorize = authorize;
     this.packSources = packSources;
     this.selectedTabId = VIEW_WORKSPACE_TAB_ID;
-    this.targetBinding = 'editor';
-    this.editorTargetId = undefined;
+    this.targetBinding = 'scene';
+    this.sceneTargetId = undefined;
     this.playOwner = undefined;
     this.revision = 0;
     this.listeners = new Set<(state: WorkspaceState) => void>();
@@ -143,9 +143,9 @@ export class ViewWorkspaceBroker {
       asset: this.hydrateAsset(preview.asset),
     }));
   }
-  editorPreview() {
+  scenePreview() {
     const live = this.previews();
-    const selected = selectEditorWorkspacePreview(this.classifiedPreviews(), this.editorTargetId);
+    const selected = selectSceneWorkspacePreview(this.classifiedPreviews(), this.sceneTargetId);
     if (!selected) return undefined;
     return live.find((preview) => String(preview.target.targetId) === String(selected.target.targetId));
   }
@@ -154,7 +154,7 @@ export class ViewWorkspaceBroker {
       const play = this.engine?.play;
       return play?.phase === 'running' ? play : undefined;
     }
-    return this.previews().find(preview => preview.target.targetId === this.previewTargetId) ?? this.editorPreview();
+    return this.previews().find(preview => preview.target.targetId === this.previewTargetId) ?? this.scenePreview();
   }
   hydrateAsset(asset: WorkspaceAsset | null | undefined) {
     if (!asset?.guid) return asset ?? null;
@@ -170,9 +170,9 @@ export class ViewWorkspaceBroker {
     else {
       const preview = this.previews().find((entry) => entry.target.targetId === targetId);
       if (!preview) throw workspaceError('view-workspace-target-mismatch', 'An existing preview or Play target', 'Refresh tabs.get.');
-      this.targetBinding = 'editor';
+      this.targetBinding = 'scene';
       this.previewTargetId = targetId as string;
-      if (isEditorWorkspaceAsset(this.hydrateAsset(preview.asset))) this.editorTargetId = String(targetId);
+      if (isSceneWorkspaceAsset(this.hydrateAsset(preview.asset))) this.sceneTargetId = String(targetId);
     }
     this.changed();
     return this.snapshot();
@@ -180,8 +180,8 @@ export class ViewWorkspaceBroker {
   syncBindings() {
     if (this.playOwner !== this.engine?.play) {
       this.playOwner = this.engine?.play;
-      this.targetBinding = this.playOwner ? 'play' : 'editor';
-      if (!this.playOwner) this.previewTargetId = this.editorPreview()?.target.targetId;
+      this.targetBinding = this.playOwner ? 'play' : 'scene';
+      if (!this.playOwner) this.previewTargetId = this.scenePreview()?.target.targetId;
     }
     if (this.projectOwner !== this.engine?.project) {
       this.projectOwner = this.engine?.project;
@@ -190,7 +190,7 @@ export class ViewWorkspaceBroker {
       this.openRequest = null;
       this.openRequestSequence = 0;
       this.resourceOpens = new Map();
-      this.editorTargetId = undefined;
+      this.sceneTargetId = undefined;
       this.sceneSelection = null;
     this.selectionAbort?.abort();
     }
@@ -256,7 +256,7 @@ export class ViewWorkspaceBroker {
       ...(this.catalogEpoch < 0 ? {} : { catalogEpoch: this.catalogEpoch }),
       ...(this.thumbnailEpoch < 0 ? {} : { thumbnailEpoch: this.thumbnailEpoch }),
       preview: this.previewProjection && { ...this.previewProjection, target: this.boundTarget()!.target, asset: this.hydrateAsset(this.previewProjection.asset), assetBinding: this.boundTarget()!.assetBinding },
-      editorPreview: this.editorPreview() ? { target: this.editorPreview()!.target, asset: this.hydrateAsset(this.editorPreview()!.asset), assetBinding: this.editorPreview()!.assetBinding } : null,
+      scenePreview: this.scenePreview() ? { target: this.scenePreview()!.target, asset: this.hydrateAsset(this.scenePreview()!.asset), assetBinding: this.scenePreview()!.assetBinding } : null,
       previews: this.previews().map(preview => ({ target: preview.target, asset: this.hydrateAsset(preview.asset), assetBinding: preview.assetBinding })),
       play: this.engine?.play ? { target: this.engine.play.target, phase: this.engine.play.phase } : null,
       targetBinding: this.targetBinding,
@@ -373,8 +373,8 @@ export class ViewWorkspaceBroker {
       input.targetId === play.target.targetId && input.targetGeneration === play.target.generation) {
       // Revoke Game panel observations before Engine closes their command channel.
       // Keep the presented Play owner and its iframe until the cleanup ACK arrives.
-      this.targetBinding = 'editor';
-      this.previewTargetId = this.editorPreview()?.target.targetId;
+      this.targetBinding = 'scene';
+      this.previewTargetId = this.scenePreview()?.target.targetId;
       this.changed();
     }
     const requestedPreview = [...this.previews(), this.engine?.play].find(preview => preview?.target.targetId === input.targetId);
@@ -384,7 +384,7 @@ export class ViewWorkspaceBroker {
     if (terminal.outcome === 'failed') {
       const resolved = resolveWorkspaceFailure(terminal.failure);
       const addressesWorkspace = input.targetId === undefined ||
-        [this.projectTarget, this.editorPreview()?.target].some(target => target &&
+        [this.projectTarget, this.scenePreview()?.target].some(target => target &&
           target.targetId === input.targetId &&
           (input.targetGeneration === undefined || target.generation === input.targetGeneration));
       if (isWorkspaceTargetRecoveryCode(resolved.code) && addressesWorkspace) {
@@ -400,8 +400,8 @@ export class ViewWorkspaceBroker {
     if (Array.isArray(result?.assets)) this.assets = result.assets.map(asset => serializeWorkspaceAsset({ ...asset, ...(asset.ddc || !asset.cookReceiptUrl ? {} : { ddc: { receiptUrl: asset.cookReceiptUrl } }) }));
     if (result?.inspection) this.inspection = serializeWorkspaceInspection(result.inspection);
     if (operation === 'asset.open') this.bindOpenedAsset(result, input.guid);
-    if (operation === 'preview.close' && input.targetId != null && String(input.targetId) === this.editorTargetId) {
-      this.editorTargetId = undefined;
+    if (operation === 'preview.close' && input.targetId != null && String(input.targetId) === this.sceneTargetId) {
+      this.sceneTargetId = undefined;
     }
     this.syncBindings();
     if (operation === 'asset.open') this.recordOpenRequest({ requestId, result, guid: input.guid });
@@ -421,7 +421,7 @@ export class ViewWorkspaceBroker {
   }
   assertWorkspaceTab(tabId: unknown) {
     requireWorkspaceString(tabId, 'tabId');
-    if (tabId !== VIEW_WORKSPACE_TAB_ID) throw workspaceError('view-workspace-tab-read-only', 'the Editor binding', 'Address AI execution through the Engine run API.', { tabId });
+    if (tabId !== VIEW_WORKSPACE_TAB_ID) throw workspaceError('view-workspace-tab-read-only', 'the Scene binding', 'Address AI execution through the Engine run API.', { tabId });
   }
   selectTab({ tabId }: Args = {}) {
     if (![VIEW_DISPLAY_TAB_ID, VIEW_WORKSPACE_TAB_ID].includes(tabId as string)) throw workspaceError('view-workspace-tab-not-found', 'an existing tab', 'Refresh tabs.get.', { tabId });
@@ -491,7 +491,7 @@ export class ViewWorkspaceBroker {
   inspectAsset(args: Args, context?: WorkspaceCallContext) { return this.invoke('asset.inspect', args, context); }
   rebuildAssetSource(args: Args, { mode = 'rebuild', ...context }: WorkspaceCallContext & { mode?: 'rebuild' | 'cold-cook' } = {}) { return this.invoke(`asset.source.${mode}`, args, context); }
   bindOpenedAsset(result: WorkspaceDomainResult, guid: unknown) {
-    this.targetBinding = 'editor';
+    this.targetBinding = 'scene';
     const kind = this.hydrateAsset(result?.preview?.asset)?.kind
       ?? this.hydrateAsset(result?.asset)?.kind
       ?? this.assets?.find((entry) => entry?.guid === guid)?.kind;
@@ -500,27 +500,27 @@ export class ViewWorkspaceBroker {
         ?? result?.target?.targetId
         ?? this.previews().find((entry) => this.hydrateAsset(entry.asset)?.guid === guid)?.target?.targetId;
       if (targetId != null) {
-        this.editorTargetId = String(targetId);
-        this.previewTargetId = this.editorTargetId;
+        this.sceneTargetId = String(targetId);
+        this.previewTargetId = this.sceneTargetId;
       }
       return;
     }
-    const editorId = this.editorPreview()?.target?.targetId;
-    if (editorId !== undefined) this.previewTargetId = editorId;
+    const sceneId = this.scenePreview()?.target?.targetId;
+    if (sceneId !== undefined) this.previewTargetId = sceneId;
   }
   recordOpenRequest({ requestId, result, guid, detailsOnly = false }: { requestId?: string; result: WorkspaceDomainResult; guid?: unknown; detailsOnly?: boolean }) {
     const requested = typeof guid === 'string' && guid.trim() !== '' ? guid : undefined;
-    const editor = this.editorPreview();
-    const editorIds = editorSceneTargetIds(
+    const scene = this.scenePreview();
+    const sceneIds = sceneTargetIds(
       this.classifiedPreviews(),
-      editor ? { target: editor.target, asset: this.hydrateAsset(editor.asset) } : undefined,
+      scene ? { target: scene.target, asset: this.hydrateAsset(scene.asset) } : undefined,
     );
     const extras = this.previews().filter((entry) =>
-      entry?.target?.targetId && !editorIds.has(String(entry.target.targetId)),
+      entry?.target?.targetId && !sceneIds.has(String(entry.target.targetId)),
     );
     const preview = [result?.preview, ...extras].find((entry) =>
       entry?.target &&
-      !editorIds.has(String(entry.target.targetId)) &&
+      !sceneIds.has(String(entry.target.targetId)) &&
       (!entry.asset || requested === undefined || entry.asset.guid === requested),
     );
     const catalogAsset = requested && Array.isArray(this.assets)
@@ -546,7 +546,7 @@ export class ViewWorkspaceBroker {
         extraPreview: summarizeResourceAsset(preview?.asset),
         extraPreviewCount: extras.length,
         catalog: summarizeResourceAsset(catalogAsset),
-        editorTargetId: this.editorTargetId ?? null,
+        sceneTargetId: this.sceneTargetId ?? null,
       }, { level: 'warn' });
       return;
     }

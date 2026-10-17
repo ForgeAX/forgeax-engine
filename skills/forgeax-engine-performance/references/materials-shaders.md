@@ -90,6 +90,7 @@ For a matched compiled-WGSL example and its CPU/GPU evidence limits, read the
 | Encoded/cooked asset loading | Actual GUID, selected cooked program key and readiness receipt | Asset readiness does not prove a device pipeline or decoded audio buffer exists |
 | Receiver material admission | Source/epoch/revision/frame, new program key and source-fact derivation | Use the existing accepted publication owner; equal source under another key is not automatically duplicate admission |
 | GPU module/pipeline creation | Exact module/program label, device generation, pass/layout and frame | Preserve layout, visual outputs and recovery; avoid all-library prewarming without an identified first-use owner |
+| Completion-qualified pipeline admission | Physical-device recipe readiness and the consumer's immediate/pending result | A fulfilled device cache can still enter a new adapter's asynchronous preparation path |
 | Host PCM decoding | Exact clip/request and prepared/rejected receipt | Prepare through the audio owner's bounded cache without a voice or fake shot |
 
 Map a late program key back to actual mesh/material resources before choosing a
@@ -97,6 +98,16 @@ pre-Ready change. Keep arrival, accepted/submitted and completed receipts
 separate. The [resource update case](cases/full-scene-resources-20261016.md#cold-boundaries-and-unexplained-time)
 records a source-fact speedup and a separate PCM preparation contract; neither
 establishes the cause of an unexplained picture interval.
+
+For a `pipeline-pending` receipt after prewarming, compare complete shader code,
+layout, entry points and render state against the device recipe; labels alone
+can differ for identical code. Separate new native compilation from an adapter
+awaiting an already-ready cached result. Keep cache misses asynchronous and
+preserve descriptor-read, error and device-generation semantics when removing
+that wait; a synchronous native handle alone is not compilation-completion proof.
+The Frontline cold receipt report
+retains a failed ready-picture interval with several preparation-pending receipts;
+those reasons do not attribute the entire interval to native compilation.
 
 ## Attribute build cache misses to their producer inputs
 

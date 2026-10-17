@@ -67,17 +67,17 @@ async function frontend(entry) {
   });
   return { code: optimized.code, css };
 }
-const editor = await frontend('src/app/editor-runtime.ts');
-await writeFile(resolve(out, 'editor-runtime.mjs'), editor.code);
+const preview = await frontend('src/app/preview-runtime.ts');
+await writeFile(resolve(out, 'preview-runtime.mjs'), preview.code);
 await writeFile(
-  resolve(out, 'editor-manifest.mjs'),
+  resolve(out, 'preview-manifest.mjs'),
   `export default ${JSON.stringify({
     root: {
-      program: 'forgeax.mcp.editor',
-      codeRevision: createHash('sha256').update(editor.code).digest('hex'),
+      program: 'forgeax.mcp.preview',
+      codeRevision: createHash('sha256').update(preview.code).digest('hex'),
     },
     module: {
-      specifier: pathToFileURL(resolve(out, 'editor-runtime.mjs')).href,
+      specifier: pathToFileURL(resolve(out, 'preview-runtime.mjs')).href,
       prepare: 'preparePlatform',
     },
   })};\n`,
@@ -116,6 +116,6 @@ console.log(
     output: out,
     version: APP_VERSION,
     viewBytes,
-    editorBytes: Buffer.byteLength(editor.code),
+    previewBytes: Buffer.byteLength(preview.code),
   }),
 );

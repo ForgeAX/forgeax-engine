@@ -178,6 +178,11 @@ export interface RenderFeature<FrameData> {
   readonly identity: string;
   /** Optional graph placement; omitted features retain the historical post stage. */
   readonly placement?: RenderFeaturePlacement;
+  /**
+   * Opt into a separately validated view-local graph at the same pipeline stage.
+   * The renderer retains the monolithic path for cross-stage or unsupported work.
+   */
+  readonly viewGraph?: 'transient';
   readonly requiredCapabilities?: readonly RenderFeatureCapabilityKey[];
   /** Optional feature-owned shader preparation policy; defaults to `validated`. */
   readonly shaderModuleMode?: RenderFeatureShaderModuleMode;

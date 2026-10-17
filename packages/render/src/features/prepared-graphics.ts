@@ -95,6 +95,8 @@ export type RenderFeatureVertexDataDescriptor =
   | {
       readonly layout: string;
       readonly buffer: RenderFeatureGpuBufferRef;
+      readonly offset?: number;
+      readonly size?: number;
       readonly data?: never;
     };
 
@@ -108,6 +110,8 @@ export type RenderFeatureIndexDataDescriptor =
   | {
       readonly format: 'uint16' | 'uint32';
       readonly buffer: RenderFeatureGpuBufferRef;
+      readonly offset?: number;
+      readonly size?: number;
       readonly data?: never;
     };
 
@@ -329,7 +333,7 @@ function hasAttachment(
   );
 }
 
-/** Internal transaction-owned classification; membership remains in its original owner. */
+/** Internal captured classification and membership; never follows a live transaction. */
 export interface PreparedGraphicsValidationProjection {
   readonly generation: number;
   readonly pipelines: readonly RenderFeaturePreparedRef[];
@@ -337,8 +341,29 @@ export interface PreparedGraphicsValidationProjection {
   readonly vertexData: readonly RenderFeaturePreparedRef[];
   readonly indexData: readonly RenderFeaturePreparedRef[];
   readonly validReferences: boolean;
-  readonly isCurrent: () => boolean;
   readonly owns: (reference: RenderFeaturePreparedRef) => boolean;
+}
+
+const projectionByState = new WeakMap<object, PreparedGraphicsValidationProjection>();
+
+/** @internal Publish a store-owned state without exposing its membership authority. */
+export function createOwnedPreparedGraphicsState(
+  capabilityAvailable: boolean,
+  attachments: RenderFeaturePreparedGraphicsState['attachments'],
+  projection: PreparedGraphicsValidationProjection,
+): RenderFeaturePreparedGraphicsState {
+  const state: RenderFeaturePreparedGraphicsState = {
+    capabilityAvailable,
+    generation: projection.generation,
+    attachments,
+    pipeline: projection.pipelines[0],
+    pipelines: projection.pipelines,
+    bindings: projection.bindings,
+    vertexData: projection.vertexData,
+    indexData: projection.indexData,
+  };
+  projectionByState.set(state, projection);
+  return state;
 }
 
 function matchesOwnedProjection(
@@ -371,8 +396,7 @@ function hasPreparedRef(
     (available === projection.pipelines ||
       available === projection.bindings ||
       available === projection.vertexData ||
-      available === projection.indexData) &&
-    projection.isCurrent()
+      available === projection.indexData)
   )
     return projection.owns(required);
   // A descriptor getter may prepare/retain/abort while this pass is being
@@ -427,7 +451,7 @@ export function validateOwnedRenderFeatureGraphicsPass(
   featureIdentity: string,
   descriptor: RenderFeatureGraphicsPassDescriptor,
   state: RenderFeaturePreparedGraphicsState,
-  projection: PreparedGraphicsValidationProjection,
+  projection: PreparedGraphicsValidationProjection | undefined = projectionByState.get(state),
 ): Result<RenderFeatureValidatedGraphicsPass, RenderError> {
   return validateGraphicsPass(featureIdentity, descriptor, state, projection);
 }

@@ -503,7 +503,19 @@ export interface SpotLightProjectorFrameContext {
  * `FrameReceipt`. Concrete assembly stays behind the host; callers retain only
  * leases, receipts, inspection PODs, and recovery Result values.
  */
+/** One host-chosen task turn at the shared, prepared Feature barrier. */
+export interface RenderPreparationSchedule {
+  readonly checkpoint: () => Promise<void>;
+  readonly signal?: AbortSignal;
+  readonly isCurrent?: () => boolean;
+}
+
 export interface Renderer {
+  /** Await real current-view pipelines for existing mesh-prepared candidate credentials. */
+  prepareDynamicGeometryPipelines(
+    candidates: readonly DynamicGeometryCandidate[],
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<Result<void, DynamicGeometryError>>;
   /** Publish one renderer-owned read-only Surface dynamic page for the next frame. */
   setSurfaceDynamicInput(frame: SurfaceDynamicInputFrame | undefined): void;
   /** Disposing the last lease detaches this World and retires its GPU resources after submission completion. */
@@ -524,6 +536,7 @@ export interface Renderer {
   preparePublishedMeshResidency(
     input: PublishedMeshPreparation,
     inputOwnership?: 'received',
+    options?: { readonly signal?: AbortSignal },
   ): Promise<Result<PreparedPublishedMeshResidency, RenderPublicationError | MeshResidencyError>>;
   /** Prepare a live MeshAsset's GPU buffers before its first rendered frame. */
   prepareMeshResidency(
@@ -553,6 +566,11 @@ export interface Renderer {
   draw(
     input: RenderFrameInput | PublishedRenderFrameInput,
   ): RenderResult<FrameReceipt, RenderError>;
+  /** Publication bytes and renderer mutation remain owned until this operation settles. */
+  drawScheduled?: (
+    input: PublishedRenderFrameInput,
+    schedule: RenderPreparationSchedule,
+  ) => Promise<RenderResult<FrameReceipt, RenderError>>;
   /**
    * Arm one upcoming submitted frame for explicit color-domain observation.
    * Observation buffers are not created, copied, mapped, or retained until a
@@ -614,7 +632,11 @@ export interface Renderer {
   currentDeviceGeneration?: () => number;
   /** Detached bounds from an extracted World or the bound publication source; undefined if unavailable. */
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
-  inspect(): RenderInspection;
+  inspect(options?: { readonly pipelineLibrary?: boolean }): RenderInspection;
+  /** Opt-in diagnostic; caller holds this receipt until readback finishes. */
+  observeGeometry?: (
+    receipt: FrameReceipt,
+  ) => Promise<import('./geometry-observation').GeometryObservation>;
   observe(
     receipt: FrameReceipt,
     request: FrameObservationRequest,
@@ -724,6 +746,8 @@ export interface FrameReceipt {
   readonly deviceGeneration: number;
   /** Whether this frame can present the active scene without a readiness fallback. */
   readonly presentation: FramePresentation;
+  /** First readiness blocker captured with this submission, never a later inspect(). */
+  readonly presentationPendingReason?: FramePresentationPendingReason;
   /** Backend identity captured at submit and checked before observation. */
   readonly backendId?: RhiCaps['backendKind'];
   /** Monotonic compiled graph identity used by renderer-issued observations. */
@@ -740,6 +764,49 @@ export interface FrameReceipt {
 
 /** Producer-derived presentation readiness for one submitted frame. */
 export type FramePresentation = 'pending' | 'ready';
+
+/** One bounded producer fact; absence on a pending legacy receipt means unknown. */
+export interface FramePresentationPendingReason {
+  readonly code:
+    | 'environment-not-ready'
+    | 'feature-preparation'
+    | 'scene-pipeline-preparation'
+    | 'material-pipeline-preparation'
+    | 'shadow-pipeline-preparation'
+    | 'pipeline-preparation'
+    | 'sky-cubemap'
+    | 'compiled-graph-unavailable'
+    | 'draw-entity-missing'
+    | 'mesh-residency'
+    | 'draw-terrain-missing'
+    | 'draw-submesh-missing'
+    | 'material-residency'
+    | 'directional-shadow'
+    | 'point-shadow'
+    | 'spot-shadow'
+    | 'ui-only'
+    | 'camera-view-pending';
+  readonly worldId?: number;
+  readonly entity?: number;
+  readonly submesh?: number;
+  readonly section?: number;
+  readonly featureIdentity?: string;
+  readonly view?: string;
+  readonly pass?: string;
+  readonly shader?: string;
+  /** Same-frame first Feature blocker; no asynchronous compilation is inferred. */
+  readonly preparationStage?:
+    | 'source-guard'
+    | 'source-plan'
+    | 'native-admission'
+    | 'resource-preparation'
+    | 'graphics-pipeline'
+    | 'plan-projection'
+    | 'capability';
+  readonly resource?: string;
+  readonly operation?: string;
+  readonly reason?: string;
+}
 
 /**
  * The sole public draw input; World objects never cross this boundary. Render
@@ -781,6 +848,7 @@ export type RenderFrameInput = (
    * extracted scene and material inputs. This is an acceptance/debug seam;
    * both lanes remain subject to the ordinary resource and generation gates.
    */
+  readonly geometryObservation?: true;
   readonly geometryLane?: 'automatic' | 'direct';
 };
 
@@ -956,6 +1024,9 @@ export interface RenderObservationInspection {
  * execution.
  */
 export interface RenderInspection {
+  readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryInspection;
+  /** Included only by an explicit inspect({pipelineLibrary:true}) export request. */
+  readonly pipelineLibraryManifest?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly views?: readonly import('./inspection-types').CameraViewInspection[];
   readonly state: RendererState;
   /** Bounded detached facts for the current or last recovery attempt. */
@@ -1129,6 +1200,9 @@ export type DrawOwnerOptions = {
   /** Explicit pause/resume or replay lifecycle boundary for temporal owners. */
   readonly temporalReset?: boolean;
   readonly profileFrame?: ProfileFrameToken;
+  readonly geometryObservation?: true;
+  /** Published-input diagnostic source World, captured by its transport owner. */
+  readonly geometryObservationSourceWorldIdentity?: string;
   readonly geometryLane?: 'automatic' | 'direct';
 };
 
@@ -1348,6 +1422,8 @@ export interface RendererOptions {
    */
   readonly ui?: import('@forgeax/engine-types').UiPaintSource;
 
+  /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
+  readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /** Construction-time graph composition; resources and submission remain renderer-owned. */

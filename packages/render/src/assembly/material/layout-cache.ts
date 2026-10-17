@@ -13,7 +13,12 @@ import { buildBindGroupLayoutDescriptor, type PipelineSpec } from '../../pipelin
 import { FirstEntryMap } from '../../record/first-entry-map';
 import type { PipelineState } from '../../record/render-context';
 import { transmissionBackdropAvailable } from '../device-feature-admission';
-import { isSharedMaterialUserRegionCompatible, type LayoutKind } from '../material-shader-policy';
+import {
+  isSharedMaterialUserRegionCompatible,
+  type LayoutKind,
+  type MaterialShaderBindingContract,
+  resolveMaterialShaderBindingContract,
+} from '../material-shader-policy';
 import type {
   PerShaderMaterialLayoutCacheEntry,
   PreparedMaterialPipelineLayoutCacheEntry,
@@ -38,6 +43,107 @@ export function createMaterialLayoutCache({
   readonly viewAndSceneDepthLayoutEntries: () => GPUBindGroupLayoutEntry[];
   readonly reportError: (error: RhiError) => void;
 }) {
+  const getMaterialShaderBindingContract = (
+    materialShaderId: string,
+  ): MaterialShaderBindingContract => {
+    const lookup = getShader().findMaterialArtifact(materialShaderId);
+    return resolveMaterialShaderBindingContract(lookup.ok ? lookup.value.receipt : undefined);
+  };
+  const getOrBuildGroup0MaterialLayout = (): {
+    materialBgl: BindGroupLayout;
+    pipelineLayout: PipelineLayout;
+  } | null => {
+    const cacheState = currentPipelineCacheState();
+    if (cacheState.group0MaterialLayout !== null) return cacheState.group0MaterialLayout;
+    if (currentPipelineState() === null) return null;
+    const bglRes = currentBuildDevice().createBindGroupLayout({ entries: [] });
+    if (!bglRes.ok) {
+      reportError(bglRes.error);
+      return null;
+    }
+    const plRes = currentBuildDevice().createPipelineLayout({
+      label: 'material-group-0-pipeline-layout',
+      bindGroupLayouts: [bglRes.value],
+    });
+    if (!plRes.ok) {
+      reportError(plRes.error);
+      return null;
+    }
+    cacheState.group0MaterialLayout = { materialBgl: bglRes.value, pipelineLayout: plRes.value };
+    return cacheState.group0MaterialLayout;
+  };
+  const getOrBuildViewOnlyMaterialPipelineLayout = (): PipelineLayout | null => {
+    const cacheState = currentPipelineCacheState();
+    if (cacheState.viewOnlyMaterialPipelineLayout !== null) {
+      return cacheState.viewOnlyMaterialPipelineLayout;
+    }
+    const currentState = currentPipelineState();
+    if (currentState === null) return null;
+    const plRes = currentBuildDevice().createPipelineLayout({
+      label: 'material-view-only-pipeline-layout',
+      bindGroupLayouts: [currentState.viewBindGroupLayout],
+    });
+    if (!plRes.ok) {
+      reportError(plRes.error);
+      return null;
+    }
+    cacheState.viewOnlyMaterialPipelineLayout = plRes.value;
+    return cacheState.viewOnlyMaterialPipelineLayout;
+  };
+  const getOrBuildViewAndSceneDepthMaterialPipelineLayout = (): PipelineLayout | null => {
+    const cacheState = currentPipelineCacheState();
+    if (cacheState.viewAndSceneDepthMaterialPipelineLayout !== null) {
+      return cacheState.viewAndSceneDepthMaterialPipelineLayout;
+    }
+    const bglRes = currentBuildDevice().createBindGroupLayout({
+      label: 'material-view-scene-depth-bgl',
+      entries: viewAndSceneDepthLayoutEntries(),
+    });
+    if (!bglRes.ok) {
+      reportError(bglRes.error);
+      return null;
+    }
+    const plRes = currentBuildDevice().createPipelineLayout({
+      label: 'material-view-scene-depth-pipeline-layout',
+      bindGroupLayouts: [bglRes.value],
+    });
+    if (!plRes.ok) {
+      reportError(plRes.error);
+      return null;
+    }
+    cacheState.viewAndSceneDepthMaterialPipelineLayout = plRes.value;
+    return cacheState.viewAndSceneDepthMaterialPipelineLayout;
+  };
+  const getOrBuildGroup0ResourceLayout = (
+    materialShaderId: string,
+  ): { materialBgl: BindGroupLayout; pipelineLayout: PipelineLayout } | null => {
+    const cacheState = currentPipelineCacheState();
+    const cached = cacheState.group0ResourceLayouts.get(materialShaderId);
+    if (cached !== undefined) return cached;
+    const lookup = getShader().findMaterialArtifact(materialShaderId);
+    if (!lookup.ok || lookup.value.receipt?.bindings !== 'group-0-resource') {
+      return null;
+    }
+    const bgl = currentBuildDevice().createBindGroupLayout({
+      label: `material-group-0-resource-${materialShaderId}`,
+      entries: [
+        {
+          binding: 0,
+          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
+          texture: { sampleType: 'depth', viewDimension: '2d', multisampled: false },
+        },
+      ],
+    });
+    if (!bgl.ok) return null;
+    const pipelineLayout = currentBuildDevice().createPipelineLayout({
+      label: `material-group-0-resource-pl-${materialShaderId}`,
+      bindGroupLayouts: [bgl.value],
+    });
+    if (!pipelineLayout.ok) return null;
+    const built = { materialBgl: bgl.value, pipelineLayout: pipelineLayout.value };
+    cacheState.group0ResourceLayouts.set(materialShaderId, built);
+    return built;
+  };
   const preparedRequests = new WeakMap<
     RendererPipelineCacheState,
     MaterialPipelineRequestCache<PipelineLayout>
@@ -267,7 +373,44 @@ export function createMaterialLayoutCache({
     });
     return built;
   };
-  return { getOrBuildPreparedMaterialPipelineLayout, getOrBuildPerShaderMaterialLayout };
+  const getParamSchema = (materialShaderId: string) => {
+    const lookup = getShader().findMaterialArtifact(materialShaderId);
+    return lookup.ok ? lookup.value.paramSchema : undefined;
+  };
+  // feat-20260621-learn-render-5-5-parallax M2 / w6 (D-1): expose the per-shader
+  // material BGL so the record stage creates the material bind group against
+  // the matching paramSchema-derived layout. Returns undefined only for
+  // group-0 / view-only contracts or an unavailable shader layout; built-in
+  // material IDs continue to resolve through the shared layout path.
+  const getMaterialBindGroupLayout = (
+    materialShaderId: string,
+    materialParamSchema?: readonly ParamSchemaEntry[],
+  ): BindGroupLayout | undefined => {
+    if (isEngineOwnedMaterialShader(materialShaderId)) return undefined;
+    const contract = getMaterialShaderBindingContract(materialShaderId).bindings;
+    if (contract === 'group-0') {
+      return getOrBuildGroup0MaterialLayout()?.materialBgl;
+    }
+    if (contract === 'group-0-resource') {
+      return getOrBuildGroup0ResourceLayout(materialShaderId)?.materialBgl;
+    }
+    if (contract === 'view-and-scene-depth') return undefined;
+    return (
+      getOrBuildPerShaderMaterialLayout(materialShaderId, materialParamSchema)?.materialBgl ??
+      undefined
+    );
+  };
+  return {
+    getMaterialShaderBindingContract,
+    getOrBuildGroup0MaterialLayout,
+    getOrBuildViewOnlyMaterialPipelineLayout,
+    getOrBuildViewAndSceneDepthMaterialPipelineLayout,
+    getOrBuildGroup0ResourceLayout,
+    getOrBuildPreparedMaterialPipelineLayout,
+    getOrBuildPerShaderMaterialLayout,
+    getParamSchema,
+    getMaterialBindGroupLayout,
+  };
 }
 
 // Exhaustive codes encode the closed layout union; these are cache keys only.

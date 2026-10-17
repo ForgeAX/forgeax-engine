@@ -6,7 +6,7 @@ import type {
 } from '@forgeax/engine/app';
 import { EngineWorkspaceError } from '@forgeax/engine/app';
 import type { EntityHandle } from '@forgeax/engine/ecs';
-import { ASSETS, EDITOR_TARGET_ID, INSPECTIONS, PROJECT, PROJECT_ROOT, SCENE_NODES } from './scenarios/default.ts';
+import { ASSETS, SCENE_TARGET_ID, INSPECTIONS, PROJECT, PROJECT_ROOT, SCENE_NODES } from './scenarios/default.ts';
 
 const MESH_FACTS: Record<string, { vertexCount: number; triangleCount: number }> = {
   'geometry/box': { vertexCount: 24, triangleCount: 12 },
@@ -33,7 +33,7 @@ function unavailable(operation: string): never {
 /** Dev-only Engine provider; the actual workspace lifecycle and Host protocol stay production-owned. */
 export function createFixtureWorkspaceProvider(): EngineWorkspaceProvider {
   const target: EngineWorkspaceTarget = {
-    targetId: EDITOR_TARGET_ID, sessionId: 'fixture-session', worldId: 'fixture-world',
+    targetId: SCENE_TARGET_ID, sessionId: 'fixture-session', worldId: 'fixture-world',
     generation: 1, headed: true, width: 1280, height: 720,
   };
   const handle = Object.freeze({ projectId: PROJECT.id });

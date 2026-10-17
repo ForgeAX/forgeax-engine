@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { CodeHighlight } from './CodeHighlight';
 
 const meta = {
-  title: 'Editor Patterns/Code Highlight',
+  title: 'Workspace Patterns/Code Highlight',
   component: CodeHighlight,
   parameters: {
     docs: {

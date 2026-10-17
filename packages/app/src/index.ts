@@ -75,6 +75,7 @@ export type {
   ExecutionEngineHealth,
   ExecutionFault,
   ExecutionFrameInspection,
+  ExecutionGeometryObservationResult,
   ExecutionMeasurement,
   ExecutionOptions,
   ExecutionRenderCapabilities,

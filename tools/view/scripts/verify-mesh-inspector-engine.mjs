@@ -63,7 +63,7 @@ try {
   const scene = assets.find(asset => asset.kind === 'scene' && asset.sourceKey === 'scene/proof');
   assert.ok(scene);
   const opened = await workspace.openAsset({ projectId, guid: scene.guid });
-  const target = opened.editorPreview.target;
+  const target = opened.scenePreview.target;
   const binding = { projectId, targetId: target.targetId, targetGeneration: target.generation };
   const tree = await workspace.getSceneTree(binding);
   const mesh = tree.nodes.find(node => node.name === 'Inspector proof mesh');
@@ -142,8 +142,8 @@ try {
     } finally { bitmap.close(); }
   }, capture.png);
   assert.ok(contrast > 5, 'the actual Engine scene must render nonblank pixels');
-  assert.equal(workspace.snapshot().editorPreview.target.targetId, target.targetId);
-  assert.equal(workspace.snapshot().editorPreview.target.generation, target.generation);
+  assert.equal(workspace.snapshot().scenePreview.target.targetId, target.targetId);
+  assert.equal(workspace.snapshot().scenePreview.target.generation, target.generation);
   assert.equal(await page.locator('vite-error-overlay').count(), 0);
   assert.deepEqual(errors, []);
   await page.screenshot({ path: join(output, 'mesh-inspector.png') });

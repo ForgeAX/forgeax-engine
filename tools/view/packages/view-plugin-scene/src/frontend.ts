@@ -1,6 +1,6 @@
 import type { Context } from '@forgeax/engine-plugin';
 import type { FrontendConfig } from '@forgeax/view-workspace-core/frontend-contract';
-import { createEditorPageTitleController } from '@forgeax/view-workspace-core/page-title';
+import { createScenePageTitleController } from '@forgeax/view-workspace-core/page-title';
 import { FRONTEND_PLUGIN_ID, PAGE_TYPE } from './identity.ts';
 
 export {
@@ -18,7 +18,7 @@ export default {
     const unregister = pageHost?.registerType({
       context: 'project',
       typeId: PAGE_TYPE,
-      titleKey: 'view.pages.editor',
+      titleKey: 'view.pages.scene',
       order: 0,
       closable: false,
       singleton: true,
@@ -30,7 +30,7 @@ export default {
       resourceSelector: { kinds: ['scene'] },
       resourcePresentation: 'preview',
       priority: 10,
-      createController: () => createEditorPageTitleController(ctx.get('viewOperationClient')),
+      createController: () => createScenePageTitleController(ctx.get('viewOperationClient')),
     });
     if (unregister) ctx.effect(() => unregister);
     ctx.provide('viewScenePage', { typeId: PAGE_TYPE });

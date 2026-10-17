@@ -1126,9 +1126,24 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
     expect(phase()).toBe(1);
     const depthUpdate = depthModel.works.find((work) =>
       work.pipeline?.shaders.some(
-        (shader) => shader.entryPoint === 'forgeax_vfx_update_compact_main',
+        (shader) =>
+          shader.entryPoint === 'forgeax_vfx_update_main' ||
+          shader.entryPoint === 'forgeax_vfx_update_compact_main',
       ),
     );
+    if (depthUpdate === undefined && options.onIblFailure !== undefined) {
+      iblFailureRecorded = true;
+      await options.onIblFailure(
+        {
+          phase: 'depth-update-selection',
+          capture: 'original-depth-latency-frame',
+          completedFrames,
+          work: depthModel.works,
+          events: errors,
+        },
+        captured.value.bytes,
+      );
+    }
     const shadowWork = depthModel.works.find((work) => work.kind === 'drawIndexedIndirect');
     expect(depthUpdate).toBeDefined();
     expect(shadowWork).toBeDefined();

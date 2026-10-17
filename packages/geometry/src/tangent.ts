@@ -63,6 +63,41 @@ function tangentInputError(field: string, value: number, reason: string): AssetE
   });
 }
 
+function fallbackTangent(
+  nx: number,
+  ny: number,
+  nz: number,
+  v: number,
+): Result<readonly [number, number, number], AssetError> {
+  const ax = Math.abs(nx);
+  const ay = Math.abs(ny);
+  const az = Math.abs(nz);
+  let rx = 1;
+  let ry = 0;
+  let rz = 0;
+  if (ax > ay && ax > az) {
+    rx = 0;
+    ry = 1;
+  } else if (ay > ax && ay > az) {
+    rx = 0;
+    rz = 1;
+  }
+  const tx = ny * rz - nz * ry;
+  const ty = nz * rx - nx * rz;
+  const tz = nx * ry - ny * rx;
+  const fallbackLength = Math.sqrt(tx * tx + ty * ty + tz * tz);
+  if (fallbackLength < EPSILON) {
+    return err(
+      tangentInputError(
+        'tangent',
+        v,
+        'material-tangent-required: supplied normal cannot define a tangent frame',
+      ),
+    );
+  }
+  return ok([tx / fallbackLength, ty / fallbackLength, tz / fallbackLength] as const);
+}
+
 function preflightTangentInput(
   positions: Float32Array,
   normals: Float32Array,
@@ -267,35 +302,9 @@ export function computeTangentVec4(
 
     const tLen = Math.sqrt(tx * tx + ty * ty + tz * tz);
     if (tLen < EPSILON) {
-      const ax = Math.abs(nx);
-      const ay = Math.abs(ny);
-      const az = Math.abs(nz);
-      let rx = 1;
-      let ry = 0;
-      let rz = 0;
-      if (ax > ay && ax > az) {
-        rx = 0;
-        ry = 1;
-      } else if (ay > ax && ay > az) {
-        rx = 0;
-        rz = 1;
-      }
-      tx = ny * rz - nz * ry;
-      ty = nz * rx - nx * rz;
-      tz = nx * ry - ny * rx;
-      const fallbackLength = Math.sqrt(tx * tx + ty * ty + tz * tz);
-      if (fallbackLength < EPSILON) {
-        return err(
-          tangentInputError(
-            'tangent',
-            v,
-            'material-tangent-required: supplied normal cannot define a tangent frame',
-          ),
-        );
-      }
-      tx /= fallbackLength;
-      ty /= fallbackLength;
-      tz /= fallbackLength;
+      const fallback = fallbackTangent(nx, ny, nz, v);
+      if (!fallback.ok) return fallback;
+      [tx, ty, tz] = fallback.value;
     } else {
       tx /= tLen;
       ty /= tLen;
@@ -309,35 +318,9 @@ export function computeTangentVec4(
     let gz = tz - dotTN * nz;
     const gLen = Math.sqrt(gx * gx + gy * gy + gz * gz);
     if (gLen < EPSILON) {
-      const ax = Math.abs(nx);
-      const ay = Math.abs(ny);
-      const az = Math.abs(nz);
-      let rx = 1;
-      let ry = 0;
-      let rz = 0;
-      if (ax > ay && ax > az) {
-        rx = 0;
-        ry = 1;
-      } else if (ay > ax && ay > az) {
-        rx = 0;
-        rz = 1;
-      }
-      gx = ny * rz - nz * ry;
-      gy = nz * rx - nx * rz;
-      gz = nx * ry - ny * rx;
-      const fallbackLength = Math.sqrt(gx * gx + gy * gy + gz * gz);
-      if (fallbackLength < EPSILON) {
-        return err(
-          tangentInputError(
-            'tangent',
-            v,
-            'material-tangent-required: supplied normal cannot define a tangent frame',
-          ),
-        );
-      }
-      gx /= fallbackLength;
-      gy /= fallbackLength;
-      gz /= fallbackLength;
+      const fallback = fallbackTangent(nx, ny, nz, v);
+      if (!fallback.ok) return fallback;
+      [gx, gy, gz] = fallback.value;
     } else {
       gx /= gLen;
       gy /= gLen;

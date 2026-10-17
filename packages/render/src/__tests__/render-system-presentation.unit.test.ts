@@ -15,6 +15,7 @@ import {
 } from '../render-system-extract';
 import {
   createPresentationDraws,
+  markPipelinePreparationPending,
   projectDisplayRenderables,
   projectFramePresentation,
 } from '../render-system-presentation';
@@ -349,4 +350,26 @@ it('attributes one submitted sprite fold to every validated source member', () =
   record.mockClear();
   submitted(unrelated, 2);
   expect(record).toHaveBeenCalledExactlyOnceWith(unrelated, 2, undefined);
+});
+
+it('keeps the first preparation owner and starts the next frame without a stale cause', () => {
+  const state: {
+    pipelinePreparationPending?: boolean;
+    pipelinePreparationPendingReason?: import('../render-contract').FramePresentationPendingReason;
+  } = {};
+  markPipelinePreparationPending(state, { code: 'feature-preparation', featureIdentity: 'first' });
+  markPipelinePreparationPending(state, { code: 'shadow-pipeline-preparation', shader: 'second' });
+  expect(state.pipelinePreparationPending).toBe(true);
+  expect(state.pipelinePreparationPendingReason).toEqual({
+    code: 'feature-preparation',
+    featureIdentity: 'first',
+  });
+  expect(Object.isFrozen(state.pipelinePreparationPendingReason)).toBe(true);
+  state.pipelinePreparationPending = false;
+  delete state.pipelinePreparationPendingReason;
+  markPipelinePreparationPending(state, { code: 'scene-pipeline-preparation', pass: 'fs_gbuffer' });
+  expect(state.pipelinePreparationPendingReason).toEqual({
+    code: 'scene-pipeline-preparation',
+    pass: 'fs_gbuffer',
+  });
 });

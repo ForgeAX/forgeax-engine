@@ -2,6 +2,10 @@ import { atmosphereEvidenceControls, type AtmosphereEvidenceSettings } from './a
 import { installSurfaceControls } from './surface-controls';
 import { verifyProbeAtmosphere } from './probe-atmosphere-evidence';
 import { verifyProbeUpdates } from './probe-update-evidence';
+import {
+  deriveReflectionProbeRecoveryEvidence,
+  REFLECTION_PROBE_SETTLE_FRAMES,
+} from '../scripts/ssr-fallback-evidence.mjs';
 // Screen-space reflection with producer-owned probe/environment fallback.
 
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
@@ -197,6 +201,10 @@ type TargetReport = {
       readonly replacementRow: unknown;
       readonly readback: unknown;
       readonly matchingReplacement: boolean;
+      readonly beforeSsr: SsrSpatialInspection;
+      readonly afterSsr: SsrSpatialInspection;
+      readonly replacementTemporal: SsrDependenciesInspection['temporal'];
+      readonly replacementSsrReady: boolean;
     };
     readonly ssrDependencies: SsrDependenciesInspection;
     readonly ssr?: SsrSpatialInspection;
@@ -772,7 +780,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const app = created.value;
   exposeLearnRenderTestApp(app, canvas);
   const renderer = app.renderer;
-  app.onError((error) => reportError('[hello-ssr] app error', JSON.stringify(error)));
+  app.onError((error) => reportError('[hello-ssr] app error', error));
 
   const targetResult = renderer.createRenderTarget(descriptor());
   if (!targetResult.ok) {
@@ -1177,19 +1185,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       owner = renderer.inspect().reflectionProbes;
     }
 
-    let deviceRecovery:
-      | {
-          readonly triggered: boolean;
-          readonly lostState: string;
-          readonly recoverCode: string;
-          readonly beforeDeviceGeneration: number;
-          readonly afterDeviceGeneration: number;
-          readonly generationChanged: boolean;
-          readonly replacementRow: unknown;
-          readonly readback: unknown;
-          readonly matchingReplacement: boolean;
-        }
-      | undefined;
+    let deviceRecovery: NonNullable<TargetReport['reflectionProbe']>['deviceRecovery'];
     if (faultInstrumentation !== undefined) {
       const beforeLoss = renderer.inspect();
       const beforeDeviceGeneration = beforeLoss.frame.deviceGeneration;
@@ -1216,36 +1212,26 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       const recoverCode = recovered.ok ? 'recovered' : recovered.error.code;
       if (!recovered.ok) throw recovered.error;
       let recoveryReceipt: NonNullable<typeof receipt>['value'] | undefined;
-      for (let frame = 0; frame < 40; frame += 1) {
+      let afterRecovery = renderer.inspect();
+      let replacement = deriveReflectionProbeRecoveryEvidence(afterRecovery, beforeDeviceGeneration);
+      for (let frame = 0; frame < REFLECTION_PROBE_SETTLE_FRAMES; frame += 1) {
         recoveryReceipt = await drawEvidenceFrame();
         await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        afterRecovery = renderer.inspect();
+        replacement = deriveReflectionProbeRecoveryEvidence(afterRecovery, beforeDeviceGeneration);
+        if (replacement.matchingReplacement && replacement.replacementSsrReady) break;
       }
-      const afterRecovery = renderer.inspect();
       const replacementOwner = afterRecovery.reflectionProbes;
-      const replacementRow = fallbackRow(replacementOwner, 'probe');
-      const replacementReadback = replacementOwner.reflectionFallbackReadback;
-      const generationChanged = afterRecovery.frame.deviceGeneration > beforeDeviceGeneration;
-      const matchingReplacement =
-        generationChanged &&
-        replacementRow?.state === 'active' &&
-        replacementRow.candidateVisible === false &&
-        replacementRow.deviceGeneration === afterRecovery.frame.deviceGeneration &&
-        replacementReadback?.readbackStatus === 'complete' &&
-        replacementReadback.deviceGeneration === replacementRow.deviceGeneration &&
-        replacementReadback.frameId === replacementRow.frameId;
       deviceRecovery = {
         triggered: true,
         lostState,
         recoverCode,
         beforeDeviceGeneration,
-        afterDeviceGeneration: afterRecovery.frame.deviceGeneration,
-        generationChanged,
-        replacementRow,
-        readback: replacementReadback,
-        matchingReplacement,
+        beforeSsr: beforeLoss.ssr,
+        ...replacement,
       };
-      if (!matchingReplacement || recoveryReceipt === undefined) {
-        throw new Error(`device replacement receipt mismatch: ${JSON.stringify(deviceRecovery)}`);
+      if (!replacement.matchingReplacement || !replacement.replacementSsrReady || recoveryReceipt === undefined) {
+        throw new Error(`device replacement receipt mismatch: ${JSON.stringify({ ...deviceRecovery, owner: replacementOwner })}`);
       }
       owner = replacementOwner;
       receipt = { ok: true, value: recoveryReceipt };

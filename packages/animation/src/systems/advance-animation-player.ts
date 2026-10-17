@@ -434,6 +434,8 @@ function tickEntityTargets(
   // is skipped in production by the shared diagnostics mode gate).
   const slotCoverage: SlotCoverage = new Map();
   const wantsCoverage = activeSlots.length >= 2 && isAnimationDevMode();
+  // Samples are folded immediately; only the accumulators own the blended pose.
+  const channelSample: number[] = [];
 
   for (let slotIdx = 0; slotIdx < activeSlots.length; slotIdx++) {
     // biome-ignore lint/style/noNonNullAssertion: bounded by activeSlots.length
@@ -472,7 +474,7 @@ function tickEntityTargets(
         channel.targetId === root.value.targetId &&
         (channel.property === 'translation' || channel.property === 'rotation')
           ? rootMotionPose(slot.clip, channel.targetId, channel.property)
-          : sampleChannel(channel.sampler, slot.time, channel.property);
+          : sampleChannel(channel.sampler, slot.time, channel.property, channelSample);
       if (sampled === undefined) continue;
       const target =
         channel.property === 'weights'

@@ -1,6 +1,7 @@
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
+import type { DispatchEntry } from '../../render-system-extract';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -250,5 +251,85 @@ it('restores shared mesh, pipeline and instance state after a Points/Lines draw 
     f.dispose();
     pointsPipeline.dispose();
     device.destroyBuffer(viewBuffer).unwrap();
+  }
+});
+
+it.each([
+  'forward',
+  'temporal',
+] as const)('preserves per-material multipass order and temporal deduplication in %s', async (kind) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, submeshes: 2 });
+  const secondSubmesh = entry.mesh.submeshes[1];
+  if (secondSubmesh === undefined) throw new Error('Missing second fixture submesh');
+  Object.assign(secondSubmesh, { materialSlot: 1 });
+  Object.assign(entry.source, {
+    materials: [entry.source.material, { ...entry.source.material, materialHandle: 8 }],
+  });
+  const makeDispatch = (
+    materialHandle: number,
+    passIndex: number,
+    stencilReference?: number,
+  ): DispatchEntry => ({
+    renderableIndex: 0,
+    entityIndex: 0,
+    materialHandle,
+    passIndex,
+    queue: 2000,
+    layer: 0,
+    tags: { SurfaceKind: 'standard', SurfaceModule: 'fixture', GeometryVariant: 'mesh' },
+    renderState: undefined,
+    defines: undefined,
+    vertexEntry: undefined,
+    fragmentEntry: undefined,
+    materialShaderId: 'forgeax::default-unlit',
+    paramSnapshot: undefined,
+    ...(stencilReference === undefined ? {} : { stencilReference }),
+  });
+  const dispatch = [
+    makeDispatch(7, 0),
+    makeDispatch(8, 0),
+    makeDispatch(7, 1),
+    makeDispatch(7, 2, 1),
+    makeDispatch(7, 3, 2),
+    makeDispatch(7, 4, 1),
+  ];
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    const record = (selected: readonly DispatchEntry[]) =>
+      recordGeometryDraws(
+        f.c,
+        pass,
+        null,
+        [[0, 1]],
+        1,
+        f.meshGroup,
+        f.meshGroup,
+        () => f.materialGroup,
+        kind,
+        selected,
+      );
+    record(dispatch);
+    expect(f.receipts.map(({ submesh }) => submesh)).toEqual(
+      kind === 'forward' ? [0, 0, 0, 0, 0, 1] : [0, 0, 0, 1],
+    );
+    f.receipts.length = 0;
+    record([makeDispatch(8, 0)]);
+    expect(f.receipts.map(({ submesh }) => submesh)).toEqual([1]);
+    f.receipts.length = 0;
+    record([
+      new Proxy(makeDispatch(7, 0), {
+        has() {
+          throw new Error('Recording must not reflect the raw dispatch');
+        },
+      }),
+    ]);
+    expect(f.receipts.map(({ submesh }) => submesh)).toEqual([0]);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
   }
 });

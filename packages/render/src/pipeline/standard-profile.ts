@@ -190,6 +190,10 @@ export interface StandardProbePlacement {
 }
 
 export interface StandardProfile {
+  /** Merge ready native view raster passes whose shaders only read depth. */
+  readonly featureReadOnlyDepthBatching?: boolean;
+  /** Explicit off/on diagnostic override of the production policy. */
+  readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
   readonly pipelineId: typeof STANDARD_PIPELINE_ID;
   readonly lightCount: StandardLightCount;
   /** Graph topology selector; all local lights use the shared Cluster path. */
@@ -205,12 +209,17 @@ export interface StandardProfile {
   readonly ssao: boolean | SsaoParameterConfig;
   /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted means on. */
   readonly gpuOcclusion?: boolean | undefined;
+  /** Opt-in ordering experiment only; omitted preserves production GBuffer order. */
+  readonly gbufferBatchOrderDiagnostic?:
+    | import('../gpu-driven/gbuffer-order-diagnostic').GBufferOrderDiagnosticConfig
+    | undefined;
   /** Renderer-owned 1080p volume profile; tile width/height remain surface-derived. */
   readonly volumetricFog?: StandardVolumetricFogProfile | undefined;
   readonly postStages: typeof STANDARD_POST_STAGE_NAMES;
 }
 
 export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
+  featureReadOnlyDepthBatching: true,
   pipelineId: STANDARD_PIPELINE_ID,
   lightCount: 32,
   renderPath: 'forward',

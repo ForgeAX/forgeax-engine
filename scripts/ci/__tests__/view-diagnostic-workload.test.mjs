@@ -42,12 +42,12 @@ for (const viewport of [
       'the later RHI journey must return to its configured viewport',
     );
   });
-test('Editor resume waits for the actual resize after a completed old-size frame', async () => {
+test('Scene resume waits for the actual resize after a completed old-size frame', async () => {
   const start = source.indexOf(
     ' await page.waitForFunction(',
     source.indexOf(' await resizeSceneBuffer(0.5);'),
   );
-  const end = source.indexOf('\n editorPresentation.resumed=', start);
+  const end = source.indexOf('\n scenePresentation.resumed=', start);
   assert.ok(start >= 0 && end > start);
   const canvas = { width: 272, clientWidth: 1204, clientHeight: 658, checkVisibility: () => true };
   const renderer = { execution: { frame: { completed: 90 } } };
@@ -57,14 +57,14 @@ test('Editor resume waits for the actual resize after a completed old-size frame
     document: { querySelector: () => canvas },
     __forgeaxGameInspection: { renderer: () => renderer },
     devicePixelRatio: 2,
-    editorOpened: { preview: { target: { targetId: 'preview-target', generation: 8 } } },
+    sceneOpened: { preview: { target: { targetId: 'preview-target', generation: 8 } } },
     client: {
       resizePreview: async (request) => {
         assert.deepEqual(calls, ['resized-ready']);
         calls.push({ ...request });
       },
     },
-    editorPresentation: {
+    scenePresentation: {
       active: { canvas: { width: 272 } },
       afterCapture: { after: { renderer: { execution: { frame: { completed: 89 } } } } },
     },

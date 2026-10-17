@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { componentId, defineComponent } from '../component';
+import { Disabled } from '../entity';
 import type { EntityHandle } from '../entity-handle';
 import {
   QueryDataRequiresFieldsError,
@@ -46,6 +47,57 @@ describe('executable Query', () => {
     const tagData = world.query({ read: [Selected] });
     expect(tagData.ok).toBe(false);
     if (!tagData.ok) expect(tagData.error).toBeInstanceOf(QueryDataRequiresFieldsError);
+  });
+
+  it('reports all duplicate roles for the first conflicting component before tag errors', () => {
+    const world = new World();
+    const result = world.query({
+      read: [Selected, Position, Velocity, Velocity],
+      write: [Position],
+      optional: [Position],
+      with: [Position],
+      without: [Position],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(QueryDescriptorConflictError);
+      expect(result.error.detail).toEqual({
+        componentName: Position.name,
+        roles: ['read', 'write', 'optional', 'with', 'without'],
+      });
+    }
+    const repeated = world.query({ with: [Selected, Selected] });
+    expect(repeated.ok).toBe(false);
+    if (!repeated.ok)
+      expect(repeated.error.detail).toEqual({
+        componentName: Selected.name,
+        roles: ['with', 'with'],
+      });
+  });
+
+  it('deduplicates temporal predicates while preserving Disabled and sparse membership', () => {
+    const world = new World();
+    const Sparse = defineComponent('QueryTemporalSparse', {}, { storage: 'sparse' });
+    const entity = world
+      .spawn(
+        { component: Position, data: { x: 1, y: 2 } },
+        { component: Sparse, data: {} },
+        { component: Disabled, data: {} },
+      )
+      .unwrap();
+    expect([...world.query({ read: [Position] }).unwrap()]).toHaveLength(0);
+    const descriptor = {
+      read: [Position],
+      with: [Disabled],
+      changed: [Position, Position, Sparse],
+      added: [Sparse, Sparse],
+    } as const;
+    const first = world.query(descriptor).unwrap();
+    const second = world.query(descriptor).unwrap();
+    expect([...first].map((row) => row.entity)).toEqual([entity]);
+    expect([...first]).toHaveLength(0);
+    expect([...second].map((row) => row.entity)).toEqual([entity]);
+    expect([...world.query({ read: [Position], without: [Sparse] }).unwrap()]).toHaveLength(0);
   });
 
   it('iterates each matching entity once and exposes optional data precisely', () => {
@@ -169,6 +221,36 @@ describe('executable Query', () => {
     expect(seen).toEqual([first, second]);
   });
 
+  it('refreshes retained rows and spans after new table and sparse archetypes', () => {
+    const { world, first, second } = createWorld();
+    const Extra = defineComponent('QueryRefreshExtra', { value: 'f32' });
+    const Flag = defineComponent('QueryRefreshFlag', {}, { storage: 'sparse' });
+    const dense = world.query({ read: [Position] }).unwrap();
+    const sparse = world.query({ read: [Position], with: [Flag] }).unwrap();
+    const absent = world.query({ read: [Extra], without: [Position] }).unwrap();
+    const spanEntities = () =>
+      [...dense.spans().unwrap()].flatMap((span) => Array.from(span.entities));
+
+    expect(spanEntities()).toEqual([first, second]);
+    expect([...sparse]).toHaveLength(0);
+    expect([...absent]).toHaveLength(0);
+    const third = world
+      .spawn(
+        { component: Position, data: { x: 7, y: 8 } },
+        { component: Extra, data: { value: 9 } },
+      )
+      .unwrap();
+    const other = world.spawn({ component: Extra, data: { value: 10 } }).unwrap();
+    world.addComponent(third, { component: Flag, data: {} }).unwrap();
+
+    expect(Array.from(dense, (row) => row.entity)).toEqual([first, second, third]);
+    expect(spanEntities()).toEqual([first, second, third]);
+    expect(Array.from(sparse, (row) => row.entity)).toEqual([third]);
+    expect(Array.from(absent, (row) => row.entity)).toEqual([other]);
+    world.despawn(second).unwrap();
+    expect(spanEntities()).toEqual([first, third]);
+  });
+
   it('keeps same-frame late writes for the next observation', () => {
     const { world, first } = createWorld();
     const query = world.query({ read: [Position], changed: [Position] }).unwrap();
@@ -177,6 +259,41 @@ describe('executable Query', () => {
     const seen: EntityHandle[] = [];
     for (const row of query) seen.push(row.entity);
     expect(seen).toEqual([first]);
+  });
+
+  it('retains empty matching storage and keeps independent observation cursors', () => {
+    const Flag = defineComponent('RepopulatedQueryFlag', {}, { storage: 'sparse' });
+    const world = new World();
+    const original = world.spawn({ component: Position, data: { x: 1, y: 2 } }).unwrap();
+    world.addComponent(original, { component: Flag, data: {} }).unwrap();
+    const dense = world.query({ read: [Position] }).unwrap();
+    const sparse = world.query({ read: [Position], with: [Flag] }).unwrap();
+    const changed = world.query({ read: [Position], changed: [Position] }).unwrap();
+    const otherChanged = world.query({ read: [Position], changed: [Position] }).unwrap();
+    const added = world.query({ read: [Position], added: [Position] }).unwrap();
+    expect(Array.from(dense, (row) => row.entity)).toEqual([original]);
+    expect(Array.from(sparse, (row) => row.entity)).toEqual([original]);
+    expect([...changed]).toHaveLength(1);
+    expect([...otherChanged]).toHaveLength(1);
+    expect([...added]).toHaveLength(1);
+
+    world.despawn(original).unwrap();
+    expect([...dense.spans().unwrap()]).toHaveLength(0);
+    expect([...sparse]).toHaveLength(0);
+    const replacement = world.spawn({ component: Position, data: { x: 3, y: 4 } }).unwrap();
+    world.addComponent(replacement, { component: Flag, data: {} }).unwrap();
+    expect(Array.from(dense, (row) => row.entity)).toEqual([replacement]);
+    expect(Array.from(sparse, (row) => row.entity)).toEqual([replacement]);
+    expect([...changed.spans().unwrap()].flatMap((span) => Array.from(span.entities))).toEqual([
+      replacement,
+    ]);
+    expect(Array.from(otherChanged, (row) => row.entity)).toEqual([replacement]);
+    expect(Array.from(added, (row) => row.entity)).toEqual([replacement]);
+    expect([...changed]).toHaveLength(0);
+    world.set(replacement, Position, { x: 5 }).unwrap();
+    expect([...changed]).toHaveLength(1);
+    expect([...otherChanged]).toHaveLength(1);
+    expect([...added]).toHaveLength(0);
   });
 
   it('fails fast on reentry and synchronous structural invalidation', () => {

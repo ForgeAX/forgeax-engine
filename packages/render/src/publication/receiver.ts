@@ -140,10 +140,11 @@ export class RenderPublicationReceiver {
     if (this.disposed) return reject('disposed', 'receiver');
     if (input.source !== this.identity.source || input.epoch !== this.identity.epoch)
       return reject('identity', 'prepared mesh source/epoch');
-    if (!Number.isSafeInteger(input.meshHandle) || input.mesh?.kind !== 'mesh')
+    const { meshHandle } = input;
+    if (!Number.isSafeInteger(meshHandle) || input.mesh?.kind !== 'mesh')
       return reject('shape', 'prepared mesh handle/payload');
-    const prior = this.preparedMeshes.get(input.meshHandle);
-    const accepted = this.assets.get(input.meshHandle)?.value;
+    const prior = this.preparedMeshes.get(meshHandle);
+    const accepted = this.assets.get(meshHandle)?.value;
     const mesh = prior?.mesh ?? accepted;
     if (mesh !== undefined && (mesh.kind !== 'mesh' || !samePublishedMesh(mesh, input.mesh)))
       return reject('shape', 'prepared mesh conflicts with its resource handle');
@@ -157,19 +158,18 @@ export class RenderPublicationReceiver {
     };
     const lease = { retire: onRetire, published: onPublished };
     entry.leases.add(lease);
-    this.preparedMeshes.set(input.meshHandle, entry);
+    this.preparedMeshes.set(meshHandle, entry);
     let released = false;
     return ok({
       resources: this.resources,
       mesh: entry.mesh,
-      isCurrent: () =>
-        !released && !this.disposed && this.preparedMeshes.get(input.meshHandle) === entry,
+      isCurrent: () => !released && !this.disposed && this.preparedMeshes.get(meshHandle) === entry,
       release: () => {
         if (released) return;
         released = true;
         entry.leases.delete(lease);
-        if (entry.leases.size === 0 && this.preparedMeshes.get(input.meshHandle) === entry)
-          this.preparedMeshes.delete(input.meshHandle);
+        if (entry.leases.size === 0 && this.preparedMeshes.get(meshHandle) === entry)
+          this.preparedMeshes.delete(meshHandle);
       },
     });
   }

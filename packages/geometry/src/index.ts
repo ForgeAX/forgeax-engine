@@ -62,7 +62,7 @@ export { distanceFieldTexel } from './distance-field-bricks';
 // Edge factories return Result<MeshAsset, AssetError>; threshold units are degrees.
 export { createEdgesGeometry, createWireframeGeometry } from './edges';
 export { createExtrusionGeometry, type ExtrusionOptions } from './extrusion';
-export { withMeshAabb } from './mesh-aabb.js';
+export { isFiniteAabb, withMeshAabb } from './mesh-aabb.js';
 export {
   createMeshBuilder,
   type MeshBuilder,

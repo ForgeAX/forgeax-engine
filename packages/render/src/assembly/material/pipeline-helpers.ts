@@ -1,11 +1,14 @@
-import type { BindGroupLayout } from '@forgeax/engine-rhi';
+import type { BindGroupLayout, RhiDevice } from '@forgeax/engine-rhi';
 import type {
   MaterialShaderArtifact,
   PipelineGroup2Contract,
+  ShaderCatalog,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
 import { type GpuDrivenPbrProgram, resolveStandardPbrProgram } from '../../gpu-driven/pbr-program';
-import type { LayoutKind } from '../material-shader-policy';
+import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
+import { type LayoutKind, selectNoColorPbrVariant } from '../material-shader-policy';
+import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../shader-prewarm-policy';
 import { type MaterialShaderArtifactRequest, resolveMaterialShaderArtifact } from './assembly';
 
 type MaterialArtifactRegistry = Pick<
@@ -147,4 +150,45 @@ export function isEngineOwnedMaterialShader(materialShaderId: string): boolean {
     materialShaderId === 'forgeax::pbr-skin' ||
     materialShaderId === 'forgeax::default-standard-pbr-skin'
   );
+}
+
+/**
+ * bug-20260527-renderstate-pipeline-dispatch-gap D-3:
+ * finds the engine-shipped PBR manifest entry from the shader registry
+ * by content marker (f_schlick BRDF helper call, same marker
+ * buildReadyWebGPU uses). Returns undefined when the manifest is
+ * empty (Camera-only path) or the pbr entry is not found.
+ */
+export function findStandardPbrEntry(
+  shader: ShaderCatalog,
+  device: RhiDevice,
+  variantSet?: string,
+): import('@forgeax/engine-types').ManifestEntry | undefined {
+  let standardEntry: import('@forgeax/engine-types').ManifestEntry | undefined;
+  for (const entry of shader.entries()) {
+    if (entry.wgsl.includes('f_schlick')) {
+      standardEntry = entry;
+      break;
+    }
+  }
+  if (standardEntry === undefined) return undefined;
+  const pbrManifestEntry = [...shader.materialShaderManifestEntries()].find(
+    (entry) => entry.identifier === 'forgeax::default-standard-pbr',
+  );
+  const noColorVariant = selectNoColorPbrVariant(
+    pbrManifestEntry,
+    device.caps.storageBuffer,
+    variantSet,
+    deriveExtendedLightingCapability(device).admitted,
+    device.caps.backendKind === 'webgpu' || device.caps.backendKind === 'wgpu-native',
+    (device.limits.maxSampledTexturesPerShaderStage ?? 0) >= STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
+  );
+  if (noColorVariant !== undefined && noColorVariant.composedWgsl !== standardEntry.wgsl) {
+    return { ...standardEntry, wgsl: noColorVariant.composedWgsl };
+  }
+  const runtimePbr = shader.findMaterialArtifact('forgeax::default-standard-pbr');
+  if (runtimePbr.ok && runtimePbr.value.source !== standardEntry.wgsl) {
+    return { ...standardEntry, wgsl: runtimePbr.value.source };
+  }
+  return standardEntry;
 }

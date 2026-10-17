@@ -30,7 +30,7 @@
 .insp-component-browser ul { list-style: none; padding: 0; margin: 0; }
 .insp-component-browser-row {
   display: flex; align-items: center; gap: var(--fx-ref-space-8); width: 100%; min-width: 0;
-  min-height: var(--fx-component-editor-row-height); padding: var(--fx-ref-space-4) var(--fx-ref-space-6);
+  min-height: var(--fx-component-control-row-height); padding: var(--fx-ref-space-4) var(--fx-ref-space-6);
   border: 0; border-radius: var(--fx-radius-control); background: transparent; color: var(--fx-color-text-secondary); text-align: left; cursor: pointer;
 }
 .insp-component-browser-row:hover { background: var(--fx-color-surface-hover); }
@@ -40,12 +40,12 @@
 .insp-component-browser-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .insp-component-tree { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: var(--fx-ref-space-4) var(--fx-ref-space-6); }
 .insp-component-tree ul { list-style: none; padding: 0; margin: 0; }
-.insp-tree-row { display: flex; align-items: center; min-height: var(--fx-component-editor-row-height); }
+.insp-tree-row { display: flex; align-items: center; min-height: var(--fx-component-control-row-height); }
 .insp-tree-row.is-selected { background: var(--fx-color-surface-selected); border-radius: var(--fx-radius-control); }
 .insp-tree-row > .fx-icon-button, .insp-tree-indent { flex: 0 0 24px; width: 24px; }
 .insp-tree-item, .insp-tree-component {
   display: flex; align-items: center; gap: var(--fx-ref-space-6); min-width: 0;
-  padding: var(--fx-ref-space-4) var(--fx-ref-space-6); min-height: var(--fx-component-editor-row-height);
+  padding: var(--fx-ref-space-4) var(--fx-ref-space-6); min-height: var(--fx-component-control-row-height);
   border: 0; border-radius: var(--fx-radius-control); background: transparent; color: var(--insp-text); text-align: left; cursor: pointer;
 }
 .insp-tree-item { flex: 1; }

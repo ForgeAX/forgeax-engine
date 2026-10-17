@@ -103,7 +103,7 @@ try {
         const chunks = [];
         for await (const chunk of request) chunks.push(chunk);
         const params = JSON.parse(Buffer.concat(chunks));
-        // Admit the real Editor after the View's first catalog observation.
+        // Admit the real Preview after the View's first catalog observation.
         // Native hosts can schedule these realms at different speeds.
         if (params.arguments.action === 'host-open' && ++hostAdmissions === 2)
           await new Promise(resolve => setTimeout(resolve, 2000));
@@ -172,7 +172,7 @@ try {
   console.error('MCP App stage: browser ready');
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   const view = page.frameLocator('#app').frameLocator('#view');
-  const initialEditorDeadline = performance.now() + 180000;
+  const initialPreviewDeadline = performance.now() + 180000;
   const hostDeadline = performance.now() + 60000;
   try {
     const iframe = await view.owner().elementHandle({ timeout: 60000 });
@@ -199,17 +199,17 @@ try {
   }
   console.error('MCP App stage: View connected');
   // Project restoration replaces the header's connected label. It belongs to
-  // the Editor's existing readiness budget, not the native Host connection gate.
+  // the Preview's existing readiness budget, not the native Host connection gate.
   await view.getByRole('status', { name: /ForgeaX Host (\u5df2\u8fde\u63a5|connected)/ })
-    .waitFor({ timeout: Math.max(1, initialEditorDeadline - performance.now()) });
+    .waitFor({ timeout: Math.max(1, initialPreviewDeadline - performance.now()) });
   const playCycle = async (cycle) => {
     const playStarted = performance.now();
     await view.getByRole('button', { name: 'Play', exact: true }).click();
-    const play = view.locator('iframe[data-forgeax-editor-play]');
+    const play = view.locator('iframe[data-forgeax-scene-play]');
     // Presentation stays transparent until native readiness; observe startup while attached.
     await play.waitFor({ state: 'attached' });
     assert.ok((await play.getAttribute('src')) === null, 'Hosted Play must not navigate loopback');
-    const playFrame = view.frameLocator('iframe[data-forgeax-editor-play]');
+    const playFrame = view.frameLocator('iframe[data-forgeax-scene-play]');
     const playHtml = playFrame.locator('html');
     const deadline = performance.now() + 180000;
     while (Number(await playHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
@@ -228,11 +228,11 @@ try {
         join(evidence, 'runtime-vase'), options => page.screenshot(options)) });
     }
     const placement = await play.evaluate(element => ({
-      hidden: element.hidden, editorTarget: element.dataset.forgeaxMcpEditor,
+      hidden: element.hidden, previewTarget: element.dataset.forgeaxMcpPreview,
       width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height,
     }));
     assert.equal(placement.hidden, false);
-    assert.equal(placement.editorTarget, undefined, 'Editor must not acquire the Play document');
+    assert.equal(placement.previewTarget, undefined, 'Preview must not acquire the Play document');
     assert.ok(placement.width > 0 && placement.height > 0);
     await page.screenshot({ path: join(evidence, `play-${cycle}.png`) });
     await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
@@ -251,8 +251,8 @@ try {
   // Scene readiness has its own budget; the preceding Play journey is independent.
   const sceneDeadline = performance.now() + 180000;
   targetId = await view
-    .locator('iframe[data-forgeax-mcp-editor]')
-    .getAttribute('data-forgeax-mcp-editor');
+    .locator('iframe[data-forgeax-mcp-preview]')
+    .getAttribute('data-forgeax-mcp-preview');
   if (!(await view.getByTestId('panel-content-browser').isVisible()))
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
   await view.getByRole('button', { name: 'assets', exact: true }).first().click();
@@ -270,28 +270,28 @@ try {
   await sceneCard.dblclick();
   await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
   targetId = await view
-    .locator('iframe[data-forgeax-mcp-editor]')
-    .getAttribute('data-forgeax-mcp-editor');
+    .locator('iframe[data-forgeax-mcp-preview]')
+    .getAttribute('data-forgeax-mcp-preview');
   assert.ok(targetId);
   const completeFrames = async (frameDeadline = performance.now() + 180000) => {
-    const editor = view.frameLocator('iframe[data-forgeax-mcp-editor]');
-    const editorHtml = editor.locator('html');
+    const preview = view.frameLocator('iframe[data-forgeax-mcp-preview]');
+    const previewHtml = preview.locator('html');
     // Match the maintained game-3d gate: observe completed frames without adding
     // GPU readbacks and multi-megabyte transport to every progress sample.
-    while (Number(await editorHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
-      await assertNoRuntimeFailure(editor, 'Editor', errors, consoleErrors);
+    while (Number(await previewHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
+      await assertNoRuntimeFailure(preview, 'Preview', errors, consoleErrors);
       assert.ok(performance.now() < frameDeadline, 'The real Renderer must complete at least 60 frames');
       await page.waitForTimeout(50);
     }
-    assert.ok(performance.now() < frameDeadline, 'Editor readiness must remain within its 180-second budget');
-    await assertNoRuntimeFailure(editor, 'Editor', errors, consoleErrors);
+    assert.ok(performance.now() < frameDeadline, 'Preview readiness must remain within its 180-second budget');
+    await assertNoRuntimeFailure(preview, 'Preview', errors, consoleErrors);
   };
   await completeFrames(sceneDeadline);
   const capture = await cli('view workspace preview capture', { targetId, targetGeneration: 1 });
   assert.ok(capture.frameId >= 60, 'The real Renderer must complete at least 60 frames');
   assert.ok(capture.png?.startsWith('data:image/png;base64,'));
   await writeFile(join(evidence, 'scene.png'), Buffer.from(capture.png.split(',')[1], 'base64'));
-  records.push({ scenePixels: await assertScenePixels(page, capture.png, 'Editor scene') });
+  records.push({ scenePixels: await assertScenePixels(page, capture.png, 'Preview scene') });
   await page.getByRole('button', { name: 'Dark', exact: true }).click();
   await view.locator('html[data-theme="dark"]').waitFor();
   if (!(await view.getByTestId('panel-content-browser').isVisible()))
@@ -314,13 +314,13 @@ try {
     'The isolated HTML preview must render its companion stylesheet');
   assert.equal(await view.getByTestId('html-ui-inspector').locator('[role="alert"]').count(), 0);
   await page.screenshot({ path: join(evidence, 'html.png') });
-  await view.getByRole('tab', { name: 'Scene', exact: true }).click();
+  await view.locator('[role="tab"][data-page-id="page-scene"]').click();
   await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
   await page.screenshot({ path: join(evidence, 'view.png') });
   await playCycle(1);
   await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
   await view.getByRole('button', { name: 'Play', exact: true }).click();
-  const preparingPlay = view.locator('iframe[data-forgeax-editor-play]');
+  const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
   await preparingPlay.waitFor();
   assert.equal(await preparingPlay.getAttribute('srcdoc'), null, 'The adopted Stop probe holds document delivery');
   // The published target is adopted: its owner retains presentation through
@@ -328,27 +328,27 @@ try {
   const preparingStopStarted = performance.now();
   await view.getByRole('button', { name: 'Stop', exact: true }).click();
   await view.getByRole('button', { name: 'Game', exact: true }).waitFor();
-  assert.equal(await view.locator('iframe[data-forgeax-mcp-editor]').evaluate(element => element.hidden), true,
-    'Editor rendering must stay paused while adopted Play startup is draining');
+  assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').evaluate(element => element.hidden), true,
+    'Preview rendering must stay paused while adopted Play startup is draining');
   await preparingPlay.waitFor({ state: 'detached', timeout: 120000 });
   records.push({ adoptedStopMs: Math.round(performance.now() - preparingStopStarted) });
   await view.getByRole('button', { name: 'Play', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Reopen View', exact: true }).click();
   await page.locator('#opened').filter({ hasText: 'http' }).waitFor();
-  assert.equal(await view.locator('iframe[data-forgeax-mcp-editor]').getAttribute('data-forgeax-mcp-editor'), targetId,
+  assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview'), targetId,
     'reopening the same View must retain the existing document and Engine target');
   const previousTargetId = targetId;
   const previousUrl = await page.locator('#opened').innerText();
   console.error('MCP App stage: initial scene and reopening passed');
-  await assertNoRuntimeFailure(view.frameLocator('iframe[data-forgeax-mcp-editor]'), 'Editor before backend replacement', errors, consoleErrors);
+  await assertNoRuntimeFailure(view.frameLocator('iframe[data-forgeax-mcp-preview]'), 'Preview before backend replacement', errors, consoleErrors);
   // Backend retirement deliberately produces connection failures. Observe the
   // replacement independently once its native Host has connected.
   replacingBackend = true;
   await page.getByRole('button', { name: 'Restart backend', exact: true }).click();
   await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
-  await view.locator(`iframe[data-forgeax-mcp-editor]:not([data-forgeax-mcp-editor="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
+  await view.locator(`iframe[data-forgeax-mcp-preview]:not([data-forgeax-mcp-preview="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
   await view.getByRole('status', { name: /ForgeaX Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });
-  targetId = await view.locator('iframe[data-forgeax-mcp-editor]').getAttribute('data-forgeax-mcp-editor');
+  targetId = await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview');
   assert.notEqual(targetId, previousTargetId, 'a backend replacement must admit a fresh Engine target');
   replacingBackend = false;
   if (!(await view.getByTestId('panel-content-browser').isVisible()))
@@ -361,7 +361,7 @@ try {
   const recoveredCapture = await cli('view workspace preview capture', { targetId, targetGeneration: 1 });
   assert.ok(recoveredCapture.frameId >= 60);
   await writeFile(join(evidence, 'scene-after-restart.png'), Buffer.from(recoveredCapture.png.split(',')[1], 'base64'));
-  records.push({ scenePixels: await assertScenePixels(page, recoveredCapture.png, 'Recovered Editor scene') });
+  records.push({ scenePixels: await assertScenePixels(page, recoveredCapture.png, 'Recovered Preview scene') });
   await view.locator('html[data-theme="dark"]').waitFor();
   records.push({ backendRestart: { previousTargetId, targetId, frameId: recoveredCapture.frameId } });
   await page.getByRole('button', { name: 'Close App', exact: true }).click();

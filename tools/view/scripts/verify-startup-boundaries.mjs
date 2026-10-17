@@ -110,14 +110,14 @@ try {
   });
   await page.goto(state.url);
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 30_000 });
-  await page.locator('[role="tab"][data-page-id="page-editor"]').click();
+  await page.locator('[role="tab"][data-page-id="page-scene"]').click();
   await page.getByRole('button', { name: 'Open project', exact: true }).waitFor();
   assert.equal(await page.locator('canvas').count(), 0);
   const openDialog = page.getByRole('dialog', { name: 'Open project', exact: true });
   await openDialog.waitFor();
   assert.equal(await openDialog.evaluate(dialog => dialog.matches(':modal')), false,
     'project admission must leave workspace navigation available');
-  await page.locator('[role="tab"][data-page-id="page-editor"]').click();
+  await page.locator('[role="tab"][data-page-id="page-scene"]').click();
   await page.keyboard.press('Escape');
   assert.equal(await openDialog.isVisible(), true, 'View requires a project before using its pages');
   await page.screenshot({ path: '/tmp/view-startup-empty.png' });

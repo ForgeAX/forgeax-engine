@@ -1,5 +1,11 @@
-import { parseScenePayload } from '@forgeax/engine-assets-runtime';
-import { externalizeSceneAsset } from '@forgeax/engine-scene';
+import {
+  AssetRegistry,
+  parseScenePayload,
+  resolveAssetHandle,
+} from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
+import { externalizeSceneAsset, Transform } from '@forgeax/engine-scene';
+import type { Handle, IesProfileAsset, TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { LightProbe, RectAreaLight, SpotLight } from '../components';
 
@@ -66,24 +72,54 @@ describe('lighting scene payload roundtrip', () => {
       'entity-7': {
         components: {
           RectAreaLight: { color: [1, 0.5, 0.25], intensity: 12, width: 2, height: 3, range: 8 },
-          LightProbe: { irradiance: new Float32Array(27).fill(0.25), radius: 4 },
+          LightProbe: { irradiance: Array(27).fill(0.25), radius: 4 },
           SpotLight: { direction: [0, -1, 0], iesProfile: 0, cookie: 1, rollDeg: 360 },
           Transform: { scale: [2, 3, 4] },
         },
       },
     });
-    const parsed = parseScenePayload(externalized.value.payload, [IES_GUID, COOKIE_GUID]);
-    expect(parsed).toMatchObject({
+    const parsed = parseScenePayload(JSON.parse(JSON.stringify(externalized.value.payload)), [
+      IES_GUID,
+      COOKIE_GUID,
+    ]);
+    if (parsed === undefined) throw new Error('expected a structural Scene payload');
+    const world = new World();
+    for (const component of [RectAreaLight, SpotLight, LightProbe, Transform])
+      world.components.register(component).unwrap();
+    const registry = new AssetRegistry({} as never);
+    const profile: IesProfileAsset = { kind: 'ies-profile', data: new Uint8Array(256 * 128 * 2) };
+    const cookie: TextureAsset = {
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+      format: 'rgba8unorm',
+      data: new Uint8Array([255, 255, 255, 255]),
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+    };
+    registry.catalog(IES_GUID, profile).unwrap();
+    registry.catalog(COOKIE_GUID, cookie).unwrap();
+    const sceneGuid = '019ffa97-4000-7000-8000-000000000005';
+    registry.catalog(sceneGuid, parsed, externalized.value.refs).unwrap();
+    const bound = registry._resolveSceneGuids(parsed, world, sceneGuid).unwrap();
+    expect(bound).toMatchObject({
       kind: 'scene',
       entities: {
         'entity-7': {
           components: {
-            SpotLight: { iesProfile: IES_GUID, cookie: COOKIE_GUID, rollDeg: 360 },
+            SpotLight: { rollDeg: 360 },
             Transform: { scale: [2, 3, 4] },
           },
         },
       },
     });
+    const fields = bound.entities['entity-7']?.components.SpotLight;
+    if (fields === undefined) throw new Error('expected bound SpotLight fields');
+    const iesHandle = fields.iesProfile as Handle<'IesProfileAsset', 'shared'>;
+    const cookieHandle = fields.cookie as Handle<'TextureAsset', 'shared'>;
+    expect(resolveAssetHandle(world, iesHandle).unwrap()).toBe(profile);
+    expect(resolveAssetHandle(world, cookieHandle).unwrap()).toBe(cookie);
+    world.sharedRefs.release(iesHandle).unwrap();
+    world.sharedRefs.release(cookieHandle).unwrap();
   });
 
   it('keeps absent Spot handles absent instead of creating refs', () => {

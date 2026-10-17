@@ -34,10 +34,10 @@ test('all realm connections share one tick and slow reads cannot accumulate', as
   }, 'transport');
   for (let tick = 0; tick < 3; tick++)
     assert.deepEqual(
-      (await Promise.all(['view', 'editor', 'worker'].map((id) => poll.read(id)))).map(
+      (await Promise.all(['view', 'preview', 'worker'].map((id) => poll.read(id)))).map(
         (value) => value.structuredContent.id,
       ),
-      ['view', 'editor', 'worker'],
+      ['view', 'preview', 'worker'],
     );
   assert.equal(calls, 3);
   assert.deepEqual(counts, [3, 3, 3]);

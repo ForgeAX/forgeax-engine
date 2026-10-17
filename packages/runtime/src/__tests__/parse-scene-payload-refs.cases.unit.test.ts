@@ -400,345 +400,83 @@ type __MergedKeep =
   | MaterialPass
   | SamplerAsset;
 
-{
-  // --- from parse-scene-payload-refs.test.ts ---
-  /** Access the private parseAssetPayload method via structural view-cast. */
-  function accessParseScenePayload(reg: AssetRegistry) {
-    // biome-ignore lint/suspicious/noExplicitAny: private method access for unit test
-    const internal = reg as any as {
-      parseAssetPayload(kind: string, payload: Record<string, unknown>, refs?: string[]): unknown;
+describe('Scene wire loading and World-local schema binding', () => {
+  it('preserves component fields without guessing asset references from names', () => {
+    const payload = {
+      entities: {
+        root: {
+          components: {
+            MeshFilter: { assetHandle: 0 },
+            MeshRenderer: { materials: [null, 0] },
+            Custom: { mesh: 13, density: 1, material: 'text', optional: null },
+          },
+        },
+      },
     };
-    return (
-      kind: string,
-      payload: Record<string, unknown>,
-      refs?: string[],
-    ): SceneAsset | undefined => {
-      const result = internal.parseAssetPayload(kind, payload, refs);
-      if (result === undefined) return undefined;
-      if (
-        typeof result === 'object' &&
-        result !== null &&
-        'kind' in result &&
-        result.kind === 'scene'
-      ) {
-        return result as SceneAsset;
-      }
-      return undefined;
-    };
-  }
-
-  const GUID_A = 'cbe42beb-8975-5096-b3a1-3dda4cb4c077';
-  const GUID_B = 'f6af7007-158f-4d92-9e47-93bf2f213e1f';
-
-  describe('w1 - parseScenePayload refs normal paths (AC-01)', () => {
-    it('replaces number field values with refs[N] GUID string', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A, GUID_B];
-      const payload = {
-        entities: {
-          'entity-0': {
-            components: {
-              MeshFilter: { assetHandle: 0 },
-              MeshRenderer: { materials: [1] },
-            },
-          },
-        },
-      };
-      const asset = fn('scene', payload, refs);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      expect(asset.kind).toBe('scene');
-      expect(Object.keys(asset.entities).length).toBe(1);
-      const comp = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      expect(comp.MeshFilter?.assetHandle).toBe(GUID_A); // refs[0]
-      expect(comp.MeshRenderer?.materials).toEqual([GUID_B]); // refs[1]
-    });
-
-    it('replaces refs index 0 (valid zero-index)', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A];
-      const payload = {
-        entities: { 'entity-0': { components: { MeshFilter: { assetHandle: 0 } } } },
-      };
-      const asset = fn('scene', payload, refs);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      const comp = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      expect(comp.MeshFilter?.assetHandle).toBe(GUID_A);
-    });
-
-    it('keeps non-integer number fields unchanged (float values are not refs indices)', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A];
-      const payload = {
-        entities: {
-          'entity-0': {
-            components: {
-              Transform: { pos: [1.5, 2.7, -3.2] },
-              DirectionalLight: { color: 'white', intensity: 0.8 },
-            },
-          },
-        },
-      };
-      const asset = fn('scene', payload, refs);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      const comp = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      // Non-integer float values are not refs indices — passed through unchanged.
-      expect(comp.Transform?.pos).toEqual([1.5, 2.7, -3.2]);
-      expect(comp.DirectionalLight?.color).toBe('white');
-      expect(comp.DirectionalLight?.intensity).toBe(0.8);
-    });
-
-    it('keeps non-handle integer fields unchanged (Transform posX=0, ChildOf.parent=0)', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A];
-      const payload = {
-        entities: {
-          'entity-0': {
-            components: {
-              ChildOf: { parent: 'entity-0' },
-              Transform: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
-              MeshFilter: { assetHandle: 0 },
-            },
-          },
-        },
-      };
-      const asset = fn('scene', payload, refs);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      const comp = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      // Non-handle integer fields are kept as-is (M1-fixup F-1)
-      expect(comp.ChildOf?.parent).toBe('entity-0');
-      expect(comp.Transform?.pos).toEqual([0, 0, 0]);
-      expect(comp.Transform?.quat).toEqual([0, 0, 0, 1]);
-      expect(comp.Transform?.scale).toEqual([1, 1, 1]);
-      // Handle fields are replaced with GUID strings
-      expect(comp.MeshFilter?.assetHandle).toBe(GUID_A);
-    });
-
-    it('multiple nodes all resolve refs correctly', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A, GUID_B];
-      const payload = {
-        entities: {
-          'entity-0': { components: { MeshFilter: { assetHandle: 0 } } },
-          'entity-1': { components: { MeshFilter: { assetHandle: 1 } } },
-          'entity-2': { components: { MeshRenderer: { materials: [0] } } },
-        },
-      };
-      const asset = fn('scene', payload, refs);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      expect(Object.keys(asset.entities).length).toBe(3);
-      const comp0 = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      const comp1 = asset.entities['entity-1']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      const comp2 = asset.entities['entity-2']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      expect(comp0.MeshFilter?.assetHandle).toBe(GUID_A);
-      expect(comp1.MeshFilter?.assetHandle).toBe(GUID_B);
-      expect(comp2.MeshRenderer?.materials).toEqual([GUID_A]);
+    expect(sceneLoader.load(payload, ['asset-guid'], {} as never)).toEqual({
+      kind: 'scene',
+      ...payload,
     });
   });
 
-  describe('w2 - parseScenePayload refs error paths (AC-02, AC-08)', () => {
-    it('returns undefined when refs index is out of bounds (N >= refs.length)', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A]; // length=1, valid indices: 0 only
-      const payload = {
-        entities: { 'entity-0': { components: { MeshFilter: { assetHandle: 1 } } } },
-      };
-      const result = fn('scene', payload, refs);
-      expect(result).toBeUndefined();
+  it('still resolves Scene-owned instance and skin indexes without a component registry', () => {
+    expect(
+      sceneLoader.load(
+        { entities: { root: { components: {}, instance: { source: 0 } } }, skinGuids: [1] },
+        ['scene-guid', 'skin-guid'],
+        {} as never,
+      ),
+    ).toMatchObject({
+      entities: { root: { instance: { source: 'scene-guid' } } },
+      skinGuids: ['skin-guid'],
     });
+    expect(
+      sceneLoader.load(
+        { entities: { root: { components: {}, instance: { source: 4 } } } },
+        ['scene-guid'],
+        {} as never,
+      ),
+    ).toBeUndefined();
+  });
 
-    it('returns undefined when refs is empty and handle field references index 0', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs: string[] = [];
-      const payload = {
-        entities: { 'entity-0': { components: { MeshFilter: { assetHandle: 0 } } } },
-      };
-      const result = fn('scene', payload, refs);
-      expect(result).toBeUndefined();
-    });
-
-    it('stops on first error (AC-08): only first out-of-bounds node triggers failure', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A]; // length=1
-      const payload = {
+  it.each([
+    'shared<MaterialAsset>',
+    'array<shared<MaterialAsset>>',
+    'array<shared<MaterialAsset>, 2>',
+  ] as const)('reports invalid references when the World supplies the custom %s schema', (type) => {
+    const reg = new AssetRegistry(makeMockShaderRegistry());
+    const world = new World();
+    const Custom = defineComponent('RuntimeReflectedWire', { arbitrary: type });
+    world.components.register(Custom).unwrap();
+    const guid = '00000000-0000-7000-8000-000000000099';
+    const value = type.startsWith('array<') ? [0, 5] : 5;
+    const scene = sceneLoader.load(
+      {
         entities: {
-          'entity-0': { components: { MeshFilter: { assetHandle: 1 } } },
-          'entity-1': { components: { MeshFilter: { assetHandle: 0 } } },
-        },
-      };
-      // parseScenePayload returns undefined on first error, so result is undefined
-      // regardless of the second node's validity
-      const result = fn('scene', payload, refs);
-      expect(result).toBeUndefined();
-    });
-
-    it('returns undefined when index is negative', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A];
-      const payload = {
-        entities: { 'entity-0': { components: { MeshFilter: { assetHandle: -1 } } } },
-      };
-      const result = fn('scene', payload, refs);
-      expect(result).toBeUndefined();
-    });
-
-    it('backward compat: parseScenePayload without refs returns SceneAsset with numbers unchanged', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const payload = {
-        entities: {
-          'entity-0': {
+          root: {
             components: {
-              MeshFilter: { assetHandle: 42 },
-              MeshRenderer: { materials: [1024] },
+              [Custom.name]: { arbitrary: value },
             },
           },
         },
-      };
-      // No refs passed -- old call signature, numbers should pass through
-      const asset = fn('scene', payload);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      const comp = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      expect(comp.MeshFilter?.assetHandle).toBe(42);
-      expect(comp.MeshRenderer?.materials).toEqual([1024]);
-    });
-
-    it('ignores all integer fields without refs and keeps them as-is (non-handle integers)', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const fn = accessParseScenePayload(reg);
-      const refs = [GUID_A];
-      const payload = {
-        entities: {
-          'entity-0': {
-            components: { Transform: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-          },
+      },
+      ['asset-guid'],
+      {} as never,
+    ) as SceneAsset;
+    reg.catalog(guid, scene, [{ guid: '11111111-1111-4111-8111-111111111111' }]).unwrap();
+    expect(reg._resolveSceneGuids(scene, world, guid)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-parse-failed',
+        detail: {
+          entityKey: 'root',
+          component: Custom.name,
+          field: type.startsWith('array<') ? 'arbitrary[1]' : 'arbitrary',
+          index: 5,
+          refsLength: 1,
         },
-      };
-      const asset = fn('scene', payload, refs);
-      expect(asset).toBeDefined();
-      if (!asset) return;
-      const comp = asset.entities['entity-0']?.components as Record<
-        string,
-        Record<string, unknown>
-      >;
-      // M1-fixup F-1: non-handle integer fields (Transform) are preserved as-is.
-      // Only fields in the HANDLE_FIELD_NAMES allowlist get refs resolution.
-      expect(comp.Transform?.pos).toEqual([0, 0, 0]);
-      expect(comp.Transform?.quat).toEqual([0, 0, 0, 1]);
-      expect(comp.Transform?.scale).toEqual([1, 1, 1]);
+      },
     });
+    expect(world.inspect().entityCount).toBe(0);
   });
-
-  describe('w2 - fetchPackFile wrapping produces AssetError for failed parse', () => {
-    it('loadByGuid returns asset-parse-failed when scene refs index is out of bounds', async () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      const guid = AssetGuid.parse('00000000-0000-7000-8000-000000000099');
-      if (!guid.ok) throw new Error('expected ok');
-
-      // Register a pack file with a scene containing out-of-bounds refs.
-      // parseAssetPayload returns { ok: false, error }, then fetchPackFile
-      // wraps it as asset-parse-failed.
-      const badPayload = {
-        entities: { 'entity-0': { components: { MeshFilter: { assetHandle: 5 } } } },
-      };
-      const packEntry = {
-        guid: '00000000-0000-7000-8000-000000000099',
-        kind: 'scene',
-        payload: badPayload,
-        refs: [
-          'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-          '11111111-2222-3333-4444-555555555555',
-          'ffffffff-gggg-hhhh-iiii-jjjjjjjjjjjj',
-        ],
-      };
-
-      // registerWithGuid wraps the raw pack entry lookup — loadByGuid dev path
-      // directly hits the guid->handle map without fetchPackFile. We verify
-      // the parse failure through the parseAssetPayload structural access
-      // (the fetchPackFile path is an integration concern for smoke tests).
-      // For unit test: use loadByGuid's dev path which registers a
-      // scene asset directly. When we call parseAssetPayload with the
-      // bad refs, it returns undefined, which would become asset-parse-failed
-      // through fetchPackFile.
-      // biome-ignore lint/suspicious/noExplicitAny: private method access
-      const internal = reg as any as {
-        parseAssetPayload(kind: string, payload: Record<string, unknown>, refs?: string[]): unknown;
-      };
-      // F21: scene refs out-of-bounds returns the structured error inline via
-      // the LoaderOutput { ok: false, error } arm (no instance-slot side effect).
-      const result = internal.parseAssetPayload('scene', badPayload, packEntry.refs) as {
-        ok: false;
-        error: { entityKey: string; index: number; refsLength: number };
-      };
-      expect(result.ok).toBe(false);
-      expect(result.error.index).toBe(5);
-    });
-
-    it('parseScenePayload returns structured ParseSceneError on refs out-of-bounds (F-2 / AC-02)', () => {
-      const reg = new AssetRegistry(makeMockShaderRegistry());
-      // biome-ignore lint/suspicious/noExplicitAny: private method access
-      const internal = reg as any;
-      const badPayload = {
-        entities: { 'entity-42': { components: { MeshFilter: { assetHandle: 5 } } } },
-      };
-      const refs = ['guid-a', 'guid-b']; // length=2, 5 is out of bounds
-      // F21: the structured error is the return value's `error` field, not a
-      // shared instance slot.
-      const result = internal.parseAssetPayload('scene', badPayload, refs) as {
-        ok: false;
-        error: {
-          entityKey: string;
-          component: string;
-          field: string;
-          index: number;
-          refsLength: number;
-        };
-      };
-      expect(result.ok).toBe(false);
-      const err = result.error;
-      expect(err.entityKey).toBe('entity-42');
-      expect(err.component).toBe('MeshFilter');
-      expect(err.field).toBe('assetHandle');
-      expect(err.index).toBe(5);
-      expect(err.refsLength).toBe(2);
-    });
-  });
-}
+});

@@ -275,6 +275,7 @@ export interface BuildAppArgs {
     readonly frameId: number;
     readonly deviceGeneration: number;
     readonly presentation: import('@forgeax/engine-render').FramePresentation;
+    readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
     readonly worldIdentity?: string;
   }) => void;
 }
@@ -396,6 +397,9 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
           // presentation. If a legacy adapter omits it, do not turn an
           // unproven frame into startup success.
           presentation: receipt.presentation ?? 'pending',
+          ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
+            ? {}
+            : { presentationPendingReason: receipt.presentationPendingReason }),
           worldIdentity: world.identity,
         }),
     });

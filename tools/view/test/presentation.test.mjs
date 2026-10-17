@@ -10,8 +10,8 @@ import { workspaceCoreCliContributions } from '../packages/view-workspace-core/s
 const disposers = [];
 afterEach(async () => { while (disposers.length) await disposers.pop()(); });
 function snapshot(title = 'Scene') {
-  return { shellState: 'mounted', activePageId: 'page-editor', pages: [{ id: 'page-editor', typeId: 'editor', title, closable: false }],
-    pageTypes: [{ typeId: 'editor', title: 'Scene', openable: false }], panels: [],
+  return { shellState: 'mounted', activePageId: 'page-scene', pages: [{ id: 'page-scene', typeId: 'scene', title, closable: false }],
+    pageTypes: [{ typeId: 'scene', title: 'Scene', openable: false }], panels: [],
     hasMorePages: false, hasMorePageTypes: false, hasMorePanels: false,
     appearance: { theme: 'dark', preference: 'system', language: 'en' } };
 }
@@ -69,7 +69,7 @@ it('targets one document, rejects ambiguity and prevents frontend cross-document
   assert.equal(pages.pages.length, 2);
   assert.equal((await cli.call('presentation.get', { connectionId: second.connection.caller.connectionId })).pages[0].title, 'Second');
   assert.equal((await first.call('presentation.get')).pages[0].title, 'First');
-  await assert.rejects(first.call('presentation.page.close', { connectionId: second.connection.caller.connectionId, pageId: 'page-editor' }), error => error.code === 'view-presentation-page-denied');
+  await assert.rejects(first.call('presentation.page.close', { connectionId: second.connection.caller.connectionId, pageId: 'page-scene' }), error => error.code === 'view-presentation-page-denied');
   second.connection.close();
   await assert.rejects(cli.call('presentation.get', { connectionId: second.connection.caller.connectionId }), error => error.code === 'view-page-gone');
 });
@@ -165,7 +165,7 @@ it('retiring a native Shell lease cancels its owner and cannot acknowledge stale
     await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
     return snapshot('Retired Shell');
   });
-  const request = host.callPresentation('presentation.page.select', { pageId: 'page-editor' }, new AbortController().signal);
+  const request = host.callPresentation('presentation.page.select', { pageId: 'page-scene' }, new AbortController().signal);
   const rejected = assert.rejects(request, error => error.code === 'view-presentation-retired');
   await started; detach();
   const dispose = host.attachPresentation(() => snapshot('New Shell'));

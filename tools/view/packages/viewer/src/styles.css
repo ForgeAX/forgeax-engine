@@ -1130,7 +1130,7 @@ body {
   will-change: auto;
 }
 
-/* The Editor viewport only presents the Engine surface; Shell owns page chrome. */
+/* The Scene viewport only presents the Engine surface; Shell owns page chrome. */
 .fx-view-viewport-surface,
 .fx-view-viewport-surface [data-forgeax-view-workspace="root"],
 .fx-view-viewport-surface [data-forgeax-view-workspace="workbench"],

@@ -57,7 +57,7 @@ describe('attachViewportRenderResizeSync', () => {
       return Promise.resolve({});
     } };
     const detach = attachPreviewRenderResizeSync({ api, surface: { clientWidth: 400, clientHeight: 300 },
-      target: { targetId: 'editor', generation: 1 }, debounceMs: 0 });
+      target: { targetId: 'scene', generation: 1 }, debounceMs: 0 });
     try {
       await new Promise(done => setTimeout(done, 20));
       assert.equal(calls, 1);
@@ -113,7 +113,7 @@ describe('attachViewportRenderResizeSync', () => {
         return Promise.resolve({ target: { width: args.width, height: args.height } });
       },
     };
-    const target = { targetId: 'editor-target', generation: 1, width: 1280, height: 720 };
+    const target = { targetId: 'scene-target', generation: 1, width: 1280, height: 720 };
     const host = {
       clientWidth: 960,
       clientHeight: 540,
@@ -150,7 +150,7 @@ describe('attachViewportRenderResizeSync', () => {
       assert.equal(calls.length, 1);
       assert.deepEqual(calls[0], {
         tabId: 'forgeax-user-workspace',
-        targetId: 'editor-target',
+        targetId: 'scene-target',
         targetGeneration: 1,
         width: 960,
         height: 540,

@@ -51,7 +51,7 @@ it('rejects implicit browser execution options before reaching the backend', asy
   }
 });
 
-it('rejects project open without an editor project path', async () => {
+it('rejects project open without a project path', async () => {
   const result = await executor.projectOpen({ root: '/tmp/workspace' });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'view-project-required');

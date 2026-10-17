@@ -39,6 +39,7 @@ import type {
   RendererLostListener,
   RenderFrameInput,
   RenderInspection,
+  RenderPreparationSchedule,
   RenderProfile,
   RenderResult,
   RenderWorldLease,
@@ -75,6 +76,10 @@ export type RendererHostEventListener = (event: RendererHostEvent) => void;
  * the public Renderer type.
  */
 export interface RendererHostImplementation {
+  prepareDynamicGeometryPipelines(
+    candidates: readonly DynamicGeometryCandidate[],
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<Result<void, DynamicGeometryError>>;
   /** Publish one renderer-owned read-only Surface dynamic page for the next frame. */
   setSurfaceDynamicInput(frame: SurfaceDynamicInputFrame | undefined): void;
   attach(world: World): RenderResult<RenderWorldLease, RenderError>;
@@ -88,6 +93,8 @@ export interface RendererHostImplementation {
   /** Prepare source-namespaced Mesh buffers and wait for physical queue completion. */
   preparePublishedMeshResidency(
     input: PublishedMeshPreparation,
+    inputOwnership?: 'received',
+    options?: { readonly signal?: AbortSignal },
   ): Promise<Result<PreparedPublishedMeshResidency, RenderPublicationError | MeshResidencyError>>;
   prepareMeshResidency(
     world: World,
@@ -149,7 +156,7 @@ export interface RendererHostImplementation {
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
   /** Direct read of the active device owner, independent of diagnostic projections. */
   currentDeviceGeneration?: () => number;
-  inspect(): RenderInspection;
+  inspect(options?: { readonly pipelineLibrary?: boolean }): RenderInspection;
   /**
    * Internal bounded inspection for high-cardinality producers. The public
    * snapshot also carries the full persistent render-scene record table, which
@@ -162,10 +169,17 @@ export interface RendererHostImplementation {
   drawFrame(
     request: RenderFrameInput | PublishedRenderFrameInput,
   ): RenderResult<FrameReceipt, RhiError | RenderError>;
+  drawFrameScheduled?: (
+    request: PublishedRenderFrameInput,
+    schedule: RenderPreparationSchedule,
+  ) => Promise<RenderResult<FrameReceipt, RhiError | RenderError>>;
   /** Arm one upcoming frame for receipt-bound color observations. */
   requestObservation?: (
     domains: readonly import('../render-contract').FrameObservationDomain[],
   ) => RenderResult<void, RenderError>;
+  observeGeometry?: (
+    receipt: FrameReceipt,
+  ) => Promise<import('../geometry-observation').GeometryObservation>;
   observe(
     receipt: FrameReceipt,
     request: FrameObservationRequest,

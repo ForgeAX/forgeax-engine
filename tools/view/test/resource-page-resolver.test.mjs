@@ -100,7 +100,7 @@ describe('PageType resource selector', () => {
     const host = createViewPageHost({ registry });
     host.registerType(pageType({
       context: 'project',
-      typeId: 'editor',
+      typeId: 'scene',
       openable: false,
       resourceSelector: { kinds: ['scene'] },
       priority: 10,
@@ -126,7 +126,7 @@ describe('PageType resource selector', () => {
     }));
     assert.equal(resolveResourcePageType(registry.getTypes(), { kind: 'mesh' }).pageType.typeId, 'mesh');
     assert.equal(resolveResourcePageType(registry.getTypes(), { kind: 'image' }).pageType.typeId, 'texture');
-    assert.equal(resolveResourcePageType(registry.getTypes(), { kind: 'scene' }).pageType.typeId, 'editor');
+    assert.equal(resolveResourcePageType(registry.getTypes(), { kind: 'scene' }).pageType.typeId, 'scene');
     assert.equal(resolveResourcePageType(registry.getTypes(), { kind: 'curve' }).pageType.typeId, 'asset');
   });
 });

@@ -20,6 +20,12 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import {
+  decodeGeometryCommands,
+  decodeGeometryView,
+  GEOMETRY_OBSERVATION_MAX_BYTES,
+  type GeometryCommandCapture,
+} from '../geometry-observation';
 import type { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS, gpuSceneWgsl } from '../gpu-scene-schema';
 import {
@@ -1477,6 +1483,9 @@ export class GpuDrivenView {
         }),
       );
     }
+    // Preparation may overwrite the same physical buffers without changing
+    // their generation. Only its subsequent submit can rebind receipt identity.
+    this.telemetrySubmit = undefined;
     this.candidateUploadBytes = 0;
     this.suppressionUploadBytes = 0;
     this.batchUploadBytes = 0;
@@ -1544,21 +1553,59 @@ export class GpuDrivenView {
       // ends instead of re-uploading the static roster for a local edit. One
       // aligned interval per table keeps queue work bounded even for scattered
       // changes; a replacement or partial failure always seeds the full table.
-      const write = (buffer: Buffer, bytes: Uint8Array, before: Uint8Array | undefined) => {
+      const write = (
+        buffer: Buffer,
+        bytes: Uint8Array,
+        before: Uint8Array | undefined,
+        candidateRows = false,
+      ) => {
         let start = 0;
         let end = bytes.byteLength / 4;
         if (before !== undefined) {
           const next = new Uint32Array(bytes.buffer, bytes.byteOffset, end);
           const old = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
-          while (start < Math.min(end, old.length) && next[start] === old[start]) start++;
-          while (end > start && end <= old.length && next[end - 1] === old[end - 1]) end--;
+          if (candidateRows && old.length === end) {
+            // Both tables are privately encoded into zeroed ArrayBuffers.
+            // Only the header and authored LOD prefix can differ; unused
+            // fixed-capacity LOD rows stay zero in both generations.
+            const rowWords = CANDIDATE_STRIDE / 4;
+            const activeEnd = (base: number) =>
+              base +
+              12 +
+              Math.max(next[base + 11] ?? 0, old[base + 11] ?? 0) * (LOD_ROW_STRIDE / 4);
+            for (let base = 0; base < end; base += rowWords) {
+              const limit = activeEnd(base);
+              start = base;
+              while (start < limit && next[start] === old[start]) start++;
+              if (start < limit) break;
+              start = base + rowWords;
+            }
+            if (start < end) {
+              for (let base = end - rowWords; base >= 0; base -= rowWords) {
+                let limit = activeEnd(base);
+                while (limit > Math.max(start, base) && next[limit - 1] === old[limit - 1]) limit--;
+                if (limit > Math.max(start, base)) {
+                  end = limit;
+                  break;
+                }
+              }
+            }
+          } else {
+            while (start < Math.min(end, old.length) && next[start] === old[start]) start++;
+            while (end > start && end <= old.length && next[end - 1] === old[end - 1]) end--;
+          }
         }
         const size = (end - start) * 4;
         if (size === 0) return ok(0);
         const written = this.device.queue.writeBuffer(buffer, start * 4, bytes, start * 4, size);
         return written.ok ? ok(size) : written;
       };
-      const candidateWrite = write(buffers.candidates, candidateBytes, previous?.candidateBytes);
+      const candidateWrite = write(
+        buffers.candidates,
+        candidateBytes,
+        previous?.candidateBytes,
+        true,
+      );
       if (!candidateWrite.ok) return candidateWrite;
       const batchWrite = write(buffers.batches, batchBytes, previous?.batchBytes);
       if (!batchWrite.ok) return batchWrite;
@@ -1779,6 +1826,133 @@ export class GpuDrivenView {
     });
     this.lodSelectionReadback = { promise };
     return promise;
+  }
+
+  /** Explicit one-shot diagnostic. Caller keeps the issued frame current until this read completes. */
+  async readGeometryCommands(
+    commands: readonly GeometryCommandCapture[],
+    receipt: { frameId: number; deviceGeneration: number },
+  ) {
+    const buffers = this.buffers,
+      plan = this.plan,
+      submit = this.telemetrySubmit,
+      generation = this.resourceGeneration;
+    const current = () =>
+      this.buffers === buffers &&
+      this.plan === plan &&
+      this.resourceGeneration === generation &&
+      this.telemetrySubmit === submit;
+    if (
+      buffers === undefined ||
+      plan === undefined ||
+      submit?.frameId !== receipt.frameId ||
+      submit.deviceGeneration !== receipt.deviceGeneration
+    )
+      throw Error('receipt-unavailable');
+    if (
+      commands.some(
+        (c) => c.bufferIdentity !== getOpaqueResourceIdentity(buffers.indirect as object),
+      )
+    )
+      throw Error('indirect-buffer-mismatch');
+    const indirectBytes = this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2;
+    const visibleBytes = this.visibleBufferCapacity * 16 * 2;
+    const counterBytes = this.batchCapacity * COUNTER_STRIDE;
+    const viewOffset = indirectBytes + visibleBytes + counterBytes;
+    const size = viewOffset + VIEW_BYTES;
+    if (size > GEOMETRY_OBSERVATION_MAX_BYTES) throw Error('readback-budget');
+    const created = this.device.createBuffer({
+      label: 'geometry-observation-once',
+      size,
+      usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+    });
+    if (!created.ok) throw created.error;
+    let releaseMap: (() => void) | undefined;
+    let decoded:
+      | {
+          commands: ReturnType<typeof decodeGeometryCommands>;
+          viewConstants: ReturnType<typeof decodeGeometryView>;
+        }
+      | undefined;
+    let failure: unknown;
+    try {
+      const encoded = this.device.createCommandEncoder({ label: 'geometry-observation-once' });
+      if (!encoded.ok) throw encoded.error;
+      encoded.value.copyBufferToBuffer(buffers.indirect, 0, created.value, 0, indirectBytes);
+      encoded.value.copyBufferToBuffer(
+        buffers.visible,
+        0,
+        created.value,
+        indirectBytes,
+        visibleBytes,
+      );
+      encoded.value.copyBufferToBuffer(
+        buffers.counters,
+        0,
+        created.value,
+        indirectBytes + visibleBytes,
+        counterBytes,
+      );
+      encoded.value.copyBufferToBuffer(buffers.view, 0, created.value, viewOffset, VIEW_BYTES);
+      const finished = encoded.value.finish();
+      if (!finished.ok) throw finished.error;
+      const sent = this.device.queue.submit([finished.value]);
+      if (!sent.ok) throw sent.error;
+      const result = await created.value.mapAsync(GPU_BUFFER_USAGE_MAP_READ);
+      if (!result.ok) throw result.error;
+      releaseMap = () => result.value.unmap();
+      const range = result.value.getMappedRange();
+      if (!range.ok) throw range.error;
+      if (!current()) throw Error('superseded');
+      const values = new DataView(range.value);
+      const earlyCountOffsets = new Map<string, number>();
+      for (let i = 0; i < plan.batches.length; i++) {
+        const batch = plan.batches[i];
+        if (batch === undefined) throw Error('batch-unavailable');
+        if (values.getUint32(indirectBytes + visibleBytes + i * COUNTER_STRIDE + 4, true) !== 0)
+          throw Error('selector-overflow');
+        for (let level = 0; level < batchLodLevelCount(batch); level++)
+          earlyCountOffsets.set(
+            `${batch.batchId}:${level}`,
+            i * COUNTER_STRIDE + (EARLY_VISIBLE_COUNTER_OFFSET + level) * 4,
+          );
+      }
+      const decodedCommands = decodeGeometryCommands({
+        bytes: values,
+        commands,
+        indirectBytes,
+        visibleBytes,
+        countersOffset: indirectBytes + visibleBytes,
+        earlyCountOffsets,
+        firstInstanceIndirect: this.device.caps.firstInstanceIndirect,
+      });
+      decoded = {
+        commands: decodedCommands,
+        viewConstants: decodeGeometryView(
+          new DataView(range.value, viewOffset, VIEW_BYTES),
+          OCCLUSION_CONSTANTS_OFFSET,
+          OCCLUSION_STATE_OFFSET,
+        ),
+      };
+    } catch (error) {
+      failure = error;
+    } finally {
+      // Always attempt both cleanup operations, preserving the original observation failure.
+      try {
+        releaseMap?.();
+      } catch (error) {
+        failure ??= error;
+      }
+      try {
+        const destroyed = this.device.destroyBuffer(created.value);
+        if (!destroyed.ok) failure ??= destroyed.error;
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    if (failure !== undefined) throw failure;
+    if (decoded === undefined) throw Error('readback-unavailable');
+    return decoded;
   }
 
   /** Shadows consume batch cull counters, not visible-member or Surface observations. */
@@ -2600,7 +2774,7 @@ export class GpuDrivenView {
       {
         name: 'view',
         size: VIEW_BYTES,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
         storage: false,
       },
       {

@@ -1,6 +1,6 @@
 # ForgeaX View
 
-View is an optional project workspace and read-only observer of Engine AI runs.
+View is an optional asset viewer and project workspace and read-only observer of Engine AI runs.
 The CLI and frontend are clients of Engine APIs. The Engine service owns runs,
 project facts, assets, scenes, observation, capture, and termination; View owns
 window resources, tab bindings, and presentation.
@@ -18,7 +18,7 @@ node skills/forgeax-view-start/scripts/start-view.mjs \
   --engine /absolute/path/to/forgeax-engine
 ```
 
-Open its `url` in a browser to load the Editor project. The script leaves the
+Open its `url` in a browser to load the project. The script leaves the
 browser, Play, and independent AI runs to their separate operations. See the
 [skill](skills/forgeax-view-start/SKILL.md#open-a-project-with-one-script) for
 reuse, restart, and failure behavior.
@@ -62,7 +62,7 @@ allocates the project and returns its headed document as `projectTarget.url`;
 open that URL, or leave an already-open empty shell to navigate there.
 Only an unknown project requires the **Open project** dialog. Open a project before using
 any View page, including Runtime capture. `backend start` and `view start` do
-not open an Editor project or run a game. These
+not open a project or run a game. These
 commands do not launch Playwright or install Chromium. Repeat `view start` to
 retrieve the URL of the existing interface.
 
@@ -71,7 +71,7 @@ retrieve the URL of the existing interface.
 | `backend start` | Engine API and declared host plugins are available; no browser or renderer is required |
 | `view start` | View is serving its interface on the existing Engine Host |
 | Open the returned URL | The browser has loaded the Shell and connected its frontend plugins |
-| Open an Editor project | Engine has opened the chosen project; its rendering target has its own readiness and errors |
+| Open a project | Engine has opened the chosen project; its rendering target has its own readiness and errors |
 | Play or start an AI run | An explicit Engine execution target has started |
 
 When the request includes a project path, opening the Shell is only an
@@ -143,7 +143,7 @@ In View, select **Runtime capture** and choose the screenshot source:
 
 | Source | Interaction |
 |:--|:--|
-| **Editor Play** | Displays screenshots of this document's Play target. Start and interact with the game in Scene. Visible capture pages sample about once a second; hidden pages stop sampling. Stop preserves the last image until another Play or project is selected. |
+| **Play** | Displays screenshots of this document's Play target. Start and interact with the game in Scene. Visible capture pages sample about once a second; hidden pages stop sampling. Stop preserves the last image until another Play or project is selected. |
 | **Independent Engine run** | Select **View project run** to discover the open project's current Engine run and pin that exact identity. No project path or run ID needs typing. Cached Engine screenshots refresh at most once every five seconds. |
 
 Screenshots show their capture time and frame number. Logs and runtime identities
@@ -155,9 +155,9 @@ clears the binding and image without stopping the game.
 API/CLI clients can still bind an independent project with exact `{root, runId}`.
 Omitting `runId` in `view.display.bind` discovers the run once through
 `engine.run.observe`; it does not start a run or follow replacements. Opening or
-closing an Editor project does not change an existing independent binding.
+closing a project does not change an existing independent binding.
 
-### Open an Editor project
+### Open a project
 
 With View already started, allocate the project from the command line:
 
@@ -168,7 +168,7 @@ forgeax view project open --root /path/to/workspace --project /path/to/game --js
 Then open the returned `projectTarget.url`. An empty shell that is already
 connected navigates there when the snapshot gains that target. The required
 dialog remains available: enter the **Project path** and select **Open project**. The
-browser opens the Engine-generated workspace document. Editor and asset
+browser opens the Engine-generated workspace document. Scene and asset
 previews use inline Engine surfaces; **Play** explicitly creates the isolated
 game iframe. Hierarchy and Inspector operate on the selected Engine target.
 Opening a project does not start an independent AI run.
@@ -176,7 +176,7 @@ In Content Browser, select a folder or asset and choose **Open**, double-click
 it, or press **Enter**. A single click selects it for inspection. **Preparing
 Play** means Engine is freezing the game's inputs; **Stop** can cancel this
 preparation before a game target appears, or stop the target after it appears.
-Stopping a matching Play immediately returns panel observations to the Editor;
+Stopping a matching Play immediately returns panel observations to the Scene;
 its game document remains owned until Engine acknowledges cleanup. A failed
 stop retains that Engine owner and reports the explicit failure.
 Standalone `.html` project files open in a singleton HTML UI page. Its toolbar
@@ -202,7 +202,7 @@ forgeax backend stop --root /path/to/workspace --json
 
 `view stop` disconnects the interface and releases View plugins; it preserves
 the Engine backend and does not close your browser window. Closing a page loses
-its actual Editor rendering targets, but not the backend or independent AI run.
+its actual Scene rendering targets, but not the backend or independent AI run.
 `backend stop` releases the Engine workspace and its Host. Stop an independent
 run separately with `forgeax engine run stop --root /path/to/game --json`.
 
@@ -322,7 +322,7 @@ selecting a specific output opens the existing Engine preview route. Assets from
 `.pack.ts` show their Catalog `sourceKey` when present; GUIDs remain their
 operation identity. A page-scoped Pack reveal checks project/source revision,
 targets one authenticated frontend connection, and accepts `shown` only after
-the Editor, Content Browser Dock panel and Pack card are visible. Workspace
+the Scene, Content Browser Dock panel and Pack card are visible. Workspace
 selection/open requests and Display run binding belong to that frontend
 connection; disconnect retires its projection and pending reveal.
 Reveal temporarily admits only the addressed Pack through the current filters.
@@ -380,12 +380,12 @@ inspection. World-local handles remain handles; resource names and links require
 an explicit GUID. Material overrides are shown separately from unavailable
 declared-slot/default-material facts, so an empty override array never means
 the mesh has no materials. All preserves the raw component fields. Resource links use the existing
-independent asset pages and do not replace the Editor surface or control runs.
+independent asset pages and do not replace the Scene surface or control runs.
 
 Scene Tree entities offer **Browse to Asset** and **Edit Asset** for direct asset
 references. A resident optional native query plugin resolves held resources to
 Engine Registry identities, including effective material slots, using existing
-Runtime Pack and ToolApi contracts. It runs in the ordinary Editor and writes no
+Runtime Pack and ToolApi contracts. It runs in the ordinary Scene and writes no
 entity data. View and game source require no Engine change. A unique primary is
 available directly; without one, the shortcuts stay disabled and direct users
 to exact Inspector reference fields. Scene Tree has no Related Assets submenu.
@@ -397,7 +397,7 @@ Dedicated pages retain their previews. Other registered assets open generic
 read-only details without creating a hidden preview; resource tabs use asset
 names. Builtins, uncatalogued resources and stale references remain unavailable.
 The service stays resident across panel/selection/tab changes, and cleans only
-its owned plugin and runtime definition when its Editor binding retires.
+its owned plugin and runtime definition when its Scene binding retires.
 Runtime Content omits that exact tooling package and native installation from
 user controls and saved content; Engine's raw queries still report them. New-page
 menus keep their registered type labels while open tabs show asset names. Play
@@ -482,7 +482,7 @@ recent images from an independent Engine run; it contains no execution iframe.
 | Action | Result |
 |:--|:--|
 | Disable a View panel or dispose its native Fiber | Engine domain tools remain callable; independent AI execution is unchanged |
-| Close the View browser | Its Editor target is lost; the independent AI run continues |
+| Close the View browser | Its Scene target is lost; the independent AI run continues |
 | Finish a CLI call | The resident backend and Engine live owner remain running |
 | Stop View explicitly | Dispose View plugins and connections; Engine backend, AI runs and caller-owned browsers survive |
 
@@ -501,13 +501,13 @@ forgeax engine run stop --root /path/to/game --json
 ```
 
 Engine snapshots source, assets, configuration and resolved dependencies before
-starting its private browser, headless by default. Editor edits do not update
+starting its private browser, headless by default. Scene edits do not update
 that run. Stop/start selects a new input version; reload keeps the current
 snapshot. View tabs, focus, dimensions and lifecycle cannot alter execution.
 Observation displays capture time and stale images explicitly; output is bounded
 and shared per run, with no screenshot loop per viewer.
 After closing a browser, reopen the returned View URL. Its project intent opens
-the same project directly. A healthy Editor refresh retains Engine's project,
+the same project directly. A healthy Scene refresh retains Engine's project,
 session and target while the workspace reports restoration. Engine retires the
 old browser's resource previews and Play through their actual cleanup owners,
 then admits the authenticated replacement browser and advances
@@ -694,19 +694,25 @@ against itself being changed or a direct push that bypasses checks.
 
 ### Page plugins and names
 
+Scene assets open the `scene` page (`page-scene` in the Shell). Workspace
+snapshots expose `scenePreview`, and `targetBinding` is `scene` or `play`.
+Material, mesh, texture and other asset pages retain their own previews and
+asset names. Shared form sizing uses `controlRowHeight`; asset panel styles use
+`fx-asset-viewer`. Engine canvas input routes through `preview` or `game`.
+
 Every page is an independent native frontend plugin and Cordis Fiber under
 View's frontend root. Closing a tab only changes presentation.
-Use `createViewProductPlan({ disabledPages: ['editor'] })` to omit a page
-and its panels from that root. Page IDs are `editor`,
+Use `createViewProductPlan({ disabledPages: ['scene'] })` to omit a page
+and its panels from that root. Page IDs are `scene`,
 `display`, `plugins`, `material`, `mesh`, `texture` and `asset`. Scene panels depend on `viewScenePage`;
 the plan omits the complete contribution when its page is disabled.
 Backend workspace and inspection services remain available.
-The same option is accepted by `startView({ disabledPages: ['editor'] })`.
+The same option is accepted by `startView({ disabledPages: ['scene'] })`.
 The resident `@forgeax/view/plugin` also accepts `config.disabledPages`.
 
 | Page | Frontend Plugin name | Owned UI |
 |:--|:--|:--|
-| Scene (Editor tab) | `forgeax.view.page.scene.frontend` | Scene page registration and panel dependency |
+| Scene | `forgeax.view.page.scene.frontend` | Scene page registration and panel dependency |
 | AI Display (Runtime capture) | `forgeax.view.page.ai-display.frontend` | Exact Engine display surface |
 | Plugin Browser | `forgeax.view.page.plugin-browser.frontend` | Actual Host Fibers and activation states |
 | Material | `forgeax.view.page.material.frontend` | Material preview and properties |
@@ -794,7 +800,7 @@ forgeax view workspace presentation get --root /path/to/backend --input '{}' --j
 The result includes the server-selected `connectionId`, that document's bounded
 workspace summary, actual open pages and active page, active-page panels, Shell
 mount/restoration state, and appearance. `tabs.get` instead describes the two
-Editor/Display runtime bindings and their Engine resources. Presentation reads
+Scene/Display runtime bindings and their Engine resources. Presentation reads
 do not serialize the asset catalog or wait for GPU readiness.
 
 | Action | Public operation suffix | Input |

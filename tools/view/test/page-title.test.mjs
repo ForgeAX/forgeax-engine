@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  createEditorPageTitleController,
+  createScenePageTitleController,
   createResourcePageTitleController,
-  editorPageTitleFromWorkspace,
+  scenePageTitleFromWorkspace,
   resourceAssetName,
   resourcePageTitleFromWorkspace,
 } from '../packages/view-workspace-core/src/page-title.ts';
@@ -28,15 +28,15 @@ function createFakeWorkspaceClient(initial) {
   };
 }
 
-describe('editor page title from workspace', () => {
+describe('scene page title from workspace', () => {
   it('is idle when no preview is bound', () => {
-    assert.equal(editorPageTitleFromWorkspace({ preview: null }), undefined);
-    assert.equal(editorPageTitleFromWorkspace({ preview: { asset: { guid: 'x', kind: 'scene' } } }), undefined);
+    assert.equal(scenePageTitleFromWorkspace({ preview: null }), undefined);
+    assert.equal(scenePageTitleFromWorkspace({ preview: { asset: { guid: 'x', kind: 'scene' } } }), undefined);
   });
 
   it('reads the bound preview asset name', () => {
     assert.equal(
-      editorPageTitleFromWorkspace({
+      scenePageTitleFromWorkspace({
         preview: { asset: { guid: 'scene-guid', kind: 'scene', name: 'Main' } },
       }),
       'Main',
@@ -45,7 +45,7 @@ describe('editor page title from workspace', () => {
 
   it('notifies subscribers when the workspace snapshot changes', () => {
     const client = createFakeWorkspaceClient({ preview: null });
-    const controller = createEditorPageTitleController(client);
+    const controller = createScenePageTitleController(client);
     const seen = [];
     const unsubscribe = controller.subscribeTitle(() => {
       seen.push(controller.getTitle());
@@ -65,7 +65,7 @@ describe('editor page title from workspace', () => {
       revision: 1,
       preview: { asset: { guid: 'scene-guid', kind: 'scene', name: 'Forest' }, target: { targetId: 't', frameId: 1 } },
     });
-    const controller = createEditorPageTitleController(client);
+    const controller = createScenePageTitleController(client);
     const seen = [];
     const unsubscribe = controller.subscribeTitle(() => {
       seen.push(controller.getTitle());

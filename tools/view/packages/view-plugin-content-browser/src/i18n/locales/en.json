@@ -80,7 +80,7 @@
       "noTextPreview": "No text preview for this file type",
       "noMediaPreview": "Preview could not be loaded",
       "previewTooLarge": "File is too large to preview here",
-      "previewEngineRequired": "Open in the editor to preview this asset",
+      "previewEngineRequired": "Open in View to preview this asset",
       "fontSample": "Aa Bb Cc 0123 游戏字体",
       "loadingSource": "Loading…",
       "highlightSkipped": "Large file — highlighting skipped",

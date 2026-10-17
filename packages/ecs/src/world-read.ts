@@ -17,6 +17,8 @@ export const worldRead: unique symbol = Symbol.for('forgeax.ecs.worldRead');
  * `undefined`; callers never receive a storage object or mutable view.
  */
 export interface WorldRead {
+  /** Existing source-relationship index revision; unindexed components return zero. */
+  readonly getRelationshipEpoch: (component: Component) => number;
   readonly getFieldValue: (
     entity: EntityHandle,
     component: Component,

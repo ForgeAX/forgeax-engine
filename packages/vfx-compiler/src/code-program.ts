@@ -24,6 +24,10 @@ import {
 } from '@forgeax/engine-vfx';
 import { VFX_FORCE_FIELDS_WGSL } from './force-fields.js';
 import {
+  createVfxInstanceComputeProgram,
+  VFX_INSTANCE_COMPUTE_COMPILER_SOURCE,
+} from './instance-compute.js';
+import {
   buildParticleStagePlan,
   createParticleStageManagedRuntime,
   PARTICLE_EVENT_MANAGED_RUNTIME,
@@ -1572,7 +1576,7 @@ async function compileEmitterV3(
     ...(dataInterfaces.length > 0 ? dataInterfaces.map((entry) => entry.kind) : []),
     ...(hasEvents ? ['eventBuffer'] : []),
   ];
-  return ok({
+  const program: VfxGpuEmitterProgramV3 = {
     id: emitter.id,
     module: moduleId,
     capacity: emitter.capacity,
@@ -1619,6 +1623,38 @@ async function compileEmitterV3(
       eventEntryPoint: 'forgeax_vfx_event_main',
       stages: Object.freeze(stagePlan.value.stages),
       renderers: renderers.value,
+    },
+  };
+  // The base ABI permits arbitrary hook reads. A multi-instance contract only
+  // follows hooks that cannot name the managed storage/runtime namespace;
+  // shader immutability or a matching reflection alone does not prove that.
+  const instanceIsolated =
+    !/\bforgeax_vfx_/.test(entryCode) &&
+    Object.values(module.imports ?? {}).every(
+      (source) => !/\bforgeax_vfx_/.test(stripWgslComments(source)),
+    );
+  const instanceCompute = instanceIsolated ? createVfxInstanceComputeProgram(program) : undefined;
+  if (instanceCompute === undefined) return ok(program);
+  const validatedBatch = await compileParticleShader(instanceCompute.wgsl, {
+    id: `forgeax_vfx_instance_v1::${emitter.id}`,
+    imports: {},
+  });
+  if (!validatedBatch.ok)
+    return err(
+      compileError(
+        'vfx-shader-invalid',
+        emitter.id,
+        'a valid managed multi-instance compute program',
+        'repair the managed job ABI compiler before recooking',
+        { module: moduleId, causeCode: validatedBatch.error.code, cause: validatedBatch.error },
+      ),
+    );
+  return ok({
+    ...program,
+    instanceCompute: {
+      ...instanceCompute,
+      wgsl: validatedBatch.value.wgsl,
+      bindings: validatedBatch.value.bindings,
     },
   });
 }
@@ -1702,6 +1738,8 @@ export function createParticleCodeNativeCooker(
       if (!native.ok) throw native.error;
       const hash = createHash('sha256')
         .update('particle-code-cooker/1\0')
+        .update(VFX_INSTANCE_COMPUTE_COMPILER_SOURCE)
+        .update(createVfxInstanceComputeProgram.toString())
         .update(native.value)
         .update('\0')
         .update(canonical({ modules, materials: materials ?? null }));

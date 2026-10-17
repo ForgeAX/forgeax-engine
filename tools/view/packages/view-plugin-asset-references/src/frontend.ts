@@ -17,7 +17,7 @@ export default {
     const session = createAssetReferenceSession({ client, api, program: assetReferenceProgram });
     const service: AssetReferenceService = { ...session, open: async guid => {
       const scope = session.getState().scope;
-      if (!scope) return Promise.reject(new Error('asset-reference-editor-unavailable'));
+      if (!scope) return Promise.reject(new Error('asset-reference-scene-unavailable'));
       const snapshot = await client.getState();
       if (!sameAssetReferenceScope(scope, assetReferenceScope(snapshot)) || !sameAssetReferenceScope(scope, session.getState().scope))
         throw new DOMException('Asset navigation scope changed', 'AbortError');

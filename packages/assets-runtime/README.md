@@ -21,6 +21,32 @@ render owner。缺失或 stale 时 inspect、修复 producer 并 recook；不会
 
 ## Authoring and recovery index
 
+### Scene component references follow the registered schema
+
+The Scene loader validates Scene structure and resolves Scene-owned instance/skin
+indexes. It preserves component values until `AssetRegistry.instantiate` can read
+the destination World's component schema. Only `shared<T>` and variable/fixed
+arrays of `shared<T>` decode asset reference indexes; component and field names
+never select reference behavior. Each nested Scene uses its own Catalog envelope's
+`refs`; instance overrides use the parent Scene's table. Wire `null` represents an
+empty shared handle, while wire `0` indexes the first reference. `catalog(guid,
+scene)` retains native numeric handles; supplying `refs` explicitly marks indexed
+wire values, including an empty table. The existing envelope preserves that
+distinction without a second registry or component-name list.
+
+| Schema storage | Scene binding |
+|:--|:--|
+| Scalar numeric/bool/enum/ref and their arrays | Preserve values; Scene checks scalar ranges and fixed lengths |
+| String | Preserve text, including text that resembles a GUID |
+| Buffer and fixed buffer | Preserve raw bytes and view offsets through JSON; check byte values and fixed size |
+| Entity and its arrays | Bind instance-local addresses before spawning |
+| Shared and its arrays | Decode the owning reference table, then acquire World handles |
+| Unique | Preserve the existing World-owned handle; its payload lifecycle stays with ECS |
+
+Malformed shared indexes report entity, component, field/array index and table
+length before an instance survives. Mesh binary loading also preserves and validates
+the producer's cooked collision attachment; Physics consumes that same MeshAsset.
+
 ## 灯光资产 runtime 入口
 
 三条最短入口：

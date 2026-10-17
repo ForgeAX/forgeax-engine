@@ -1,5 +1,9 @@
 export const READINESS_FRAME_LIMIT = 60;
 
+export function isSimulationUpdate(entryPoint) {
+  return entryPoint === 'forgeax_vfx_update_main' || entryPoint === 'forgeax_vfx_update_compact_main';
+}
+
 /** Normalize raw GPU channel order without touching padded row bytes. */
 export function normalizeReadbackRgba(pixels, width, height, bytesPerRow, format) {
   if (format === 'rgba8unorm' || format === 'rgba8unorm-srgb') return pixels;

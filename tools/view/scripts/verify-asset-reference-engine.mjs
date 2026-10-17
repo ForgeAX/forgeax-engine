@@ -1,4 +1,4 @@
-/** Production View resident service against an actual Editor App and runtime Pack owner. */
+/** Production View resident service against an actual Scene App and runtime Pack owner. */
 import assert from 'node:assert/strict';
 import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -41,7 +41,7 @@ try {
   const scene = state.assets.find(asset => asset.kind === 'scene' && (!process.env.FORGEAX_REFERENCE_SCENE || asset.sourceKey === process.env.FORGEAX_REFERENCE_SCENE));
   assert(scene, 'The requested scene must be in the project Catalog');
   await workspace.openAsset({ projectId: state.project.id, guid: scene.guid });
-  const target = workspace.snapshot().editorPreview.target;
+  const target = workspace.snapshot().scenePreview.target;
   const scope = { projectId: state.project.id, targetId: target.targetId, targetGeneration: target.generation };
   const tree = await workspace.getSceneTree(scope);
   const mesh = tree.nodes.find(node => node.name === (process.env.FORGEAX_REFERENCE_ENTITY ?? 'Inspector proof mesh'))

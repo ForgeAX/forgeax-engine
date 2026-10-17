@@ -7,6 +7,7 @@ import { build as viteBuild } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
+import { generatedPlayerQueries } from './generated-player-queries.js';
 
 describe('generated Worker startup URLs', () => {
   it.each([
@@ -45,14 +46,10 @@ describe('generated Worker startup URLs', () => {
       if (!facts.ok) throw facts.error;
       const config = await createViteConfig(facts.value, 'build', base);
       const generated = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
-      const queryStart = generated.indexOf('const query = new URLSearchParams(location.search);');
-      const queryEnd = generated.indexOf('const recipeValue =', queryStart);
       const setupStart = generated.indexOf('const assetCatalog = createCatalogSource(');
       const setupEnd = generated.indexOf('const assetPreparation =', setupStart);
       const callStart = generated.indexOf('const result = await createApp(');
       const callEnd = generated.indexOf('if (!result.ok)', callStart);
-      expect(queryStart).toBeGreaterThan(0);
-      expect(queryEnd).toBeGreaterThan(queryStart);
       expect(setupStart).toBeGreaterThan(0);
       expect(setupEnd).toBeGreaterThan(setupStart);
       expect(callStart).toBeGreaterThan(setupEnd);
@@ -92,7 +89,7 @@ describe('generated Worker startup URLs', () => {
       const moduleUrl = new URL('assets/main.js', new URL(base, documentUrl)).href;
       const source = `${chunk.code}\nconst forgeaxBundlerAdapter = Adapter.forgeaxBundlerAdapter;
         (async () => {
-          ${generated.slice(queryStart, queryEnd)}
+          ${generatedPlayerQueries(generated)}
           ${generated.slice(setupStart, setupEnd)}
           ${generated.slice(callStart, callEnd)}
           return { ...result, assetCatalog };

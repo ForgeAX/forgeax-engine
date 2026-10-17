@@ -3,22 +3,20 @@ import {
   type ProfileModel,
   type ProfilePhaseModel,
   type ProfileSummaryModel,
+  phaseKey,
 } from './model.js';
 import type { ProfileArtifactError } from './schema.js';
 import type { ProfileCapture, ProfileResult } from './types.js';
 
-export interface ProfileComparisonPhaseIdentity {
-  readonly source: ProfilePhaseModel['source'];
-  readonly phase: string;
-  readonly parentSource?: ProfilePhaseModel['parentSource'];
-  readonly parentPhase?: string;
-}
+export type ProfileComparisonPhaseIdentity = Pick<
+  ProfilePhaseModel,
+  'source' | 'phase' | 'parentSource' | 'parentPhase'
+>;
 
-export interface ProfileComparisonPhaseFact {
-  readonly count: number;
-  readonly skipCount: number;
-  readonly p95DurationMicros: number | null;
-}
+export type ProfileComparisonPhaseFact = Pick<
+  ProfilePhaseModel,
+  'count' | 'skipCount' | 'p95DurationMicros'
+>;
 
 export interface ProfileComparisonPhaseDelta {
   readonly count?: number;
@@ -57,15 +55,6 @@ function withSide(side: 'left' | 'right', error: ProfileArtifactError): ProfileC
   };
 }
 
-function phaseKey(phase: ProfilePhaseModel): string {
-  return JSON.stringify([
-    phase.source,
-    phase.parentSource ?? null,
-    phase.parentPhase ?? null,
-    phase.phase,
-  ]);
-}
-
 function phaseIdentity(phase: ProfilePhaseModel): ProfileComparisonPhaseIdentity {
   return {
     source: phase.source,
@@ -89,18 +78,13 @@ function phaseDelta(
   comparableTimeUnit: boolean,
 ): ProfileComparisonPhaseDelta | undefined {
   if (left === undefined || right === undefined) return undefined;
-  const delta: {
-    count?: number;
-    skipCount?: number;
-    p95DurationMicros?: number;
-  } = {
+  return {
     count: right.count - left.count,
     skipCount: right.skipCount - left.skipCount,
+    ...(comparableTimeUnit && left.p95DurationMicros !== null && right.p95DurationMicros !== null
+      ? { p95DurationMicros: right.p95DurationMicros - left.p95DurationMicros }
+      : {}),
   };
-  if (comparableTimeUnit && left.p95DurationMicros !== null && right.p95DurationMicros !== null) {
-    delta.p95DurationMicros = right.p95DurationMicros - left.p95DurationMicros;
-  }
-  return delta;
 }
 
 function projectPhases(

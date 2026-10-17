@@ -5,7 +5,14 @@ import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createProfiler } from '@forgeax/engine-profiler';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
-import { RhiError, type RhiWebgpuRuntimeCause, type ShaderModule } from '@forgeax/engine-rhi';
+import {
+  type PipelineLibrary,
+  type PipelineLibraryInspection,
+  type PipelineLibraryManifest,
+  RhiError,
+  type RhiWebgpuRuntimeCause,
+  type ShaderModule,
+} from '@forgeax/engine-rhi';
 import {
   RhiNullAdapter,
   RhiNullCommandEncoder,
@@ -209,6 +216,107 @@ function createGenericPostProbeFeature(): RenderFeature<undefined> {
 }
 
 describe('factory contract', () => {
+  it('includes a feature installed during library preparation in initialization prewarm', async () => {
+    const libraryFence = deferred<void>();
+    const inspection: PipelineLibraryInspection = {
+      state: 'active',
+      shaders: 0,
+      renderPipelines: 0,
+      computePipelines: 0,
+      shaderHits: 0,
+      pipelineHits: 0,
+      synchronousCreations: 0,
+      asynchronousCreations: 0,
+      compilationCompleted: 0,
+      compilationPending: 0,
+      failures: 0,
+      unrecordable: 0,
+      overflow: 0,
+      sourceBytes: 0,
+      warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+    };
+    const pipelineLibrary: PipelineLibraryManifest = {
+      version: 1,
+      backend: 'webgpu',
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const library = {
+      prepare: vi.fn(async () => {
+        await libraryFence.promise;
+        return ok(inspection);
+      }),
+      inspect: () => inspection,
+      export: () => ok(pipelineLibrary),
+    } satisfies PipelineLibrary;
+    const adapter = new RhiNullAdapter();
+    const device = Object.assign((await adapter.requestDevice()).unwrap(), {
+      pipelineLibrary: library,
+    });
+    const compile = vi.fn(rhi.createShaderModule);
+    const backend = {
+      ...rhi,
+      createShaderModule: compile,
+      requestAdapter: async () =>
+        ok({
+          features: adapter.features,
+          limits: adapter.limits,
+          requestDevice: async () => ok(device),
+        }),
+    };
+    const shaderId = 'game::late-library-feature';
+    const variantSource = '// late feature ordinary variant';
+    const manifest = await (await fetch(renderLifecycleManifestUrl())).json();
+    manifest.materialShaders.push({
+      identifier: shaderId,
+      sourcePath: 'fixture://late-library-feature.wgsl',
+      composedWgsl: '// late feature base',
+      paramSchema: '[]',
+      variants: [
+        { definesKey: '', defines: { STYLE: true }, composedWgsl: '// late feature base' },
+        { definesKey: 'STYLE=false', defines: { STYLE: false }, composedWgsl: variantSource },
+      ],
+    });
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { rhi: backend, pipelineLibrary },
+      {
+        shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
+      },
+    );
+    try {
+      let startupError: unknown;
+      void renderer.initialization.then((result) => {
+        if (!result.ok) startupError = result.error;
+      });
+      await vi.waitFor(() => {
+        if (startupError !== undefined) throw startupError;
+        expect(library.prepare).toHaveBeenCalledOnce();
+      });
+      const installed = await renderer.installRenderFeature({
+        identity: 'late-library-feature',
+        requiredMaterialShaders: [shaderId],
+        extract: () => ok(undefined),
+        plan: () => ok({ work: [] }),
+      });
+      expect(installed.ok).toBe(true);
+      expect(compile.mock.calls.some(([, descriptor]) => descriptor.code === variantSource)).toBe(
+        false,
+      );
+      libraryFence.resolve();
+      expect((await renderer.initialization).ok).toBe(true);
+      expect(compile.mock.calls.some(([, descriptor]) => descriptor.code === variantSource)).toBe(
+        true,
+      );
+    } finally {
+      libraryFence.resolve();
+      await renderer.dispose();
+    }
+  });
+
   it('does not publish renderer initialization before boot queue work settles', async () => {
     const fence = deferred<undefined>();
     const onSubmittedWorkDone = vi

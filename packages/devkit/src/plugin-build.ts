@@ -12,7 +12,7 @@ import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 /** Serializable project options sampled after the native build root starts. */
 export type DevKitAppOptions = Pick<
   CreateAppOptions,
-  'dynamicGeometryMeshBudgetBytes' | 'standardProfile'
+  'dynamicGeometryMeshBudgetBytes' | 'standardProfile' | 'pipelineLibrary'
 >;
 
 /** Build-only Context vocabulary. Import this subpath for authored build plugins. */

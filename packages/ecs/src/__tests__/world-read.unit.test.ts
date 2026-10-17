@@ -12,6 +12,25 @@ const relationship = defineRelationship({
 });
 
 describe('World semantic read seam', () => {
+  it('reads the existing relationship epoch independently of unrelated entities', () => {
+    const world = new World();
+    const read = world[worldRead];
+    const first = world.spawn().unwrap();
+    const second = world.spawn().unwrap();
+    const source = world
+      .spawn({ component: relationship.source, data: { target: first } })
+      .unwrap();
+    const initial = read.getRelationshipEpoch(relationship.source);
+    const unrelated = world.spawn().unwrap();
+    world.despawn(unrelated).unwrap();
+    expect(read.getRelationshipEpoch(relationship.source)).toBe(initial);
+    world.set(source, relationship.source, { target: second }).unwrap();
+    expect(read.getRelationshipEpoch(relationship.source)).toBeGreaterThan(initial);
+    const reparented = read.getRelationshipEpoch(relationship.source);
+    world.despawn(source).unwrap();
+    expect(read.getRelationshipEpoch(relationship.source)).toBeGreaterThan(reparented);
+  });
+
   it('reads relationship facts without exposing a storage view', () => {
     const world = new World();
     const target = world.spawn().unwrap();

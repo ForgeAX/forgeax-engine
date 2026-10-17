@@ -42,6 +42,7 @@ export interface BrowserFrameCompleted {
   /** World/session identity owned by the active App execution. */
   readonly worldIdentity?: string;
   readonly presentation: import('@forgeax/engine-render').FramePresentation;
+  readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
 }
 
 const submittedFrame = Symbol('forgeax.submitted-frame');

@@ -1,5 +1,7 @@
 export const READINESS_FRAME_LIMIT: number;
 
+export function isSimulationUpdate(entryPoint: unknown): boolean;
+
 export function normalizeReadbackRgba(
   pixels: Uint8Array,
   width: number,

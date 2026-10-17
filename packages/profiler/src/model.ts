@@ -10,11 +10,8 @@ export interface ProfileFrameModel {
   readonly records: readonly ProfileRecord[];
 }
 
-export interface ProfilePhaseModel {
-  readonly source: ProfilePhaseRecord['source'];
-  readonly phase: string;
-  readonly parentSource?: ProfilePhaseRecord['source'];
-  readonly parentPhase?: string;
+export interface ProfilePhaseModel
+  extends Pick<ProfilePhaseRecord, 'source' | 'phase' | 'parentSource' | 'parentPhase'> {
   readonly count: number;
   readonly skipCount: number;
   readonly p95DurationMicros: number | null;
@@ -56,6 +53,17 @@ function isRootPhase(record: ProfileRecord): record is ProfilePhaseRecord {
   return record.kind === 'phase' && record.parentPhase === undefined;
 }
 
+export function phaseKey(
+  phase: Pick<ProfilePhaseModel, 'source' | 'phase' | 'parentSource' | 'parentPhase'>,
+): string {
+  return JSON.stringify([
+    phase.source,
+    phase.parentSource ?? null,
+    phase.parentPhase ?? null,
+    phase.phase,
+  ]);
+}
+
 function buildFrames(records: readonly ProfileRecord[]): ProfileFrameModel[] {
   const frameMap = new Map<number, ProfileRecord[]>();
   for (const record of records) {
@@ -91,7 +99,7 @@ function buildPhases(records: readonly ProfileRecord[]): ProfilePhaseModel[] {
   for (const record of records) {
     const parentSource = record.kind === 'phase' ? record.parentSource : undefined;
     const parentPhase = record.kind === 'phase' ? record.parentPhase : undefined;
-    const key = `${record.source}:${parentSource ?? ''}:${parentPhase ?? ''}:${record.phase}`;
+    const key = phaseKey(record);
     let entry = phaseMap.get(key);
     if (entry === undefined) {
       entry = {

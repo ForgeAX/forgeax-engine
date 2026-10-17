@@ -127,9 +127,9 @@ it('revokes observations synchronously on selection/generation changes, with ide
 
 for (const operation of ['scene.tree.get', 'entity.inspect']) {
   it(`${operation}: revokes Game observations before close while retaining its ACK document and active failures`, async () => {
-    const editor = { target: { targetId: 'editor', generation: 1 } };
+    const scene = { target: { targetId: 'scene', generation: 1 } };
     const play = { target: { targetId: 'play', generation: 2 } };
-    const engine = { previews: [editor], play };
+    const engine = { previews: [scene], play };
     let finishClose;
     const toolApi = {
       describe: () => [{ callable: true, owner: { providerId: 'engine', generation: 1 } }],
@@ -157,24 +157,24 @@ for (const operation of ['scene.tree.get', 'entity.inspect']) {
     const releaseErrors = subscribeWorkspaceCommandErrors(error => reports.push(error));
     try {
       const stopping = broker.invoke('play.stop', { targetId: 'play', targetGeneration: 2 });
-      assert.equal(reader.getSnapshot().preview.target.targetId, 'editor', 'Game observations retire before Engine close starts');
+      assert.equal(reader.getSnapshot().preview.target.targetId, 'scene', 'Game observations retire before Engine close starts');
       assert.equal(reader.getSnapshot().play.target.targetId, 'play', 'the ACK document remains owned until close succeeds');
       assert.equal(observation.signal.aborted, true);
       await assert.rejects(client.call(operation, { targetId: 'play', targetGeneration: 2 }, { signal: observation.signal }),
         { name: 'AbortError' });
       assert.equal(observation.signal.aborted, true, 'state revocation precedes the rejected response and React cleanup');
-      assert.equal(reader.getSnapshot().preview.target.targetId, 'editor');
+      assert.equal(reader.getSnapshot().preview.target.targetId, 'scene');
       assert.equal(broker.snapshot().workspaceTargetLost, false);
       assert.equal(reports.length, 0);
       finishClose();
       await stopping;
-      const current = createWorkspaceObservation(reader, state => state?.preview?.target?.targetId === 'editor');
+      const current = createWorkspaceObservation(reader, state => state?.preview?.target?.targetId === 'scene');
       try {
-        await assert.rejects(client.call(operation, { targetId: 'editor', targetGeneration: 1 }, { signal: current.signal }),
+        await assert.rejects(client.call(operation, { targetId: 'scene', targetGeneration: 1 }, { signal: current.signal }),
           { code: 'view-workspace-target-mismatch' });
         assert.equal(current.signal.aborted, false);
         assert.equal(reports.length, 1, 'the same error on a still-current target remains visible');
-        assert.equal(broker.snapshot().workspaceTargetLost, true, 'a genuine editor failure retains recovery reporting');
+        assert.equal(broker.snapshot().workspaceTargetLost, true, 'a genuine scene failure retains recovery reporting');
       } finally { current.dispose(); }
     } finally {
       finishClose?.(); observation.dispose(); releasePanel(); reader.dispose(); releaseErrors(); await broker.dispose();
@@ -184,9 +184,9 @@ for (const operation of ['scene.tree.get', 'entity.inspect']) {
 
 for (const args of [{ targetId: 'other', targetGeneration: 2 }, { targetId: 'play', targetGeneration: 1 }]) {
   it(`does not revoke Game observations for a stale stop ${JSON.stringify(args)}`, async () => {
-    const editor = { target: { targetId: 'editor', generation: 1 } };
+    const scene = { target: { targetId: 'scene', generation: 1 } };
     const play = { target: { targetId: 'play', generation: 2 } };
-    const engine = { previews: [editor], play };
+    const engine = { previews: [scene], play };
     const broker = new ViewWorkspaceBroker({ engine, toolApi: {
       describe: () => [{ callable: true, owner: { providerId: 'engine', generation: 1 } }],
       run: () => ({ terminal: Promise.resolve({ outcome: 'failed', failure: { code: 'engine-workspace-target-stale', expected: 'The current generation' } }) }),
@@ -202,9 +202,9 @@ for (const args of [{ targetId: 'other', targetGeneration: 2 }, { targetId: 'pla
 }
 
 it('keeps failed-close Play ownership and reports its stop error after revoking Game observations', async () => {
-  const editor = { target: { targetId: 'editor', generation: 1, worldId: 'edit-world' } };
+  const scene = { target: { targetId: 'scene', generation: 1, worldId: 'edit-world' } };
   const play = { target: { targetId: 'play', generation: 2, worldId: 'game-world' } };
-  const engine = { previews: [editor], play };
+  const engine = { previews: [scene], play };
   const broker = new ViewWorkspaceBroker({ engine, accessToken: 'test', toolApi: {
     describe: () => [{ callable: true, owner: { providerId: 'engine', generation: 1 } }],
     run: () => ({ terminal: Promise.resolve({ outcome: 'failed', failure: { code: 'engine-workspace-plugin-release-incomplete', expected: 'Native cleanup must complete' } }) }),
@@ -221,15 +221,15 @@ it('keeps failed-close Play ownership and reports its stop error after revoking 
     const state = broker.snapshot();
     assert.equal(state.preview.target.worldId, 'edit-world');
     assert.equal(state.play.target.worldId, 'game-world');
-    assert.equal(state.targetBinding, 'editor');
+    assert.equal(state.targetBinding, 'scene');
     assert.equal(engine.play, play);
-    assert.equal(engine.previews[0], editor);
+    assert.equal(engine.previews[0], scene);
   } finally { releaseErrors(); await broker.dispose(); }
 });
 
 
-it('opens non-previewable UI assets as metadata without replacing the Editor or allocating a preview', async () => {
-  const scene = { asset: { guid: 'scene', kind: 'scene' }, target: { targetId: 'editor', generation: 1 } };
+it('opens non-previewable UI assets as metadata without replacing the Scene or allocating a preview', async () => {
+  const scene = { asset: { guid: 'scene', kind: 'scene' }, target: { targetId: 'scene', generation: 1 } };
   const ui = { guid: 'ui-guide', kind: 'ui', name: 'guide.ui.html', previewable: false };
   const engine = { project: { project: { id: 'p', root: '/p' } }, previews: [scene], preview: scene };
   const operations = [];
@@ -250,6 +250,6 @@ it('opens non-previewable UI assets as metadata without replacing the Editor or 
   const result = await broker.openAsset({ projectId: 'p', guid: ui.guid });
   assert.deepEqual(operations, ['engine.asset.inspect']);
   assert.equal(result.openRequest.asset.guid, ui.guid);
-  assert.equal(result.editorPreview.target.targetId, 'editor');
+  assert.equal(result.scenePreview.target.targetId, 'scene');
   assert.equal(engine.previews.length, 1);
 });

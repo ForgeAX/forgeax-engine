@@ -68,12 +68,19 @@ silently promoted from a Dawn or mock result.
 | `RhiRenderPipelineOps` | render-pipeline cache + dispatch helpers (op-set scoped to render path) |
 | `RhiComputePipelineOps` | compute-pipeline cache + dispatch helpers (op-set scoped to compute path) |
 
-`RhiDevice.createRenderPipelineAsync?` is optional. A backend exposes it only
-when completion means the returned pipeline can be used without further pipeline
-compilation delay. It returns the normal `Result<RenderPipeline, RhiError>` through
-a Promise; failures remain structured. Absence of the method preserves the
-backend's synchronous creation contract. See [hidden preparation](../render/README.md#preparing-hidden-loadout-pipelines)
-for the renderer's required-ready consumer.
+`RhiDevice.createRenderPipelineAsync?` and `createComputePipelineAsync?` expose
+backend compilation completion. Both return `Result<Pipeline, RhiError>` for a
+recipe already completed on the current physical device, or a Promise of that
+result while native compilation is needed. `await` accepts either form;
+required-ready consumers preserve an immediate result without adding a pending
+frame. Descriptor conversion happens once per request, including cache misses.
+Failures remain structured and absence preserves synchronous backend creation.
+See [hidden preparation](../render/README.md#preparing-hidden-loadout-pipelines).
+
+> [!IMPORTANT]
+> A synchronous factory handle is not compilation-completion evidence. Only the
+> device library's completed native recipe permits an immediate prepared result;
+> misses retain native async compilation without a synchronous fallback.
 
 > opaque handles are no-prefix; 7 main interfaces are `Rhi`-prefixed. AI users grep `Rhi` to enumerate the operation verb set; grep handle name (e.g. `Buffer`) to enumerate handle uses. The two namespaces never overlap (charter proposition 5).
 

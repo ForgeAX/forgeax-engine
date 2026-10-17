@@ -45,6 +45,7 @@ export interface ExecutionFrameCompletion {
   readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
   /** Renderer presentation readiness from the completed FrameReceipt. */
   readonly presentation?: import('@forgeax/engine-render').FramePresentation;
+  readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
   readonly engineUpdateMs: number;
   readonly kernelWaitMs: number;
   readonly audioIntents?: readonly AudioIntent[];
@@ -153,6 +154,8 @@ export interface ExecutionInitMessage {
   readonly diagnostics?: import('./types').ExecutionDiagnosticsOptions;
   /** Renderer-realm display output color space; the Renderer owns negotiation. */
   readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
+  /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
+  readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly dynamicGeometryMeshBudgetBytes?: number;
   readonly workers: import('./types').ExecutionSelection;
 }

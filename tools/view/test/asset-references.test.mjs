@@ -30,16 +30,16 @@ async function fixture(t) {
   const world = new World();
   const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
   const ctx = await createWorldContext(world, [assetsPlugin(assets), createToolApiPlugin()]);
-  const tools = ctx.plugin(engineWorkspaceTargetToolsPlugin, { targetId: 'editor' });
+  const tools = ctx.plugin(engineWorkspaceTargetToolsPlugin, { targetId: 'scene' });
   await tools.await();
   const leases = [MeshFilter, MeshRenderer].map(component => world.components.register(component).unwrap());
   const grants = [];
   const entities = [];
   const allocate = (type, payload) => { const handle = world.allocSharedRef(type, payload); grants.push(handle); return handle; };
   const spawn = (...entries) => { const entity = world.spawn(...entries).unwrap(); entities.push(entity); return entity; };
-  const scope = { projectId: 'project', targetId: 'editor', targetGeneration: 1, browserGeneration: 1, worldId: world.identity };
-  const inspect = entity => ctx.engineWorkspaceTargetTools.inspect({ entityId: `editor:${world.identity}:${entity}` });
-  const query = entity => queryEntityAssetReferences(ctx, scope, { ...scope, entityId: `editor:${world.identity}:${entity}` });
+  const scope = { projectId: 'project', targetId: 'scene', targetGeneration: 1, browserGeneration: 1, worldId: world.identity };
+  const inspect = entity => ctx.engineWorkspaceTargetTools.inspect({ entityId: `scene:${world.identity}:${entity}` });
+  const query = entity => queryEntityAssetReferences(ctx, scope, { ...scope, entityId: `scene:${world.identity}:${entity}` });
   t.after(async () => { for (const entity of entities) world.despawn(entity).unwrap(); for (const handle of grants) world.sharedRefs.release(handle).unwrap(); for (const lease of leases.reverse()) lease.dispose(); await ctx.fiber.dispose(); });
   return { ctx, world, assets, scope, leases, allocate, spawn, inspect, query };
 }
@@ -87,7 +87,7 @@ it('reports builtin, unregistered and stale handles without guessing Catalog ide
     const entity = f.spawn({ component: MeshFilter, data: { assetHandle: handle } });
     assert.equal((await f.query(entity)).references.find(ref => ref.component === 'MeshFilter').status, index ? 'unregistered' : 'builtin');
   }
-  await assert.rejects(() => queryEntityAssetReferences(f.ctx, f.scope, { ...f.scope, worldId: 'wrong', entityId: 'editor:wrong:1' }), /stale/);
+  await assert.rejects(() => queryEntityAssetReferences(f.ctx, f.scope, { ...f.scope, worldId: 'wrong', entityId: 'scene:wrong:1' }), /stale/);
 });
 
 it('recognizes custom shared reference arrays and excludes ordinary strings and entity arrays', async t => {
@@ -123,7 +123,7 @@ it('native Fiber withdrawal removes its ToolApi provider and restoration re-regi
 
 it('UI projection joins only returned identities and retains raw component fields', () => {
   const asset = { guid: meshGuid, kind: 'mesh', sourceKey: 'mesh/box' };
-  const inspection = { entityId: 'editor:world:1', targetId: 'editor', components: [{ name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' } }, values: { assetHandle: 1025 } }] };
+  const inspection = { entityId: 'scene:world:1', targetId: 'scene', components: [{ name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' } }, values: { assetHandle: 1025 } }] };
   const bindings = { entityId: inspection.entityId, targetId: inspection.targetId, references: [{ key: 'MeshFilter.assetHandle', component: 'MeshFilter', field: 'assetHandle', guid: meshGuid, status: 'resolved', origin: 'component' }] };
   const source = inspectorEntityFromInspection(inspection, [asset], {}, bindings);
   assert.equal(source.meshReference.guid, meshGuid);

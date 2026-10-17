@@ -523,7 +523,7 @@ type __MergedKeep =
       expect(out).toMatchObject({ kind: 'scene' });
     });
 
-    it('sceneLoader returns structured error { ok: false } on refs out-of-bounds (F21)', () => {
+    it('Scene binding reports structured bounds errors once its schema is available', () => {
       const ctx = mockCtx();
       const out = sceneLoader.load(
         { entities: { 'entity-7': { components: { MeshFilter: { assetHandle: 5 } } } } },
@@ -531,14 +531,26 @@ type __MergedKeep =
         ctx,
       );
       expect(out).toBeDefined();
-      // F21: sceneLoader now returns { ok: false, error: ParseErrorDetail }
-      // instead of writing to ctx.reportParseError.
-      const errResult = out as {
-        ok: boolean;
-        error?: { entityKey: string; index: number; refsLength: number };
-      };
-      expect(errResult.ok).toBe(false);
-      expect(errResult.error).toMatchObject({ entityKey: 'entity-7', index: 5, refsLength: 1 });
+      const world = new World();
+      world.components
+        .register(defineComponent('MeshFilter', { assetHandle: 'shared<MeshAsset>' }))
+        .unwrap();
+      const reg = new AssetRegistry(makeMockShaderRegistry());
+      const guid = '22222222-2222-4222-8222-222222222222';
+      reg.catalog(guid, out, [{ guid: '11111111-1111-4111-8111-111111111111' }]).unwrap();
+      expect(reg._resolveSceneGuids(out, world, guid)).toMatchObject({
+        ok: false,
+        error: {
+          code: 'asset-parse-failed',
+          detail: {
+            entityKey: 'entity-7',
+            component: 'MeshFilter',
+            field: 'assetHandle',
+            index: 5,
+            refsLength: 1,
+          },
+        },
+      });
     });
 
     it('materialLoader carries parentGuid resolved from refs index', () => {

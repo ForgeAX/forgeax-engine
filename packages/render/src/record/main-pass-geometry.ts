@@ -5,8 +5,10 @@ import {
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import { FirstEntryMap } from './first-entry-map';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
+import type { ValidatedRenderable } from './frame-snapshot';
 import { variantSetFromDefines } from './helpers';
 import { resolveSpriteInstancesBuffer } from './sprite-instance-buffer';
 // @forgeax/engine-runtime - RenderSystem record stage: main-pass geometry draws.
@@ -574,6 +576,7 @@ export function recordGeometryDraws(
     pass: Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>,
     material: MaterialSnapshot,
   ) => boolean,
+  skipPreparationDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
 ): void {
   const recordPresented = createFoldedDrawRecorder(c);
   const {
@@ -589,20 +592,31 @@ export function recordGeometryDraws(
     viewBindGroup,
     viewBindGroupDynamicOffset = 0,
   } = c;
-  const materialPasses = new Map<number, FirstEntryMap<number, DispatchEntry[]>>();
-  for (const dispatch of selectedDispatch ?? []) {
+  // A material usually selects one pass. Keep that dispatch directly and
+  // allocate a pass list only when another distinct draw actually exists.
+  const materialPasses = new Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>();
+  for (const dispatch of selectedDispatch ?? EMPTY_MATERIAL_DRAWS) {
     let byMaterial = materialPasses.get(dispatch.renderableIndex);
     if (byMaterial === undefined) {
       byMaterial = new FirstEntryMap();
       materialPasses.set(dispatch.renderableIndex, byMaterial);
     }
     const passes = byMaterial.get(dispatch.materialHandle);
-    if (passes === undefined) byMaterial.set(dispatch.materialHandle, [dispatch]);
-    else if (
-      passKind !== 'temporal' ||
-      !passes.some((previous) => sameOpaqueTemporalDraw(previous, dispatch))
-    )
-      passes.push(dispatch);
+    if (passes === undefined) byMaterial.set(dispatch.materialHandle, dispatch);
+    else if (Array.isArray(passes)) {
+      let duplicate = false;
+      if (passKind === 'temporal') {
+        for (const previous of passes) {
+          if (sameOpaqueTemporalDraw(previous, dispatch)) {
+            duplicate = true;
+            break;
+          }
+        }
+      }
+      if (!duplicate) passes.push(dispatch);
+    } else if (passKind !== 'temporal' || !sameOpaqueTemporalDraw(passes, dispatch)) {
+      byMaterial.set(dispatch.materialHandle, [passes, dispatch]);
+    }
   }
   const diagnosticsEnabled = materialDiagnosticsEnabled();
   const colorFormatOverride = c.transparentColorFormat as GPUTextureFormat | undefined;
@@ -1088,7 +1102,8 @@ export function recordGeometryDraws(
     for (const entry of c.pipelinePreparationEntries ?? []) {
       const passes = entry.source.pipelinePreparation ?? [];
       const authoredVariantSet = variantSetFromDefines(passes.at(-1)?.defines);
-      for (const sm of entry.mesh.submeshes) {
+      for (const [submeshIndex, sm] of entry.mesh.submeshes.entries()) {
+        if (skipPreparationDraw?.(entry, submeshIndex)) continue;
         const material = entry.source.materials[sm.materialSlot] ?? entry.source.material;
         for (const preparedPass of entry.source.pipelinePreparation ?? []) {
           const selectedPass = preparedPass;
@@ -1131,7 +1146,15 @@ export function recordGeometryDraws(
           );
           // A fallback visible pipeline does not qualify an explicitly requested authored PSO.
           if (!resolved || pipelineSelection.material === null)
-            frameState.pipelinePreparationPending = true;
+            markPipelinePreparationPending(frameState, {
+              code: 'material-pipeline-preparation',
+              worldId: entry.source.worldId,
+              entity: entry.source.entityKey,
+              pass: passKind,
+              ...(selectedPass.materialShaderId === undefined
+                ? {}
+                : { shader: selectedPass.materialShaderId.slice(0, 256) }),
+            });
         }
       }
     }
@@ -1514,14 +1537,19 @@ export function recordGeometryDraws(
       const selectedMaterialPasses = materialPasses
         .get(entry.renderableIndex)
         ?.get(submeshMaterial.materialHandle ?? 0);
-      const draws: readonly (DispatchEntry | undefined)[] =
+      const draws =
         selectedDispatch === undefined ||
         (selectedMaterialPasses === undefined &&
           submeshMaterial.surfaceModel === 'single-layer-medium' &&
           matchedMaterials?.get(entry.renderableIndex)?.has(submeshMaterial.materialHandle ?? 0))
           ? DEFAULT_MATERIAL_DRAWS
           : (selectedMaterialPasses ?? EMPTY_MATERIAL_DRAWS);
-      for (const selectedPass of draws) {
+      const drawList: readonly (DispatchEntry | undefined)[] | undefined = Array.isArray(draws)
+        ? draws
+        : undefined;
+      const singleDraw = drawList === undefined ? (draws as DispatchEntry) : undefined;
+      for (let drawIndex = 0; drawIndex < (drawList?.length ?? 1); drawIndex++) {
+        const selectedPass = drawList === undefined ? singleDraw : drawList[drawIndex];
         // Temporal projects the selected material's alpha/motion contract,
         // not its authored Forward entry points or color outputs.
         const vertexEntry = passKind === 'temporal' ? undefined : selectedPass?.vertexEntry;

@@ -67,12 +67,18 @@ flowchart LR
   A["Resolve source and exact CI"]
   B["Build and verify artifact"]
   C["Seal immutable bytes"]
-  D["Upload candidate and verify public bytes"]
+  G["Qualify stable public source"]
+  H["Publish GitHub Release"]
+  I["Publish enabled stable mirror and verify public CI"]
+  D["Upload npm products concurrently and verify all public bytes"]
   E["Verify fresh public consumer"]
-  F["Advance channel and finalize Release"]
+  F["Advance npm channel tags"]
   A --> B
   B --> C
-  C --> D
+  C --> G
+  G --> H
+  H --> I
+  I --> D
   D --> E
   E --> F
 ```
@@ -92,12 +98,18 @@ and Candidate consumer proof before the first stable publication.
 
 Candidate builds once, runs its complete npm and archive/browser consumers, and
 compares independent reproducibility and collision evidence before sealing.
-Promotion uploads under `candidate`, verifies exact public metadata and downloaded
-SHA-512 bytes, then submits the next delivery unit. Before `latest` or `next`
+Promotion qualifies stable public source, publishes the GitHub Release, and
+completes the enabled stable mirror through public CI and remote-tree verification
+before uploading to npm. Development releases skip stable source qualification
+and mirroring; paused stable mirroring still requires source qualification.
+The three npm products upload concurrently under `candidate`, then jointly verify
+exact public metadata and downloaded SHA-512 bytes. Before `latest` or `next`
 moves, a fresh registry consumer installs the SDK, initializes it and exercises
 both templates through typecheck, tests, build, package and dev HTTP lifecycle.
 The publisher rejects focused-package publication and channel regression.
 Development GitHub Releases are prereleases and never become the latest Release.
+GitHub publication can complete while npm is pending. Cleanup waits for all
+enabled stages, so retrying the same sealed Candidate can finish partial delivery.
 
 > [!WARNING]
 > The public `candidate` tag is not a privacy boundary. Stable version numbers

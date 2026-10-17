@@ -2,7 +2,7 @@
 name: forgeax-view-cli
 description: >-
   Operate View through its public API and CLI. Use when demonstrating or
-  inspecting View, opening assets, controlling Editor Play or cameras, selecting
+  inspecting View, opening assets, controlling Play or cameras, selecting
   scene entities, or checking whether a request affects an open View page.
 ---
 
@@ -72,7 +72,7 @@ of guessing from paths, names, or a previous target.
 | Need | Owner and entry |
 |:--|:--|
 | Backend or optional View lifecycle | `forgeax backend ...` and `forgeax view start\|status\|stop`; use [View startup](../forgeax-view-start/SKILL.md) |
-| Allocate an Editor project on the running View | `forgeax view project open --root <backend-root> --project <project-root> --json`; open the returned headed URL |
+| Allocate a project on the running View | `forgeax view project open --root <backend-root> --project <project-root> --json`; open the returned headed URL |
 | Call one resident workspace operation through Engine CLI | `forgeax view workspace call --root <backend-root> --operation <id> --args <json> --json`; requires the selected View host Pack and running View owner |
 | Call the resident View workspace API | `forgeax-view workspace --operation <id> --args <json>` with the issued endpoint and token |
 | List pages and reveal a Pack | `forgeax view workspace call --operation pages.list --args '{}' --json`, then `--operation pack.reveal --args '{"projectId":"...","sourcePath":"assets/example.pack.ts","revision":"...","connectionId":"..."}' --json` |
@@ -96,7 +96,7 @@ addressed frontend to show the Pack. With multiple pages, select the exact
 
 ## Open an asset through the API
 
-With one Editor page connected, read its identities, list its exact target's
+With one Scene page connected, read its identities, list its exact target's
 assets, then open a returned GUID. Scene, mesh, material and texture opens use
 the same operation as Content Browser double click:
 
@@ -108,13 +108,13 @@ forgeax view workspace asset open --root <backend-root> \
   --input '{"projectId":"<project-id>","targetId":"<project-target-id>","guid":"<asset-guid>","tabId":"forgeax-user-workspace"}' --json
 ```
 
-After success, read `tabs.get` again and check its `openRequest` and Editor
+After success, read `tabs.get` again and check its `openRequest` and Scene
 target. If an already connected frontend has the scene PageType, it observes
-the new request and focuses the Editor page. A frontend that connects later
+the new request and focuses the Scene page. A frontend that connects later
 baselines the retained request; the CLI response alone does not prove a page
 is visible or that a rendered frame exists. Verify the browser and target when
 the requested outcome is visual. `view.workspace.tabs.select` selects the
-Editor or Runtime capture binding; resource-page placement remains frontend
+Scene or Runtime capture binding; resource-page placement remains frontend
 policy. With multiple connected pages, page operations fail with
 `view-page-ambiguous`; do not guess a page or reuse another target's identities.
 

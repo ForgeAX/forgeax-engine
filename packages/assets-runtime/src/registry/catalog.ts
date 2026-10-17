@@ -39,7 +39,9 @@ export function createInlineCatalogRecord(
     kind: envelope.payload.kind,
     authoring: authoringCapabilityForAssetKind(envelope.payload.kind),
     name,
-    ...(envelope.refs.length > 0 ? { refs: envelope.refs.map((ref) => ref.guid) } : {}),
+    ...(envelope.refs !== undefined && envelope.refs.length > 0
+      ? { refs: envelope.refs.map((ref) => ref.guid) }
+      : {}),
   };
 }
 

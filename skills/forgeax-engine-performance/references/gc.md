@@ -10,6 +10,13 @@ Use the [heap/source/native tools](toolbox.md#worker-heap-and-native-gc-attribut
 on existing captures first. Use a new bounded capture to resolve a material
 unknown or validate a changed candidate.
 
+Keep an actionable row per source owner: Worker, file/function, direct or
+nearest-caller attribution, bytes/rate, observed source operations, change
+frequency, proposed ownership change, invalidation counterexample and outcome.
+Mark unresolved object types explicitly; an ancestor such as ray-box can own
+callee allocations without allocating a hit record itself. Source shares rank
+investigation; they are not percentages already eliminated by a patch.
+
 | Measurement | Answers | Boundary |
 | --- | --- | --- |
 | Ordinary frame/completion intervals | User-visible throughput and stalls | No heap profiler or debug probe; preserve current workload/quality |
@@ -17,6 +24,14 @@ unknown or validate a changed candidate.
 | SamplingHeapProfile including collected objects | Short-lived allocation owner distribution | Statistical estimates, not resident heap or exact freed bytes |
 | Retained heap/after-GC size | Surviving storage and possible lifetime leak | A different population from cumulative allocation |
 | Sampled JS GC stacks | GC samples within a CPU profile | Do not add these samples to native GC duration |
+
+A RunTask whose `args.src_file` names V8 incremental marking, a MinorGCJob or
+cppgc sweeping identifies the scheduler owner. Its whole wall interval is not a
+GC subspan: it can include idle, nested callbacks and other CPU work. Keep native
+explicit GC spans, sampled `(garbage collector)` weights and heap-scheduled task
+intersections as separate observations. The
+[late-window case](cases/late-task-clock-boundaries-20261017.md) preserves all three
+boundaries without assigning a software completion tail to GPU execution.
 
 An accepted capture must retain its own workload and correctness guards. A failed
 combat capture can supply independently valid source attribution, but remains
@@ -50,6 +65,28 @@ cppgc sweeping separately. Boundary allocation/promotion counters omit their
 first observation and unobserved tail; fewer than two boundaries mean no rate.
 Promotion is neither total retained storage nor proof of a leak.
 
+### Bound the collection phase and the trace reader
+
+Starting CPU observation on Home does not require starting heap sampling there.
+When the question concerns the initial battle transition, start allocation
+sampling after an actual matched, loaded BUY completion and await every owned
+target's acknowledgement before sending READY. Keep that receipt, each target's
+request/ack brackets and the CPU-stop/retrieval tail. A LIVE-only heap start misses
+BUY allocations; a Home-start heap includes loading. Neither can be renamed to
+the missing phase, and timestamp-less samples cannot be cropped afterwards.
+
+Large native traces can exceed a JavaScript string limit before analysis starts.
+Drain the complete original stream to disk and persist transport completion,
+data-loss status, EOF and close receipts before parsing. Frame JSON values across
+arbitrary byte chunks; validate discarded values and the complete outer tail.
+Retain the summary's marker, GC, counter and cleanup inputs with explicit
+per-value/depth/output limits. Exceeding a bound rejects the analysis rather than
+silently omitting events. Compare the filtered summary against an independent
+recovery when possible; a missing original receipt stays unknown.
+
+The [restored-scene collection case](cases/restored-scene-attribution-20261017.md#separate-allocation-population-from-a-cold-stall)
+records an actual oversized trace, bounded recovery and matched-BUY heap start.
+
 ## Authenticate source locations and count once
 
 1. Save `Debugger.getScriptSource` SHA256 for each loaded script URL. Preserve
@@ -70,6 +107,14 @@ Node self-size totals and sample-record totals can differ in V8 captures. Retain
 both values rather than inventing an equality check or replacing one silently.
 Report raw bytes with an explicit MB/MiB convention, duration and sample interval.
 Millions of allocated bytes do not mean those bytes survive simultaneously.
+
+Validate each target independently without turning a failed capture green. The
+[current LIVE heap audit](../../../packages/render/reports/current-a011-live-heap-source-attribution-20261017.json)
+retains an Engine Worker sample whose node is absent, while separately qualifying
+the unchanged Host and Render Worker profiles. Any tree-only projection must
+preserve orphan rows and both byte totals outside its attributed partition.
+Report sampling request/ack bounds and the CPU-stop/retrieval tail: samples have
+no timestamps, so that tail cannot be removed or called exact product churn.
 
 ## Inventory retained representations
 
@@ -103,6 +148,20 @@ fences. `invalidate` changes publication authority; it is not a safe memory
 eviction operation. The [source-read case](cases/full-scene-resources-20261016.md#decoded-source-roots-and-render-readiness)
 records the public API, full producer proof and measured limits.
 
+### Separate moved allocation from removed storage
+
+Eager loading can eliminate first-use construction while retaining a much larger
+set than the measured route touched. Measure snapshots/selections and derived
+indices separately before choosing a representation change. Count reachable
+ArrayBuffer backing stores with heap changes; moving objects out of `heapUsed`
+alone is not storage removal. Keep diagnostic forced-GC measurements outside
+product startup and natural-GC timing.
+
+Use the [query preparation case](cases/query-preparation-20261017.md) when deciding
+between loading preparation, a compact fixed index and the existing dynamic
+index. It preserves the adverse complete-loader observation alongside local
+CPU and storage improvements.
+
 ## Remove work at its existing authority
 
 | Observed source | Structural change | Required falsifier |
@@ -120,6 +179,31 @@ Reusing a material fact does not authorize reusing a view's visibility or depth.
 Aliased ECS array views cannot be held across structural change or published as
 detached snapshots. Preserve raw/custom input observation; immutable-looking
 types and shallow freezing alone do not prove producer ownership.
+
+## Qualify reusable facts once at admission
+
+Private producer admission can capture and seal detached primitive facts once,
+then register that exact object in an existing realm-local ownership registry.
+Consumers borrow only admitted facts. Raw/custom rows retain their original
+capture path; a TypeScript readonly type, shallow freeze or public brand field
+cannot establish this qualification. Repeating descriptor inspection at every
+lookup can cost more than the copying it replaces.
+
+| Recurring work | Move or remove it at this boundary | Lifetime limit |
+| --- | --- | --- |
+| Main and shadow rebuild the same primitive membership | Publish one reverse index from the immutable submission plan | Visibility, depth and indirect commands remain view-owned |
+| Material defaults, tuples and numeric wrappers | Write scalar defaults directly and reuse the payload owner's DataView | Mutable bytes still repack; each physical upload target remains authoritative |
+| Per-row closures and iterator entry tuples | One classifier per invocation; trusted dense traversal where already admitted | Raw iterators retain next/IteratorClose, getters, holes and callback receiver behavior |
+| Resource, shader or contact-history result wrappers | Reuse the existing lifetime owner's immutable success/publication | Failure, replacement, append/reset and recovery invalidate their actual owner |
+| ECS membership and field-name intermediates | Read the existing sorted component roster and frozen definition metadata | Public row snapshots still detach mutable values |
+| Query vectors, rotated corners and losing ray hits | Scalar kernels and bounded invocation scratch; allocate final public winners | Reentry needs separate scratch; old results remain valid; binary64 precision is preserved |
+
+Prefer a tri-state native contact prefilter over eagerly publishing manifolds
+when the caller only asks whether a pair could matter. Return unknown before a
+healthy completed step or for unmanaged bodies. Collision-event membership can
+admit a pair, but its absence cannot reject colliders that never emitted events;
+consult authoritative native adjacency before returning false. Keep public
+contact snapshot and history lifetimes separate from this admission query.
 
 ## Batch changes around the measured owners
 
@@ -145,6 +229,12 @@ collection frequency and surviving/promotion storage together. Do not infer an
 object count by dividing bytes by a guessed size, or assume smaller objects are
 always more expensive. Report the batch's combined result first; attributing a
 percentage to each change requires an additional controlled comparison.
+When a task specifies a combined reduction target, compare matched before/after
+Worker rates in the same units and workload window. For an 80% target, the final
+sum must be at most 0.2 times the baseline sum; also report bytes per completed
+frame so a lower frame rate cannot masquerade as reduced churn. Keep functional
+regressions local during implementation and reserve expensive whole-scene
+captures for the completed batch unless a specific unknown blocks the design.
 
 A raw iterator must retain its cached next method, tuple destructuring and
 IteratorClose on exceptions. Use the original for-of path for raw inputs; a
@@ -166,3 +256,5 @@ allocation reduction does not establish elimination of most Worker GC.
 
 [The scoped Worker case](cases/worker-gc-ownership.md) records examples where
 local reductions passed correctness tests while whole-Worker churn remained high.
+Its [integration batch](cases/worker-gc-ownership.md#integration-batch-2026-10-15)
+separates shipped source changes from unfinished whole-Worker acceptance.

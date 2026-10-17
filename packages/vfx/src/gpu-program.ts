@@ -80,6 +80,15 @@ export interface VfxGpuProgramReflectionV3 {
   readonly renderers: readonly VfxGpuRendererReflectionV3[];
 }
 
+/** Explicit compiler-authored multi-instance compute contract. The original
+ * program remains the fallback for devices or emitters outside this ABI. */
+export interface VfxGpuInstanceComputeProgram {
+  readonly format: 'forgeax-vfx-instance-compute-1';
+  readonly jobBytes: 336;
+  readonly wgsl: string;
+  readonly bindings: readonly BindGroupLayoutDescriptor[];
+}
+
 export interface VfxGpuEmitterProgramV3
   extends Omit<ParticleEffectProgramEmitter, 'renderers' | 'reflection'> {
   readonly id: string;
@@ -94,6 +103,7 @@ export interface VfxGpuEmitterProgramV3
   readonly events?: readonly ParticleEventSource[];
   readonly simulationWhenCulled: NonNullable<ParticleEmitterSourceV3['simulationWhenCulled']>;
   readonly wgsl: string;
+  readonly instanceCompute?: VfxGpuInstanceComputeProgram;
   readonly reflection: VfxGpuProgramReflectionV3;
 }
 

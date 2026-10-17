@@ -30,6 +30,7 @@ import { materialParametersToParamSchema } from '../../../assets-runtime/src/mat
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { derive } from '../../../types/src/index';
 import { createRenderer as constructRenderer } from '../assembly/factory';
+import { resolveMaterialPipelineVertexEntry } from '../assembly/material/pipeline-helpers';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight } from '../components';
 import { gpuDrivenDrawKey } from '../extract/gpu-driven';
 import { BatchTopology } from '../gpu-driven/batch-topology';
@@ -76,7 +77,7 @@ import {
   standardPbrInputs,
   updateSnapshot,
 } from './gpu-driven-production-fixture';
-import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
+import { renderLifecycleManifestUrl, standardPbrFixtureVariants } from './shader-manifest-fixture';
 
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
 
@@ -3062,6 +3063,331 @@ describe('GPU-driven production projection', () => {
     } finally {
       projectVisibility.mockRestore();
       renderer.dispose();
+    }
+  });
+});
+
+describe('GPU-driven early GBuffer ordering diagnostic command contract', () => {
+  it('reports real Renderer extraction, material registry, factory and cached graph gate inputs', async () => {
+    const manifest = JSON.parse(
+      decodeURIComponent(
+        manifestDataUrl('// f_schlick( diagnostic factory', true).split(',')[1] ?? '',
+      ),
+    );
+    const row = manifest.materialShaders.find(
+      (entry: { identifier: string }) => entry.identifier === 'forgeax::default-standard-pbr',
+    );
+    row.variants = standardPbrFixtureVariants(row.composedWgsl).map((variant) => ({
+      ...variant,
+      receipt: STANDARD_PBR_RECEIPT,
+    }));
+    const lifecycle = JSON.parse(
+      decodeURIComponent(renderLifecycleManifestUrl().split(',')[1] ?? ''),
+    );
+    manifest.entries.push(...lifecycle.entries);
+    manifest.materialShaders.push(
+      ...lifecycle.materialShaders.filter(
+        (entry: { identifier: string }) =>
+          !manifest.materialShaders.some(
+            (known: { identifier: string }) => known.identifier === entry.identifier,
+          ),
+      ),
+    );
+    const renderer = await constructRenderer(
+      {
+        width: 16,
+        height: 16,
+        getContext: () => null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      } as unknown as HTMLCanvasElement,
+      { rhi },
+      {
+        shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
+      },
+    );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect(
+        renderer.setProfile({
+          ...renderer.inspect().profile,
+          renderPath: 'deferred',
+          gbufferBatchOrderDiagnostic: { order: 'near', programDigests: [] },
+        }).ok,
+      ).toBe(true);
+      const world = new World();
+      renderer.attach(world).unwrap();
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 5] } },
+          { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
+        )
+        .unwrap();
+      const material = world.allocSharedRef(
+        'MaterialAsset',
+        Materials.standard({ baseColor: [1, 1, 1, 1] }),
+      );
+      for (const z of [0, -2])
+        world
+          .spawn(
+            { component: Transform, data: { pos: [0, 0, z] } },
+            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshRenderer, data: { materials: [material] } },
+          )
+          .unwrap();
+      for (let frame = 0; frame < 4; frame++) {
+        world.update(1 / 60).unwrap();
+        const result = renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+        if (!result.ok) throw result.error;
+        await result.value?.completed;
+      }
+      const proof = renderer.inspect().renderScene.gpuDriven?.gbufferBatchOrderDiagnostic;
+      expect(proof?.status).toBe('evaluated');
+      expect(proof?.denominator?.selected).toBeGreaterThan(0);
+      expect(proof?.classes?.length).toBeGreaterThan(0);
+      expect(
+        proof?.classes?.every((entry) => entry.facts.selectedVertexEntry === 'vs_scene_index'),
+      ).toBe(true);
+      expect(proof?.rejections?.['program-digest']).toBe(proof?.denominator?.live);
+      expect(proof?.rejections).toEqual({ 'program-digest': proof?.denominator?.live });
+      expect(proof?.batches?.length).toBe(proof?.denominator?.live);
+      expect(proof?.encodes.some((entry) => entry.phase === 'late' && !entry.admitted)).toBe(true);
+    } finally {
+      renderer.dispose();
+    }
+  });
+  it('sorts authored Forward overlays through the real factory entry selection, preserving raw and unknown programs', async () => {
+    const { gbufferProgramDigest } = await import('../gpu-driven/gbuffer-order-diagnostic');
+    const device = (
+      await (await rhi.requestAdapter()).unwrap().requestDevice()
+    ).unwrap() as RhiNullDevice;
+    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+    const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
+    const pbrInputs = standardPbrInputs(device, shader, viewLayout);
+    const baseArtifact = pbrInputs.standardPbrArtifact;
+    const pipelineLayout = pbrInputs.standardPbrPipelineState?.gpuDrivenPbrPipelineLayout;
+    if (baseArtifact === undefined || pipelineLayout === undefined)
+      throw Error('missing fixture material pipeline');
+    const forwardArtifact = {
+      ...baseArtifact,
+      vertexEntry: 'vs_main',
+      fragmentEntry: 'fs_main',
+    };
+    const selectedEntries: string[] = [];
+    const pipelineFactory: NonNullable<
+      Parameters<GpuDrivenProduction['prepare']>[0]['materialPipelineFactory']
+    > = (...args) => {
+      const entryPoint = resolveMaterialPipelineVertexEntry(args[15], args[16], args[18]);
+      if (entryPoint === undefined) throw Error('missing selected scene-index entry');
+      selectedEntries.push(entryPoint);
+      return {
+        group2Contract: 'mesh',
+        pipeline: device
+          .createRenderPipeline({
+            layout: pipelineLayout,
+            vertex: { module: shader, entryPoint, buffers: [] },
+            fragment: {
+              module: shader,
+              entryPoint: args[19] ?? 'fs_main',
+              targets: [args[9] ?? 'rgba16float', ...(args[17] ?? [])].map((format) => ({
+                format,
+              })),
+            },
+          })
+          .unwrap(),
+      };
+    };
+    const projection = new RenderScene();
+    const topology = new BatchTopology();
+    const availability = GpuScene.create(device, 8).unwrap();
+    if (availability.status !== 'available') throw Error('GPU scene unavailable');
+    const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
+    const rows = [8, 2, 4, 9, 1].map((depth, index) => {
+      const source = preparedPbrFixture(snapshot(index + 1, index + 1));
+      source.transform.world[14] = -depth;
+      const material = {
+        ...source.material,
+        deferredPass: true,
+        renderState: {
+          depthCompare: 'greater' as const,
+          ...(index === 2 ? { depthWriteEnabled: false } : {}),
+        },
+      };
+      return { ...source, material, materials: [material] };
+    });
+    availability.scene.sync(projection.apply(rows.map(updateSnapshot))).unwrap();
+    topology.rebuild(projection.slotsSnapshot());
+    const meshes = new Map(rows.map((_, index) => [index, mesh(device)]));
+    const emptyGroup = device.createBindGroup({ layout: viewLayout, entries: [] }).unwrap();
+    const encode = async (
+      order: 'near' | 'far' | undefined,
+      known = true,
+      stock = true,
+      sourceFailure?: 'morph' | 'displacement' | 'bounds',
+    ) => {
+      const prepared = production
+        .prepare({
+          ...pbrInputs,
+          standardPbrArtifact: forwardArtifact,
+          materialPipelineFactory: pipelineFactory,
+          scene: {
+            scene: availability.scene,
+            plan: topology.plan(),
+            slots: projection.slotsSnapshot(),
+            slotAt:
+              sourceFailure === undefined
+                ? projection.slotAt
+                : (index: number) => {
+                    const slot = projection.slotAt(index);
+                    if (slot === undefined) return undefined;
+                    const source = slot.snapshot;
+                    return {
+                      ...slot,
+                      snapshot: {
+                        ...source,
+                        ...(sourceFailure === 'morph'
+                          ? { morph: {} as NonNullable<RenderableSnapshot['morph']> }
+                          : {}),
+                        ...(sourceFailure === 'bounds' ? { localAabb: undefined } : {}),
+                        ...(sourceFailure === 'displacement'
+                          ? {
+                              materials: [],
+                              material: {
+                                ...source.material,
+                                paramSnapshot: { displacementScale: 2 },
+                              },
+                            }
+                          : {}),
+                      },
+                    };
+                  },
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
+          meshResidencyEpoch: 1,
+          ...(order === undefined
+            ? {}
+            : {
+                gbufferBatchOrderDiagnostic: {
+                  order,
+                  programDigests: [gbufferProgramDigest(known ? 'synthetic' : 'unknown')],
+                },
+              }),
+        })
+        .unwrap();
+      const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+      const formats = ['r32uint', 'r32uint', 'r32uint', 'r32uint', 'rg32uint'] as const;
+      const gpu = prepared
+        .project(graph, 'rgba16float', 1, undefined, formats, false, stock)
+        .unwrap();
+      const colors = (['rgba16float', ...formats] as const).map((format, index) =>
+        graph
+          .view(
+            graph
+              .createTexture(`order-${index}`, { format, size: { width: 1, height: 1 } })
+              .unwrap(),
+          )
+          .unwrap(),
+      );
+      const offsets: number[] = [];
+      graph
+        .addRasterPass('order', {
+          accesses: [
+            ...gpu.accesses,
+            ...colors.map((resource) => ({ resource, usage: 'color-attachment' as const })),
+          ],
+          colorAttachments: colors.map((view) => ({
+            view,
+            loadOp: 'clear' as const,
+            storeOp: 'store' as const,
+          })),
+          encode: ({ pass, resources }) => {
+            const draw = vi.spyOn(pass, 'drawIndexedIndirect');
+            gpu.encode(
+              emptyGroup,
+              pass,
+              resources,
+              {
+                ...prepared.standardPbrFrameResources,
+                materialStride: 256,
+                materialBindGroups: [emptyGroup],
+                colorFormats: ['rgba16float', ...formats],
+              },
+              'deferred-opaque',
+              'fs_gbuffer',
+            );
+            offsets.push(...draw.mock.calls.map(([, offset]) => offset));
+          },
+        })
+        .unwrap();
+      const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      try {
+        const encoder = device.createCommandEncoder().unwrap();
+        compiled.execute({ encoder } as RenderPipelineFrame).unwrap();
+        encoder.finish().unwrap();
+      } finally {
+        (await compiled.retire()).unwrap();
+      }
+      return offsets;
+    };
+    try {
+      const base = await encode(undefined);
+      expect(base).toHaveLength(5);
+      const near = await encode('near');
+      expect(near).toEqual([base[1], base[0], base[2], base[4], base[3]]);
+      expect(production.inspect().gbufferBatchOrderDiagnostic).toMatchObject({
+        mode: 'near',
+        eligibleBatches: 4,
+        movedBatches: 4,
+        status: 'evaluated',
+        denominator: { live: 5, selected: 5 },
+        rejections: { 'interface/depthWrite': 1 },
+      });
+      const evidence = production.inspect().gbufferBatchOrderDiagnostic;
+      expect(evidence?.batches).toHaveLength(5);
+      expect(
+        evidence?.classes?.every(
+          (row) => row.auditedSource && row.facts.depthCompare === 'greater',
+        ),
+      ).toBe(true);
+      expect(evidence?.encodes).toMatchObject([
+        {
+          filter: 'deferred-opaque',
+          fragmentEntry: 'fs_gbuffer',
+          phase: 'all',
+          colorTargetCount: 6,
+          admitted: true,
+        },
+      ]);
+      expect(await encode('far')).toEqual(base);
+      expect(await encode('near', false)).toEqual(base);
+      expect(production.inspect().gbufferBatchOrderDiagnostic?.eligibleBatches).toBe(0);
+      expect(production.inspect().gbufferBatchOrderDiagnostic?.rejections?.['program-digest']).toBe(
+        5,
+      );
+      for (const [failure, reason] of [
+        ['morph', 'source-or-deformation'],
+        ['displacement', 'displacement'],
+        ['bounds', 'bounds-invalid'],
+      ] as const) {
+        expect(await encode('near', false, true, failure)).toEqual(base);
+        const proof = production.inspect().gbufferBatchOrderDiagnostic;
+        expect(proof?.rejections?.[`bounds/${reason}`]).toBe(5);
+        expect(proof?.rejections?.['program-digest']).toBe(5);
+        expect(proof?.rejections?.['interface/depthWrite']).toBe(1);
+        expect(proof?.batches?.every((row) => row.rejectedSource !== undefined)).toBe(true);
+      }
+      expect(await encode('near', true, false)).toEqual(base);
+      expect(production.inspect().gbufferBatchOrderDiagnostic).toMatchObject({
+        status: 'not-encoded',
+        encodes: [{ rendererRecording: false, admitted: false }],
+      });
+      expect(selectedEntries.length).toBeGreaterThan(0);
+      expect(new Set(selectedEntries)).toEqual(new Set(['vs_scene_index']));
+    } finally {
+      production.dispose();
+      availability.scene.dispose();
     }
   });
 });

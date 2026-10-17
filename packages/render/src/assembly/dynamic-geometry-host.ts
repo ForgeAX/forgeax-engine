@@ -1,9 +1,18 @@
+import { resolveAssetHandle, runtimeContentRevision } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { FixedTime } from '@forgeax/engine-ecs';
+import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Transform } from '@forgeax/engine-scene';
-import { err, type Handle, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
+import {
+  err,
+  type Handle,
+  type MaterialAsset,
+  type MeshAsset,
+  ok,
+  type Result,
+} from '@forgeax/engine-types';
 import type { AsyncDynamicGeometryHost } from '../async-dynamic-geometry';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
@@ -23,6 +32,11 @@ import {
   type PreparedMeshResidency,
   sameCandidateCredential,
 } from '../dynamic-geometry';
+import type { MeshPipelinePreparation } from '../publication/contract';
+import type {
+  CandidatePipelineInput,
+  PreparedCandidatePipelines,
+} from '../record/candidate-pipeline-preparation';
 import type { RecordProfileRunner } from '../record/render-context';
 import type { RenderRecordPhase } from '../render-contract';
 
@@ -68,6 +82,10 @@ function cloneMesh(mesh: MeshAsset, transfers: ArrayBuffer[]): MeshAsset {
 }
 
 export interface DynamicGeometryHostImplementation {
+  prepareDynamicGeometryPipelines(
+    candidates: readonly DynamicGeometryCandidate[],
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<Result<void, DynamicGeometryError>>;
   prepareDynamicGeometry(
     input: DynamicGeometryPrepareInput,
   ): Result<DynamicGeometryCandidate, DynamicGeometryError>;
@@ -120,6 +138,10 @@ interface PhysicsPublicationLike {
 }
 
 interface HostCandidateRecord {
+  pipelinePreparation?: MeshPipelinePreparation;
+  materialIsCurrent?: () => boolean;
+  pipelines?: PreparedCandidatePipelines;
+  pipelineAbort?: AbortController;
   /** Credential plus the lifecycle state this host last issued or observed. */
   candidate: DynamicGeometryCandidate;
   /** Private snapshot metadata; exclusive storage can move to the remote residency owner. */
@@ -163,6 +185,7 @@ export interface DynamicGeometryResidencyPort {
       readonly entity?: number;
       readonly meshHandle: Handle<'MeshAsset', 'shared'>;
       readonly mesh: MeshAsset;
+      readonly pipelinePreparation?: MeshPipelinePreparation;
     },
     options?: {
       readonly signal?: AbortSignal;
@@ -301,10 +324,21 @@ function physicsPublicationOf(
 
 type DynamicGeometryAdmissionHost = Omit<
   DynamicGeometryHostImplementation,
-  'prepareDynamicGeometry' | 'prepareDynamicGeometryCandidates' | 'prepareMeshResidency'
+  | 'prepareDynamicGeometry'
+  | 'prepareDynamicGeometryCandidates'
+  | 'prepareDynamicGeometryPipelines'
+  | 'prepareMeshResidency'
 >;
 
 interface DynamicGeometryHostOptions {
+  readonly capturePipelinePreparation?:
+    | ((input: {
+        readonly world: World;
+        readonly entity: number;
+        readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+        readonly mesh: MeshAsset;
+      }) => Result<MeshPipelinePreparation, DynamicGeometryError>)
+    | undefined;
   readonly lifecycle: DynamicGeometryLifecycle;
   readonly attachedWorlds: ReadonlySet<World>;
   readonly currentGeneration: () => number;
@@ -330,6 +364,16 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
   } = options;
   const hostCandidates = new Map<string, HostCandidateRecord>();
   const faultedWorlds = new WeakMap<World, DynamicGeometryError>();
+  const materialCurrentnessRevisions = new WeakMap<World, string>();
+  const preparingPipelines = new WeakMap<World, Set<HostCandidateRecord>>();
+  const releasePipelinePreparation = (record: HostCandidateRecord) => {
+    preparingPipelines.get(record.world)?.delete(record);
+    record.pipelineAbort?.abort();
+    delete record.pipelineAbort;
+    delete record.pipelinePreparation;
+    delete record.materialIsCurrent;
+    delete record.pipelines;
+  };
   let currentnessRevision: object = Object.freeze({});
   const invalidateCurrentness = () => {
     currentnessRevision = Object.freeze({});
@@ -436,11 +480,115 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       return undefined;
     return record;
   };
+  const capturePipelines = (record: HostCandidateRecord): Result<void, DynamicGeometryError> => {
+    if (
+      record.pipelinePreparation !== undefined ||
+      options.capturePipelinePreparation === undefined
+    )
+      return ok(undefined);
+    const binding = record.world.get(record.entity as EntityHandle, MeshRenderer);
+    if (!binding.ok)
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'candidate material binding is live',
+          'prepare the current render entity',
+        ),
+      );
+    const handles = [...binding.value.materials];
+    const captured = options.capturePipelinePreparation(record);
+    if (!captured.ok) return captured;
+    const materialHandles = [
+      ...new Set(
+        captured.value.template.snapshot.materials
+          .map((material) => material.materialHandle ?? 0)
+          .filter((handle) => handle !== 0),
+      ),
+    ];
+    const payloads = materialHandles.map((handle) =>
+      record.world.sharedRefs.resolve(handle as Handle<'MaterialAsset', 'shared'>),
+    );
+    record.pipelinePreparation = captured.value;
+    let guards = preparingPipelines.get(record.world);
+    if (guards === undefined) {
+      guards = new Set();
+      preparingPipelines.set(record.world, guards);
+    }
+    guards.add(record);
+    let contentRevision = runtimeContentRevision(record.world);
+    let runtimePayloads = materialHandles.map((handle) =>
+      resolveAssetHandle<MaterialAsset>(record.world, handle as Handle<'MaterialAsset', 'shared'>),
+    );
+    let rasterCurrent = true;
+    record.materialIsCurrent = () => {
+      if (!rasterCurrent) return false;
+      const current = record.world.get(record.entity as EntityHandle, MeshRenderer);
+      if (
+        !current.ok ||
+        current.value.materials.length !== handles.length ||
+        !handles.every((handle, index) => current.value.materials[index] === handle) ||
+        !materialHandles.every((handle, index) => {
+          const previous = payloads[index];
+          const resolved = record.world.sharedRefs.resolve(
+            handle as Handle<'MaterialAsset', 'shared'>,
+          );
+          return previous?.ok === true && resolved.ok && previous.value === resolved.value;
+        })
+      ) {
+        rasterCurrent = false;
+        return false;
+      }
+      const revision = runtimeContentRevision(record.world);
+      if (revision === contentRevision) return true;
+      contentRevision = revision;
+      const nextPayloads = materialHandles.map((handle) =>
+        resolveAssetHandle<MaterialAsset>(
+          record.world,
+          handle as Handle<'MaterialAsset', 'shared'>,
+        ),
+      );
+      const unchanged = nextPayloads.every((next, index) => {
+        const previous = runtimePayloads[index];
+        return next.ok && previous?.ok === true && next.value === previous.value;
+      });
+      runtimePayloads = nextPayloads;
+      if (unchanged) return true;
+      // RuntimeMaterialValue changes numeric values, never immutable programs.
+      // Re-extract only an affected material, comparing the values used by raster
+      // selection. Uniform-only edits retain the existing compilation proof.
+      const next = options.capturePipelinePreparation?.(record);
+      if (next?.ok !== true) {
+        rasterCurrent = false;
+        return false;
+      }
+      const previous = captured.value.template.snapshot.materials;
+      const materials = next.value.template.snapshot.materials;
+      rasterCurrent =
+        previous.length === materials.length &&
+        previous.every((material, index) => {
+          const other = materials[index];
+          return (
+            other !== undefined &&
+            material.materialHandle === other.materialHandle &&
+            material.standardTextureMask === other.standardTextureMask &&
+            Number(material.paramSnapshot?.alphaCutoff ?? 0) > 0 ===
+              Number(other.paramSnapshot?.alphaCutoff ?? 0) > 0 &&
+            Number(material.paramSnapshot?.alphaHash ?? 0) > 0.5 ===
+              Number(other.paramSnapshot?.alphaHash ?? 0) > 0.5 &&
+            Number(material.paramSnapshot?.transmission ?? 0) > 0 ===
+              Number(other.paramSnapshot?.transmission ?? 0) > 0
+          );
+        });
+      return rasterCurrent;
+    };
+    return ok(undefined);
+  };
   const scheduleCandidateCleanup = (
     record: HostCandidateRecord,
     force = false,
     terminal?: 'cancel' | 'retire',
   ): Promise<void> | undefined => {
+    releasePipelinePreparation(record);
     if (record.cleanup !== undefined) return record.cleanup.completed;
     let complete!: () => void;
     const completed = new Promise<void>((resolve) => {
@@ -659,7 +807,9 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         if (
           !input.gpuReady ||
           record.residency === undefined ||
-          record.residency.isCurrent?.() === false
+          record.residency.isCurrent?.() === false ||
+          record.materialIsCurrent?.() === false ||
+          record.pipelines?.isCurrent() === false
         )
           return err(
             new DynamicGeometryError(
@@ -1004,6 +1154,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         if (entry === undefined || committed === undefined)
           throw fault(world, new Error('lifecycle acceptance returned an incomplete batch'));
         entry.record.candidate = committed;
+        releasePipelinePreparation(entry.record);
         invalidateCurrentness();
       }
 
@@ -1237,6 +1388,8 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         record.cleanup === undefined &&
         record.residency !== undefined &&
         record.residency.isCurrent?.() !== false &&
+        (record.candidate.state !== 'prepared' ||
+          (record.materialIsCurrent?.() !== false && record.pipelines?.isCurrent() !== false)) &&
         record.generation === currentGeneration() &&
         attachedWorlds.has(record.world) &&
         !faultedWorlds.has(record.world)
@@ -1540,6 +1693,11 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         'discard the stale preparation',
       );
     if (signal?.aborted) return err(cancelled());
+    const captured = capturePipelines(record);
+    if (!captured.ok) {
+      await scheduleCandidateCleanup(record, false, 'cancel');
+      return captured;
+    }
     const pending = Promise.resolve().then(() =>
       port.prepare(
         {
@@ -1547,6 +1705,9 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
           entity: record.entity,
           meshHandle: record.meshHandle,
           mesh: record.mesh,
+          ...(record.pipelinePreparation === undefined
+            ? {}
+            : { pipelinePreparation: record.pipelinePreparation }),
         },
         {
           ...(signal === undefined ? {} : { signal }),
@@ -1592,7 +1753,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
             )
           : signal?.aborted || record.cleanup !== undefined
             ? cancelled()
-            : !resident.value.isCurrent()
+            : !resident.value.isCurrent() || record.materialIsCurrent?.() === false
               ? new DynamicGeometryError(
                   'dynamic-geometry-gpu-not-ready',
                   'the prepared physical allocation remains current',
@@ -1678,7 +1839,94 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
   };
   return {
     host,
-    currentnessRevision: () => currentnessRevision,
+    async preparePipelines(
+      candidates: readonly DynamicGeometryCandidate[],
+      getGpuStore: () => GpuResidencyCache,
+      prepare: (
+        input: CandidatePipelineInput,
+        signal?: AbortSignal,
+      ) => Promise<Result<PreparedCandidatePipelines, DynamicGeometryError>>,
+      signal?: AbortSignal,
+    ): Promise<Result<void, DynamicGeometryError>> {
+      const unavailable = () =>
+        new DynamicGeometryError(
+          'dynamic-geometry-gpu-not-ready',
+          'pipeline preparation uses current prepared candidate credentials',
+          'prepare the current mesh and material again',
+        );
+      const records: HostCandidateRecord[] = [];
+      for (const candidate of candidates) {
+        const record = candidateRecord(candidate);
+        if (
+          record === undefined ||
+          record.candidate.state !== 'prepared' ||
+          signal?.aborted ||
+          !host.isDynamicGeometryCurrent(candidate)
+        )
+          return err(unavailable());
+        const captured = capturePipelines(record);
+        if (!captured.ok) return captured;
+        if (record.pipelinePreparation === undefined) return err(unavailable());
+        records.push(record);
+      }
+      const results = await Promise.all(
+        records.map(async (record) => {
+          const mesh = getGpuStore().getMeshGpuHandles(record.meshHandle, record.world);
+          const preparation = record.pipelinePreparation;
+          if (mesh === undefined || preparation === undefined) return err(unavailable());
+          const isCurrent = () =>
+            record.cleanup === undefined &&
+            record.generation === currentGeneration() &&
+            attachedWorlds.has(record.world) &&
+            record.residency !== undefined &&
+            record.residency.isCurrent?.() !== false &&
+            record.materialIsCurrent?.() !== false;
+          record.pipelines = { isCurrent: () => false };
+          record.pipelineAbort?.abort();
+          const controller = new AbortController();
+          record.pipelineAbort = controller;
+          const cancel = () => controller.abort();
+          signal?.addEventListener('abort', cancel, { once: true });
+          if (signal?.aborted) cancel();
+          try {
+            const result = await prepare(
+              {
+                preparation,
+                world: record.world,
+                mesh,
+                asset: record.mesh,
+                isCurrent,
+              },
+              controller.signal,
+            );
+            if (result.ok && isCurrent() && !controller.signal.aborted)
+              record.pipelines = result.value;
+            else if (result.ok) return err(unavailable());
+            return result;
+          } finally {
+            signal?.removeEventListener('abort', cancel);
+            if (record.pipelineAbort === controller) delete record.pipelineAbort;
+          }
+        }),
+      );
+      const failure = results.find((result) => !result.ok);
+      return failure !== undefined && !failure.ok ? failure : ok(undefined);
+    },
+    currentnessRevision: (world: World) => {
+      const preparing = preparingPipelines.get(world);
+      if (preparing === undefined || preparing.size === 0) return currentnessRevision;
+      const revision = `${runtimeContentRevision(world)}:${readComponentMutationEpoch(world, MeshRenderer)}`;
+      if (materialCurrentnessRevisions.get(world) !== revision) {
+        materialCurrentnessRevisions.set(world, revision);
+        for (const record of preparing) {
+          if (record.materialIsCurrent?.() === false) {
+            invalidateCurrentness();
+            break;
+          }
+        }
+      }
+      return currentnessRevision;
+    },
     fault,
     ensureHealthyWorld,
     async prepareAsync(
@@ -1738,6 +1986,13 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       const begun = beginBatch(inputs);
       if (!begun.ok) return begun;
       const candidates = begun.value.map((record) => record.candidate);
+      for (const record of begun.value) {
+        const captured = capturePipelines(record);
+        if (!captured.ok) {
+          cancelPreparedBatch(candidates);
+          return captured;
+        }
+      }
       const results: DynamicGeometryCandidate[] = [];
       // The port arbitrates shared physical credits across concurrent rosters.
       // Drain every started member before returning a refusal or native fault.
@@ -1771,12 +2026,35 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
 export function createDynamicGeometryHost(
   options: DynamicGeometryHostOptions & {
     readonly getGpuStore: () => GpuResidencyCache;
+    readonly prepareCandidatePipelines?:
+      | ((
+          input: CandidatePipelineInput,
+          signal?: AbortSignal,
+        ) => Promise<Result<PreparedCandidatePipelines, DynamicGeometryError>>)
+      | undefined;
   },
 ): DynamicGeometryHostImplementation {
   const owner = createDynamicGeometryHostOwner(options);
   const { attachedWorlds, getGpuStore } = options;
   return {
     ...owner.host,
+    prepareDynamicGeometryPipelines: (candidates, preparation) =>
+      options.prepareCandidatePipelines === undefined
+        ? Promise.resolve(
+            err(
+              new DynamicGeometryError(
+                'dynamic-geometry-gpu-not-ready',
+                'a Renderer pipeline preparation owner is attached',
+                'use the rendering host for asynchronous draw preparation',
+              ),
+            ),
+          )
+        : owner.preparePipelines(
+            candidates,
+            getGpuStore,
+            options.prepareCandidatePipelines,
+            preparation?.signal,
+          ),
     prepareDynamicGeometry: (input) => owner.prepareSync(input, getGpuStore),
     prepareDynamicGeometryCandidates: (inputs) => owner.prepareBatchSync(inputs, getGpuStore),
     prepareMeshResidency(world, meshHandle, observePhase) {
@@ -1908,7 +2186,7 @@ export function createDynamicGeometrySourceHost(
         owner.host.dynamicGeometryFault(world) !== undefined
       )
         return undefined;
-      const revision = owner.currentnessRevision(),
+      const revision = owner.currentnessRevision(world),
         previous = currentness.get(world);
       if (
         previous?.generation === generation &&
@@ -2023,6 +2301,10 @@ export function createDynamicGeometrySourceHost(
  * discard the submitted camera or unrelated surfaces' temporal history.
  */
 export function createRendererDynamicGeometryHost(options: {
+  readonly capturePipelinePreparation?: DynamicGeometryHostOptions['capturePipelinePreparation'];
+  readonly prepareCandidatePipelines?: Parameters<
+    typeof createDynamicGeometryHost
+  >[0]['prepareCandidatePipelines'];
   readonly lifecycle: DynamicGeometryLifecycle;
   readonly attachedWorlds: ReadonlySet<World>;
   readonly getGpuStore: () => GpuResidencyCache;

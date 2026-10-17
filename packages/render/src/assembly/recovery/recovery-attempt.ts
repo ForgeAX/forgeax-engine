@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import { RenderGraphBuilder, type RenderGraphFrame } from '@forgeax/engine-render-graph';
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
 import {
@@ -31,15 +32,6 @@ const PROBE_BUFFER_USAGE_COPY_DST = 0x08;
 const PROBE_READBACK_BYTES_PER_ROW = 256;
 const PROBE_CLEAR: readonly [number, number, number, number] = [0.125, 0.25, 0.5, 1];
 type ProbeFormat = 'rgba16float' | 'rgba8unorm';
-
-function halfToFloat(bits: number): number {
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits & 0x7c00) >> 10;
-  const fraction = bits & 0x03ff;
-  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
-  if (exponent === 0x1f) return fraction === 0 ? sign * Number.POSITIVE_INFINITY : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
-}
 
 function recoveryDeviceProbeFailure(expected: string, hint: string, cause?: unknown): RhiError {
   const inner =
@@ -230,7 +222,7 @@ export async function probeCandidateDeviceExecution(
     const view = new DataView(rangeResult.value);
     const actual =
       format === 'rgba16float'
-        ? [0, 1, 2, 3].map((channel) => halfToFloat(view.getUint16(channel * 2, true)))
+        ? [0, 1, 2, 3].map((channel) => halfFloat.f16ToF32(view.getUint16(channel * 2, true)))
         : [0, 1, 2, 3].map((channel) => (view.getUint8(channel) ?? 0) / 255);
     const epsilon = format === 'rgba16float' ? 0.02 : 2 / 255;
     const matches = actual.every(
@@ -423,7 +415,7 @@ async function probeCandidateGraphTarget(
     const view = new DataView(rangeResult.value);
     const actual =
       target.format === 'rgba16float'
-        ? [0, 1, 2, 3].map((channel) => halfToFloat(view.getUint16(channel * 2, true)))
+        ? [0, 1, 2, 3].map((channel) => halfFloat.f16ToF32(view.getUint16(channel * 2, true)))
         : [0, 1, 2, 3].map((channel) => (view.getUint8(channel) ?? 0) / 255);
     const epsilon = target.format === 'rgba16float' ? 0.02 : 2 / 255;
     if (!actual.every((value, index) => Math.abs(value - (PROBE_CLEAR[index] ?? 0)) <= epsilon)) {

@@ -8,11 +8,11 @@ import {
   createViewExtensionWorkspaceClient,
 } from '@forgeax/view-workspace-core/extension-bridge';
 
-describe('Editor View extension capability bridge', () => {
+describe('Scene View extension capability bridge', () => {
   it('forwards a read operation through the host without a resident token', async () => {
     const calls = [];
     const client = createViewExtensionWorkspaceClient({
-      clientId: 'editor-frame',
+      clientId: 'scene-frame',
       capabilities: [VIEW_EXTENSION_CAPABILITIES.read],
       invoke: (request) => {
         calls.push(request);

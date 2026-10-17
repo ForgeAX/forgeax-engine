@@ -9,6 +9,11 @@ selection used for visible draws. Preparation neither changes visibility nor
 encodes a draw. CPU asset loading and shader-program registration remain
 separate prerequisites.
 
+Ordinary hidden entities keep their persistent Scene and GPU Scene records but
+do not enter raster batches or request their pipelines. Only explicit
+`MeshRenderer.preparePipelines` or candidate preparation requests prepare hidden
+PSOs; making an entity visible updates its ordinary batch membership.
+
 | Receipt | Meaning |
 | --- | --- |
 | `FrameReceipt.presentation === 'pending'` | At least one requested pipeline is still being prepared |
@@ -2170,6 +2175,9 @@ Without a spot shadow, the graph supplies an initialized 1×1 depth array with
 the same four-layer binding shape. A nonzero spot-shadow count keeps the authored
 map resolution. Light count belongs to graph identity, so entering or leaving
 this state rebuilds and initializes the matching target.
+Spot lights beyond the four-tile shadow budget retain direct illumination.
+Their unallocated tiles do not hold `FrameReceipt.presentation` pending;
+allocated shadow tiles retain the ordinary pipeline and resource readiness gates.
 
 Shadow views stay cached under ordinary motion:
 
@@ -6732,7 +6740,13 @@ same revision. This is a publication admission optimization, not per-frame shade
 
 `await renderer.preparePublishedMeshResidency({ source, epoch, meshHandle, mesh })`
 prepares a standard Mesh in that same receiver resource namespace before its
-first scene publication. It resolves only after physical queue completion and
+first scene publication. The internal `pipelinePreparation` payload carries the
+source candidate's real entity, transform, material template and unpublished
+program closure; the receiver installs that closure through ordinary publication
+admission and awaits the same candidate pipeline stage. Native cloning rebinds
+material schemas to their admitted program owner. The optional third argument
+`{ signal }` cancels outstanding preparation while still awaiting submitted upload
+fences before releasing physical ownership. It resolves only after physical queue completion and
 returns a device-generation lease with `isCurrent()`, fence-aware `release()`,
 and `recordStageLane(frame, entity)`. Preparation does not admit a scene row or
 make an unpublished asset a valid dependency. The next packet must publish the
@@ -6755,15 +6769,43 @@ retains the allocation and Mesh identity until actual packet acceptance.
 `release(true)` upgrades a pending transfer to cancellation; receiver retirement
 does the same, so shutdown never depends on a future source publication.
 
+`Renderer.prepareDynamicGeometry` and `prepareDynamicGeometryCandidates` retain
+synchronous mesh-buffer preparation. A caller that also needs raster readiness
+awaits `prepareDynamicGeometryPipelines(candidates, { signal })` on those same
+prepared credentials before FixedUpdate acceptance. This stage extracts each
+candidate's real rigid mesh layout, material bindings and selected programs without
+changing its `MeshFilter`. It requests only the CPU/GPU color, depth/temporal and
+shadow lanes selected by the current compiled view graphs, using the ordinary PSO
+owner. Typed scene passes retain their declared GPU material lane even when the
+current scene has no GPU batches; the existing scene owner's geometry-lane policy
+still controls whether that lane is available. Shadow preparation uses the current
+light projection roster, including a light with no visible caster yet.
+GPU-selected submeshes do not also compile unused direct PSOs. Stable
+candidate projections survive compilation waits; no temporary scene entity, GPU
+Scene row, draw command or second pipeline cache is created.
+
+Candidate compilation has a separate pending state, so current scene frames keep
+submitting while native compilation is outstanding. A native PSO rejection returns
+its original cause with `dynamic-geometry-gpu-not-ready`. No current view or no
+applicable raster lane fails explicitly; stalled preparation is bounded to 30 seconds.
+Skin, morph, terrain, sprite and expanded point/line candidates require their own
+specialized preparation and are rejected by this rigid candidate path. Readiness
+covers the captured current raster demand, not future camera or graph changes.
+Changing the candidate mesh, generation or material binding invalidates preparation.
+Supported numeric material changes that alter raster selection (including alpha
+coverage, transmission lane or texture specialization) invalidate it; ordinary
+uniform changes retain the compiled PSOs. Collective source currentness checks only
+pending candidates, never the retained published terrain roster.
+
 `AsyncDynamicGeometryHost` separates asynchronous physical preparation from
 synchronous World admission. `createAsyncDynamicGeometryHost(renderer)` adapts
-an actual local Renderer; App supplies the same contract for a split Render
-Worker. `currentGeneration()` is undefined before Render readiness. Consumers
+an actual local Renderer and awaits both mesh buffers and candidate pipelines;
+App supplies the same contract for a split Render Worker. `currentGeneration()` is undefined before Render readiness. Consumers
 use `isDynamicGeometryCurrent(candidate)` to query the original candidate and
 physical owner, including source-session invalidation when a replacement
 device reports the same numeric generation. Preparation
 accepts an optional AbortSignal and holds the existing candidate byte budget
-and World shared references while upload is pending. Cancellation and recovery
+and World shared references while upload or pipeline compilation is pending. Cancellation and recovery
 retain those references until physical release completes. Neither upload
 completion nor a Promise continuation mutates ECS. Expected refusals use the
 existing structured error unions; uncertain physical failures fault the paired
@@ -6786,8 +6828,8 @@ methods. Publication still requires each member's actual consumed FrameReceipt.
 
 The internal `createDynamicGeometrySourceHost` reuses the native candidate,
 atomic batch acceptance, rollback and publication owner with a physical
-residency port. All members of a declared roster capture their protected mesh
-snapshots before its first upload window starts. A later snapshot-copy failure
+residency port. All members of a declared roster capture their protected
+mesh and material/program snapshots before its first upload window starts. A later snapshot-copy failure
 cancels the staged roster and releases its references and byte reservations.
 The port receives the private snapshot; consumer credentials carry no payload.
 Worker transport still clones Mesh POD into receiver-owned bytes and never

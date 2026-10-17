@@ -39,7 +39,7 @@ export type WorkspaceState = {
   apiVersion?: string; revision?: number; selectedTabId?: string | null; tabs?: readonly WorkspaceTab[];
   projectIntent?: { root: string };
   project?: WorkspaceProject | null; projectTarget?: WorkspaceTarget | null; assets?: readonly WorkspaceAsset[] | null;
-  preview?: WorkspacePreview | null; previews?: readonly WorkspacePreview[]; editorPreview?: WorkspacePreview | null;
+  preview?: WorkspacePreview | null; previews?: readonly WorkspacePreview[]; scenePreview?: WorkspacePreview | null;
   play?: { target: WorkspaceTarget; phase?: string } | null; targetBinding?: string;
   inspection?: WorkspaceInspection | null; openRequest?: WorkspaceOpenRequest | null;
   resourceOpens?: Map<string, WorkspaceResourceOpen> | Record<string, WorkspaceResourceOpen>;
@@ -85,7 +85,7 @@ export const VIEW_WORKSPACE_STATE_TOPIC = 'forgeax.view.workspace.state';
 
 export const VIEW_PAGE_TYPES = Object.freeze({
   history: 'history',
-  editor: 'editor',
+  scene: 'scene',
   display: 'display',
   plugins: 'plugins',
   material: 'material',
@@ -588,9 +588,9 @@ export function serializeWorkspaceState(state: WorkspaceState): WorkspaceState {
         }
       : null,
     previews: (state.previews ?? []).map(preview => ({ target: serializeWorkspaceTarget(preview.target), asset: preview.asset ? serializeWorkspaceAsset(preview.asset) : null, assetBinding: preview.assetBinding })),
-    editorPreview: state.editorPreview ? { target: serializeWorkspaceTarget(state.editorPreview.target), asset: state.editorPreview.asset ? serializeWorkspaceAsset(state.editorPreview.asset) : null, assetBinding: state.editorPreview.assetBinding } : null,
+    scenePreview: state.scenePreview ? { target: serializeWorkspaceTarget(state.scenePreview.target), asset: state.scenePreview.asset ? serializeWorkspaceAsset(state.scenePreview.asset) : null, assetBinding: state.scenePreview.assetBinding } : null,
     play: state.play ? { target: serializeWorkspaceTarget(state.play.target), phase: state.play.phase } : null,
-    targetBinding: state.targetBinding ?? 'editor',
+    targetBinding: state.targetBinding ?? 'scene',
     inspection: serializeWorkspaceInspection(state.inspection),
     openRequest: serializeWorkspaceOpenRequest(state.openRequest),
     resourceOpens: serializeWorkspaceResourceOpens(state.resourceOpens),

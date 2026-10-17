@@ -4,7 +4,7 @@ import { createWorkspaceStateReader } from './workspace-state.ts';
 import { selectWorkspaceFallbackSubject, selectWorkspaceResourceSubject } from './resource-open.ts';
 
 /**
- * Live title for the editor page. The Host workspace snapshot is the SSOT:
+ * Live title for the scene page. The Host workspace snapshot is the SSOT:
  * when a preview/scene is bound, the tab shows that asset's name. The page
  * type's titleKey remains the idle fallback — this helper never invents a
  * static label, so the shell stays decoupled from scene vocabulary.
@@ -12,7 +12,7 @@ import { selectWorkspaceFallbackSubject, selectWorkspaceResourceSubject } from '
  * @param {unknown} state
  * @returns {string | undefined}
  */
-export function editorPageTitleFromWorkspace(state: WorkspaceState | null | undefined) {
+export function scenePageTitleFromWorkspace(state: WorkspaceState | null | undefined) {
   const asset = state && typeof state === 'object' ? state.preview?.asset : undefined;
   if (!asset || typeof asset !== 'object') return undefined;
   for (const candidate of [asset.name, asset.label]) {
@@ -28,15 +28,15 @@ export function editorPageTitleFromWorkspace(state: WorkspaceState | null | unde
  *
  * @param {unknown} client
  */
-export function createEditorPageTitleController(client: WorkspaceStateClient | undefined) {
+export function createScenePageTitleController(client: WorkspaceStateClient | undefined) {
   const reader = createWorkspaceStateReader(client);
   return Object.freeze({
     getResource() {
-      const asset = reader.getSnapshot()?.editorPreview?.asset;
+      const asset = reader.getSnapshot()?.scenePreview?.asset;
       return asset ? { asset: { guid: asset.guid, kind: asset.kind } } : undefined;
     },
     getTitle() {
-      return editorPageTitleFromWorkspace(reader.getSnapshot());
+      return scenePageTitleFromWorkspace(reader.getSnapshot());
     },
     subscribeTitle(listener: () => void) {
       return reader.subscribe(listener);

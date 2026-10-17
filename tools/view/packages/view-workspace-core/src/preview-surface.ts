@@ -3,7 +3,7 @@ import type { WorkspaceTarget } from './contract.ts';
 import type { ViewWorkspaceClient } from './client.ts';
 import type { ViewPresentation, PreviewOwner } from './engine-presentation.ts';
 export type PreviewSurfaceResult = { ok: true; dispose?: () => void | Promise<void> } | { ok: false; error: { code: string; expected: string; hint: string } };
-export type PreviewSurfaceOptions = { presentation?: ViewPresentation; target?: WorkspaceTarget; container?: HTMLElement | null; canvas?: unknown; owner?: PreviewOwner; editorTargetId?: string; api?: Pick<ViewWorkspaceClient, 'resizePreview'> };
+export type PreviewSurfaceOptions = { presentation?: ViewPresentation; target?: WorkspaceTarget; container?: HTMLElement | null; canvas?: unknown; owner?: PreviewOwner; sceneTargetId?: string; api?: Pick<ViewWorkspaceClient, 'resizePreview'> };
 
 import { keepSurfaceInContainer, watchUntilReady } from './adopt-surface.ts';
 import { logResourceOpen } from './resource-open.ts';
@@ -37,12 +37,12 @@ function surfaceCanvas(surface: HTMLElement) {
   return typeof surface?.querySelector === 'function' ? surface.querySelector('canvas') : null;
 }
 
-function isEditorOwnerSurface(surface: HTMLElement, container: HTMLElement, { target, editorTargetId }: Pick<PreviewSurfaceOptions, 'target' | 'editorTargetId'> = {}) {
+function isSceneOwnerSurface(surface: HTMLElement, container: HTMLElement, { target, sceneTargetId }: Pick<PreviewSurfaceOptions, 'target' | 'sceneTargetId'> = {}) {
   if (surface?.id === 'app-shell' || surface?.id === 'app') return true;
   if (
-    editorTargetId != null &&
+    sceneTargetId != null &&
     target?.targetId != null &&
-    String(editorTargetId) === String(target.targetId)
+    String(sceneTargetId) === String(target.targetId)
   ) {
     return true;
   }
@@ -100,14 +100,14 @@ export function dedicatedPreviewPresentation(presentation: ViewPresentation | un
 /**
  * Place an Engine type-preview surface into the container owned by one asset
  * panel. The panel never creates a canvas; Engine `createSurface` returns the
- * live surface. Editor owner canvases are refused.
+ * live surface. Scene owner canvases are refused.
  *
  * @param {{
  *   presentation?: object,
  *   target?: { targetId?: string | number },
  *   container?: HTMLElement,
  *   owner?: { panelId?: string, pageType?: string },
- *   editorTargetId?: string | number,
+ *   sceneTargetId?: string | number,
  *   api?: { resizePreview?: (input: object) => Promise<unknown> },
  * }} [options]
  * @returns {{ ok: true, dispose?: () => unknown } | { ok: false, error: { code: string, expected: string, hint: string } }}
@@ -118,7 +118,7 @@ export function bindWorkspacePreviewSurface({
   container,
   canvas,
   owner,
-  editorTargetId,
+  sceneTargetId,
   api,
 }: PreviewSurfaceOptions = {}): PreviewSurfaceResult {
   if (canvas !== undefined || isCanvasNode(container)) {
@@ -138,7 +138,7 @@ export function bindWorkspacePreviewSurface({
     return previewSurfaceError(
       'view-preview-surface-unavailable',
       'a shell-placed Engine preview surface dedicated to this panel',
-      'The Engine owner surface stays on the Editor viewport; asset preview cannot relocate that iframe.',
+      'The Engine owner surface stays on the Scene viewport; asset preview cannot relocate that iframe.',
     );
   }
   if (!presentation || typeof presentation.createSurface !== 'function') {
@@ -170,10 +170,10 @@ export function bindWorkspacePreviewSurface({
     'an Engine type-preview surface for this target',
     'Engine must expose a type-preview surface via createSurface; the tab does not create a canvas.',
   );
-  const refuseEditor = () => previewSurfaceError(
+  const refuseScene = () => previewSurfaceError(
     'view-preview-surface-unavailable',
     'a shell-placed Engine preview surface dedicated to this panel',
-    'The Engine owner surface stays on the Editor viewport; asset preview cannot relocate that iframe.',
+    'The Engine owner surface stays on the Scene viewport; asset preview cannot relocate that iframe.',
   );
 
   const resolveSurface = () => {
@@ -251,7 +251,7 @@ export function bindWorkspacePreviewSurface({
 
   const first = resolveSurface();
   if (first) {
-    if (isEditorOwnerSurface(first, container, { target, editorTargetId })) return refuseEditor();
+    if (isSceneOwnerSurface(first, container, { target, sceneTargetId })) return refuseScene();
     return installSurface(first);
   }
 
@@ -267,7 +267,7 @@ export function bindWorkspacePreviewSurface({
     probe: () => {
       if (hosted) return true;
       const surface = resolveSurface();
-      if (!surface || isEditorOwnerSurface(surface, container, { target, editorTargetId })) return false;
+      if (!surface || isSceneOwnerSurface(surface, container, { target, sceneTargetId })) return false;
       hosted = installSurface(surface);
       return true;
     },

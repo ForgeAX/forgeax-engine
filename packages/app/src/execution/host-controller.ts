@@ -23,11 +23,13 @@ import {
 } from '../types';
 import { normalizeExecutionBootstrapUrl } from './bootstrap-url';
 import { cloneExecutionReport } from './control';
+import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { type EngineWorkerSession, startEngineWorker } from './engine-worker';
 import { createMeasurementSeries } from './measurement';
 import {
   type EngineToHostMessage,
   type ExecutionFaultMessage,
+  type ExecutionFrameMessage,
   FrameCreditLedger,
 } from './protocol';
 import { createExecutionReport, executionAudioReport } from './report';
@@ -152,6 +154,9 @@ export async function createWorkerExecutionApp(
       ...(executionOptions.diagnostics === undefined
         ? {}
         : { diagnostics: executionOptions.diagnostics }),
+      ...(options.appOptions.pipelineLibrary === undefined
+        ? {}
+        : { pipelineLibrary: options.appOptions.pipelineLibrary }),
       ...(options.appOptions.outputColorSpace === undefined
         ? {}
         : { outputColorSpace: options.appOptions.outputColorSpace }),
@@ -538,15 +543,71 @@ export async function createWorkerExecutionApp(
   // Source frame IDs are monotonic across renderer replacement. A lost epoch
   // retires its outstanding frames; a new baseline starts at this floor.
   let renderRecoveryFloor = 0;
+  const renderPipelineCapacity =
+    executionOptions.diagnostics?.renderPipelineCapacity === 4
+      ? 4
+      : executionOptions.diagnostics?.renderPipelineCapacity === 3
+        ? 3
+        : 2;
+  type AdmissionMessage =
+    | Extract<
+        EngineToHostMessage,
+        { kind: 'render-complete' | 'simulation-complete' | 'frame-complete' }
+      >
+    | ExecutionFrameMessage;
+  const traceAdmission = (
+    event: 'host-tick-due' | 'host-admission' | 'host-ack-entry' | 'host-ack-accepted',
+    outcome: string,
+    message?: AdmissionMessage,
+  ): void => {
+    const sink = executionDiagnosticSink();
+    if (sink === undefined) return;
+    const frame = message === undefined ? undefined : 'frame' in message ? message.frame : message;
+    emitExecutionDiagnostic(sink, {
+      event,
+      outcome:
+        outcome === 'render-blocked'
+          ? report.render?.state === 'rebuilding'
+            ? 'render-rebuilding'
+            : 'render-credit'
+          : outcome,
+      worldIdentity: report.world.identity,
+      frameId: frame?.frameId ?? null,
+      messageWorldIdentity: frame?.worldIdentity ?? null,
+      deviceGeneration:
+        frame !== undefined && 'deviceGeneration' in frame
+          ? (frame.deviceGeneration ?? null)
+          : null,
+      messageKind: message?.kind ?? null,
+      messageRenderEpoch: message !== undefined && 'epoch' in message ? message.epoch : null,
+      renderEpoch: report.render?.epoch ?? null,
+      state,
+      frameDue,
+      ledger: ledger.inspect(),
+      renderCompletedFrame: report.render?.completedFrame ?? null,
+      renderRecoveryFloor,
+      renderState: report.render?.state ?? null,
+      capacity: renderPipelineCapacity,
+    });
+  };
   const admitFrame = (): void => {
-    if (state !== 'running' || ledger.hasCreditInFlight) return;
+    if (state !== 'running') {
+      traceAdmission('host-admission', 'not-running');
+      return;
+    }
+    if (ledger.hasCreditInFlight) {
+      traceAdmission('host-admission', 'simulation-in-flight');
+      return;
+    }
     if (
       report.render !== undefined &&
       (report.render.state === 'rebuilding' ||
         ledger.inspect().submitted - Math.max(renderRecoveryFloor, report.render.completedFrame) >=
-          2)
-    )
+          renderPipelineCapacity)
+    ) {
+      traceAdmission('host-admission', 'render-blocked');
       return;
+    }
     // Sample input and native platform time at admission, including when an
     // ACK releases a tick that became due while a Worker still owned credit.
     const time = platform.now();
@@ -572,7 +633,11 @@ export async function createWorkerExecutionApp(
       temporalResetAfterFrame !== undefined,
     );
     report = { ...report, frame: ledger.inspect() };
-    if (frame === undefined) return;
+    if (frame === undefined) {
+      traceAdmission('host-admission', 'not-issued');
+      return;
+    }
+    traceAdmission('host-admission', 'issued', frame);
     frameProfile = profiler?.activeSession();
     if (frameProfile !== undefined && profilerCaptureId !== frameProfile.captureId) {
       profilerCaptureId = frameProfile.captureId;
@@ -607,6 +672,7 @@ export async function createWorkerExecutionApp(
       cancelHostFrame = undefined;
       if (state !== 'running' || !platform.visible()) return;
       frameDue = true;
+      traceAdmission('host-tick-due', 'callback');
       admitFrame();
     });
     if (requested.ok) cancelHostFrame = requested.value;
@@ -702,6 +768,12 @@ export async function createWorkerExecutionApp(
   };
   session.listen((message: EngineToHostMessage) => {
     if (disposal !== undefined) return;
+    if (
+      message.kind === 'render-complete' ||
+      message.kind === 'simulation-complete' ||
+      message.kind === 'frame-complete'
+    )
+      traceAdmission('host-ack-entry', 'callback', message);
     switch (message.kind) {
       // Startup readiness and the disposal ACK belong to the Worker session.
       case 'ready':
@@ -859,6 +931,7 @@ export async function createWorkerExecutionApp(
               completedFrame: message.frame.frameId,
             },
           };
+          traceAdmission('host-ack-accepted', 'render-complete', message);
           publishBrowserFrameCompleted(canvas, {
             ...message.frame,
             deviceGeneration: message.frame.deviceGeneration ?? 0,
@@ -885,6 +958,7 @@ export async function createWorkerExecutionApp(
       case 'frame-complete':
       case 'simulation-complete': {
         if (ledger.complete(message) !== 'accepted') return;
+        traceAdmission('host-ack-accepted', 'simulation-credit', message);
         let renderRejectionError: AppErrorType | undefined;
         if (message.kind === 'simulation-complete' && message.renderRejection !== undefined) {
           const rejection = new AppError({
@@ -920,6 +994,10 @@ export async function createWorkerExecutionApp(
             // is not evidence that the active scene is visible. Fail closed so a
             // protocol omission cannot dismiss the startup screen.
             presentation: message.presentation ?? 'pending',
+            ...(message.presentation !== 'pending' ||
+            message.presentationPendingReason === undefined
+              ? {}
+              : { presentationPendingReason: message.presentationPendingReason }),
           });
         report = { ...report, frame: ledger.inspect() };
         clearFrameAdmissionWatchdog({

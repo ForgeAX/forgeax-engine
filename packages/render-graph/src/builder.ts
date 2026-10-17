@@ -47,6 +47,7 @@ import type {
   RasterGraphPass,
   RenderGraphCompileOptions,
   RenderGraphFrame,
+  SubgraphPass,
 } from './types.js';
 
 const BUFFER_USAGE = {
@@ -436,6 +437,13 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     return this.addPass(name, { kind: 'copy', descriptor });
   }
 
+  addSubgraphPass(
+    name: string,
+    descriptor: SubgraphPass<FrameCtx>,
+  ): Result<void, RenderGraphError> {
+    return this.addPass(name, { kind: 'subgraph', descriptor });
+  }
+
   compile(
     options: RenderGraphCompileOptions,
   ): Result<CompiledRenderGraph<FrameCtx>, RenderGraphError> {
@@ -823,6 +831,11 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     access: GraphAccess,
   ): { readonly read: boolean; readonly write: boolean } {
     const base = accessMode(access.usage);
+    if (
+      pass.pass.kind === 'subgraph' &&
+      (access.usage === 'color-attachment' || access.usage === 'depth-stencil-write')
+    )
+      return READ_WRITE_ACCESS_MODE;
     if (pass.pass.kind !== 'raster' || handleData(access.resource)?.kind !== 'texture-view') {
       return base;
     }
@@ -924,6 +937,8 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     pass: PassRecord<FrameCtx>,
     accesses: readonly NormalizedAccess[],
   ): Result<void, RenderGraphError> {
+    // A child has separately validated, ordered scopes rather than one GPU pass.
+    if (pass.pass.kind === 'subgraph') return ok(undefined);
     // Link equal-resource indices in the original ascending order, including sparse inputs.
     const nextAccessByResource: (number | undefined)[] = [];
     const nextResourceAccess = new Map<number, number>();

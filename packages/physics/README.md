@@ -629,3 +629,17 @@ physicsStepSimulation; PhysicsWorld remains the sole collision and position owne
 KCC translation refreshes only the moved body's attached collider world positions;
 parent-local offsets remain unchanged. Repeated KCC calls retain collision queries
 and actual pose without repeatedly propagating the accumulating whole-body roster.
+
+### Compact voxel shapes
+
+`VoxelShapeInput` adds `kind: 'voxels'`, `regions: Int32Array` and
+`voxelSize: PhysicsVector` to the derived shape contract. Each sextuple is a
+half-open integer box `[minX, minY, minZ, maxX, maxY, maxZ]`; overlapping boxes
+form a union. Pose, friction, restitution, sensor and collision masks use the
+same shape metadata as convex inputs. Empty bodies clear their shape roster.
+
+The 3D Rapier backend supports these shapes in the existing atomic candidate
+transaction, including automatic or explicit mass and portable recovery.
+Preparation bounds native expansion, not just compressed input length, and
+copies accepted buffers before staging. This contract carries a complete shape;
+raw native batch edits do not imply a published Engine revision.

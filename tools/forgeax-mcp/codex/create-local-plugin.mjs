@@ -73,7 +73,7 @@ await build({
 });
 await copyRuntime(resolve(import.meta.dirname, '..'), pluginRoot, appRuntimePackages);
 await mkdir(join(pluginRoot, 'dist'), { recursive: true });
-for (const name of ['carrier.html', 'full-view.html', 'codex-view.html', 'editor-runtime.mjs'])
+for (const name of ['carrier.html', 'full-view.html', 'codex-view.html', 'preview-runtime.mjs'])
   await cp(join(import.meta.dirname, '../dist', name), join(pluginRoot, 'dist', name));
 await writeJson(join(pluginRoot, 'plugin.json'), {
   $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',

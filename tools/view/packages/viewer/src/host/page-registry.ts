@@ -233,7 +233,7 @@ export function resolveResourcePageType(pageTypes: readonly PageType[], request:
     error: Object.freeze({
       code: 'view-resource-page-unavailable',
       expected: `a PageType plugin that accepts asset kind ${kind}`,
-      hint: 'Install a matching asset editor plugin, or a fallback asset page plugin.',
+      hint: 'Install a matching asset viewer plugin, or a fallback asset page plugin.',
       detail: Object.freeze({ kind }),
     }),
   });
@@ -241,7 +241,7 @@ export function resolveResourcePageType(pageTypes: readonly PageType[], request:
 
 /**
  * Decide whether a resolved PageType should focus an already-open singleton
- * or open a new page. Non-openable types (Editor) can still be focused.
+ * or open a new page. Non-openable types (Scene) can still be focused.
  */
 export function planResourcePageActivation(pages: readonly { id: string; typeId: string }[], pageType: PageType | undefined) {
   if (!pageType || typeof pageType !== 'object') {

@@ -145,7 +145,7 @@ describe('plugin-owned live composition', () => {
     };
     const context = new Context();
     context.provide('engineWorkspacePresentation', enginePresentation);
-    context.provide('viewScenePage', { typeId: 'editor' });
+    context.provide('viewScenePage', { typeId: 'scene' });
     context.provide('viewOperationClient', { subscribe: () => () => {}, getState: async () => ({}) });
     await context.plugin(viewPlayPresentationPlugin, { document });
     context.provide('panelHost', {

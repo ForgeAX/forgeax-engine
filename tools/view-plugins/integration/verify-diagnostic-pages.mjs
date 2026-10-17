@@ -123,7 +123,7 @@ try {
   ],
   chromiumSandbox: true,
  });
- // The paired-page CI probe keeps the real Editor surface and sixty ready frames,
+ // The paired-page CI probe keeps the real Scene surface and sixty ready frames,
  // with fewer framebuffer pixels during cold pipeline/IBL preparation.
  const viewport = process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'
   ? { width: 860, height: 660 } : { width: 1440, height: 900 };
@@ -268,9 +268,9 @@ try {
  const snapshot = await client.getState();
  assert.equal(snapshot.project.root, await realpath(gameRoot));
  const assets = await client.listAssets(manifest.id); assert.ok(assets.assets.length > 0);
- await page.locator('[role="tab"][data-page-id="page-editor"]').click();
+ await page.locator('[role="tab"][data-page-id="page-scene"]').click();
  const scene = assets.assets.find(asset => asset.kind === 'scene'); assert.ok(scene);
- const editorOpened=await client.openAsset(scene.guid,{projectId:manifest.id});
+ const sceneOpened=await client.openAsset(scene.guid,{projectId:manifest.id});
  await page.bringToFront();
  await page.evaluate(() => {
   const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
@@ -282,45 +282,45 @@ try {
   const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
   return !!identity && globalThis.__diagnosticReadyCompletedFrames[identity]>=60;
  },undefined,{timeout:90000});
- const editorCompletedFrames=await page.evaluate(()=>globalThis.__diagnosticCompletedFrames);
- await writeFile(resolve(output,'editor-target.json'),JSON.stringify({
-  target:editorOpened.preview.target,
-  camera:await client.getCamera({targetId:editorOpened.preview.target.targetId,targetGeneration:editorOpened.preview.target.generation}),
-  completedFrames:editorCompletedFrames,
+ const sceneCompletedFrames=await page.evaluate(()=>globalThis.__diagnosticCompletedFrames);
+ await writeFile(resolve(output,'scene-target.json'),JSON.stringify({
+  target:sceneOpened.preview.target,
+  camera:await client.getCamera({targetId:sceneOpened.preview.target.targetId,targetGeneration:sceneOpened.preview.target.generation}),
+  completedFrames:sceneCompletedFrames,
   readyCompletedFrames:await page.evaluate(()=>globalThis.__diagnosticReadyCompletedFrames),
   readiness:await page.evaluate(()=>globalThis.__diagnosticReadiness),
  },(key,value)=>key==='url'?undefined:value,2));
  await page.screenshot({path:resolve(output,'game-3d.png')});
- await assertAuthoredSky(await page.locator('canvas').first().screenshot(),'editor');
- const editorFacts=()=>page.evaluate(()=>({
+ await assertAuthoredSky(await page.locator('canvas').first().screenshot(),'scene');
+ const sceneFacts=()=>page.evaluate(()=>({
   renderer:globalThis.__forgeaxGameInspection?.renderer(),
   canvas:(()=>{const canvas=document.querySelector('canvas');return canvas?{width:canvas.width,height:canvas.height,clientWidth:canvas.clientWidth,clientHeight:canvas.clientHeight,widthLimit:canvas.getAttribute('data-forgeax-render-width-limit'),heightLimit:canvas.getAttribute('data-forgeax-render-height-limit'),visible:canvas.checkVisibility({visibilityProperty:true})}:null;})(),
  }));
- const editorPresentation={active:await editorFacts()};
- assert.ok(editorPresentation.active.canvas.clientHeight>=300,'initial Editor layout must retain a usable scene extent');
- const editorWorld=editorPresentation.active.renderer.execution.world.identity;
+ const scenePresentation={active:await sceneFacts()};
+ assert.ok(scenePresentation.active.canvas.clientHeight>=300,'initial Scene layout must retain a usable scene extent');
+ const sceneWorld=scenePresentation.active.renderer.execution.world.identity;
  // Follow the user journey into the diagnostic page before starting another
- // GPU-owning game. Keep the completed Editor receipt and its live target.
+ // GPU-owning game. Keep the completed Scene receipt and its live target.
  await openDiagnosticPage(page);
- const waitForHiddenEditor=async()=>{
+ const waitForHiddenScene=async()=>{
   await page.waitForFunction(()=>Array.from(document.querySelectorAll('canvas')).every(canvas=>!canvas.checkVisibility({visibilityProperty:true})),undefined,{timeout:10000});
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const before=await editorFacts();
+  const before=await sceneFacts();
   await page.waitForTimeout(1000);
-  const after=await editorFacts();
-  assert.equal(after.renderer.execution.world.identity,editorWorld,'hiding a preview must preserve its World');
-  assert.equal(after.renderer.execution.frame.submitted,before.renderer.execution.frame.submitted,'inactive Editor must stop continuous submissions');
+  const after=await sceneFacts();
+  assert.equal(after.renderer.execution.world.identity,sceneWorld,'hiding a preview must preserve its World');
+  assert.equal(after.renderer.execution.frame.submitted,before.renderer.execution.frame.submitted,'inactive Scene must stop continuous submissions');
   return {before,after};
  };
- editorPresentation.hidden=await stage('editor-hidden-presentation',waitForHiddenEditor);
- await writeFile(resolve(output,'editor-presentation.json'),JSON.stringify(editorPresentation,null,2));
- const hiddenCapture=await stage('editor-hidden-capture',()=>client.capture({targetId:editorOpened.preview.target.targetId,targetGeneration:editorOpened.preview.target.generation}));
- assert.equal(hiddenCapture.width,editorPresentation.active.canvas.width,'hidden capture must retain the actual preview width');
- assert.equal(hiddenCapture.height,editorPresentation.active.canvas.height,'hidden capture must retain the actual preview height');
+ scenePresentation.hidden=await stage('scene-hidden-presentation',waitForHiddenScene);
+ await writeFile(resolve(output,'scene-presentation.json'),JSON.stringify(scenePresentation,null,2));
+ const hiddenCapture=await stage('scene-hidden-capture',()=>client.capture({targetId:sceneOpened.preview.target.targetId,targetGeneration:sceneOpened.preview.target.generation}));
+ assert.equal(hiddenCapture.width,scenePresentation.active.canvas.width,'hidden capture must retain the actual preview width');
+ assert.equal(hiddenCapture.height,scenePresentation.active.canvas.height,'hidden capture must retain the actual preview height');
  assert.ok(hiddenCapture.png.startsWith('data:image/png;base64,'));
- await writeFile(resolve(output,'editor-hidden.png'),Buffer.from(hiddenCapture.png.split(',')[1],'base64'));
- editorPresentation.hiddenCapture={frameId:hiddenCapture.frameId,width:hiddenCapture.width,height:hiddenCapture.height};
- editorPresentation.afterCapture=await waitForHiddenEditor();
+ await writeFile(resolve(output,'scene-hidden.png'),Buffer.from(hiddenCapture.png.split(',')[1],'base64'));
+ scenePresentation.hiddenCapture={frameId:hiddenCapture.frameId,width:hiddenCapture.width,height:hiddenCapture.height};
+ scenePresentation.afterCapture=await waitForHiddenScene();
  // The UI resize still reallocates the real drawing buffer under the shared cap.
  const resizeSceneBuffer=async scale=>{
   if(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT!=='1')return;
@@ -341,38 +341,38 @@ try {
     changes.push({width:canvas.width,height:canvas.height});
   });
   observer.observe(canvas,{attributes:true,attributeFilter:['width','height']});
-  globalThis.__diagnosticEditorResize={canvas,changes,disconnect:()=>observer.disconnect()};
+  globalThis.__diagnosticSceneResize={canvas,changes,disconnect:()=>observer.disconnect()};
  });
  await page.setViewportSize({width:1280,height:800});
- await page.locator('[role="tab"][data-page-id="page-editor"]').click();
+ await page.locator('[role="tab"][data-page-id="page-scene"]').click();
  await page.waitForFunction(({frame,width,requireResize})=>{
   const canvas=document.querySelector('canvas');
   const renderer=globalThis.__forgeaxGameInspection?.renderer();
   return canvas?.checkVisibility({visibilityProperty:true})&&canvas.clientWidth>0&&canvas.clientHeight>0&&renderer?.execution.frame.completed>frame&&(!requireResize||canvas.width<width);
- },{frame:editorPresentation.afterCapture.after.renderer.execution.frame.completed,width:editorPresentation.active.canvas.width,requireResize:process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT==='1'},{timeout:90000});
+ },{frame:scenePresentation.afterCapture.after.renderer.execution.frame.completed,width:scenePresentation.active.canvas.width,requireResize:process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT==='1'},{timeout:90000});
  const resizedExtent=await page.locator('canvas').first().evaluate(canvas=>({width:Math.round(canvas.clientWidth*devicePixelRatio),height:Math.round(canvas.clientHeight*devicePixelRatio)}));
- await client.resizePreview({targetId:editorOpened.preview.target.targetId,targetGeneration:editorOpened.preview.target.generation,...resizedExtent});
- editorPresentation.resumed=await editorFacts();
- editorPresentation.bufferChanges=await page.evaluate(()=>{
-  const observation=globalThis.__diagnosticEditorResize;
+ await client.resizePreview({targetId:sceneOpened.preview.target.targetId,targetGeneration:sceneOpened.preview.target.generation,...resizedExtent});
+ scenePresentation.resumed=await sceneFacts();
+ scenePresentation.bufferChanges=await page.evaluate(()=>{
+  const observation=globalThis.__diagnosticSceneResize;
   observation.disconnect();
   return {sameCanvas:observation.canvas===document.querySelector('canvas'),changes:observation.changes};
  });
- await writeFile(resolve(output,'editor-presentation.json'),JSON.stringify(editorPresentation,null,2));
- assert.equal(editorPresentation.resumed.renderer.execution.world.identity,editorWorld);
- assert.equal(editorPresentation.bufferChanges.sameCanvas,true,'resizing must preserve the actual preview canvas');
+ await writeFile(resolve(output,'scene-presentation.json'),JSON.stringify(scenePresentation,null,2));
+ assert.equal(scenePresentation.resumed.renderer.execution.world.identity,sceneWorld);
+ assert.equal(scenePresentation.bufferChanges.sameCanvas,true,'resizing must preserve the actual preview canvas');
  if(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT==='1') {
-  assert.ok(editorPresentation.bufferChanges.changes.length>0,'resuming must change the real drawing buffer');
-  for(const size of editorPresentation.bufferChanges.changes)
+  assert.ok(scenePresentation.bufferChanges.changes.length>0,'resuming must change the real drawing buffer');
+  for(const size of scenePresentation.bufferChanges.changes)
    assert.ok(size.width<=testQuality.viewport.width*.5&&size.height<=testQuality.viewport.height*.5,`every native and workspace resize must honor the smaller budget: ${JSON.stringify(size)}`);
-  assert.ok(editorPresentation.resumed.canvas.width<editorPresentation.active.canvas.width,'resuming at the smaller budget must resize the real drawing buffer');
+  assert.ok(scenePresentation.resumed.canvas.width<scenePresentation.active.canvas.width,'resuming at the smaller budget must resize the real drawing buffer');
  }
- await page.screenshot({path:resolve(output,'editor-resumed.png')});
+ await page.screenshot({path:resolve(output,'scene-resumed.png')});
  await resizeSceneBuffer(1);
  await page.setViewportSize(viewport);
  await page.locator('[role="tab"][data-page-id="page-rhi-debug"]').click();
- editorPresentation.beforeIndependent=await waitForHiddenEditor();
- await writeFile(resolve(output,'editor-presentation.json'),JSON.stringify(editorPresentation,null,2));
+ scenePresentation.beforeIndependent=await waitForHiddenScene();
+ await writeFile(resolve(output,'scene-presentation.json'),JSON.stringify(scenePresentation,null,2));
  // The existing CLI observes the actual game App. Embedded View readiness is a
  // boolean and must never be treated as a native Context or profiler authority.
  independentStarted=true;
@@ -390,7 +390,7 @@ try {
  assert.equal(liveVase?.error,undefined,'the actual game must execute its native runtime Pack');
  assert.ok(liveVase?.generation !== undefined,'the actual game must publish a generated vase');
  // Keep completed producer evidence even if a later large tape export fails.
- await writeFile(resolve(output,'live-producer.json'),JSON.stringify({independent,profileArtifact,editorCompletedFrames,liveProfile:liveProfileModel.value.summary},null,2));
+ await writeFile(resolve(output,'live-producer.json'),JSON.stringify({independent,profileArtifact,sceneCompletedFrames,liveProfile:liveProfileModel.value.summary},null,2));
  const liveTape=resolve(output,'live-frame.rhitape');
  const liveCapture=await stage('live-frame-capture',()=>cli(['rhi','capture','--output',liveTape],gameRoot));
  assert.equal(liveCapture.source,'live');
@@ -411,7 +411,7 @@ try {
  assert.equal(independentImageReport.record.pixels.rendered,true,'the actual independent game canvas must contain rendered pixels');
  assert.ok(independentImageReport.record.runtime.domUi.rootChildren>0,'the game UI must be mounted');
  assert.ok(independentImageReport.record.runtime.domUi.textWitness.length>0,'the mounted game UI must expose visible text');
- await writeFile(resolve(output,'live-producer.json'),JSON.stringify({independent,profileArtifact,liveProfile:liveProfileModel.value.summary,liveCapture,liveBytes,editorCompletedFrames},null,2));
+ await writeFile(resolve(output,'live-producer.json'),JSON.stringify({independent,profileArtifact,liveProfile:liveProfileModel.value.summary,liveCapture,liveBytes,sceneCompletedFrames},null,2));
 
  await openDiagnosticPage(page);
  await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
@@ -537,7 +537,7 @@ try {
  assert.equal(independentAfterLifecycle.revision,independentBeforeStop.revision);
  assert.equal(independentAfterLifecycle.worldIdentity,independentBeforeStop.worldIdentity);
  assert.deepEqual(errors, []);
- await writeFile(resolve(output,'browser.json'), JSON.stringify({ok:true,stages,errors,graphics:await page.evaluate(()=>globalThis.__diagnosticGraphics),project: snapshot.project,assetCount:assets.assets.length,profile:expected.value.summary,liveProfile:liveProfileModel.value.summary,liveCapture:{...liveCapture,byteLength:liveBytes,...liveModel},editorCompletedFrames,independentAfterStop,independentWhileBackendStopped,independentAfterLifecycle,backendBeforeRestart,backendRestart:true,replayPixels,liveReplayWork,liveReplayPixels,presentationRetirementRecovery:true,noWebGpu:true,nativePluginRemoveRestore:true,viewport:page.viewportSize(),platform:process.platform,architecture:process.arch},null,2));
+ await writeFile(resolve(output,'browser.json'), JSON.stringify({ok:true,stages,errors,graphics:await page.evaluate(()=>globalThis.__diagnosticGraphics),project: snapshot.project,assetCount:assets.assets.length,profile:expected.value.summary,liveProfile:liveProfileModel.value.summary,liveCapture:{...liveCapture,byteLength:liveBytes,...liveModel},sceneCompletedFrames,independentAfterStop,independentWhileBackendStopped,independentAfterLifecycle,backendBeforeRestart,backendRestart:true,replayPixels,liveReplayWork,liveReplayPixels,presentationRetirementRecovery:true,noWebGpu:true,nativePluginRemoveRestore:true,viewport:page.viewportSize(),platform:process.platform,architecture:process.arch},null,2));
 } catch (error) {
  // Freeze qualification facts before the diagnostic capture can add frames.
  const readinessAtFailure=await page?.evaluate(()=>({milliseconds:performance.now(),
@@ -578,7 +578,7 @@ try {
   }}catch(cause){failingFrame={...failingFrame,exportError:String(cause)};}
   await writeFile(resolve(output,'failing-frame.json'),JSON.stringify({workspace,...failingFrame},null,2));
  }
- // Diagnose the actual independent producer, rather than the View's Editor App.
+ // Diagnose the actual independent producer, rather than the View's Scene App.
  // The live owner retains its existing bounded capture transaction and failure.
  if(independentStarted) {
   const command=['rhi','capture','--output',resolve(output,'independent-failing-frame.rhitape'),'--root',gameRoot,'--json'];

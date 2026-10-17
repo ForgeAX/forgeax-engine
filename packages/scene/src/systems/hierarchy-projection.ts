@@ -5,6 +5,7 @@ import {
   type Query,
   type World,
 } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { ChildOf } from '../components/child-of';
 import type { SceneErrorCode, SceneErrorDetail } from '../errors';
 
@@ -22,14 +23,16 @@ export interface SceneHierarchySnapshot {
 }
 
 interface HierarchyProjectionCacheEntry {
-  readonly structureEpoch: number;
+  structureEpoch: number;
+  readonly relationshipEpoch: number;
   readonly childOfChanges: Query;
+  readonly childOfEdges: Query | undefined;
   readonly snapshot: SceneHierarchySnapshot;
 }
 
 // A World can be observed by the transform system, renderer visibility, and
 // editor projections in the same frame. Keep one World-local projection so
-// those consumers do not each rescan every archetype. Structure changes and
+// those consumers do not each rescan every archetype. Relationship changes and
 // the ChildOf component's own mutation token are the invalidation keys; the
 // global mutation epoch is intentionally too broad because animation and
 // runtime-only component writes may advance it every frame. Direct table
@@ -72,12 +75,41 @@ function diagnostic(
 /** Build the only World-local projection of ChildOf parent facts. */
 export function projectHierarchy(world: World): SceneHierarchySnapshot {
   const cached = HIERARCHY_PROJECTION_CACHE.get(world);
+  const structureEpoch = world.getStructureEpoch();
+  const relationshipEpoch = world[worldRead].getRelationshipEpoch(ChildOf);
   if (
     cached !== undefined &&
-    cached.structureEpoch === world.getStructureEpoch() &&
+    cached.relationshipEpoch === relationshipEpoch &&
     !drainChanges(cached.childOfChanges)
   ) {
-    return cached.snapshot;
+    if (cached.structureEpoch === structureEpoch) return cached.snapshot;
+    // Structural migration can change public parentOf iteration order without
+    // changing an edge. Reuse the original read Query to verify that sequence;
+    // do not rebuild graph Maps, cycle state, and change queries for FX roots.
+    // A malformed edge may also bypass the relationship index, so retain the
+    // generation check and rebuild existing diagnostics conservatively.
+    if (cached.snapshot.diagnostics.length === 0 && cached.childOfEdges !== undefined) {
+      const keys = cached.snapshot.parentOf.keys();
+      let unchanged = true;
+      for (const span of cached.childOfEdges.spans().unwrap()) {
+        const parents = span.get(ChildOf).parent;
+        for (let index = 0; index < span.length; index++) {
+          const child = span.entities[index],
+            parent = parents[index];
+          if (child === undefined || parent === undefined || parent === ENTITY_NULL_RAW) continue;
+          const previous = keys.next();
+          unchanged &&=
+            !previous.done &&
+            previous.value === child &&
+            cached.snapshot.getParent(child as EntityHandle) === parent &&
+            world.hasComponent(parent as EntityHandle, Entity);
+        }
+      }
+      if (unchanged && keys.next().done) {
+        cached.structureEpoch = structureEpoch;
+        return cached.snapshot;
+      }
+    }
   }
   const parentOf = new Map<EntityHandle, EntityHandle>();
   const diagnostics: SceneHierarchyDiagnostic[] = [];
@@ -146,8 +178,10 @@ export function projectHierarchy(world: World): SceneHierarchySnapshot {
   const childOfChanges = createChildOfChangeQuery(world);
   drainChanges(childOfChanges);
   HIERARCHY_PROJECTION_CACHE.set(world, {
-    structureEpoch: world.getStructureEpoch(),
+    structureEpoch,
+    relationshipEpoch,
     childOfChanges,
+    childOfEdges: query.ok ? query.value : undefined,
     snapshot,
   });
   return snapshot;

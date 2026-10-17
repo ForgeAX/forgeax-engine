@@ -1,3 +1,4 @@
+import type { GBufferOrderDiagnosticInspection } from './gpu-driven/gbuffer-order-diagnostic';
 import type { ShadowCasterClassInspection } from './gpu-driven/shadow-caster-classes';
 import type { ShadowViewInspection } from './gpu-driven/shadow-views';
 /**
@@ -222,11 +223,24 @@ export type GpuResourceAllocationInspection = Omit<
  * or prepared-resource retirement semantics.
  */
 export interface RenderFeatureHostInspection {
+  /** Explicit experiment only: current preparation, not a GPU completion receipt. */
+  readonly featureReadOnlyDepthBatchDiagnostic?: {
+    readonly frameNumber: number;
+    readonly generation: number;
+    readonly stage: 'prepared';
+    readonly scopes: number;
+    readonly beforePasses: number;
+    readonly afterPasses: number;
+    readonly removedRasterPasses: number;
+    readonly admittedPasses: number;
+  };
   readonly signatures: readonly {
     readonly featureIdentity: string;
     readonly calls: number;
     readonly typedArrayBytes: number;
     readonly outputChars: number;
+    /** Scoped private execution publications; zero/absent means the raw path. */
+    readonly nativeCalls?: number;
     readonly cpuMs: number;
     /** Number of exact structural comparisons that reused a detached snapshot. */
     readonly cacheHits: number;
@@ -272,6 +286,8 @@ export interface RenderFeatureGraphInspection {
   readonly accepted: number;
   readonly rejected: number;
   readonly abandoned: number;
+  /** Separately compiled view-local work; Host signatures and preparation remain measured above. */
+  readonly transientViewGraphs?: import('./features/transient-view-graph').TransientViewGraphInspection;
   readonly last: {
     readonly planSignature: string;
     readonly topologyKey: string | undefined;
@@ -479,6 +495,8 @@ export interface GpuDrivenStructureMetrics {
 }
 
 export interface GpuDrivenProductionInspection {
+  /** Requested diagnostic and reference-order changes, never GPU execution counts. */
+  readonly gbufferBatchOrderDiagnostic?: GBufferOrderDiagnosticInspection;
   /** Exact producer-selected Surface artifact prepared for the last candidate. */
   readonly surfaceArtifact?: {
     readonly material: string;
@@ -1090,6 +1108,12 @@ export interface FrameCacheCounters {
 export interface MaterialUniformCacheInspection {
   readonly packHits: number;
   readonly packMisses: number;
+  /** First failed packing-cache condition; exclusive counts partition packMisses. */
+  readonly packMissNoComparison?: number;
+  readonly packMissMutable?: number;
+  readonly packMissRuntimeSchema?: number;
+  readonly packMissMovedSlot?: number;
+  readonly packMissCold?: number;
   readonly comparedSlots: number;
   readonly unchangedSlots: number;
   readonly uploadRanges: number;

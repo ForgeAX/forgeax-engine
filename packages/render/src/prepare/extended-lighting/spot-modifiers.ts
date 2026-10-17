@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import { deriveTextureLayout, isCompressedFormat, type TextureAsset } from '@forgeax/engine-types';
 import {
   COOKIE_MIP_LEVEL_COUNT,
@@ -38,15 +39,6 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function halfToFloat(bits: number): number {
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  const sign = bits & 0x8000 ? -1 : 1;
-  if (exponent === 0) return sign * mantissa * 2 ** -24;
-  if (exponent === 0x1f) return mantissa === 0 ? sign * Number.POSITIVE_INFINITY : Number.NaN;
-  return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
-}
-
 /**
  * One source texel encoding: bytes per texel, the colour space its format
  * requires, and a reader that writes linear RGBA for texel `index`.
@@ -81,7 +73,7 @@ function floatDecoder(bytesPerChannel: 2 | 4): SourceDecoder {
         const offset = (index * 4 + channel) * bytesPerChannel;
         const value =
           bytesPerChannel === 2
-            ? halfToFloat(view.getUint16(offset, true))
+            ? halfFloat.f16ToF32(view.getUint16(offset, true))
             : view.getFloat32(offset, true);
         // The slice is RGBA8: HDR sources keep their shape below 1 and clip
         // above it, so `intensity` stays the light's absolute scale.

@@ -17,7 +17,7 @@ describe('workspace command error reporting', { concurrency: false }, () => {
     const remove = subscribeWorkspaceCommandErrors(error => reports.push(error));
     try {
       const client = createViewWorkspaceClient({ clientId: 'test', transport: { request() { throw failure; } } });
-      await assert.rejects(client.call('scene.pick', { targetId: 'editor', targetGeneration: 1, x: 1, y: 1 }), error => error === failure);
+      await assert.rejects(client.call('scene.pick', { targetId: 'scene', targetGeneration: 1, x: 1, y: 1 }), error => error === failure);
       assert.deepEqual(reports, [failure]);
     } finally { remove(); }
   });

@@ -20,6 +20,7 @@ import { transformWithOxc } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createViteConfig, devKitDdcRoots, ignoreDevKitCatalogPath } from '../host.js';
 import { readProjectFacts } from '../project.js';
+import { generatedPlayerQueries } from './generated-player-queries.js';
 
 type PackContext = {
   readonly emitFile: (asset: {
@@ -147,6 +148,15 @@ describe('standalone host', () => {
       const facts = await readProjectFacts(root);
       if (!facts.ok) throw facts.error;
       const identities: string[] = [];
+      const pipelineLibrary = {
+        version: 1,
+        backend: 'webgpu',
+        shaders: [],
+        bindGroupLayouts: [],
+        pipelineLayouts: [],
+        renderPipelines: [],
+        computePipelines: [],
+      };
       for (const budget of [256 * 1024 * 1024, 128 * 1024 * 1024]) {
         const standardProfile = {
           ...DEFAULT_STANDARD_PROFILE,
@@ -162,7 +172,11 @@ describe('standalone host', () => {
                 kind: 'plugin',
                 payload: {
                   module: { specifier: './build.ts' },
-                  config: { dynamicGeometryMeshBudgetBytes: budget, standardProfile },
+                  config: {
+                    dynamicGeometryMeshBudgetBytes: budget,
+                    standardProfile,
+                    pipelineLibrary,
+                  },
                 },
               },
             },
@@ -191,6 +205,18 @@ describe('standalone host', () => {
               source.indexOf('if (!result.ok) throw result.error;'),
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
+            expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
+            expect(
+              JSON.parse(
+                await readFile(resolve(config.root ?? '', 'pipeline-library.json'), 'utf8'),
+              ),
+            ).toEqual(pipelineLibrary);
+            expect(source).toContain(
+              "import pipelineLibraryUrl from './pipeline-library.json?url'",
+            );
+            expect(source.indexOf('await fetch(pipelineLibraryUrl)')).toBeLessThan(
+              source.indexOf('const result = await createApp('),
+            );
             // Execute the generated renderer-realm hook, including failure propagation.
             const bootstrap = await readFile(
               resolve(config.root ?? '', 'execution-bootstrap.ts'),
@@ -1677,11 +1703,10 @@ describe('standalone host', () => {
 
       // Execute the generated query and actual createApp call, not a duplicate
       // parser. The App owner remains responsible for Worker capability admission.
-      const queryStart = generated.indexOf('const query = new URLSearchParams(location.search);');
-      const queryEnd = generated.indexOf('const recipeValue =', queryStart);
       const callStart = generated.indexOf('const runtimePacks = workerExecution ?');
       const callEnd = generated.indexOf('if (!result.ok)', callStart);
-      expect(Math.min(queryStart, queryEnd, callStart, callEnd)).toBeGreaterThanOrEqual(0);
+      expect(callStart).toBeGreaterThanOrEqual(0);
+      expect(callEnd).toBeGreaterThan(callStart);
       const runtimeScopeBinding = {
         catalogUrl: 'http://localhost:5173/__pack/scopes/resource-game/1/catalog.json',
       };
@@ -1716,7 +1741,7 @@ describe('standalone host', () => {
             const realmPrograms = { programHost: deliveredHost };
             let profilerAllocations = 0;
             const options = await runInNewContext(
-              `(async () => { ${generated.slice(queryStart, queryEnd)} ${bootstrapCall} return result; })()`,
+              `(async () => { ${generatedPlayerQueries(generated)} ${bootstrapCall} return result; })()`,
               {
                 location: { search },
                 document: {
@@ -1781,6 +1806,10 @@ describe('standalone host', () => {
               );
               expect(options.execution.bootstrapData).toEqual({
                 programDeliveryChannel: 'test-program-channel',
+                isolateVfxViewGraph: true,
+                vfxInstanceArenas: true,
+                vfxNativePlanning: true,
+                vfxRetainedResources: true,
               });
             } else {
               expect(options).not.toHaveProperty('geometryLane');

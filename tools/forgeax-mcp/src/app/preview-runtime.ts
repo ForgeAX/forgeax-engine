@@ -16,10 +16,10 @@ z.config({ jitless: true });
 
 /** Activated by DevKit's declared frontendModule.prepare before its Host connection. */
 export const preparePlatform = {
-  name: 'forgeax.mcp.editor.platform',
+  name: 'forgeax.mcp.preview.platform',
   async apply(ctx: Context) {
     const app = new App(
-      { name: 'ForgeaX Engine Editor runtime', version: APP_VERSION },
+      { name: 'ForgeaX Engine Preview runtime', version: APP_VERSION },
       { availableDisplayModes: ['fullscreen'] },
       { autoResize: false },
     );
@@ -27,7 +27,7 @@ export const preparePlatform = {
     await app.connect();
     const config = JSON.parse(document.getElementById('fx-config')!.textContent!);
     const report = (value: unknown) => {
-      console.debug('ForgeaX Editor', value);
+      console.debug('ForgeaX Preview', value);
     };
     const invoke = async (args: any, options: any = {}) => {
       const result = await app.callServerTool({ name: TRANSPORT_TOOL, arguments: args }, options);
@@ -95,7 +95,7 @@ export const preparePlatform = {
       themeListeners.clear();
       try { await documents.dispose(); }
       finally {
-        await Promise.all([...connections].map((client) => client.close('MCP Editor retired')));
+        await Promise.all([...connections].map((client) => client.close('MCP Preview retired')));
         connections.clear();
         programHosts.dispose();
         runtime.dispose();
@@ -121,7 +121,7 @@ export const preparePlatform = {
 
 /** This realm installs the ordinary View workspace client, with no duplicate Shell. */
 export default {
-  name: 'forgeax.mcp.editor',
+  name: 'forgeax.mcp.preview',
   inject: ['frontendPlatform'],
   async apply(ctx: Context, config: any = {}) {
     const fiber = ctx.plugin(core, {

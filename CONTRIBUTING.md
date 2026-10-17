@@ -38,6 +38,13 @@ Hardware Ray Query uses the independent
 with Rust/Cargo and MSVC C++ Build Tools (including C++ ATL) plus Windows SDK for Windows source
 builds. Dawn is not a dependency of that backend.
 
+## Performance investigations
+
+Use the [performance skill](skills/forgeax-engine-performance/SKILL.md) to select
+evidence and the [contribution route](skills/forgeax-engine-performance/references/contributing.md)
+to retain reusable methods. Keep dated measurements in a scoped case and verify
+the complete affected owner before claiming savings from fewer allocations.
+
 ## Linux Emscripten 6.0.2 without external xz
 
 This is a Linux-only CI path for Emscripten `6.0.2`. It uses the Python standard

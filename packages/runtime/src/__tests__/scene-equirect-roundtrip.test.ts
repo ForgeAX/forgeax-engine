@@ -8,18 +8,12 @@
 //   (1) A SceneAsset whose Skylight references an equirect source by GUID
 //       string round-trips through instantiate: the GUID resolves to a live
 //       user-tier shared handle on the spawned Skylight column (AC-07). This
-//       exercises BOTH scene-resolution paths the equirect field rides:
-//         - extractSceneEntityHandleGuids (generic `shared<` detection, R-1)
-//         - parseScenePayload HANDLE_FIELD_NAMES allowlist (w27, second path)
+//       exercises schema-derived shared-reference extraction and binding.
 //   (2) `world.spawn(Skylight{equirect}).data.equirect` is typed
 //       `Handle<'EquirectAsset','shared'>` — verified by assigning a branded
 //       EquirectAsset handle into the spawn data and reading it back (a wrong
 //       field type would fail typecheck on this consumer path, AC-04).
 //
-// TDD red phase: the equirect field lands in w16 (Skylight component) +
-// w27 (HANDLE_FIELD_NAMES). Until then the `shared<EquirectAsset>` field name
-// is `cubemap` and this file fails to compile / resolve — that is the red.
-
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';

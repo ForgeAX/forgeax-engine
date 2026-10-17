@@ -34,9 +34,9 @@ async function fixture(context, useEvidenceRoot = false) {
 
 // This exercises failure routing and file preservation, not browser/GPU acceptance.
 function failedInlinePreview(input, failure) {
-  const editor = { target: { targetId: 'editor', worldId: 'editor-world' } };
+  const scene = { target: { targetId: 'scene', worldId: 'scene-world' } };
   const preview = { asset: { guid: 'mesh', kind: 'mesh' }, target: { ...input.target, generation: 7 } };
-  const state = { project: { id: 'project' }, editorPreview: editor,
+  const state = { project: { id: 'project' }, scenePreview: scene,
     assets: [preview.asset, { guid: 'material', kind: 'material' }], previews: [preview] };
   const query = { waitFor: async () => {}, count: async () => 1, locator: () => query };
   return {

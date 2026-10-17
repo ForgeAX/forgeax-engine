@@ -16,7 +16,7 @@ import { PAGE_TYPE, PANEL_CLOSABLE, PANEL_LAYOUT, FRONTEND_PLUGIN_ID, SLOT, TITL
 import { attachViewportRenderResizeSync } from './render-resize-sync.ts';
 import { attachViewportPageInputGate } from './page-input-gate.ts';
 import { mountPlayToolbar } from './play-toolbar.ts';
-import { fitEditorSurface } from './editor-surface.ts';
+import { fitSceneSurface } from './scene-surface.ts';
 import { viewPlayPresentationPlugin } from './play-presentation.ts';
 import { attachEngineFatalBanner } from './engine-fatal-banner.ts';
 
@@ -44,7 +44,7 @@ function liveWorkspacePresentation(ctx: Context, config: ViewportFrontendConfig,
             event.preventDefault();
           };
           surface.addEventListener?.('contextmenu', onContextMenu);
-          const restoreFit = workspace?.surfacePlacement === 'owner' ? () => {} : fitEditorSurface(surface);
+          const restoreFit = workspace?.surfacePlacement === 'owner' ? () => {} : fitSceneSurface(surface);
           const detachResize = attachViewportRenderResizeSync({
             api,
             surface,
@@ -130,7 +130,7 @@ const viewViewportFrontendPlugin = {
     const unclaim = claimViewportPanel(panelHost);
     ctx.effect(() => unclaim);
     // Play/Engine providers suspend only the canvas inside this fill slot.
-    // The dock is claimed with the other editor panels as soon as the page exists.
+    // The dock is claimed with the other scene panels as soon as the page exists.
     const document = config.document ?? globalThis.document;
     if (!document?.createElement) return;
     const element = document.createElement('div');

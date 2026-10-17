@@ -3,6 +3,7 @@ import {
   type Component,
   type ComponentId,
   type ComponentSchema,
+  componentDefinition,
   componentId,
   componentSchema,
   isManagedField,
@@ -23,7 +24,6 @@ import {
 import { DERIVED_WRITER } from '../internal';
 import { isRelationshipTarget, relationshipRole } from '../relationship-index';
 import { type Archetype, type ArchetypeId, archetypeHasComponent } from '../storage/archetype';
-import type { ArchetypeGraph } from '../storage/archetype-graph';
 import { PROJECTION_BLOCK_SIZE, sparseTagIndex } from '../storage/change-detection';
 import type { FieldView, ManagedColumnReader } from '../storage/column';
 import type { Table } from '../storage/table';
@@ -121,66 +121,74 @@ interface CompiledDescriptor<
   readonly sparseRoute: boolean;
 }
 
-type Role = 'read' | 'write' | 'optional' | 'with' | 'without';
+const ACCESS_ROLES = ['read', 'write', 'optional', 'with', 'without'] as const;
+const TEMPORAL_ROLES = ['changed', 'added'] as const;
+const EMPTY_COMPONENT_IDS: readonly ComponentId[] = Object.freeze([]);
+type Role = (typeof ACCESS_ROLES)[number];
 
 function compileDescriptor<
   const R extends readonly Component[],
   const W extends readonly Component[],
   const O extends readonly Component[],
 >(descriptor: QueryDescriptor<R, W, O>): Result<CompiledDescriptor<R, W, O>, QueryCreationError> {
-  const read = descriptor.read ?? ([] as unknown as R);
-  const write = descriptor.write ?? ([] as unknown as W);
-  const optional = descriptor.optional ?? ([] as unknown as O);
-  const withComponents = descriptor.with ?? [];
-  const withoutComponents = [...(descriptor.without ?? [])];
-  const roles = new Map<Component, Role[]>();
-  const addRole = (component: Component, role: Role): void => {
-    const current = roles.get(component);
-    if (current === undefined) roles.set(component, [role]);
-    else current.push(role);
-  };
-  for (const component of read) addRole(component, 'read');
-  for (const component of write) addRole(component, 'write');
-  for (const component of optional) addRole(component, 'optional');
-  for (const component of withComponents) addRole(component, 'with');
-  for (const component of withoutComponents) addRole(component, 'without');
-
-  for (const [component, componentRoles] of roles) {
-    if (componentRoles.length > 1) {
-      return err(new QueryDescriptorConflictError(component.name, componentRoles));
+  // Successful descriptors need one role per component. Allocate diagnostic
+  // role lists only for conflicts, preserving first-component error order.
+  const roles = new Map<Component, Role | Role[]>();
+  for (const role of ACCESS_ROLES) {
+    const components = descriptor[role];
+    if (components === undefined) continue;
+    for (const component of components) {
+      const previous = roles.get(component);
+      if (previous === undefined) roles.set(component, role);
+      else if (typeof previous === 'string') roles.set(component, [previous, role]);
+      else previous.push(role);
     }
   }
-  for (const component of [...read, ...write, ...optional]) {
-    if (Object.keys(componentSchema(component)).length === 0) {
+  for (const [component, role] of roles) {
+    if (typeof role !== 'string') {
+      return err(new QueryDescriptorConflictError(component.name, role));
+    }
+  }
+
+  let requiredIds: ComponentId[] = [];
+  const withoutIds: ComponentId[] = [];
+  let sparseRoute = false;
+  for (const [component, role] of roles) {
+    if (
+      (role === 'read' || role === 'write' || role === 'optional') &&
+      componentDefinition(component).fieldNames.length === 0
+    ) {
       return err(new QueryDataRequiresFieldsError(component.name));
     }
+    if (role === 'optional') continue;
+    if (role === 'without') withoutIds.push(componentId(component));
+    else requiredIds.push(componentId(component));
+    if (component.storage === 'sparse') sparseRoute = true;
   }
 
-  const required = [
-    ...read,
-    ...write,
-    ...withComponents,
-    ...(descriptor.changed ?? []),
-    ...(descriptor.added ?? []),
-  ];
-  const requiredIds = [...new Set(required.map((component) => componentId(component)))];
-  const withoutIds = [...new Set(withoutComponents.map((component) => componentId(component)))];
-  if (!requiredIds.includes(componentId(Disabled)) && !withoutIds.includes(componentId(Disabled))) {
-    withoutIds.push(componentId(Disabled));
+  let changedIds = EMPTY_COMPONENT_IDS;
+  let addedIds = EMPTY_COMPONENT_IDS;
+  let requiredSet: Set<ComponentId> | undefined;
+  for (const role of TEMPORAL_ROLES) {
+    const components = descriptor[role];
+    if (components === undefined || components.length === 0) continue;
+    requiredSet ??= new Set(requiredIds);
+    const ids = new Set<ComponentId>();
+    for (const component of components) {
+      const id = componentId(component);
+      ids.add(id);
+      requiredSet.add(id);
+      if (component.storage === 'sparse') sparseRoute = true;
+    }
+    if (role === 'changed') changedIds = [...ids];
+    else addedIds = [...ids];
   }
-  return ok({
-    descriptor,
-    requiredIds,
-    withoutIds,
-    changedIds: [...new Set((descriptor.changed ?? []).map((component) => componentId(component)))],
-    addedIds: [...new Set((descriptor.added ?? []).map((component) => componentId(component)))],
-    sparseRoute: [
-      ...required,
-      ...withoutComponents,
-      ...(descriptor.changed ?? []),
-      ...(descriptor.added ?? []),
-    ].some((component) => component.storage === 'sparse'),
-  });
+  if (requiredSet !== undefined) requiredIds = [...requiredSet];
+  const disabledId = componentId(Disabled);
+  if (!requiredIds.includes(disabledId) && !withoutIds.includes(disabledId)) {
+    withoutIds.push(disabledId);
+  }
+  return ok({ descriptor, requiredIds, withoutIds, changedIds, addedIds, sparseRoute });
 }
 
 class QueryRowFacade<
@@ -345,10 +353,9 @@ class ExecutableQuery<
   O extends readonly Component[],
 > implements Query<R, W, O>
 {
-  private matchedArchetypes: ArchetypeId[] = [];
-  private matchedTables: number[] = [];
-  private matchedTableObjects: Table[] = [];
-  private lastGraphGeneration = -1;
+  private readonly matchedArchetypes: ArchetypeId[] = [];
+  private readonly matchedTables: Table[] = [];
+  private scannedStorageCount = 0;
   private lastObservedEpoch = 0;
   private active = false;
 
@@ -388,8 +395,7 @@ class ExecutableQuery<
         }
         if (!this.compiled.sparseRoute) {
           while (tableIndex < this.matchedTables.length) {
-            const table =
-              this.world[worldInternal].getGraph().tables[this.matchedTables[tableIndex] ?? -1];
+            const table = this.matchedTables[tableIndex];
             if (table === undefined || rowIndex >= table.size) {
               tableIndex += 1;
               rowIndex = 0;
@@ -474,8 +480,7 @@ class ExecutableQuery<
               );
             }
             while (tableIndex < query.matchedTables.length) {
-              const table =
-                query.world[worldInternal].getGraph().tables[query.matchedTables[tableIndex] ?? -1];
+              const table = query.matchedTables[tableIndex];
               if (table === undefined || table.size === 0) {
                 tableIndex += 1;
                 rowIndex = 0;
@@ -543,7 +548,7 @@ class ExecutableQuery<
           structureEpoch: () => this.world[worldInternal].getStructureEpoch(),
           tables: () => {
             this.refreshMatches();
-            return this.matchedTableObjects;
+            return this.matchedTables;
           },
           readComponents: this.compiled.descriptor.read ?? [],
           writeComponents: this.compiled.descriptor.write ?? [],
@@ -607,29 +612,31 @@ class ExecutableQuery<
   }
 
   private refreshMatches(): void {
-    const graph = this.world[worldInternal].getGraph() as ArchetypeGraph;
-    if (this.lastGraphGeneration === graph.generation) return;
-    this.matchedArchetypes = graph.archetypes
-      .filter((archetype) => this.archetypeMatches(archetype))
-      .map((archetype) => archetype.id);
-    this.matchedTables = graph.tables
-      .filter((table) => this.tableMatches(table))
-      .map((table) => table.id);
-    this.matchedTableObjects = this.matchedTables.flatMap((id) => {
-      const table = graph.tables[id];
-      return table === undefined ? [] : [table];
-    });
-    this.lastGraphGeneration = graph.generation;
+    const graph = this.world[worldInternal].getGraph();
+    // A World's storage rosters only append; membership changes mutate rows
+    // within those same owners. Match each new owner once, on the route this
+    // query consumes, and keep empty matches for later row repopulation.
+    if (this.compiled.sparseRoute) {
+      for (; this.scannedStorageCount < graph.archetypes.length; this.scannedStorageCount++) {
+        const archetype = graph.archetypes[this.scannedStorageCount];
+        if (archetype !== undefined && this.archetypeMatches(archetype)) {
+          this.matchedArchetypes.push(archetype.id);
+        }
+      }
+    } else {
+      for (; this.scannedStorageCount < graph.tables.length; this.scannedStorageCount++) {
+        const table = graph.tables[this.scannedStorageCount];
+        if (table !== undefined && this.tableMatches(table)) this.matchedTables.push(table);
+      }
+    }
   }
 
   private archetypeMatches(archetype: Archetype): boolean {
     for (const requiredId of this.compiled.requiredIds) {
-      if (!archetype.components.some((component) => componentId(component) === requiredId))
-        return false;
+      if (!archetypeHasComponent(archetype, requiredId)) return false;
     }
     for (const excludedId of this.compiled.withoutIds) {
-      if (archetype.components.some((component) => componentId(component) === excludedId))
-        return false;
+      if (archetypeHasComponent(archetype, excludedId)) return false;
     }
     return true;
   }

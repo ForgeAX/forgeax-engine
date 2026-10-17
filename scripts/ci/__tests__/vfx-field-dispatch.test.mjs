@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { isSimulationUpdate } from '../../../apps/hello/boss-lightning/scripts/smoke-diagnostics.mjs';
 
 const source = readFileSync(
   new URL('../../../apps/hello/boss-lightning/scripts/smoke-fields-dawn.mjs', import.meta.url),
@@ -10,12 +11,15 @@ const source = readFileSync(
 const begin = source.indexOf('if(!performanceRun){');
 const end = source.indexOf('nativeCreate=device.createBuffer', begin);
 assert(begin > 0 && end > begin);
-const instrument = runInNewContext(`(device) => {
+const instrument = runInNewContext(
+  `(device) => {
   let simulationUpdates = 0;
   const performanceRun = false;
   ${source.slice(begin, end)}
   return () => simulationUpdates;
-}`);
+}`,
+  { isSimulationUpdate },
+);
 
 test('the actual field-smoke observer counts full and compact GPU dispatches without counting view work', async () => {
   let forwarded = 0;

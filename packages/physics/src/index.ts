@@ -59,6 +59,7 @@ export type {
   PhysicsQuaternion,
   PhysicsVector,
   PhysicsVelocityPolicy,
+  VoxelShapeInput,
 } from './derived-physics.js';
 export {
   cloneDerivedPhysicsInput,
@@ -67,6 +68,7 @@ export {
   estimateDerivedPhysicsInputBytes,
   normalizeConvexCompoundShapeInput,
   normalizeHeightfieldShapeInput,
+  normalizeVoxelShapeInput,
   preserveCenterOfMassVelocity,
   validateMassProperties,
 } from './derived-physics.js';

@@ -12,7 +12,8 @@ import {
   SpriteInstancesRequiresSpriteShaderError,
 } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
-import { box3, frustum, type Mat4, mat4, type Vec3, vec3 } from '@forgeax/engine-math';
+import { isFiniteAabb } from '@forgeax/engine-geometry';
+import { box3, frustum, type Mat4, mat4, type Vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import { RhiError } from '@forgeax/engine-rhi';
@@ -46,6 +47,7 @@ import {
   derive,
   isTriangleTopology,
   materialValuesToLinearRuntime,
+  ok,
   toShared,
 } from '@forgeax/engine-types';
 import { buildCameraFrusta } from './camera-frusta';
@@ -146,7 +148,6 @@ import {
   internSharedRefFromGuid,
   isEngineInjectedTextureField,
   materialColorParameterSchema,
-  materialNormalScale,
   materialParamSchemaForMaterial,
   materialProgramSelectionsForMaterial,
   materialPublicationForMaterial,
@@ -157,6 +158,7 @@ import {
   materialTextureFields,
   materialTextureRef,
   materialTextureSourceFields,
+  materialValueSnapshot,
   pipelineRenderState,
   prepareExtractContext,
   readPersistentMaterialSnapshot,
@@ -318,6 +320,13 @@ export function extractFrames(
           readonly entitiesByWorld: readonly (ReadonlySet<number> | undefined)[];
         };
     readonly retainHidden?: boolean;
+    /** Private preparation overlay; never mutates the entity's accepted MeshFilter. */
+    readonly preparationMesh?: {
+      readonly world: World;
+      readonly entity: number;
+      readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+      readonly mesh: MeshAsset;
+    };
     readonly getMaterialShaderArtifact?: (
       materialShaderId: string,
       request?: {
@@ -432,6 +441,9 @@ export function extractFrames(
           ? {}
           : { renderableEntities: partialEntitiesByWorld[wi] }),
         retainHidden,
+        ...(options.preparationMesh?.world === world
+          ? { preparationMesh: options.preparationMesh }
+          : {}),
         worldId: wi,
         ...(options.getMaterialShaderArtifact === undefined
           ? {}
@@ -822,44 +834,6 @@ export function extractFrames(
   };
 }
 
-/**
- * A MeshAsset participates in frustum culling only when its producer supplied
- * the complete finite local-space bounds promised by the asset contract.
- * Missing, malformed, and inverted-infinity empty bounds remain conservative
- * (always visible) so a bad asset cannot turn into a false-negative render;
- * they are not cull candidates and therefore do not inflate frustumStats.
- */
-function hasFiniteOrderedLocalAabb(aabb: Float32Array | undefined): aabb is Float32Array {
-  if (aabb === undefined || aabb.length !== 6) return false;
-  const minX = aabb[0];
-  const minY = aabb[1];
-  const minZ = aabb[2];
-  const maxX = aabb[3];
-  const maxY = aabb[4];
-  const maxZ = aabb[5];
-  if (
-    minX === undefined ||
-    minY === undefined ||
-    minZ === undefined ||
-    maxX === undefined ||
-    maxY === undefined ||
-    maxZ === undefined
-  ) {
-    return false;
-  }
-  if (
-    !Number.isFinite(minX) ||
-    !Number.isFinite(minY) ||
-    !Number.isFinite(minZ) ||
-    !Number.isFinite(maxX) ||
-    !Number.isFinite(maxY) ||
-    !Number.isFinite(maxZ)
-  ) {
-    return false;
-  }
-  return minX <= maxX && minY <= maxY && minZ <= maxZ;
-}
-
 export function morphSnapshotFor(
   mesh: Pick<MeshAsset, 'vertices' | 'morphTargets'>,
   weights: ArrayLike<number> | undefined,
@@ -1109,7 +1083,10 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       });
       continue;
     }
+    const preparationMesh =
+      context.preparationMesh?.entity === row.entity ? context.preparationMesh : undefined;
     const preparePipelines =
+      preparationMesh !== undefined ||
       world[worldRead].getFieldValue(row.entity, MeshRenderer, 'preparePipelines') === 1;
     const hasTransform = row.has(Transform);
     const meshFilter = row.get(MeshFilter);
@@ -1153,7 +1130,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     // loop below. Normal structural paths materialize this carrier through
     // Transform's generic ECS requirement; keep the defensive row check because
     // an owner can explicitly remove a required component during recovery.
-    const fAssetHandle = meshFilter?.assetHandle;
+    const fAssetHandle = preparationMesh?.meshHandle ?? meshFilter?.assetHandle;
     // feat-20260520-2d-sprite-layer-mvp M-3 / w22: Layer column read here;
     // value folded into each DispatchEntry so the render-system sort can use
     // it as the primary transparent-sort key without a second ECS round-trip.
@@ -1253,7 +1230,10 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         assets !== null
       ) {
         const meshHandle = toShared<'MeshAsset'>(fAssetHandleVal);
-        const meshRes = resolveAssetHandle<Asset>(world, meshHandle);
+        const meshRes =
+          preparationMesh === undefined
+            ? resolveAssetHandle<Asset>(world, meshHandle)
+            : ok(preparationMesh.mesh);
         if (meshRes.ok && meshRes.value.kind === 'mesh') {
           const meshAsset = meshRes.value as MeshAsset;
           const guid = (meshRes.value as { guid?: string }).guid ?? '<no-guid>';
@@ -1651,25 +1631,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               resolved.colorSpace,
             ) as Readonly<Record<string, unknown>>;
 
-            const baseColorPv = pv.baseColor as readonly number[] | undefined;
-            const baseColor = vec3.create(
-              baseColorPv?.[0] ?? 1,
-              baseColorPv?.[1] ?? 1,
-              baseColorPv?.[2] ?? 1,
-            );
-            const metallicPv = typeof pv.metallic === 'number' ? pv.metallic : 0;
-            const roughnessPv = typeof pv.roughness === 'number' ? pv.roughness : 0.5;
-            const specularColorPv = pv.specularColor as readonly number[] | undefined;
-            const normalScalePv = materialNormalScale(pv);
-
-            const paramSnap: Record<string, number | number[] | string> = {};
-            for (const [k, v] of Object.entries(pv)) {
-              if (typeof v === 'number') paramSnap[k] = v;
-              else if (typeof v === 'string') paramSnap[k] = v;
-              else if (Array.isArray(v) && v.every((x) => typeof x === 'number')) {
-                paramSnap[k] = v as number[];
-              }
-            }
+            const valueSnapshot = materialValueSnapshot(pv);
+            const paramSnap = valueSnapshot.paramSnapshot;
 
             const materialParamSchema = materialParamSchemaForMaterial(
               resolved.parameters ?? [],
@@ -1868,7 +1831,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               materialTextureSourceStats,
               materialTextureSourceCache,
             );
-            const emissivePv = pv.emissive as readonly number[] | undefined;
+
             // feat-20260625 M2 / w6: first-pass transparency flag folds into
             // MaterialSnapshot.transparent so the record stage can drive the
             // LDR split + premultiplied-alpha blend decision without
@@ -1946,9 +1909,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             // SpriteRegionOverride + flip fold); the rest of the UBO is filled
             // by the same paramSchema-driven path PBR / unlit use.
             materialSnap = {
-              baseColor,
-              metallic: metallicPv,
-              roughness: roughnessPv,
+              ...valueSnapshot,
               surfaceModel: materialSurfaceModel(allPasses, resolved.surface?.model),
               deferredPass: allPasses.some(
                 (pass) =>
@@ -1957,14 +1918,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                       pass.name,
                   ) === 'Deferred',
               ),
-              ...(specularColorPv !== undefined && {
-                specularColor: [
-                  specularColorPv[0] ?? 1,
-                  specularColorPv[1] ?? 1,
-                  specularColorPv[2] ?? 1,
-                ] as readonly [number, number, number],
-              }),
-              normalScale: normalScalePv,
               materialShaderId: firstPassShader,
               materialProgramKeys,
               materialPublication: materialPublicationForMaterial(
@@ -1977,7 +1930,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               materialSurfacePrograms,
               materialHandle: handleRaw,
               renderState: pipelineRenderState(allPasses[0]?.renderState),
-              paramSnapshot: paramSnap,
               ...(materialParamSchema.length > 0 && { materialParamSchema }),
               standardTextureMask: materialStandardTextureMask(
                 resolved.parameters,
@@ -1999,24 +1951,11 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 metallicRoughnessTexture: metallicRoughnessTextureHandle,
               }),
               ...(normalTextureHandle !== undefined && { normalTexture: normalTextureHandle }),
-              ...(emissivePv !== undefined && {
-                emissive: [emissivePv[0] ?? 0, emissivePv[1] ?? 0, emissivePv[2] ?? 0] as readonly [
-                  number,
-                  number,
-                  number,
-                ],
-              }),
-              ...(typeof pv.emissiveIntensity === 'number' && {
-                emissiveIntensity: pv.emissiveIntensity,
-              }),
               ...(emissiveTextureHandle !== undefined && {
                 emissiveTexture: emissiveTextureHandle,
               }),
               ...(occlusionTextureHandle !== undefined && {
                 occlusionTexture: occlusionTextureHandle,
-              }),
-              ...(typeof pv.occlusionStrength === 'number' && {
-                occlusionStrength: pv.occlusionStrength,
               }),
               transparent: firstPassTransparent,
             };
@@ -2404,7 +2343,10 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         let morph: MorphSnapshot | undefined;
         const assetHandleRaw = Math.round(fAssetHandle ?? 0);
         if (assetHandleRaw !== 0) {
-          const meshRes = resolveAssetHandle(world, toShared<'MeshAsset'>(assetHandleRaw));
+          const meshRes =
+            preparationMesh === undefined
+              ? resolveAssetHandle(world, toShared<'MeshAsset'>(assetHandleRaw))
+              : ok(preparationMesh.mesh);
           if (meshRes.ok && meshRes.value.kind === 'mesh') {
             const meshAsset = meshRes.value as MeshAsset;
             lods = meshAsset.lods;
@@ -2429,7 +2371,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             // specialized lane conservative until a target-aware bounds
             // projection is available; a false-positive draw is preferable
             // to culling a valid deformed vertex.
-            if (morph === undefined && hasFiniteOrderedLocalAabb(meshAabb)) {
+            if (morph === undefined && isFiniteAabb(meshAabb)) {
               localAabb = new Float32Array(meshAabb);
             }
           }

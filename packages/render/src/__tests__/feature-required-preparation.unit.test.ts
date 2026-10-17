@@ -1,7 +1,10 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { RenderFeatureStageFailedError } from '../errors/render';
+import {
+  RenderFeaturePreparationFailedError,
+  RenderFeatureStageFailedError,
+} from '../errors/render';
 import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
 import type { RenderFeature } from '../features/types';
 
@@ -20,7 +23,7 @@ async function frame(feature: RenderFeature<{ required: boolean }>) {
         caps: device.caps,
       },
     ]);
-  return { host, run };
+  return { host, run, device };
 }
 
 it('retains explicit source preparation through a failed plan and retries without changing ordinary failures', async () => {
@@ -39,17 +42,27 @@ it('retains explicit source preparation through a failed plan and retries withou
   try {
     const pending = f.run();
     expect(pending.frame.preparationPending).toBe(true);
+    expect(pending.frame.preparationPendingFeatureIdentity).toBe('source-preparation');
+    expect(pending.frame.preparationPendingReason).toEqual({
+      code: 'feature-preparation',
+      featureIdentity: 'source-preparation',
+      preparationStage: 'source-plan',
+    });
     expect(pending.frame.errors).toHaveLength(1);
     pending.onAborted();
     required = false;
     const ordinary = f.run();
     expect(ordinary.frame.preparationPending).not.toBe(true);
+    expect(ordinary.frame.preparationPendingReason).toBeUndefined();
     expect(ordinary.frame.errors).toHaveLength(1);
     ordinary.onAborted();
     required = true;
     missing = false;
+    f.host.recover({ frameNumber: 2, caps: f.device.caps }).unwrap();
     const ready = f.run();
     expect(ready.frame.preparationPending).not.toBe(true);
+    expect(ready.frame.preparationPendingFeatureIdentity).toBeUndefined();
+    expect(ready.frame.preparationPendingReason).toBeUndefined();
     expect(ready.frame.errors).toEqual([]);
     ready.onAborted();
   } finally {
@@ -72,11 +85,57 @@ it('a failed source readiness guard cannot fail open and still aborts extracted 
   try {
     const value = f.run();
     expect(value.frame.preparationPending).toBe(true);
+    expect(value.frame.preparationPendingFeatureIdentity).toBe('guard-failure');
+    expect(value.frame.preparationPendingReason).toEqual({
+      code: 'feature-preparation',
+      featureIdentity: 'guard-failure',
+      preparationStage: 'source-guard',
+    });
     expect(value.frame.errors).toHaveLength(1);
     expect(plan).not.toHaveBeenCalled();
     expect(aborted).toHaveBeenCalledTimes(1);
     value.onAborted();
     expect(aborted).toHaveBeenCalledTimes(1);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+it('bounds one first-frame blocker without serializing an exception or calling unknown work compile', async () => {
+  const identity = 'bounded'.repeat(100),
+    token = 'resource'.repeat(100);
+  const f = await frame({
+    identity,
+    extract: () => ok({ required: true }),
+    requiresPreparation: () => true,
+    plan: () =>
+      err(
+        new RenderFeaturePreparationFailedError(
+          identity,
+          0,
+          'upload'.repeat(100),
+          'vertex-data',
+          token,
+          'backend-not-resident'.repeat(100),
+          'next-frame',
+        ),
+      ),
+  });
+  try {
+    const pending = f.run();
+    const reason = pending.frame.preparationPendingReason;
+    expect(reason).toEqual({
+      code: 'feature-preparation',
+      featureIdentity: identity.slice(0, 256),
+      preparationStage: 'resource-preparation',
+      operation: 'upload'.repeat(100).slice(0, 64),
+      resource: token.slice(0, 256),
+      reason: 'backend-not-resident'.repeat(100).slice(0, 128),
+    });
+    expect(structuredClone(reason)).toEqual(reason);
+    pending.onAborted();
+    f.host.recover({ frameNumber: 2, caps: f.device.caps }).unwrap();
+    expect(reason).toEqual(pending.frame.preparationPendingReason);
   } finally {
     f.host.dispose();
   }

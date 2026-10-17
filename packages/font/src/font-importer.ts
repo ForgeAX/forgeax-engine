@@ -40,8 +40,8 @@ import type {
   SamplerAsset,
   TextureAsset,
 } from '@forgeax/engine-types';
+import type { BakeAtlas, MsdfGenerator } from './atlas-font-data.js';
 import { atlasFontData } from './atlas-font-data.js';
-import type { BakeAtlas, MsdfGenerator } from './cli-font.js';
 import { realGeneratorFactory } from './cli-font.js';
 
 /** Stable semantic identities for the three writable font outputs. */

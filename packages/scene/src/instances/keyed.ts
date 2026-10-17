@@ -1,6 +1,10 @@
 import type { Component, World } from '@forgeax/engine-ecs';
 import { classifyEntityField, remapEntityFieldValue } from '@forgeax/engine-ecs/externalization';
-import { componentDefinition, componentSchema } from '@forgeax/engine-ecs/internal';
+import {
+  bufferFieldByteLength,
+  componentDefinition,
+  componentSchema,
+} from '@forgeax/engine-ecs/internal';
 import type {
   ComponentValuesMap,
   LocalEntityId,
@@ -113,8 +117,42 @@ function fieldRemap(
       });
     }
     const kind = classifyEntityField(token as Component, fieldName);
+    const array = definition.fields[fieldName]?.arrayMeta;
+    if (
+      array !== undefined &&
+      (!(Array.isArray(value) || (ArrayBuffer.isView(value) && 'length' in value)) ||
+        (array.length !== undefined && value.length !== array.length))
+    ) {
+      return fail('authored array violates its declared schema', {
+        component: componentName,
+        field: fieldName,
+        type: fieldType,
+        ...(entityKey === undefined ? {} : { entity: entityKey }),
+      });
+    }
     if (kind === null) {
-      const array = definition.fields[fieldName]?.arrayMeta;
+      if (fieldType === 'buffer' || fieldType.startsWith('buffer<')) {
+        const bytes = Array.isArray(value)
+          ? value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)
+            ? new Uint8Array(value)
+            : undefined
+          : ArrayBuffer.isView(value)
+            ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+            : value instanceof ArrayBuffer ||
+                (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
+              ? new Uint8Array(value)
+              : undefined;
+        const size = bufferFieldByteLength(fieldType);
+        if (bytes === undefined || (Number.isFinite(size) && bytes.byteLength !== size))
+          return fail('authored buffer violates its declared schema', {
+            component: componentName,
+            field: fieldName,
+            type: fieldType,
+            ...(entityKey === undefined ? {} : { entity: entityKey }),
+          });
+        out[fieldName] = bytes;
+        continue;
+      }
       const primitive = array?.elementType === 'bool' ? 'u8' : (array?.elementType ?? fieldType);
       if (isPrimitiveScalarFieldType(primitive)) {
         const values = array
@@ -124,11 +162,7 @@ function fieldRemap(
               ? Array.from(value as unknown as ArrayLike<unknown>)
               : undefined
           : [value];
-        if (
-          values === undefined ||
-          (array?.length !== undefined && values.length !== array.length) ||
-          values.some((item) => !validPrimitive(primitive, item))
-        )
+        if (values === undefined || values.some((item) => !validPrimitive(primitive, item)))
           return fail('authored component value violates its declared schema', {
             component: componentName,
             field: fieldName,

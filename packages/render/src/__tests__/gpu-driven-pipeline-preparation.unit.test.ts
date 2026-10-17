@@ -80,7 +80,15 @@ it('waits for the exact declared scene-index fragment and targets without encodi
       .unwrap();
     expect(ordinary).not.toHaveBeenCalled();
     projected.registerPipelinePreparation?.(DEFERRED_COLOR_FORMATS, undefined, 'fs_gbuffer');
-    expect(projected.preparePipelines?.()).toBe(false);
+    const pending = vi.fn();
+    expect(projected.preparePipelines?.([], undefined, pending)).toBe(false);
+    expect(pending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'scene-pipeline-preparation',
+        pass: 'fs_gbuffer',
+        shader: expect.any(String),
+      }),
+    );
     expect(ordinary).not.toHaveBeenCalled();
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(prepare.mock.calls[0]?.[15]).toBe('gpu-driven-pbr');
@@ -88,7 +96,9 @@ it('waits for the exact declared scene-index fragment and targets without encodi
     expect(prepare.mock.calls[0]?.[17]).toEqual(DEFERRED_COLOR_FORMATS.slice(1));
     expect(prepare.mock.calls[0]?.[19]).toBe('fs_gbuffer');
     released = true;
-    expect(projected.preparePipelines?.()).toBe(true);
+    pending.mockClear();
+    expect(projected.preparePipelines?.([], undefined, pending)).toBe(true);
+    expect(pending).not.toHaveBeenCalled();
     expect(projected.preparePipelines?.()).toBe(true);
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(prepare.mock.calls[1]).toEqual(prepare.mock.calls[0]);

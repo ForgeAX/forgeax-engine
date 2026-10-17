@@ -121,9 +121,9 @@ const matrix = async (first, second, tool) => {
   await pageCall(first,'target.select',{targetId:ownTarget.targetId});
   const entity = await tool('forgeax_engine_entity_inspect',{entityId:tree.value.nodes[0].entityId,targetId:ownTarget.targetId,targetGeneration:ownTarget.generation});
   assert.equal(entity.ok,true,JSON.stringify(entity));
-  // Restore the second page's original Editor fixture after proving that the
+  // Restore the second page's original Preview fixture after proving that the
   // first page's Scene open preserved its Runtime Capture selection.
-  await second.locator('[role="tab"][data-page-id="page-editor"]').click();
+  await second.locator('[role="tab"][data-page-id="page-scene"]').click();
   await pageCall(second,'asset.open',{projectId:b.project.id,guid:mesh.guid,tabId:'forgeax-user-workspace'});
   await first.getByRole('tab',{name:/\u8fd0\u884c\u65f6\u622a\u56fe|Runtime Capture/}).click();
   const afterA=await pageCall(first,'tabs.get'), afterB=await pageCall(second,'tabs.get');

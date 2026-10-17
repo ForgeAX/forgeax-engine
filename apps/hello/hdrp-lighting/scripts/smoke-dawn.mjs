@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readReferencePng } from '../../../shared/png-codec.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 const lightweight = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1';
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? (lightweight ? '60' : '60'), 10);
@@ -290,18 +291,12 @@ let totalFrames = 0;
 let latestReceipt;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const drawn = renderer.draw({
+  latestReceipt = await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (!drawn.ok) {
-    originalConsoleError(`[smoke] FAIL - draw frame ${i}: ${drawn.error.code} - ${drawn.error.hint}`);
-    process.exit(1);
-  }
-  latestReceipt = drawn.value;
   totalFrames++;
-  if (i % 16 === 15) await delay(1);
 }
 
 if (latestReceipt === undefined) {

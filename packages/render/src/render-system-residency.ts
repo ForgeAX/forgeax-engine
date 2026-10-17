@@ -168,7 +168,7 @@ export function observeMaterialResidency(
     // Video views are supplied by the renderer-owned dynamic store at record
     // time. A previously uploaded view is a producer-owned last-known-good
     // fact; absence means the visible workset still needs a decodable frame.
-    for (const clip of material.videoTextureFields?.values() ?? []) {
+    for (const clip of material.videoTextureFields?.values() ?? EMPTY_RESIDENCY_DETAILS) {
       if (internals.dynamicTextureStore?.getView(clip) === undefined) pending = true;
       else resident = true;
     }

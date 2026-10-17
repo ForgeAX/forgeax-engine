@@ -25,46 +25,11 @@ import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { deflateSync } from 'node:zlib';
-import { FontError, type GlyphMetric } from '@forgeax/engine-types';
-import { atlasFontData } from './atlas-font-data.js';
+import { type FontAsset, FontError } from '@forgeax/engine-types';
+import { atlasFontData, type BakeAtlas, type MsdfGenerator } from './atlas-font-data.js';
 import { NodeWorkerAdapter } from './node-worker-adapter.js';
 
-/**
- * Minimal subset of the @zappar/msdf-generator glyph record consumed by the
- * bake. Mirrors the package's `GlyphInfo` (dist/index.d.ts) -- only the fields
- * the BMFont -> FontAsset mapping needs (toolchain wiki section 4).
- */
-export interface BakeGlyph {
-  readonly unicode: number;
-  readonly advance: number;
-  readonly xoffset: number;
-  readonly yoffset: number;
-  readonly atlasPosition: readonly [number, number];
-  readonly atlasSize: readonly [number, number];
-}
-
-/**
- * Minimal subset of the @zappar/msdf-generator `MSDFAtlas` consumed by the
- * bake. `texture` carries the RGBA pixel buffer + dimensions (the package's
- * `ImageData`-shaped texture, but reduced to POD so the bake stays
- * environment-agnostic for testing).
- */
-export interface BakeAtlas {
-  readonly texture: { readonly width: number; readonly height: number; readonly data: Uint8Array };
-  readonly glyphs: readonly BakeGlyph[];
-  readonly metrics: { readonly lineHeight: number; readonly ascender: number };
-  readonly textureSize: readonly [number, number];
-  readonly fieldRange: number;
-}
-
-/**
- * The bake-time MSDF generator contract. Injected into {@link bakeFont} so
- * unit tests can supply a mock (real path: `@zappar/msdf-generator`'s `MSDF`).
- */
-export interface MsdfGenerator {
-  generateAtlas(ttf: Uint8Array): Promise<BakeAtlas>;
-  dispose(): Promise<void>;
-}
+export type { BakeAtlas, BakeGlyph, MsdfGenerator } from './atlas-font-data.js';
 
 /** Default charset baked into the atlas (printable ASCII). */
 const DEFAULT_CHARSET = (() => {
@@ -82,21 +47,12 @@ const DEFAULT_FONT_SIZE = 48;
  * (BMFont -> FontAsset mapping, toolchain wiki section 4) + the common block
  * (distanceRange / atlas dimensions). Parsed by the runtime font load path.
  */
-export interface BakeSidecar {
+export interface BakeSidecar extends Pick<FontAsset, 'common' | 'glyphs'> {
   readonly schemaVersion: string;
   readonly kind: 'external-asset-package';
   readonly importer: 'font';
   readonly source: string;
   readonly importSettings: { readonly colorSpace: 'linear'; readonly mipmap: 'none' };
-  readonly common: {
-    readonly lineHeight: number;
-    readonly base: number;
-    readonly distanceRange: number;
-    readonly pxRange: number;
-    readonly atlasWidth: number;
-    readonly atlasHeight: number;
-  };
-  readonly glyphs: Record<number, GlyphMetric>;
 }
 
 /** TTF / OTF magic numbers (first 4 bytes). Per the OpenType spec. */
@@ -266,44 +222,8 @@ export async function bakeFont(
  * subcommand (or a test that injects a mock) never pays the wasm load cost,
  * and so the package builds without the browser globals the generator needs.
  */
-/**
- * Shape of @zappar/msdf-generator's `MSDFAtlas` (dist/index.d.ts) that the
- * real factory adapts into the POD {@link BakeAtlas}. The package's `texture`
- * is an ImageData-shaped `{ width, height, data }`; we read those fields
- * structurally so the font package never needs the DOM `ImageData` type.
- */
-interface ZapparAtlas {
-  texture: { width: number; height: number; data: Uint8ClampedArray | Uint8Array };
-  glyphs: ReadonlyArray<{
-    unicode: number;
-    advance: number;
-    xoffset: number;
-    yoffset: number;
-    atlasPosition: [number, number];
-    atlasSize: [number, number];
-  }>;
-  metrics: { lineHeight: number; ascender: number };
-  textureSize: [number, number];
-  fieldRange: number;
-}
-
 export async function realGeneratorFactory(): Promise<MsdfGenerator> {
-  const mod = (await import('@zappar/msdf-generator')) as unknown as {
-    MSDF: new (config?: {
-      workerUrl?: URL;
-      wasmUrl?: string;
-    }) => {
-      initialize(): Promise<void>;
-      generateAtlas(opts: {
-        font: Uint8Array;
-        charset: string;
-        textureSize: [number, number];
-        fieldRange: number;
-        fontSize: number;
-      }): Promise<ZapparAtlas>;
-      dispose(): Promise<void>;
-    };
-  };
+  const mod = await import('@zappar/msdf-generator');
 
   const wasmModuleUrl = import.meta.resolve('@zappar/msdf-generator/msdfgen_wasm.wasm');
   const wasmBytes = await readFile(new URL(wasmModuleUrl));
@@ -314,7 +234,7 @@ export async function realGeneratorFactory(): Promise<MsdfGenerator> {
   let msdf: InstanceType<typeof mod.MSDF> | undefined;
   try {
     msdf = new mod.MSDF({
-      workerUrl: new URL('./node-msdf-worker.mjs', import.meta.url),
+      workerUrl: fileURLToPath(new URL('./node-msdf-worker.mjs', import.meta.url)),
       wasmUrl,
     });
     await msdf.initialize();

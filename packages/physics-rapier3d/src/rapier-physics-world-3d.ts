@@ -84,8 +84,9 @@ import type {
   DerivedBodySource,
   DerivedCandidateRecord,
   DerivedConstraintRecord,
+  DerivedShapeRecord,
 } from './derived-candidate-records.js';
-import { createDerivedColliderDesc } from './derived-collider.js';
+import { createDerivedCollider, stageDerivedColliders } from './derived-collider.js';
 import { validateConstraintInput } from './derived-constraint.js';
 import { createManagedJointData } from './managed-joint-data.js';
 import {
@@ -1231,8 +1232,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         ),
       );
     }
-    // A live member already holds this group's one preparation credit. Input
-    // getters can retire it, so verify ownership after copying and body lookup.
+    // Recheck the group's preparation credit after potentially reentrant getters.
     const first = batch?.records[0];
     if (
       first === undefined ||
@@ -1260,22 +1260,19 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       ...copied.value,
       ...(mass.value === undefined ? {} : { massProperties: mass.value }),
     });
-    // Keep the public token's copied POD separate from the private record. A
-    // readonly typed-array field is still writable at runtime; admission must
-    // never consume caller mutations made after prepare() returned.
-    // The first validated copy already owns detached geometry buffers. Keep it
-    // private instead of validating and copying the same owned snapshot again.
-    const privateInput = candidateInput;
+    const privateInput = candidateInput; // Admission retains the detached first copy.
     const publicInput = cloneDerivedPhysicsInput(privateInput);
     if (!publicInput.ok) return publicInput;
-    const nativeColliders: { handle: number }[] = [];
+    let staged: ReturnType<typeof stageDerivedColliders>;
     try {
-      for (const shape of privateInput.shapes) {
-        const collider = this.createDerivedCollider(body, shape);
-        nativeColliders.push({ handle: collider.handle });
-      }
+      staged = stageDerivedColliders(
+        privateInput.shapes,
+        this.derivedBodies.get(input.entity),
+        (shape, previous) => this.createDerivedCollider(body, shape, previous),
+        (handle) => this.raw.getCollider(handle)?.parent()?.handle === body.handle,
+        (handle) => this.removeNativeCollider(handle),
+      );
     } catch (cause) {
-      for (const collider of nativeColliders) this.removeNativeCollider(collider.handle);
       return err(
         new DerivedPhysicsError(
           'derived-backend-failed',
@@ -1295,7 +1292,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     });
     this.derivedCandidates.set(candidateId, {
       token,
-      nativeColliders,
+      ...staged,
       input: privateInput,
       bytes: candidateBytes,
       state: 'ready',
@@ -1492,9 +1489,10 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     }
     const active = this.derivedBodies.get(record.input.entity);
     if (
-      record.retainedGeometry !== undefined
+      (record.sharedGeometry !== undefined && active !== record.sharedGeometry.owner) ||
+      (record.retainedGeometry !== undefined
         ? active !== record.retainedGeometry
-        : active !== undefined && record.input.revision <= active.revision
+        : active !== undefined && record.input.revision <= active.revision)
     ) {
       const stale = new DerivedPhysicsError(
         'derived-candidate-stale',
@@ -1790,7 +1788,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
                     heights: new Float32Array(shape.input.heights),
                     scale: [...shape.input.scale] as PhysicsVector,
                   }
-                : { pieces: shape.input.pieces.map((piece) => new Float32Array(piece)) }),
+                : shape.input.kind === 'voxels'
+                  ? {
+                      regions: new Int32Array(shape.input.regions),
+                      voxelSize: [...shape.input.voxelSize] as PhysicsVector,
+                    }
+                  : { pieces: shape.input.pieces.map((piece) => new Float32Array(piece)) }),
               origin: [...shape.input.origin] as PhysicsVector,
               rotation: [...shape.input.rotation] as PhysicsQuaternion,
             })),
@@ -2028,9 +2031,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   private createDerivedCollider(
     body: RapierRigidBody,
     shape: DerivedShapeInput,
+    previous?: DerivedShapeRecord,
   ): { readonly handle: number } {
-    const desc = createDerivedColliderDesc(this.rapierModule, shape);
-    const collider = this.raw.createCollider(desc, body);
+    const collider = createDerivedCollider(this.rapierModule, this.raw, body, shape, previous);
     this.isolationColliderOwners.set(collider.handle, body.userData);
     this.derivedColliderToShape.set(collider.handle, { entity: body.userData, id: shape.id });
     return collider;
@@ -2220,7 +2223,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
             { entity: record.input.entity },
           );
         } else if (
-          record.retainedGeometry !== undefined &&
+          (record.retainedGeometry !== undefined || record.sharedGeometry !== undefined) &&
           !retainedDerivedGeometryCurrent(
             record,
             this.derivedBodies.get(record.input.entity),
@@ -2230,7 +2233,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         ) {
           rejected = new DerivedPhysicsError(
             'derived-candidate-stale',
-            'type-only admission retains the exact accepted geometry owner',
+            'admission retains the exact accepted geometry owner',
             'read its new publication and prepare again',
             { entity: record.input.entity },
           );
@@ -2286,11 +2289,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         const rollback = (): boolean => {
           for (const staged of stagedConstraints.values())
             this.removeNativeConstraint(staged.handle);
-          // The commit path may already have removed/replaced a native joint
-          // before a later body mutation fails. Clear every current native joint
-          // now; the old records are recreated after the body state is restored
-          // instead of leaving a stale JS handle that no longer exists in
-          // Rapier.
+          // A partial commit may have replaced joints. Recreate old native joints
+          // after restoring bodies instead of retaining stale JS handles.
           for (const current of this.derivedConstraints.values())
             this.removeNativeConstraint(current.handle);
           this.derivedConstraints.clear();
@@ -2311,10 +2311,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
             const collider = (this.raw as RapierWorld).getCollider(native.handle);
             if (collider !== null && collider !== undefined) collider.setEnabled(false);
           }
-          // Remove staged colliders before restoring mass. Rapier defers some
-          // mass-property recomputation until a collider mutation; restoring
-          // while a disabled candidate is still attached can leave an explicit
-          // override behind for the next fixed step.
+          // Remove staged colliders before Rapier's deferred mass recomputation.
           for (const native of record.nativeColliders) this.removeNativeCollider(native.handle);
           for (const { collider, density, enabled } of oldDensities) {
             if (this.raw.getCollider(collider.handle) === null) continue;
@@ -2449,11 +2446,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
               true,
             );
           }
-          // A body revision invalidates any committed joint that still names
-          // that body's previous source/revision. Keep this tied to the body
-          // that is actually committing: a different queued endpoint may still
-          // fail, in which case its old joint remains valid and must not be
-          // removed speculatively.
+          // Retire joints against this committed revision only. Other queued
+          // endpoints may still fail and retain their previous joints.
           const committedSources = new Map(this.derivedBodySources);
           committedSources.set(record.input.entity, {
             sourceKey: record.input.sourceKey,
@@ -2472,7 +2466,11 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
             this.derivedConstraints.delete(constraintId);
           }
           if (old !== undefined && record.retainedGeometry === undefined) {
+            const retained = new Set(
+              record.sharedGeometry?.shapes.map((shape) => shape.colliderHandle),
+            );
             for (const shape of old.shapes) {
+              if (retained.has(shape.colliderHandle)) continue;
               const collider = (this.raw as RapierWorld).getCollider(shape.colliderHandle);
               if (collider !== null && collider !== undefined) collider.setEnabled(false);
             }
@@ -2499,9 +2497,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
               ...(record.input.constraints ?? []),
             ],
           };
-          // The sole cross-domain observation boundary: no native operation
-          // follows a successful geometry commit before recording this body.
-          // A refused commit takes the same complete native rollback below.
+          // No native mutation may follow geometry acceptance before recording ownership.
           const commitGeometry =
             record === group[group.length - 1]
               ? (record.batch?.commitGeometry ?? record.commitGeometry)
@@ -2596,7 +2592,11 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   private retireDerivedBodies(): void {
     for (const body of this.retiredDerivedBodies.splice(0)) {
-      for (const shape of body.shapes) this.removeNativeCollider(shape.colliderHandle);
+      const retained = new Set(
+        this.derivedBodies.get(body.entity)?.shapes.map((shape) => shape.colliderHandle),
+      );
+      for (const shape of body.shapes)
+        if (!retained.has(shape.colliderHandle)) this.removeNativeCollider(shape.colliderHandle);
       this.releaseDerivedCandidate(body.candidateId);
     }
   }

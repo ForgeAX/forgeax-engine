@@ -57,7 +57,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 | **`box3`** (7) | `create / expandByPoint / containsPoint / intersectsBox / fromPoints / fromPositions / transformBox3` |
 | **`circle2`** (10) | `create / fromPoints / toBox / center / radius / closestPoint / containsPoint / intersectsCircle / intersectsBox / merge` |
 | **`sphere`** (5) | `create / expandByPoint / containsPoint / intersectsBox / fromPoints` |
-| **`f32-to-f16-bytes`** (1) | `f32ToF16Bytes` |
+| **`f32-to-f16-bytes`** (2) | `f32ToF16Bytes`, `f16ToF32` |
 
 > [!NOTE]
 > Surface 由 `packages/math/scripts/count-math-exports.mjs` AST 计数（`node packages/math/scripts/count-math-exports.mjs`）SSOT 派生；表格中函数清单与计数器同步（M5 verify 已锁；surface 增减需同步本表）。

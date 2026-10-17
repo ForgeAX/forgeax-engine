@@ -27,6 +27,12 @@ export {
 export { SceneSdfUnavailableError, type SceneSdfUnavailableReason } from './errors/scene-sdf';
 export type { RenderFeatureSceneSdfDescriptor } from './features/scene-sdf';
 export type {
+  GeometryCommandObservation,
+  GeometryObservation,
+  GeometrySourceIdentity,
+  GeometryViewObservation,
+} from './geometry-observation';
+export type {
   CameraViewInspection,
   LodOcclusionReceiptCompleteViewObservation,
   LodOcclusionReceiptObservation,
@@ -842,6 +848,7 @@ export type {
   FrameEnvironment,
   FrameObservationRequest,
   FramePresentation,
+  FramePresentationPendingReason,
   FrameReceipt,
   FrameReceiptObservation,
   MaterialDrawObservation,
@@ -852,6 +859,7 @@ export type {
   RendererState,
   RenderFrameInput,
   RenderInspection,
+  RenderPreparationSchedule,
   RenderProfile,
   RenderResult,
   RenderWorldLease,

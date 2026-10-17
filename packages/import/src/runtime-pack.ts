@@ -451,7 +451,7 @@ function runtimeOutputProducers(
             detail: { reason: 'missing program artifact' },
           }),
         );
-      return producePluginAsset(input, program);
+      return producePluginAsset(input, () => ({ program }));
     },
   });
   return outputs;
@@ -795,7 +795,7 @@ export class RuntimePackProducer {
         if (!program) throw new TypeError('plugin source module missing from program closure');
         const lowered = producePluginAsset(
           { guid: asset.guid, sourceKey: asset.sourceKey, asset: source },
-          program,
+          () => ({ program }),
         ).unwrap();
         assets.push({
           ...asset,

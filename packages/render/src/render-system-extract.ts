@@ -1,7 +1,9 @@
+import { isFiniteAabb } from '@forgeax/engine-geometry';
 import {
   type MaterialCookRasterContext,
   materialProgramContextForPass,
 } from '@forgeax/engine-pack/material-cook';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import { LensEffects, resolveLensEffects } from './components/lens-effects';
 import { LensFlare, resolveLensFlare } from './components/lens-flare';
@@ -2001,37 +2003,10 @@ export function shadowCasterCpuReason(
     (skin === undefined && preparedDeformation === 'rigid') ||
     (skin !== undefined && preparedDeformation === 'skin');
   if (!materialContractMatches || !deformationContractMatches) return 'prepared-contract';
-  if (preparedDeformation === 'skin' && !hasFiniteOrderedSkinBounds(skin?.bounds)) {
+  if (preparedDeformation === 'skin' && !isFiniteAabb(skin?.bounds)) {
     return 'missing-skin-bounds';
   }
   return undefined;
-}
-
-function hasFiniteOrderedSkinBounds(bounds: Float32Array | undefined): bounds is Float32Array {
-  if (bounds === undefined || bounds.length !== 6) return false;
-  const minX = bounds[0];
-  const minY = bounds[1];
-  const minZ = bounds[2];
-  const maxX = bounds[3];
-  const maxY = bounds[4];
-  const maxZ = bounds[5];
-  return (
-    minX !== undefined &&
-    minY !== undefined &&
-    minZ !== undefined &&
-    maxX !== undefined &&
-    maxY !== undefined &&
-    maxZ !== undefined &&
-    Number.isFinite(minX) &&
-    Number.isFinite(minY) &&
-    Number.isFinite(minZ) &&
-    Number.isFinite(maxX) &&
-    Number.isFinite(maxY) &&
-    Number.isFinite(maxZ) &&
-    minX <= maxX &&
-    minY <= maxY &&
-    minZ <= maxZ
-  );
 }
 
 /**
@@ -2172,6 +2147,51 @@ export function materialNormalScale(
     Number.isFinite(scale[1])
     ? [scale[0], scale[1]]
     : [1, 1];
+}
+
+/** Value projection shared by primary and secondary material extraction. */
+export function materialValueSnapshot(
+  values: Readonly<Record<string, unknown>>,
+): Pick<
+  MaterialSnapshot,
+  | 'baseColor'
+  | 'metallic'
+  | 'roughness'
+  | 'specularColor'
+  | 'normalScale'
+  | 'emissive'
+  | 'emissiveIntensity'
+  | 'occlusionStrength'
+> & { paramSnapshot: Record<string, number | number[] | string> } {
+  const baseColor = values.baseColor as readonly number[] | undefined;
+  const specularColor = values.specularColor as readonly number[] | undefined;
+  const emissive = values.emissive as readonly number[] | undefined;
+  const paramSnapshot: Record<string, number | number[] | string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value === 'number' || typeof value === 'string') paramSnapshot[key] = value;
+    else if (Array.isArray(value) && value.every((entry) => typeof entry === 'number')) {
+      paramSnapshot[key] = value;
+    }
+  }
+  return {
+    baseColor: vec3.create(baseColor?.[0] ?? 1, baseColor?.[1] ?? 1, baseColor?.[2] ?? 1),
+    metallic: typeof values.metallic === 'number' ? values.metallic : 0,
+    roughness: typeof values.roughness === 'number' ? values.roughness : 0.5,
+    normalScale: materialNormalScale(values),
+    ...(specularColor !== undefined && {
+      specularColor: [specularColor[0] ?? 1, specularColor[1] ?? 1, specularColor[2] ?? 1] as const,
+    }),
+    ...(emissive !== undefined && {
+      emissive: [emissive[0] ?? 0, emissive[1] ?? 0, emissive[2] ?? 0] as const,
+    }),
+    ...(typeof values.emissiveIntensity === 'number' && {
+      emissiveIntensity: values.emissiveIntensity,
+    }),
+    ...(typeof values.occlusionStrength === 'number' && {
+      occlusionStrength: values.occlusionStrength,
+    }),
+    paramSnapshot,
+  };
 }
 
 export function materialTextureRef(value: unknown): unknown {
@@ -2718,25 +2738,8 @@ export function resolveMaterialSnapshot(
     materialColorParameterSchema(resolved.parameters ?? [], firstPassShader, assetsRef),
     resolved.colorSpace,
   ) as Readonly<Record<string, unknown>>;
-  const baseColorPv = pv.baseColor as readonly number[] | undefined;
-  const baseColor = vec3.create(
-    baseColorPv?.[0] ?? 1,
-    baseColorPv?.[1] ?? 1,
-    baseColorPv?.[2] ?? 1,
-  );
-  const metallicPv = typeof pv.metallic === 'number' ? pv.metallic : 0;
-  const roughnessPv = typeof pv.roughness === 'number' ? pv.roughness : 0.5;
-  const specularColorPv = pv.specularColor as readonly number[] | undefined;
-  const normalScalePv = materialNormalScale(pv);
+  const valueSnapshot = materialValueSnapshot(pv);
 
-  const paramSnap: Record<string, number | number[] | string> = {};
-  for (const [k, v] of Object.entries(pv)) {
-    if (typeof v === 'number') paramSnap[k] = v;
-    else if (typeof v === 'string') paramSnap[k] = v;
-    else if (Array.isArray(v) && v.every((x) => typeof x === 'number')) {
-      paramSnap[k] = v as number[];
-    }
-  }
   const materialParamSchema = materialParamSchemaForMaterial(
     resolved.parameters ?? [],
     firstPassShader,
@@ -2791,12 +2794,10 @@ export function resolveMaterialSnapshot(
   const baseColorTextureHandle = textureHandles.get('baseColorTexture');
   const metallicRoughnessTextureHandle = textureHandles.get('metallicRoughnessTexture');
   const normalTextureHandle = textureHandles.get('normalTexture');
-  const emissivePv = pv.emissive as readonly number[] | undefined;
+
   const surfaceModel = materialSurfaceModel(allPasses, resolved.surface?.model);
   const snapshot: MaterialSnapshot = {
-    baseColor,
-    metallic: metallicPv,
-    roughness: roughnessPv,
+    ...valueSnapshot,
     ...(surfaceModel === undefined ? {} : { surfaceModel }),
     deferredPass: allPasses.some(
       (pass) =>
@@ -2804,14 +2805,6 @@ export function resolveMaterialSnapshot(
           (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
         ) === 'Deferred',
     ),
-    ...(specularColorPv !== undefined && {
-      specularColor: [
-        specularColorPv[0] ?? 1,
-        specularColorPv[1] ?? 1,
-        specularColorPv[2] ?? 1,
-      ] as readonly [number, number, number],
-    }),
-    normalScale: normalScalePv,
     materialShaderId: firstPassShader,
     materialProgramKeys,
     materialPublication: materialPublicationForMaterial(
@@ -2830,7 +2823,6 @@ export function resolveMaterialSnapshot(
     materialSurfacePrograms,
     materialHandle: handleRaw,
     renderState: pipelineRenderState(allPasses[0]?.renderState, allPasses[0]?.outputs),
-    paramSnapshot: paramSnap,
     ...(materialParamSchema.length > 0 && { materialParamSchema }),
     standardTextureMask: materialStandardTextureMask(resolved.parameters, firstPassShader, pv, {
       textureHandles,
@@ -2847,17 +2839,8 @@ export function resolveMaterialSnapshot(
       metallicRoughnessTexture: metallicRoughnessTextureHandle,
     }),
     ...(normalTextureHandle !== undefined && { normalTexture: normalTextureHandle }),
-    ...(emissivePv !== undefined && {
-      emissive: [emissivePv[0] ?? 0, emissivePv[1] ?? 0, emissivePv[2] ?? 0] as readonly [
-        number,
-        number,
-        number,
-      ],
-    }),
-    ...(typeof pv.emissiveIntensity === 'number' && { emissiveIntensity: pv.emissiveIntensity }),
     ...(emissiveTextureHandle !== undefined && { emissiveTexture: emissiveTextureHandle }),
     ...(occlusionTextureHandle !== undefined && { occlusionTexture: occlusionTextureHandle }),
-    ...(typeof pv.occlusionStrength === 'number' && { occlusionStrength: pv.occlusionStrength }),
     // feat-city-glb Bug 5 (per-submesh transparency): derive `transparent`
     // from the first pass's `renderState.blend` presence, identical to the
     // entity-level snapshot builder (extractFrame archetype loop). Without
@@ -3322,6 +3305,11 @@ export interface PreparedExtractContext {
   readonly renderables: 'full' | 'none';
   readonly renderableEntities: ReadonlySet<number> | undefined;
   readonly retainHidden: boolean;
+  readonly preparationMesh?: {
+    readonly entity: number;
+    readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+    readonly mesh: MeshAsset;
+  };
   /** World identity used to form cross-world producer ownership keys. */
   readonly worldId: number;
   readonly visibility: VisibilitySnapshot;
@@ -3776,6 +3764,11 @@ export function prepareExtractContext(
     readonly renderables?: 'full' | 'none';
     readonly renderableEntities?: ReadonlySet<number>;
     readonly retainHidden?: boolean;
+    readonly preparationMesh?: {
+      readonly entity: number;
+      readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+      readonly mesh: MeshAsset;
+    };
     readonly worldId?: number;
     readonly getMaterialShaderArtifact?: (
       materialShaderId: string,
@@ -3805,6 +3798,7 @@ export function prepareExtractContext(
     worldId: options.worldId ?? 0,
     renderableEntities: options.renderableEntities,
     retainHidden: options.retainHidden ?? false,
+    ...(options.preparationMesh === undefined ? {} : { preparationMesh: options.preparationMesh }),
     visibility: renderables === 'none' ? ALL_VISIBLE : resolveVisibility(world),
     getMaterialShaderArtifact: options.getMaterialShaderArtifact,
     instanceCollections: options.instanceCollections,

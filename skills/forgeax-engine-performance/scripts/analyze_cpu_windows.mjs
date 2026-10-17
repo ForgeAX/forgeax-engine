@@ -216,6 +216,23 @@ export function analyzeCaptureWindows(raw, report, frames, maps, rawSha256, top 
       frames.end > frames.firstLiveAt,
     'Require explicit observed LIVE start and end; startup is not LIVE',
   );
+  requireFact(Array.isArray(frames.frames), 'Require captured completed frames');
+  const receipts = [...frames.frames];
+  if (frames.closingFrame !== undefined) {
+    const closing = frames.closingFrame;
+    frameBoundary({ ...closing, completedAtMs: closing.at });
+    const existing = receipts.find(
+      (row) =>
+        row.frameId === closing.frameId &&
+        row.worldIdentity === closing.worldIdentity &&
+        row.deviceGeneration === closing.deviceGeneration,
+    );
+    requireFact(
+      existing === undefined || existing.at === closing.at,
+      'Closing receipt conflicts with a captured completion',
+    );
+    if (existing === undefined) receipts.push(closing);
+  }
   const gaps = report.windows?.sampled?.submissionGaps?.worstCompletedGaps;
   requireFact(
     Array.isArray(gaps),
@@ -237,14 +254,13 @@ export function analyzeCaptureWindows(raw, report, frames, maps, rawSha256, top 
     // A gap from another report/capture must not silently become this capture's attribution.
     for (const boundary of [gap.previous, gap.current])
       requireFact(
-        Array.isArray(frames.frames) &&
-          frames.frames.some(
-            (row) =>
-              row.frameId === boundary.frameId &&
-              row.worldIdentity === boundary.worldIdentity &&
-              row.deviceGeneration === boundary.deviceGeneration &&
-              row.at === boundary.completedAtMs,
-          ),
+        receipts.some(
+          (row) =>
+            row.frameId === boundary.frameId &&
+            row.worldIdentity === boundary.worldIdentity &&
+            row.deviceGeneration === boundary.deviceGeneration &&
+            row.at === boundary.completedAtMs,
+        ),
         'Gap boundary is absent from supplied sampled frames',
       );
     selections.push({
@@ -253,6 +269,77 @@ export function analyzeCaptureWindows(raw, report, frames, maps, rawSha256, top 
       endMs: gap.current.completedAtMs,
       frames: { previous: gap.previous, current: gap.current },
     });
+  }
+  const smoke = report.windows?.sampled?.smokeAppearance;
+  if (smoke?.status === 'observed') {
+    const receipt = smoke.receipt;
+    const observations = frames.smokeObservations;
+    const same = (row, other) =>
+      row?.at === other?.at &&
+      row?.frameId === other?.frameId &&
+      row?.worldIdentity === other?.worldIdentity &&
+      row?.deviceGeneration === other?.deviceGeneration;
+    requireFact(
+      receipt &&
+        Number.isSafeInteger(receipt.count) &&
+        receipt.count > 0 &&
+        receipt.at === smoke.observedAtMs &&
+        Array.isArray(observations) &&
+        observations.some((row) => same(row, receipt) && row.count === receipt.count) &&
+        observations.some(
+          (row) =>
+            row.count === 0 &&
+            row.at < receipt.at &&
+            row.worldIdentity === receipt.worldIdentity &&
+            row.deviceGeneration === receipt.deviceGeneration,
+        ),
+      'First smoke requires its captured positive receipt and preceding same-World zero',
+    );
+    const boundary =
+      'HUD smoke observation; creation, visibility and exclusive cause are unobserved';
+    const addSmokeGap = (name, from, to) => {
+      const currentIndex = receipts.findIndex(
+        (row) =>
+          row.at === to &&
+          row.worldIdentity === receipt.worldIdentity &&
+          row.deviceGeneration === receipt.deviceGeneration,
+      );
+      const current = receipts[currentIndex];
+      const previous = receipts[currentIndex - 1];
+      frameBoundary({ ...previous, completedAtMs: previous?.at });
+      frameBoundary({ ...current, completedAtMs: current?.at });
+      requireFact(
+        previous &&
+          current &&
+          previous.at < current.at &&
+          previous.worldIdentity === current.worldIdentity &&
+          previous.deviceGeneration === current.deviceGeneration &&
+          previous.frameId < current.frameId &&
+          (from === undefined || previous.at === from),
+        'Smoke gap endpoints must be adjacent captured completed receipts',
+      );
+      return {
+        name,
+        startMs: previous.at,
+        endMs: current.at,
+        boundary,
+        observedAtMs: receipt.at,
+        frames: { previous, current },
+      };
+    };
+    const observed = addSmokeGap('first-smoke-receipt', undefined, receipt.at);
+    requireFact(same(observed.frames.current, receipt), 'Smoke receipt identity differs');
+    selections.push(observed);
+    const gap = smoke.longestInterval;
+    if (gap !== undefined) {
+      const longest = addSmokeGap('first-smoke-longest-gap', gap.fromMs, gap.toMs);
+      requireFact(
+        longest.frames.current.frameId === gap.frameId &&
+          Math.abs(longest.endMs - longest.startMs - gap.ms) < 0.001,
+        'Smoke longest gap duration or frame identity differs',
+      );
+      selections.push(longest);
+    }
   }
   const mapsByTarget = new Map();
   if (maps !== undefined) {
@@ -347,8 +434,12 @@ export function analyzeCaptureWindows(raw, report, frames, maps, rawSha256, top 
       ? 'complete'
       : 'partial',
     slices,
+    smokeObservation:
+      smoke === undefined
+        ? { status: 'notCollected' }
+        : { status: smoke.status, reason: smoke.reason ?? null },
     interpretation:
-      'Each realm is separate. Ending-sample weights can include scheduling delay; first-sample startup and unobserved tail are unsampled. Inclusive stacks overlap and realm times must not be added. Only these supplied same-capture frame gaps are analyzed; an earlier unprofiled gap cannot be attributed.',
+      'Each realm is separate. Ending-sample weights can include scheduling delay; first-sample startup and unobserved tail are unsampled. Inclusive stacks overlap and realm times must not be added. Only these supplied same-capture frame gaps and smoke observation receipts are analyzed; an earlier unprofiled gap cannot be attributed.',
   };
 }
 
@@ -366,7 +457,7 @@ runCli(import.meta.url, async () => {
   });
   if (values.help) {
     process.stdout.write(
-      'node analyze_cpu_windows.mjs CPU_PROFILES --report REPORT --frames SAMPLED_FRAMES [--maps CPU_NODE_MAPS] [--top 30] [--output FILE]\nOffline adapter for existing Frontline ordinary CPU collector records: report.coldFirelineCpu anchors, cpu.commonWindow, windows.sampled.submissionGaps; frames.firstLiveAt/end/timeOrigin/frames. No Engine install or live capture. CDP times are us; page clocks/output durations are ms. Refuses missing/nonintersecting anchors or foreign gap/map facts. Partial common-window coverage exits 2. Output defaults to stdout and cannot overwrite inputs.\n',
+      'node analyze_cpu_windows.mjs CPU_PROFILES --report REPORT --frames SAMPLED_FRAMES [--maps CPU_NODE_MAPS] [--top 30] [--output FILE]\nOffline adapter for existing Frontline ordinary CPU collector records: report.coldFirelineCpu anchors, cpu.commonWindow, windows.sampled.submissionGaps and observed smokeAppearance; frames.firstLiveAt/end/timeOrigin/frames, optional closingFrame and smokeObservations. No Engine install or live capture. CDP times are us; page clocks/output durations are ms. Refuses missing/nonintersecting anchors or foreign gap/map facts. Partial common-window coverage exits 2. Output defaults to stdout and cannot overwrite inputs.\n',
     );
     return;
   }

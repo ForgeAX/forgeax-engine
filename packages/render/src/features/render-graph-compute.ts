@@ -7,11 +7,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type { Buffer } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import {
-  type RenderError,
-  RenderFeatureDrawRecordingFailedError,
-  RenderFeatureStageFailedError,
-} from '../errors/render';
+import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeaturePlanExecutionPass } from './host';
 import type { RenderFeatureComputeTarget } from './prepared-gpu-work';
@@ -19,6 +15,7 @@ import {
   encodeRenderFeatureGpuComputePass,
   type RenderFeatureResolvedGpuComputePass,
 } from './prepared-gpu-work';
+import { throwFeatureRecordingFailure } from './recording-failure';
 import { projectRenderFeatureCopies } from './render-graph-copy';
 import type { RenderFeatureGraphTargetResolver } from './render-graph-raster';
 import {
@@ -26,6 +23,101 @@ import {
   importRenderFeatureGraphBuffer,
   type RenderFeatureGraphBufferState,
 } from './render-graph-resources';
+
+/** Preserve physical usage scopes and copy barriers for graph and native command consumers. */
+export function visitRenderFeatureComputeSequence(
+  passes: readonly RenderFeaturePlanExecutionPass[],
+  actions: {
+    copy: (pass: RenderFeaturePlanExecutionPass) => Result<void, RenderGraphError | RenderError>;
+    compute: (
+      passes: readonly RenderFeaturePlanExecutionPass[],
+    ) => Result<void, RenderGraphError | RenderError>;
+  },
+): Result<void, RenderGraphError | RenderError> {
+  const bufferOnly = (pass: RenderFeaturePlanExecutionPass): boolean =>
+    pass.gpuCompute !== undefined &&
+    pass.resolvedGpuCompute !== undefined &&
+    (pass.resolvedGpuCompute.sampledTargets?.length ?? 0) === 0 &&
+    (pass.resolvedGpuCompute.storageTargets?.length ?? 0) === 0;
+  for (let start = 0; start < passes.length; ) {
+    const first = passes[start];
+    if (first === undefined) {
+      start++;
+      continue;
+    }
+    if (first.resolvedGpuCopies !== undefined) {
+      const added = actions.copy(first);
+      if (!added.ok) return added;
+      start++;
+      continue;
+    }
+    if (first.resolvedGpuCompute === undefined)
+      return err(
+        new RenderFeatureStageFailedError(first.featureIdentity, first.order, 'plan', 'next-frame'),
+      );
+    let end = start + 1;
+    const logicalPasses = [first];
+    const earlyCopies: RenderFeaturePlanExecutionPass[] = [];
+    const program = first.gpuCompute?.program;
+    if (program !== undefined && bufferOnly(first)) {
+      const uses = new Map<Buffer, Set<GraphBufferAccess>>();
+      const remember = (work: RenderFeatureResolvedGpuComputePass): void => {
+        for (const resource of work.buffers) {
+          let accesses = uses.get(resource.buffer);
+          if (accesses === undefined) {
+            accesses = new Set();
+            uses.set(resource.buffer, accesses);
+          }
+          accesses.add(resource.access);
+        }
+      };
+      remember(first.resolvedGpuCompute);
+      while (end < passes.length) {
+        const next = passes[end];
+        const nextWork = next?.resolvedGpuCompute;
+        if (
+          next === undefined ||
+          next.featureIdentity !== first.featureIdentity ||
+          next.order !== first.order
+        )
+          break;
+        if (next.resolvedGpuCopies !== undefined) {
+          // Copies may cross prior dispatches only with disjoint physical
+          // buffers. Names, byte ranges and the current enabled bit are not proof.
+          if (
+            next.resolvedGpuCopies.some(
+              (copy) => uses.has(copy.source.buffer) || uses.has(copy.destination.buffer),
+            )
+          )
+            break;
+          earlyCopies.push(next);
+          end++;
+          continue;
+        }
+        if (
+          nextWork === undefined ||
+          !bufferOnly(next) ||
+          nextWork.buffers.some((resource) => {
+            const accesses = uses.get(resource.buffer);
+            return accesses !== undefined && !accesses.has(resource.access);
+          })
+        )
+          break;
+        remember(nextWork);
+        logicalPasses.push(next);
+        end++;
+      }
+    }
+    for (const copy of earlyCopies) {
+      const added = actions.copy(copy);
+      if (!added.ok) return added;
+    }
+    const added = actions.compute(logicalPasses);
+    if (!added.ok) return added;
+    start = end;
+  }
+  return ok(undefined);
+}
 
 export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFrame> {
   private readonly resources: RenderFeatureGraphBufferState;
@@ -44,94 +136,10 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     passes: readonly RenderFeaturePlanExecutionPass[],
     scope?: string,
   ): Result<void, RenderGraphError | RenderError> {
-    const bufferOnly = (pass: RenderFeaturePlanExecutionPass): boolean =>
-      pass.gpuCompute !== undefined &&
-      pass.resolvedGpuCompute !== undefined &&
-      (pass.resolvedGpuCompute.sampledTargets?.length ?? 0) === 0 &&
-      (pass.resolvedGpuCompute.storageTargets?.length ?? 0) === 0;
-    for (let start = 0; start < passes.length; ) {
-      const first = passes[start];
-      if (first === undefined) {
-        start++;
-        continue;
-      }
-      if (first.resolvedGpuCopies !== undefined) {
-        const added = projectRenderFeatureCopies(this.builder, this.resources, first, scope);
-        if (!added.ok) return added;
-        start++;
-        continue;
-      }
-      if (first.resolvedGpuCompute === undefined)
-        return err(
-          new RenderFeatureStageFailedError(
-            first.featureIdentity,
-            first.order,
-            'plan',
-            'next-frame',
-          ),
-        );
-      let end = start + 1;
-      const logicalPasses = [first];
-      const earlyCopies: RenderFeaturePlanExecutionPass[] = [];
-      const program = first.gpuCompute?.program;
-      if (program !== undefined && bufferOnly(first)) {
-        const uses = new Map<Buffer, Set<GraphBufferAccess>>();
-        const remember = (work: RenderFeatureResolvedGpuComputePass): void => {
-          for (const resource of work.buffers) {
-            let accesses = uses.get(resource.buffer);
-            if (accesses === undefined) {
-              accesses = new Set();
-              uses.set(resource.buffer, accesses);
-            }
-            accesses.add(resource.access);
-          }
-        };
-        remember(first.resolvedGpuCompute);
-        while (end < passes.length) {
-          const next = passes[end];
-          const nextWork = next?.resolvedGpuCompute;
-          if (
-            next === undefined ||
-            next.featureIdentity !== first.featureIdentity ||
-            next.order !== first.order
-          )
-            break;
-          if (next.resolvedGpuCopies !== undefined) {
-            // Copies may cross prior dispatches only with disjoint physical
-            // buffers. Names, byte ranges and the current enabled bit are not proof.
-            if (
-              next.resolvedGpuCopies.some(
-                (copy) => uses.has(copy.source.buffer) || uses.has(copy.destination.buffer),
-              )
-            )
-              break;
-            earlyCopies.push(next);
-            end++;
-            continue;
-          }
-          if (
-            nextWork === undefined ||
-            !bufferOnly(next) ||
-            nextWork.buffers.some((resource) => {
-              const accesses = uses.get(resource.buffer);
-              return accesses !== undefined && !accesses.has(resource.access);
-            })
-          )
-            break;
-          remember(nextWork);
-          logicalPasses.push(next);
-          end++;
-        }
-      }
-      for (const copy of earlyCopies) {
-        const added = projectRenderFeatureCopies(this.builder, this.resources, copy, scope);
-        if (!added.ok) return added;
-      }
-      const added = this.addPass(logicalPasses, scope);
-      if (!added.ok) return added;
-      start = end;
-    }
-    return ok(undefined);
+    return visitRenderFeatureComputeSequence(passes, {
+      copy: (pass) => projectRenderFeatureCopies(this.builder, this.resources, pass, scope),
+      compute: (group) => this.addPass(group, scope),
+    });
   }
 
   private addPass(
@@ -230,21 +238,14 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
               return view.value;
             });
           } catch (failure) {
-            const error =
-              failure instanceof Error && typeof (failure as Partial<RenderError>).code === 'string'
-                ? (failure as RenderError)
-                : new RenderFeatureDrawRecordingFailedError(
-                    featureIdentity,
-                    order,
-                    name,
-                    'bindings',
-                    'backend-recording-failed',
-                    failure instanceof Error ? failure.message : String(failure),
-                    'renderer-recover',
-                  );
-            this.reportError?.(error);
-            // A partially encoded intent is not a submitted transaction.
-            throw error;
+            throwFeatureRecordingFailure(
+              failure,
+              featureIdentity,
+              order,
+              name,
+              'bindings',
+              this.reportError,
+            );
           }
         }
       },

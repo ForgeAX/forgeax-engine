@@ -1,5 +1,6 @@
 // M5 w18: unit tests verifying M5 site migration correctness.
-// - GPU store Map key uses handleSlot (not unwrapHandle) — AC-09.
+// - Texture and mesh residency retain complete handle generations.
+// - Cubemap projection retains its source-slot lookup contract.
 // - Tier judgment: gen>0 user handles route to world.sharedRefs.resolve,
 //   not BuiltinAssetRegistry.
 // - Builtin handles (gen=0) still route to BuiltinAssetRegistry.resolve.
@@ -13,77 +14,115 @@ import {
   resolveAssetHandle,
 } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { rhi } from '@forgeax/engine-rhi-null';
+import type { Handle, TextureAsset } from '@forgeax/engine-types';
 import { handleSlot, pack } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
 
 describe('M5 handle-migration', () => {
-  describe('GPU store Map key uses handleSlot (AC-09)', () => {
-    it('textureGpuHandles: slot-based key — gen>0 and gen=0 for same slot hit same entry', () => {
+  describe('GPU residency handle identity', () => {
+    async function setup() {
+      const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
       const store = new GpuResidencyCache();
-      const slot = 1050;
-      const mockGpuTexture = { isDestroyed: false, destroy: () => ({ ok: true }) } as any;
-      const mockEntry = { texture: mockGpuTexture, view: undefined };
-      (store as any).textureGpuHandles.set(slot, mockEntry);
+      store.configureGpuDevice(
+        device,
+        undefined,
+        () => {
+          throw new Error('cubemap projection is outside this fixture');
+        },
+        device.caps,
+      );
+      return store;
+    }
 
-      const h0 = pack(slot, 0) as any;
-      const h5 = pack(slot, 5) as any;
+    const texture: TextureAsset = {
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: new Uint8Array([255, 255, 255, 255]),
+    };
 
-      expect((store as any).textureGpuHandles.get(handleSlot(h0))).toBe(mockEntry);
-      expect((store as any).textureGpuHandles.get(handleSlot(h5))).toBe(mockEntry);
+    it('keeps gen=0 and gen>0 textures in the same slot independently resident', async () => {
+      const store = await setup();
+      try {
+        const h0 = pack(1050, 0) as Handle<'TextureAsset', 'shared'>;
+        const h5 = pack(1050, 5) as Handle<'TextureAsset', 'shared'>;
+        const first = store.ensureResident(h0, texture).unwrap();
+        expect(store.getTextureGpuView(h5)).toBeUndefined();
+        const next = store.ensureResident(h5, texture).unwrap();
+        expect(next.view).not.toBe(first.view);
+        expect(store.getTextureGpuView(h0)).toBe(first.view);
+        expect(store.getTextureGpuView(h5)).toBe(next.view);
+      } finally {
+        store.destroyAll();
+      }
     });
 
-    it('meshGpuHandles: slot-based key — different gen handles hit same entry', () => {
-      const store = new GpuResidencyCache();
-      const slot = 1055;
-      const mockEntry = {
-        vertexBuffer: { isDestroyed: false, destroy: () => ({ ok: true }) },
-        indexBuffer: null,
-        vboBytes: 0,
-        iboBytes: 0,
-        indexCount: 0,
-        indexFormat: 'uint16' as const,
-        vertexCount: 0,
-        indexed: false,
-        topology: 'triangle-list' as const,
-        submeshes: [],
-      };
-      (store as any).meshGpuHandles.set(slot, mockEntry);
-
-      const h0 = pack(slot, 0) as any;
-      const h7 = pack(slot, 7) as any;
-
-      expect((store as any).meshGpuHandles.get(handleSlot(h0))).toBe(mockEntry);
-      expect((store as any).meshGpuHandles.get(handleSlot(h7))).toBe(mockEntry);
+    it('evicts one mesh generation without retiring another in the same slot', async () => {
+      const store = await setup();
+      try {
+        const h0 = pack(1055, 0) as Handle<'MeshAsset', 'shared'>;
+        const h7 = pack(1055, 7) as Handle<'MeshAsset', 'shared'>;
+        const first = store.ensureResident(h0, createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+        expect(store.getMeshGpuHandles(h7)).toBeUndefined();
+        const next = store.ensureResident(h7, createBoxGeometry(2, 2, 2).unwrap()).unwrap();
+        expect(next).not.toBe(first);
+        expect(store.getMeshGpuHandles(h0)).toBe(first);
+        store.evictMesh(h0);
+        expect(store.getMeshGpuHandles(h0)).toBeUndefined();
+        expect(store.getMeshGpuHandles(h7)).toBe(next);
+        expect(next.vertexBuffer.isDestroyed).toBe(false);
+      } finally {
+        store.destroyAll();
+      }
     });
 
-    it('cubemapGpuHandles: slot-based key — different gen handles hit same cubemap entry', () => {
+    it('retains a live cubemap source slot when sweeping complete handles', () => {
       const store = new GpuResidencyCache();
+      const destroy = vi.fn(() => ({ ok: true }));
+      const mockGpuTexture = { isDestroyed: false, destroy };
       const slot = 1060;
-      const mockEntry = {
-        texture: { isDestroyed: false, destroy: () => ({ ok: true }) },
+      (store as any).cubemapGpuHandles.set(slot, {
+        texture: mockGpuTexture,
         view: undefined,
-        faceViews: undefined,
-      };
-      (store as any).cubemapGpuHandles.set(slot, mockEntry);
-
-      const h0 = pack(slot, 0) as any;
-      const h3 = pack(slot, 3) as any;
-
-      expect((store as any).cubemapGpuHandles.get(handleSlot(h0))).toBe(mockEntry);
-      expect((store as any).cubemapGpuHandles.get(handleSlot(h3))).toBe(mockEntry);
+        faceViews: [],
+      });
+      const h0 = pack(slot, 0) as Handle<'EquirectAsset', 'shared'>;
+      const h3 = pack(slot, 3) as Handle<'EquirectAsset', 'shared'>;
+      expect(store.getCubemapGpuTexture(h0)).toBe(mockGpuTexture);
+      expect(store.getCubemapGpuTexture(h3)).toBe(mockGpuTexture);
+      expect(store.releaseUnreferenced(new Set([Number(h3)])).freed).toBe(0);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(store.getCubemapGpuTexture(h3)).toBe(mockGpuTexture);
+      expect(store.releaseUnreferenced(new Set()).freed).toBe(1);
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(store.getCubemapGpuTexture(h3)).toBeUndefined();
     });
 
-    it('delete path uses handleSlot — gen>0 eviction removes entry stored under slot key', () => {
-      const store = new GpuResidencyCache();
-      const slot = 1070;
-      const mockGpuTexture = { isDestroyed: false, destroy: () => ({ ok: true }) } as any;
-      const mockEntry = { texture: mockGpuTexture, view: undefined };
-      (store as any).textureGpuHandles.set(slot, mockEntry);
-
-      const h = pack(slot, 9) as any;
-      store.evictTexture(h);
-      expect((store as any).textureGpuHandles.get(slot)).toBeUndefined();
+    it('evicts exactly the requested texture generation and ignores stale retirement', async () => {
+      const store = await setup();
+      try {
+        const h8 = pack(1070, 8) as Handle<'TextureAsset', 'shared'>;
+        const h9 = pack(1070, 9) as Handle<'TextureAsset', 'shared'>;
+        const first = store.ensureResident(h8, texture).unwrap();
+        const next = store.ensureResident(h9, texture).unwrap();
+        expect(store.evictTexture(h8).freed).toBe(1);
+        expect(first.texture.isDestroyed).toBe(true);
+        expect(store.getTextureGpuView(h8)).toBeUndefined();
+        expect(store.getTextureGpuView(h9)).toBe(next.view);
+        expect(next.texture.isDestroyed).toBe(false);
+        expect(store.evictTexture(h8).freed).toBe(0);
+        expect(store.getTextureGpuView(h9)).toBe(next.view);
+        expect(store.evictTexture(h9).freed).toBe(1);
+        expect(next.texture.isDestroyed).toBe(true);
+        expect(store.getTextureGpuView(h9)).toBeUndefined();
+      } finally {
+        store.destroyAll();
+      }
     });
   });
 

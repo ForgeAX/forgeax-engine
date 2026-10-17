@@ -56,6 +56,7 @@ import type {
   ShadowCasterMembership,
 } from '../render-system-extract';
 import { shadowCasterCpuReason } from '../render-system-extract';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import { matchPass, SHADOW_CASTER_PASS_SELECTOR } from '../systems/pass-selector';
 import { FirstEntryMap } from './first-entry-map';
 import { meshSlotBindGroup } from './frame-lighting';
@@ -2134,11 +2135,18 @@ export function prepareShadowMaterialPipelines(
         }
       >()
     : undefined;
+  let preparedHiddenDraws: Map<ValidatedRenderable, Set<number>> | undefined;
   const shadowArtifacts = c.gpuDrivenShadowPreparationArtifacts;
   // Only actual declared shadow view kinds participate. Hidden rows stay outside
   // the scene/culling lists, but their accepted receipt owns the future native PSO.
   const views = c.gpuDrivenShadowViews?.inspect() ?? [];
-  const reflections = new Set(views.map((view) => view.identity.kind === 'point'));
+  // The light projection roster exists before the first visible GPU batch.
+  // Hidden candidates must consume these exact planned views as well: using
+  // only submitted GPU views would miss a new caster's first shadow PSO.
+  const reflections =
+    c.shadowViewPlanesByView === undefined
+      ? new Set(views.map((view) => view.identity.kind === 'point'))
+      : new Set([...c.shadowViewPlanesByView.keys()].map((key) => key.startsWith('point:')));
   for (const view of c.runtime.prepareMaterialShaderPipeline === undefined ? [] : views) {
     // The same compiled graph proves retained depth will bypass this raster.
     // Explicit hidden preparation below remains independent of view reuse.
@@ -2180,7 +2188,11 @@ export function prepareShadowMaterialPipelines(
           reflected,
         ) == null
       ) {
-        c.frameState.pipelinePreparationPending = true;
+        markPipelinePreparationPending(c.frameState, {
+          code: 'shadow-pipeline-preparation',
+          pass: 'shadow',
+          shader: projection.shadowArtifact.material.slice(0, 256),
+        });
       } else {
         preparedBatches?.set(batch.batchId, { projection, key: batch.key, reflected });
       }
@@ -2188,6 +2200,7 @@ export function prepareShadowMaterialPipelines(
   }
   if (
     c.runtime.prepareMaterialShaderPipeline !== undefined &&
+    c.gpuDrivenGeometryLane !== 'direct' &&
     shadowArtifacts !== undefined &&
     reflections.size > 0
   ) {
@@ -2227,9 +2240,24 @@ export function prepareShadowMaterialPipelines(
         for (const pass of passes) {
           const artifact = shadowArtifacts.get(artifactKey);
           if (artifact === undefined) {
-            c.frameState.pipelinePreparationPending = true;
+            markPipelinePreparationPending(c.frameState, {
+              code: 'shadow-pipeline-preparation',
+              worldId: entry.source.worldId,
+              entity: entry.source.entityKey,
+              pass: 'shadow',
+              ...(pass.materialShaderId === undefined
+                ? {}
+                : { shader: pass.materialShaderId.slice(0, 256) }),
+            });
             continue;
           }
+          preparedHiddenDraws ??= new Map();
+          let selected = preparedHiddenDraws.get(entry);
+          if (selected === undefined) {
+            selected = new Set();
+            preparedHiddenDraws.set(entry, selected);
+          }
+          selected.add(draw.sourceDrawIndex);
           for (const reflected of reflections) {
             if (
               requestGpuDrivenShadowPipeline(
@@ -2257,14 +2285,23 @@ export function prepareShadowMaterialPipelines(
                 reflected,
               ) == null
             )
-              c.frameState.pipelinePreparationPending = true;
+              markPipelinePreparationPending(c.frameState, {
+                code: 'shadow-pipeline-preparation',
+                worldId: entry.source.worldId,
+                entity: entry.source.entityKey,
+                pass: 'shadow',
+                ...(pass.materialShaderId === undefined
+                  ? {}
+                  : { shader: pass.materialShaderId.slice(0, 256) }),
+              });
           }
         }
       }
     }
   }
   for (const entry of c.pipelinePreparationEntries ?? []) {
-    for (const sm of entry.mesh.submeshes) {
+    for (const [submeshIndex, sm] of entry.mesh.submeshes.entries()) {
+      if (preparedHiddenDraws?.get(entry)?.has(submeshIndex)) continue;
       const material = entry.source.materials[sm.materialSlot] ?? entry.source.material;
       for (const pass of entry.source.pipelinePreparation ?? []) {
         if (
@@ -2272,19 +2309,29 @@ export function prepareShadowMaterialPipelines(
           pass.materialHandle !== (material.materialHandle ?? 0)
         )
           continue;
-        if (
-          resolveShadowMaterialPipeline(
-            c,
-            entry,
-            sm.topology,
-            material,
-            pass,
-            false,
-            false,
-            true,
-          ) === null
-        )
-          c.frameState.pipelinePreparationPending = true;
+        for (const reflected of reflections.size === 0 ? [false] : reflections) {
+          if (
+            resolveShadowMaterialPipeline(
+              c,
+              entry,
+              sm.topology,
+              material,
+              pass,
+              reflected,
+              false,
+              true,
+            ) === null
+          )
+            markPipelinePreparationPending(c.frameState, {
+              code: 'shadow-pipeline-preparation',
+              worldId: entry.source.worldId,
+              entity: entry.source.entityKey,
+              pass: 'shadow',
+              ...(pass.materialShaderId === undefined
+                ? {}
+                : { shader: pass.materialShaderId.slice(0, 256) }),
+            });
+        }
       }
     }
   }

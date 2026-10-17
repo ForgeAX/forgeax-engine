@@ -37,7 +37,13 @@ export interface HeightfieldShapeInput extends DerivedShapeBase {
   readonly heights: Float32Array;
   readonly scale: PhysicsVector;
 }
-export type DerivedShapeInput = ConvexCompoundShapeInput | HeightfieldShapeInput;
+/** Union of half-open integer boxes in a uniform local voxel grid. */
+export interface VoxelShapeInput extends DerivedShapeBase {
+  readonly kind: 'voxels';
+  readonly regions: Int32Array;
+  readonly voxelSize: PhysicsVector;
+}
+export type DerivedShapeInput = ConvexCompoundShapeInput | HeightfieldShapeInput | VoxelShapeInput;
 export type NormalizedDerivedShapeInput = DerivedShapeInput & {
   readonly origin: PhysicsVector;
   readonly rotation: PhysicsQuaternion;
@@ -315,6 +321,7 @@ const SHAPE_BASE_KEYS = [
   'solverGroups',
 ];
 const COMPOUND_KEYS = new Set([...SHAPE_BASE_KEYS, 'pieces']);
+const VOXEL_KEYS = new Set([...SHAPE_BASE_KEYS, 'regions', 'voxelSize']);
 const HEIGHTFIELD_KEYS = new Set([...SHAPE_BASE_KEYS, 'rows', 'columns', 'heights', 'scale']);
 const CANDIDATE_KEYS = new Set([
   'entity',
@@ -381,6 +388,13 @@ function candidateEnvelopeError(
         return invalid('heightfield fields and sample buffer match the public contract');
       samples += shape.heights.length;
       bytes += shape.heights.byteLength * 4;
+    } else if (shape.kind === 'voxels') {
+      if (!declaredKeys(shape, VOXEL_KEYS) || !(shape.regions instanceof Int32Array))
+        return invalid('voxel regions are an Int32Array of half-open boxes');
+      const voxelBytes = estimateVoxelShapeBytes(shape);
+      if (!Number.isFinite(voxelBytes))
+        return invalid('voxel regions contain valid bounded half-open integer boxes');
+      bytes += voxelBytes;
     } else if (shape.kind === 'convex-compound') {
       if (!declaredKeys(shape, COMPOUND_KEYS) || !Array.isArray(shape.pieces))
         return invalid('compound fields and piece array match the public contract');
@@ -392,7 +406,7 @@ function candidateEnvelopeError(
         bytes += piece.byteLength * 4 + 128;
         if (bytes > DERIVED_PHYSICS_LIMITS.maxCandidateBytes) return budget();
       }
-    } else return invalid('shape kind is convex-compound or heightfield');
+    } else return invalid('shape kind is convex-compound, heightfield or voxels');
     if (
       samples > DERIVED_PHYSICS_LIMITS.maxHeightfieldSamples ||
       bytes > DERIVED_PHYSICS_LIMITS.maxCandidateBytes
@@ -556,6 +570,114 @@ export function normalizeHeightfieldShapeInput(
   );
 }
 
+/** Conservative native chunk/copy envelope, including partially occupied chunks. */
+function estimateVoxelShapeBytes(input: VoxelShapeInput): number {
+  if (!input.regions.length || input.regions.length % 6) return Infinity;
+  const inputBytes = input.regions.byteLength * 4;
+  if (inputBytes > DERIVED_PHYSICS_LIMITS.maxCandidateBytes) return inputBytes;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
+  for (let i = 0; i < input.regions.length; i += 6) {
+    for (let axis = 0; axis < 3; axis++) {
+      const min = input.regions[i + axis] as number,
+        max = input.regions[i + axis + 3] as number;
+      if (min >= max || min < -2147483640 || max > 2147483639) return Infinity;
+    }
+    minX = Math.min(minX, Math.floor((input.regions[i] as number) / 8));
+    minY = Math.min(minY, Math.floor((input.regions[i + 1] as number) / 8));
+    minZ = Math.min(minZ, Math.floor((input.regions[i + 2] as number) / 8));
+    maxX = Math.max(maxX, Math.floor(((input.regions[i + 3] as number) - 1) / 8));
+    maxY = Math.max(maxY, Math.floor(((input.regions[i + 4] as number) - 1) / 8));
+    maxZ = Math.max(maxZ, Math.floor(((input.regions[i + 5] as number) - 1) / 8));
+  }
+  const nx = maxX - minX + 1,
+    ny = maxY - minY + 1;
+  const numeric = Number.isSafeInteger(nx * ny * (maxZ - minZ + 1));
+  const chunks = new Set<number | string>();
+  let visits = 0;
+  for (let i = 0; i < input.regions.length; i += 6) {
+    const x0 = Math.floor((input.regions[i] as number) / 8),
+      x1 = Math.floor(((input.regions[i + 3] as number) - 1) / 8);
+    const y0 = Math.floor((input.regions[i + 1] as number) / 8),
+      y1 = Math.floor(((input.regions[i + 4] as number) - 1) / 8);
+    const z0 = Math.floor((input.regions[i + 2] as number) / 8),
+      z1 = Math.floor(((input.regions[i + 5] as number) - 1) / 8);
+    for (let z = z0; z <= z1; z++)
+      for (let y = y0; y <= y1; y++)
+        for (let x = x0; x <= x1; x++) {
+          if (++visits > 1_000_000) return DERIVED_PHYSICS_LIMITS.maxCandidateBytes + 1;
+          // Exact local ordinals avoid allocating a string for every region/chunk
+          // overlap. Very distant sparse input retains collision-free tuple keys.
+          chunks.add(numeric ? x - minX + nx * (y - minY + ny * (z - minZ)) : `${x}/${y}/${z}`);
+          if (inputBytes + chunks.size * 2048 > DERIVED_PHYSICS_LIMITS.maxCandidateBytes)
+            return inputBytes + chunks.size * 2048;
+        }
+  }
+  // Region copies are separate from native occupancy. A unique 8^3 chunk gets
+  // an allocation-growth allowance for its cells, spatial headers and BVH.
+  return inputBytes + chunks.size * 2048;
+}
+
+export function normalizeVoxelShapeInput(
+  input: VoxelShapeInput,
+): Result<NormalizedDerivedShapeInput, DerivedPhysicsError> {
+  const invalid = () =>
+    err(
+      new DerivedPhysicsError(
+        'derived-shape-invalid',
+        'bounded integer voxel regions with positive finite cell dimensions and a valid pose',
+        'repair voxel regions, dimensions and shape metadata',
+        { shapeId: input.id },
+      ),
+    );
+  const bounded = candidateEnvelopeError({
+    entity: 0,
+    revision: 0,
+    sourceKey: 'shape',
+    shapes: [input],
+  });
+  if (!bounded.ok) return bounded;
+  if (
+    typeof input.id !== 'string' ||
+    !ID_RE.test(input.id) ||
+    !Number.isSafeInteger(input.revision) ||
+    input.revision < 0 ||
+    !Array.isArray(input.voxelSize) ||
+    input.voxelSize.length !== 3 ||
+    input.voxelSize.some((v) => !Number.isFinite(Math.fround(v)) || Math.fround(v) <= 0)
+  )
+    return invalid();
+  const origin = input.origin ?? [0, 0, 0];
+  const rotation = normalizedQuaternion(input.rotation ?? [0, 0, 0, 1]);
+  if (!vectorFinite(origin, 3) || rotation === undefined) return invalid();
+  for (const value of [input.friction, input.restitution, input.density])
+    if (value !== undefined && (!finite(value) || value < 0)) return invalid();
+  for (const value of [input.collisionGroups, input.solverGroups])
+    if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 0xffffffff))
+      return invalid();
+  if (input.isSensor !== undefined && typeof input.isSensor !== 'boolean') return invalid();
+  for (let i = 0; i < input.regions.length; i++)
+    if (
+      !Number.isFinite(
+        Math.fround((input.regions[i] as number) * (input.voxelSize[i % 3] as number)),
+      )
+    )
+      return invalid();
+  return ok(
+    Object.freeze({
+      ...input,
+      regions: new Int32Array(input.regions),
+      voxelSize: Object.freeze([...input.voxelSize]) as PhysicsVector,
+      origin: Object.freeze([...origin]) as PhysicsVector,
+      rotation: Object.freeze(rotation),
+    }),
+  );
+}
+
 /** Validate explicit mass/inertia values before touching the backend. */
 export function validateMassProperties(
   properties: PhysicsMassProperties | undefined,
@@ -672,7 +794,9 @@ export function cloneDerivedPhysicsInput(
     const normalized =
       shape.kind === 'heightfield'
         ? normalizeHeightfieldShapeInput(shape)
-        : normalizeConvexCompoundShapeInput(shape);
+        : shape.kind === 'voxels'
+          ? normalizeVoxelShapeInput(shape)
+          : normalizeConvexCompoundShapeInput(shape);
     if (!normalized.ok) return normalized;
     if (seen.has(normalized.value.id)) {
       return err(
@@ -787,7 +911,9 @@ export function estimateDerivedPhysicsInputBytes(input: DerivedPhysicsCandidateI
       128 +
       (shape.kind === 'heightfield'
         ? shape.heights.byteLength * 4
-        : shape.pieces.reduce((bytes, piece) => bytes + piece.byteLength * 4 + 128, 0)),
+        : shape.kind === 'voxels'
+          ? estimateVoxelShapeBytes(shape)
+          : shape.pieces.reduce((bytes, piece) => bytes + piece.byteLength * 4 + 128, 0)),
     0,
   );
   return shapeBytes + (input.constraints?.length ?? 0) * 192 + 256;

@@ -284,7 +284,7 @@ type MeshPreviewCameraApi = PreviewCameraDriveApi & Pick<ViewWorkspaceClient, 'g
 
 /**
  * Drive the open mesh preview with the scene camera API.
- * The scene editor target is never selected. Hold the returned drive to keep
+ * The scene target is never selected. Hold the returned drive to keep
  * a move sample integrating, then commit or abort on the same connection.
  */
 export async function openMeshPreviewCamera(

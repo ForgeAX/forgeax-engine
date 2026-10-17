@@ -19,7 +19,7 @@ export function parseProjectArgument(argv: readonly string[] = []) {
   if (index < 0 || typeof value !== 'string' || value.trim() === '' || value.startsWith('--')) {
     throw viewProjectOpenError(
       'view-project-required',
-      'Pass --project with the editor project directory.',
+      'Pass --project with the project directory.',
     );
   }
   return resolve(value.trim());
@@ -61,7 +61,7 @@ function publishedProject(snapshot: WorkspaceState, viewerUrl: string | undefine
 }
 
 /**
- * Open the editor project on the broker captured for this View.
+ * Open the project on the broker captured for this View.
  * Does not start View, launch a browser, or switch away from another project.
  */
 export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snapshot' | 'openProject'>, projectPath: string, { signal, viewerUrl }: { signal?: AbortSignal; viewerUrl?: string } = {}) {
@@ -72,11 +72,11 @@ export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snap
     throw viewProjectOpenError('view-not-started', 'View has stopped. Run forgeax view start again when needed.');
   }
   if (typeof projectPath !== 'string' || projectPath.trim() === '') {
-    throw viewProjectOpenError('view-project-required', 'Pass --project with the editor project directory.');
+    throw viewProjectOpenError('view-project-required', 'Pass --project with the project directory.');
   }
   const requested = await projectIdentity(projectPath);
   if (!requested.trim()) {
-    throw viewProjectOpenError('view-project-required', 'Pass --project with the editor project directory.');
+    throw viewProjectOpenError('view-project-required', 'Pass --project with the project directory.');
   }
   const current = workspace.snapshot();
   const currentRoot = current?.project?.root;

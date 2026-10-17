@@ -864,7 +864,7 @@ textarea.fx-input {
 .fx-property-row {
   display: flex;
   align-items: center;
-  min-height: var(--fx-component-editor-row-height);
+  min-height: var(--fx-component-control-row-height);
   gap: var(--fx-space-control);
   padding: var(--fx-ref-space-6) var(--fx-ref-space-8);
   border-radius: var(--fx-radius-control);

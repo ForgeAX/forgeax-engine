@@ -48,7 +48,7 @@ const preview: Preview = {
           'Themes',
           'Controls',
           ['Button', 'Icon', 'Forms', 'Choices', 'Switch'],
-          'Editor Patterns',
+          'Workspace Patterns',
           'Feedback',
           ['States', 'Error Notice'],
           'Overlays',

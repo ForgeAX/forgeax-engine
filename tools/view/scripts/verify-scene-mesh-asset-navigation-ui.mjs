@@ -31,14 +31,14 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.getByTestId('hier-row-editor:world:2').waitFor();
+  await page.getByTestId('hier-row-scene:world:2').waitFor();
   await page.waitForFunction(() => globalThis.sceneMeshAssetFixture?.browserReady());
   for (const [id, reason] of [['missing-asset', 'Missing asset'], ['unregistered-asset', 'Asset identity unavailable'], ['unavailable-viewer', 'Asset viewer unavailable']]) {
     const button = page.getByTestId(id).getByTestId('asset-reference-open');
     assert.equal(await button.isDisabled(), true);
     assert.ok((await button.getAttribute('title')).includes(reason));
   }
-  const row = page.getByTestId('hier-row-editor:world:2');
+  const row = page.getByTestId('hier-row-scene:world:2');
   await row.click({ button: 'right' });
   const browse = page.locator('[data-operation="scene-tree.asset.browse"]');
   const edit = page.locator('[data-operation="scene-tree.asset.edit"]');
@@ -50,17 +50,17 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-cb-guid="cube-guid"]')?.getAttribute('aria-selected') === 'true');
   assert.equal(await page.locator('#browser').isVisible(), true);
   assert.equal(await page.locator('[data-cb-path="assets/geometry.pack.ts"]').count(), 1);
-  assert.equal(await page.evaluate(() => globalThis.sceneMeshAssetFixture.selected()), 'editor:world:2');
+  assert.equal(await page.evaluate(() => globalThis.sceneMeshAssetFixture.selected()), 'scene:world:2');
   assert.equal(await page.evaluate(() => globalThis.sceneMeshAssetFixture.calls.filter(call => call.operation === 'asset.open').length), 0);
   const inspected = await page.evaluate(() => globalThis.sceneMeshAssetFixture.calls.find(call => call.operation === 'asset.inspect'));
-  assert.deepEqual(inspected.args, { guid: 'cube-guid', projectId: 'project', tabId: 'forgeax-user-workspace', targetId: 'editor', targetGeneration: 1 });
+  assert.deepEqual(inspected.args, { guid: 'cube-guid', projectId: 'project', tabId: 'forgeax-user-workspace', targetId: 'scene', targetGeneration: 1 });
   await page.screenshot({ path: resolve(output, 'browse-exact-asset.png') });
 
   await row.click({ button: 'right' });
   await page.waitForFunction(() => !document.querySelector('[data-operation="scene-tree.asset.edit"]')?.disabled);
   await edit.click();
   const opened = await page.evaluate(() => globalThis.sceneMeshAssetFixture.calls.find(call => call.operation === 'asset.open'));
-  assert.deepEqual(opened.args, { projectId: 'project', tabId: 'forgeax-user-workspace', guid: 'cube-guid', targetId: 'editor', targetGeneration: 1 });
+  assert.deepEqual(opened.args, { projectId: 'project', tabId: 'forgeax-user-workspace', guid: 'cube-guid', targetId: 'scene', targetGeneration: 1 });
 
   await page.evaluate(() => globalThis.sceneMeshAssetFixture.setHandle(1028));
   await row.click({ button: 'right' });
@@ -92,19 +92,19 @@ try {
   await page.locator('[data-cb-guid="material-guid"][aria-selected="true"]').waitFor();
   await materialField.getByTestId('asset-reference-open').click();
   assert.equal(await page.evaluate(() => globalThis.sceneMeshAssetFixture.calls.filter(call => call.operation === 'asset.open').at(-1).args.guid), 'material-guid');
-  const audio = page.getByTestId('hier-row-editor:world:4');
+  const audio = page.getByTestId('hier-row-scene:world:4');
   await audio.click({ button: 'right' });
   await page.waitForFunction(() => document.querySelector('[data-operation="scene-tree.asset.edit"]')?.textContent?.includes('ambient'));
   await edit.click();
   assert.equal(await page.evaluate(() => globalThis.sceneMeshAssetFixture.calls.filter(call => call.operation === 'asset.open').at(-1).args.guid), 'audio-guid');
-  const combined = page.getByTestId('hier-row-editor:world:5');
+  const combined = page.getByTestId('hier-row-scene:world:5');
   await combined.click({ button: 'right' });
   await page.waitForFunction(title => document.querySelector('[data-operation="scene-tree.asset.edit"]')?.closest('[title]')?.title === title, ambiguousTitle);
   assert.equal(await browse.isDisabled(), true);
   assert.equal(await edit.isDisabled(), true);
   assert.equal(await page.locator('.hier-context-submenu').count(), 0);
   await page.keyboard.press('Escape');
-  await page.getByTestId('hier-row-editor:world:6').click({ button: 'right' });
+  await page.getByTestId('hier-row-scene:world:6').click({ button: 'right' });
   await page.waitForFunction(title => document.querySelector('[data-operation="scene-tree.asset.edit"]')?.closest('[title]')?.title === title, ambiguousTitle);
   assert.equal(await browse.isDisabled(), true);
   assert.equal(await edit.isDisabled(), true);

@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { classifyDawnErrors, READINESS_FRAME_LIMIT } from '../../scripts/smoke-diagnostics.mjs';
+import {
+  classifyDawnErrors,
+  isSimulationUpdate,
+  READINESS_FRAME_LIMIT,
+} from '../../scripts/smoke-diagnostics.mjs';
 
 const appRoot = resolve(import.meta.dirname, '../..');
 const dawnSource = readFileSync(resolve(appRoot, 'scripts/smoke-dawn.mjs'), 'utf8');
@@ -9,6 +13,23 @@ const browserSource = readFileSync(resolve(appRoot, 'scripts/smoke-browser.mjs')
 const falsifySource = readFileSync(resolve(appRoot, 'scripts/smoke-falsify.mjs'), 'utf8');
 
 describe('Boss Lightning smoke probe contract', () => {
+  it('counts separate and fused simulation updates without counting auxiliary dispatches', () => {
+    expect(isSimulationUpdate('forgeax_vfx_update_main')).toBe(true);
+    expect(isSimulationUpdate('forgeax_vfx_update_compact_main')).toBe(true);
+    for (const entryPoint of [
+      undefined,
+      'forgeax_vfx_spawn_main',
+      'forgeax_vfx_scan_blocks_main',
+      'forgeax_vfx_scan_compact_main',
+      'forgeax_vfx_compact_main',
+      'forgeax_vfx_stage_main',
+      'forgeax_vfx_billboard_main',
+      'forgeax_vfx_update_custom_main',
+    ]) {
+      expect(isSimulationUpdate(entryPoint)).toBe(false);
+    }
+  });
+
   it('uses particle-specific Dawn signals and rejects persistent preparation errors', () => {
     expect(dawnSource).toContain('TARGET_FRAMES = Math.max(60,');
     expect(dawnSource).toContain('SEED = 42');

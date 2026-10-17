@@ -211,12 +211,12 @@ try {
   // Keep the real Play gesture, including outside-click drawer dismissal. Arm
   // Stop in that browser task, after the client's request microtask but before
   // a server reply can adopt the target. An adopted Stop is a different boundary.
-  const playButton = page.locator('[data-action="editor.play"]');
+  const playButton = page.locator('[data-action="scene.play"]');
   await playButton.evaluate(button => {
     button.addEventListener('click', () => queueMicrotask(() => {
       const status = [...document.querySelectorAll('[role="status"]')]
         .find(node => node.textContent.includes('Preparing Play'))?.textContent;
-      const stop = document.querySelector('[data-action="editor.stop"]');
+      const stop = document.querySelector('[data-action="scene.stop"]');
       globalThis.__preparationCancellation = { status, stopEnabled: !!stop && !stop.disabled };
       stop?.click();
     }), { once: true });
@@ -225,7 +225,7 @@ try {
   const preparing = await page.evaluate(() => globalThis.__preparationCancellation);
   assert.match(preparing.status, /Preparing Play/);
   assert.equal(preparing.stopEnabled, true, 'Preparing Play must expose an enabled Stop');
-  await page.waitForFunction(() => document.querySelector('[data-action="editor.play"]')?.disabled === false);
+  await page.waitForFunction(() => document.querySelector('[data-action="scene.play"]')?.disabled === false);
   assert.equal(typeof preparationRequestId, 'string', 'preparation must send a real Play request');
   assert.equal(preparationCancelled, true, 'Stop must cancel that exact request through the real transport');
   assert.equal((await workspace.getState()).play, null);
@@ -235,7 +235,7 @@ try {
   console.error('Play snapshot and target prepared', { waitMs: Math.round(performance.now() - preparationStarted) });
   const playArgs = { targetId: play.play.target.targetId, targetGeneration: play.play.target.generation };
   console.error('workspace target identities', {
-    editor: { targetId: target.targetId, origin: new URL(target.url).origin },
+    scene: { targetId: target.targetId, origin: new URL(target.url).origin },
     play: { targetId: play.play.target.targetId, origin: new URL(play.play.target.url).origin },
   });
   const waitingSince = performance.now();
@@ -250,9 +250,9 @@ try {
     throw error;
   } finally { clearInterval(progress); }
   console.error('game tools ready', { waitMs: Math.round(performance.now() - waitingSince) });
-  const editorFrame = await page.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted);
+  const sceneFrame = await page.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted);
   await page.waitForTimeout(400);
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted), editorFrame, 'hidden editor preview must release continuous rendering');
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted), sceneFrame, 'hidden scene preview must release continuous rendering');
   const hiddenCapture = await workspace.capture(args);
   assert.match(hiddenCapture.png, /^data:image\/png/);
   assert.equal((await workspace.getSceneTree(args)).worldId, target.worldId);

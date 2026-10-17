@@ -3,7 +3,7 @@ import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { type DynamicGeometryCandidate, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { ShaderRegistry } from '@forgeax/engine-shader';
+import { DEFAULT_UNLIT_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
 import { afterEach, expect, it, vi } from 'vitest';
 import type {
   EngineToHostMessage,
@@ -68,6 +68,154 @@ class CreditWorker {
   terminate() {}
 }
 afterEach(() => vi.unstubAllGlobals());
+
+async function programTransportFixture() {
+  vi.stubGlobal('Worker', CreditWorker);
+  const world = new World();
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  shaders.installMaterialArtifact('test::candidate-program', {
+    source:
+      '@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }\n@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }',
+    paramSchema: DEFAULT_UNLIT_PARAM_SCHEMA,
+  });
+  const assets = new AssetRegistry(shaders);
+  const canvas = {} as OffscreenCanvas;
+  const source = new SourceRenderWorker(
+    world,
+    assets,
+    {
+      kind: 'init',
+      canvas,
+      startupTimeoutMs: 90_000,
+      bootstrapUrl: '',
+      workers: workerSelection({ render: true, kernels: false }),
+    },
+    () => {},
+  );
+  const previous = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+  const mesh = createBoxGeometry(2, 2, 2).unwrap();
+  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+  const material = world.allocSharedRef('MaterialAsset', {
+    kind: 'material',
+    passes: [
+      {
+        name: 'forward',
+        program: { module: 'test::candidate-program' },
+        renderState: { tags: { LightMode: 'Forward' } },
+      },
+    ],
+    values: { baseColor: [1, 1, 1, 1] },
+  });
+  await source.start(canvas);
+  const worker = CreditWorker.current;
+  const prepare = (signal?: AbortSignal) => {
+    const entity = world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: previous } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
+    world.update(1 / 60).unwrap();
+    return source.dynamicGeometry.prepareDynamicGeometry(
+      { world, entity, meshHandle, mesh, revision: 1 },
+      signal === undefined ? undefined : { signal },
+    );
+  };
+  const requests = () => worker.controls.filter((message) => message.kind === 'mesh-prepare');
+  const waitRequest = async (index: number) => {
+    await vi.waitFor(() => expect(requests().length).toBeGreaterThan(index));
+    const request = requests()[index];
+    if (request === undefined) throw new Error('missing preparation');
+    return request;
+  };
+  const ready = (requestId: number, deviceGeneration = 7) =>
+    worker.emit({
+      kind: 'mesh-ready',
+      requestId,
+      identity: worker.init?.identity,
+      result: { ok: true, deviceGeneration },
+    });
+  return { source, worker, prepare, waitRequest, ready };
+}
+
+it('sends first candidate programs until valid preparation ACK, then reuses publication program knowledge', async () => {
+  const f = await programTransportFixture();
+  try {
+    const first = f.prepare();
+    const a = await f.waitRequest(0);
+    const programs = a.input.pipelinePreparation?.programs;
+    expect(programs?.length).toBeGreaterThan(0);
+    const concurrent = f.prepare();
+    const b = await f.waitRequest(1);
+    expect(b.input.pipelinePreparation?.programs).toEqual(programs);
+    f.ready(a.requestId);
+    expect((await first).ok).toBe(true);
+    const next = f.prepare();
+    const c = await f.waitRequest(2);
+    expect(c.input.pipelinePreparation?.programs).toEqual([]);
+    expect(f.worker.packets).toHaveLength(0);
+    f.ready(b.requestId);
+    f.ready(c.requestId);
+    expect((await concurrent).ok).toBe(true);
+    expect((await next).ok).toBe(true);
+  } finally {
+    await f.source.dispose();
+  }
+});
+
+it.each([
+  'failed',
+  'cancelled',
+  'generation',
+  'epoch',
+] as const)('retains candidate program payload after %s preparation response', async (failure) => {
+  const f = await programTransportFixture();
+  try {
+    const controller = new AbortController();
+    const first = f.prepare(controller.signal);
+    const a = await f.waitRequest(0);
+    const programs = a.input.pipelinePreparation?.programs;
+    expect(programs?.length).toBeGreaterThan(0);
+    if (failure === 'failed') {
+      f.worker.emit({
+        kind: 'mesh-ready',
+        requestId: a.requestId,
+        identity: f.worker.init?.identity,
+        result: {
+          ok: false,
+          error: {
+            code: 'mesh-residency-gpu-not-ready',
+            expected: 'native preparation completes',
+            hint: 'test failure',
+          },
+        },
+      });
+    } else if (failure === 'generation') {
+      f.ready(a.requestId, 8);
+    } else if (failure === 'epoch') {
+      f.worker.emit({
+        kind: 'mesh-ready',
+        requestId: a.requestId,
+        identity: { ...f.worker.init?.identity, epoch: 2 },
+        result: { ok: true, deviceGeneration: 7 },
+      });
+      controller.abort();
+    } else {
+      controller.abort();
+      f.ready(a.requestId);
+    }
+    expect((await first).ok).toBe(false);
+    const next = f.prepare();
+    const b = await f.waitRequest(1);
+    expect(b.input.pipelinePreparation?.programs).toEqual(programs);
+    f.ready(b.requestId);
+    expect((await next).ok).toBe(true);
+  } finally {
+    await f.source.dispose();
+  }
+});
+
 it('publishes geometry without a global temporal reset and faults paired recovery when release is unconfirmed', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
@@ -111,6 +259,12 @@ it('publishes geometry without a global temporal reset and faults paired recover
     );
     const request = worker.controls.find((message) => message.kind === 'mesh-prepare');
     if (request?.kind !== 'mesh-prepare') throw new Error('missing preparation');
+    expect(request.input.pipelinePreparation).toMatchObject({
+      entity,
+      template: { snapshot: { assetHandle: meshHandle } },
+    });
+    // Capturing the replacement must not publish it into the live World.
+    expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(previous);
     worker.emit({
       kind: 'mesh-ready',
       requestId: request.requestId,
@@ -218,9 +372,15 @@ it('publishes geometry without a global temporal reset and faults paired recover
 });
 
 it.each([
-  false,
-  true,
-])('seals two frames until the oldest completes (duplicate ready: %s)', async (duplicateReady) => {
+  { duplicateReady: false, capacity: 2 },
+  { duplicateReady: true, capacity: 2 },
+  { duplicateReady: true, capacity: 3 },
+  { duplicateReady: false, capacity: 4 },
+  { duplicateReady: true, capacity: 4 },
+] as const)('seals $capacity frames until the oldest completes (duplicate ready: $duplicateReady)', async ({
+  duplicateReady,
+  capacity,
+}) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
   const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
@@ -232,6 +392,7 @@ it.each([
     canvas,
     bootstrapUrl: '',
     workers: workerSelection({ engine: true, render: true, kernels: false }),
+    diagnostics: { renderPipelineCapacity: capacity },
   };
   const source = new SourceRenderWorker(world, assets, init, (message) =>
     hostMessages.push(message),
@@ -288,10 +449,13 @@ it.each([
   try {
     source.publish(frame, 0);
     source.publish({ ...frame, frameId: 2, temporalReset: true }, 1);
+    for (let id = 3; id <= capacity; id++) source.publish({ ...frame, frameId: id }, id - 1);
     expect(source.hasPublicationCapacity).toBe(false);
-    expect(worker.packets.map((packet) => packet.frameId)).toEqual([1, 2]);
+    expect(worker.packets.map((packet) => packet.frameId)).toEqual(
+      Array.from({ length: capacity }, (_, index) => index + 1),
+    );
     expect(worker.packets[1]?.publication.temporalReset).toBe(true);
-    expect(() => source.publish({ ...frame, frameId: 3 }, 2)).toThrow();
+    expect(() => source.publish({ ...frame, frameId: capacity + 1 }, capacity)).toThrow();
     if (duplicateReady) {
       const clearDeadline = vi.spyOn(globalThis, 'clearTimeout');
       try {
@@ -313,22 +477,28 @@ it.each([
     complete();
     expect(hostMessages.filter((message) => message.kind === 'fault')).toHaveLength(0);
     expect(source.hasPublicationCapacity).toBe(true);
-    source.publish({ ...frame, frameId: 3 }, 2);
-    expect(worker.packets.map((packet) => packet.frameId)).toEqual([2, 3]);
+    source.publish({ ...frame, frameId: capacity + 1 }, capacity);
+    expect(worker.packets.map((packet) => packet.frameId)).toEqual(
+      Array.from({ length: capacity }, (_, index) => index + 2),
+    );
     expect(worker.packets[1]?.publication.temporalReset).toBe(false);
     complete();
-    source.publish({ ...frame, frameId: 4 }, 3);
+    source.publish({ ...frame, frameId: capacity + 2 }, capacity + 1);
     expect(worker.packets[1]?.publication.temporalReset).toBe(false);
   } finally {
     await source.dispose();
   }
 });
 
-it('forwards timing options to the child and retains the latest completed observation', async () => {
+it.each([
+  false,
+  true,
+])('forwards timing and depth experiment %s to the child and retains the latest completed observation', async (featureReadOnlyDepthBatchDiagnostic) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
   const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
   const canvas = {} as OffscreenCanvas;
+  const messages: EngineToHostMessage[] = [];
   const source = new SourceRenderWorker(
     world,
     assets,
@@ -338,14 +508,36 @@ it('forwards timing options to the child and retains the latest completed observ
       canvas,
       bootstrapUrl: '',
       workers: workerSelection({ engine: true, render: true, kernels: false }),
-      diagnostics: { gpuPassTiming: { retentionFrames: 4 }, geometryLane: 'direct' },
+      diagnostics: {
+        gpuPassTiming: { retentionFrames: 4 },
+        featureReadOnlyDepthBatchDiagnostic,
+        gbufferBatchOrderDiagnostic: {
+          order: 'near',
+          programDigests: [`sha256:${'a'.repeat(64)}`],
+        },
+        geometryLane: 'direct',
+        renderTaskYield: 'completion',
+        renderPipelineCapacity: 3,
+      },
+      bootstrapData: { isolateVfxViewGraph: true },
     },
-    () => {},
+    (message) => messages.push(message),
   );
   await source.start(canvas);
   const worker = CreditWorker.current;
   expect(worker.init?.gpuPassTiming).toEqual({ retentionFrames: 4 });
+  expect(worker.init).toHaveProperty(
+    'featureReadOnlyDepthBatchDiagnostic',
+    featureReadOnlyDepthBatchDiagnostic,
+  );
+  expect(worker.init).toHaveProperty('gbufferBatchOrderDiagnostic', {
+    order: 'near',
+    programDigests: [`sha256:${'a'.repeat(64)}`],
+  });
   expect(worker.init).toHaveProperty('geometryLane', 'direct');
+  expect(worker.init).toHaveProperty('renderTaskYield', 'completion');
+  expect(worker.init).toHaveProperty('renderPipelineCapacity', 3);
+  expect(worker.init?.bootstrapData).toEqual({ isolateVfxViewGraph: true });
   source.publish(
     {
       kind: 'frame',
@@ -391,11 +583,31 @@ it('forwards timing options to the child and retains the latest completed observ
       kind: 'frame-complete',
       worldIdentity: world.identity,
       frameId: 7,
+      presentation: 'pending',
+      presentationPendingReason: {
+        code: 'scene-pipeline-preparation',
+        pass: 'fs_gbuffer',
+        shader: 'test::opaque',
+      },
       engineUpdateMs: 0,
       kernelWaitMs: 0,
     },
   });
   expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation });
+  expect(messages).toContainEqual(
+    expect.objectContaining({
+      kind: 'render-complete',
+      frame: expect.objectContaining({
+        frameId: 7,
+        presentation: 'pending',
+        presentationPendingReason: {
+          code: 'scene-pipeline-preparation',
+          pass: 'fs_gbuffer',
+          shader: 'test::opaque',
+        },
+      }),
+    }),
+  );
   await source.dispose();
 });
 
@@ -746,12 +958,13 @@ it('fences child inspection by request, source, epoch and World without touching
   const worker = CreditWorker.current;
   try {
     let settled = false;
-    const pending = source.inspectRenderer();
+    const pending = source.inspectRenderer({ pipelineLibrary: true });
     void pending.then(() => {
       settled = true;
     });
     const request = inspectionRequest(worker);
     expect(request.worldIdentity).toBe(world.identity);
+    expect(request.pipelineLibrary).toBe(true);
     expect(worker.init?.worldIdentity).toBe(world.identity);
     for (const changed of [
       { ...inspectionReply(request), requestId: request.requestId + 1 },
@@ -904,6 +1117,53 @@ it('fences the old actual child after recovery while the new read remains attach
     expect(await pending).toEqual({ ok: true, value: inspectedFacts });
     expect(oldWorker.packets).toEqual([]);
     expect(freshWorker.packets).toEqual([]);
+  } finally {
+    await source.dispose();
+  }
+});
+
+it('bounds one geometry observation, validates its source epoch and cancels without consuming publication credit', async () => {
+  const { source, canvas, world } = await inspectionOwner();
+  await source.start(canvas);
+  const worker = CreditWorker.current;
+  try {
+    const abort = new AbortController();
+    const pending = source.observeNextGeometry({ signal: abort.signal });
+    const request = worker.controls.find((row) => row.kind === 'geometry-observe-next');
+    if (request?.kind !== 'geometry-observe-next') throw Error('No geometry request');
+    expect(request.worldIdentity).toBe(world.identity);
+    expect((await source.observeNextGeometry()).ok).toBe(false);
+    expect(worker.packets).toHaveLength(0);
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    worker.emit({
+      kind: 'geometry-observation-result',
+      requestId: request.requestId,
+      identity: { ...request.identity, epoch: 99 },
+      worldIdentity: world.identity,
+      result: { ok: true, value: { frameId: 99 } },
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    abort.abort();
+    expect((await pending).ok).toBe(false);
+    expect(worker.controls).toContainEqual({
+      kind: 'geometry-observe-cancel',
+      requestId: request.requestId,
+    });
+    const next = source.observeNextGeometry();
+    const wanted = worker.controls.filter((row) => row.kind === 'geometry-observe-next').at(-1);
+    if (wanted?.kind !== 'geometry-observe-next') throw Error('No next request');
+    worker.emit({
+      kind: 'geometry-observation-result',
+      requestId: wanted.requestId,
+      identity: wanted.identity,
+      worldIdentity: world.identity,
+      result: { ok: true, value: { frameId: 7, status: 'complete', commands: [] } },
+    });
+    expect(await next).toMatchObject({ ok: true, value: { frameId: 7 } });
   } finally {
     await source.dispose();
   }

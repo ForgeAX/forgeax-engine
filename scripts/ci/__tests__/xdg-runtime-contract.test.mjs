@@ -52,7 +52,9 @@ test('shared XDG runtime action creates a private Linux directory and exports it
   assert.match(action, /XDG_RUNTIME_DIR=%s\\n.*GITHUB_ENV/);
 });
 
-test('job runtime setup routes real Node staging away from an unusable system temp root', () => {
+test('job runtime setup routes real Node staging away from an unusable system temp root', {
+  skip: process.platform !== 'linux' && 'The action and Node TMPDIR routing apply only on Linux',
+}, () => {
   const fixture = mkdtempSync(join(tmpdir(), 'forgeax-job-runtime-test-'));
   try {
     const runnerTemp = join(fixture, 'runner-temp');

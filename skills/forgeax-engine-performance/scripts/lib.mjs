@@ -72,7 +72,7 @@ export function statistics(values) {
   };
 }
 
-export async function emitJson(value, output, inputs = []) {
+export async function emitJson(value, output, inputs = [], { exclusive = false } = {}) {
   const text = `${JSON.stringify(value, null, 2)}\n`;
   if (output !== undefined) {
     let destination = resolve(output);
@@ -95,7 +95,7 @@ export async function emitJson(value, output, inputs = []) {
         'Output must not overwrite an input',
       );
     }
-    await writeFile(output, text);
+    await writeFile(output, text, { flag: exclusive ? 'wx' : 'w' });
   } else process.stdout.write(text);
 }
 

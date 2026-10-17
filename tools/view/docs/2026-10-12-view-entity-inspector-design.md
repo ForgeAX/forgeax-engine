@@ -125,13 +125,13 @@ are under `/tmp/mesh-inspector-ui`. This is UI evidence, not Engine/GPU evidence
 The focused real Engine probe passes eight configurations: ordinary mesh,
 scene instance, generic entity, camera, directional light, point light, skylight
 and skybox. It cooks a disposable View-owned scene, queries actual schemas,
-checks unnamed child/parent selection and keeps the exact Editor binding.
+checks unnamed child/parent selection and keeps the exact Scene binding.
 The captured scene has pixel contrast 87, with no page or capture errors.
 Engine warned that the fixture skybox pass needs a tonemap; this proves its
 inspection fields, not HDR skybox rendering. The other twenty configurations
 have explicit UI fixture evidence, not real Engine feature-rendering acceptance.
 Attempts to install additional native fixture schemas were rejected by the
-installed Editor program inventory with `plugin-publication-mismatch`; no
+installed Scene program inventory with `plugin-publication-mismatch`; no
 Engine change or alternative World authority was introduced.
 
 At the end of the 2026-10-12 native Brotato validation, the service opened
@@ -169,7 +169,6 @@ from focused UI or Engine probes; the separate Harness repository is unchanged.
 ## References
 
 UE's extensible Actor/Component model motivates organization rather than a
-fixed number of UE classes: [Actors Reference](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-actors-reference),
-[Details Panel](https://dev.epicgames.com/documentation/en-us/unreal-engine/level-editor-details-panel-in-unreal-engine).
+fixed number of UE classes: [Actors Reference](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-actors-reference).
 The 28 entries above are View presentation configurations, not mutually exclusive
 Engine entity classes or a promise to expose data absent from Engine inspection.

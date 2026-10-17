@@ -380,6 +380,15 @@ recipes. A held async raster request stayed pending for four frames before
 ready; actual Null Renderer device generation 0 to 1 also passed through pending
 before ready. These counts and recovery checks are stronger than assuming a
 fixed number of warmup frames, but are not hardware GPU or ordinary FPS proof.
+A later [published brick-material owner](../../../../packages/vfx-render/reports/public-warm-retirement-owner-20261017.json)
+kept actual group-1 binding qualification and native factory counts across
+paused loading, retirement, live effects and asynchronous preparation. Its
+normal closure and controlled delayed-retirement cases passed while the real
+game still reported a missing brick-material GUID handle. Keep such negative
+controls: they reject blindly adding more warm Players, but do not establish
+that the full Worker transport, Standard graph or native driver has the same
+lifetime behavior. Only a matching failing owner and a repaired ordinary capture
+can close the product interruption.
 A permanently paused three-recipe pool had added about 3.3 ms/frame of idle CPU
 and was rejected; do not generalize program retention into permanent Player
 retention.
@@ -476,3 +485,59 @@ baseline rather than a causal percentage A/B against an earlier camera path.
 > when a fixture's camera and eye position disagree and the real safety gate
 > correctly rejects them. Require exercised emitter/retirement evidence at the
 > changed boundary; repairing that fixture starts a new qualified comparison.
+
+## Exact skinned vertex welding
+
+An upstream replacement of all eight character bodies retained 42 clips and
+the shared Biped, but increased authored geometry. The receiving Game branch
+kept those new bodies and welded only byte-identical complete shader inputs
+offline. Position, normal, tangent, palette UV, joint indices and weights all
+participated; hard shading, color and deformation seams remained distinct.
+
+| Source observation | Before | After |
+| --- | ---: | ---: |
+| Unique attribute rows across eight assets | 284,140 | 155,059 |
+| GLB bytes | 22,533,696 | 13,239,840 |
+| Ordered triangle corners | 426,210 | 426,210 |
+
+The Game report
+retains the incoming revision, per-asset hashes and actual checks. Its
+read-only comparison tool
+compares every indexed corner's six streams, plus unchanged hierarchy, material,
+image, inverse-bind and animation data. Whole-Game type checking and the focused
+asset checks passed. A separate upstream firearm clipping test timed out at its
+unchanged five-second limit; the batch did not claim an entirely green suite.
+
+This removed 45.43% of source vertex rows and 41.24% of GLB storage without
+approximate decimation. Triangle count stayed unchanged. GPU post-transform
+cache behavior, actual vertex shader invocations and product FPS were not
+measured by this asset proof; do not promote its row reduction into a GPU/FPS
+percentage. Rebuild and ordinary workload acceptance remain separate work.
+
+### Inspect the decoded geometry and optimization admission
+
+A shared glTF accessor does not guarantee one receiving vertex stream. In a
+later normal built AssetRegistry/Scene/World probe, two material primitives
+expanded the full source accessor twice. The 15,230-row source role became a
+30,460-row MeshAsset; its position, joint-index and weight streams exceeded the
+existing 1 MiB bounds-cache gate. Three real-pose calls never entered the
+conservative envelope path, while six other roles did. A sampled function's
+entry coordinate alone had not established that branch.
+
+Before changing a cache limit, inspect the actual decoded attribute lengths,
+backing-buffer kinds, mutable-input contract, renderer policy and admission
+branch. Compare each primitive's referenced rows with its full accessor. An
+exact per-primitive row projection can remove unused imported rows while
+retaining ordered triangle-corner shader inputs and material ranges; prove
+those bytes, skin/animation data and actual receiving admission before claiming
+a runtime or FPS improvement. Source-file welding and smaller GLB bytes do not
+by themselves prove that an existing runtime optimization remains enabled.
+
+The subsequent Game correction
+kept all 426,210 triangle corners and six input streams byte-identical, retained
+skin/animation/material data, and left the other six GLBs unchanged. The two
+receiving meshes returned to 15,230 and 15,822 rows and passed the existing
+conservative-cache admission in three actual-pose calls. On eight real imported
+skins, 200-round bounds-function CPU pairs changed from 185.223/185.696 ms to
+63.522/63.601 ms. The cache limit was unchanged; whole Engine Worker and product
+FPS gains still required separate measurement.

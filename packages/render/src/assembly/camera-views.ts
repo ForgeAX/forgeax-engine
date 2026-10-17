@@ -6,7 +6,7 @@ import {
   RhiError,
   type Texture,
 } from '@forgeax/engine-rhi';
-import type { Handle } from '@forgeax/engine-types';
+import { type Handle, ok } from '@forgeax/engine-types';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
 import { CameraView, cameraViewExtent } from '../components/camera-view';
@@ -25,12 +25,21 @@ import type { PreparedRenderPublication, RenderPublicationReceiver } from '../pu
 import { DiffuseGiBudget } from '../raytracing/diffuse-gi-budget';
 import type { GpuTimingCapture } from '../record/gpu-timing';
 import type { RenderSystemInternals } from '../record/render-context';
-import type { DrawOwnerOptions, FramePresentation } from '../render-contract';
+import type {
+  DrawOwnerOptions,
+  FramePresentation,
+  FramePresentationPendingReason,
+} from '../render-contract';
 import { createRenderSystem, type RenderSystem } from '../render-system';
 import { selectCameraRoles } from '../render-system-extract';
 import type { RenderTarget } from '../targets/contracts';
 import type { FramebufferSnapshotSource } from '../targets/framebuffer-snapshot';
-import { type FrameRecording, submitFrameRecordings } from './frame-recording';
+import {
+  drainFramePreparation,
+  type FramePreparation,
+  type FrameRecording,
+  prepareFrameSubmission,
+} from './frame-recording';
 import type { LodObservationCapture, LodObservationViewCapture } from './lod-observation';
 import { type CompositeChannels, createViewCompositor } from './view-compositor';
 import { createViewPipelineState } from './view-pipeline-state';
@@ -100,6 +109,19 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     return view !== undefined && view === row.viewRef && view.system === row.system;
   };
   return {
+    async prepareCandidatePipelines(
+      ...args: Parameters<RenderSystem['prepareCandidatePipelines']>
+    ) {
+      const captured = systems();
+      const results = await Promise.all(
+        captured.map((system) => system.prepareCandidatePipelines(...args)),
+      );
+      const failed = results.find((result) => !result.ok);
+      if (failed !== undefined && !failed.ok) return failed;
+      return ok({
+        isCurrent: () => results.every((result) => result.ok && result.value.isCurrent()),
+      });
+    },
     terrainSections() {
       return active
         ? [...views.values()].map((view) => ({
@@ -174,6 +196,16 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
           : 'pending'
         : undefined;
     },
+    get presentationPendingReason(): FramePresentationPendingReason | undefined {
+      if (!active) return undefined;
+      for (const view of views.values())
+        if (view.system.presentation === 'pending')
+          return Object.freeze({
+            ...(view.system.presentationPendingReason ?? { code: 'camera-view-pending' as const }),
+            view: view.key.slice(0, 256),
+          });
+      return undefined;
+    },
     inspect(): readonly CameraViewInspection[] {
       return [...views.values()].map((v) => ({
         entityKey: v.entity,
@@ -207,7 +239,10 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         clear();
       }
     },
-    draw(
+    draw(...args: Parameters<typeof this.prepareSubmission>): boolean {
+      return drainFramePreparation(this.prepareSubmission(...args));
+    },
+    *prepareSubmission(
       worlds: readonly World[],
       opts: DrawOwnerOptions,
       leases?: readonly RenderReadLease[],
@@ -216,7 +251,8 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         readonly publication: PreparedRenderPublication;
         readonly receiver: RenderPublicationReceiver;
       },
-    ): boolean {
+      isCurrent?: () => boolean,
+    ): FramePreparation {
       frame += 1;
       internals.rendererFrameNumber = frame;
       let frameSubmitted = false;
@@ -340,7 +376,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
             composite.dispose();
           }
           active = false;
-          frameSubmitted = primary.draw(
+          frameSubmitted = yield* primary.prepareSubmission(
             worlds,
             opts,
             leases,
@@ -348,6 +384,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
             wasActive && source !== undefined
               ? source.receiver.snapshot(source.publication)
               : publication,
+            isCurrent,
           );
           if (frameSubmitted) {
             const primaryInspection = primary.lodOcclusionInspection;
@@ -712,7 +749,12 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
             return submitted.ok;
           };
           recordings.push(finalRecording());
-          submitted = submitFrameRecordings(recordings, encodeComposite, internals);
+          submitted = yield* prepareFrameSubmission(
+            recordings,
+            encodeComposite,
+            internals,
+            isCurrent,
+          );
           if (submitted)
             for (const view of views.values()) {
               if (view.target === undefined || view.output === undefined) continue;

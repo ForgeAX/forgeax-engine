@@ -1428,7 +1428,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
   const data = (packet: RenderPublication) =>
     required(packet.features[0]).data as Parameters<typeof consumer.plan>[0];
   world.update(1 / 60).unwrap();
-  const publish = () => {
+  const publish = (materialBindings = false) => {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
       transfer: [
@@ -1444,6 +1444,9 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
         singleViewContext({
           targets: [{ name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 }],
           resolveAsset: (_index, assetHandle) => accepted.resources.resolveAsset(assetHandle),
+          ...(materialBindings
+            ? { materialShaderBindingContract: () => ({ bindings: 'render-material' as const }) }
+            : {}),
           caps: {} as never,
           frame: { frameNumber: packet.revision },
           generation: 0,
@@ -1473,6 +1476,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
     handle,
     player,
     meshGuid,
+    definition,
     materialGuid,
     source,
     publisher,
@@ -1675,6 +1679,10 @@ it('resolves published Player mesh references in their source World index', asyn
         views: [{ identity: 'main', render: true }],
         referenceAsset: (index, identity, captured) => {
           requested.push(index);
+          if (identity === f.materialGuid) {
+            expect(captured).toBe(f.assets.lookup(f.materialGuid));
+            return undefined;
+          }
           expect(identity).toBe(f.handle);
           expect(resolveAssetHandle(f.world, f.handle).unwrap()).toBe(captured);
           return f.handle;
@@ -1699,6 +1707,119 @@ it('resolves published Player mesh references in their source World index', asyn
     );
     expect(result.ok).toBe(true);
     expect(new Set(resolved)).toEqual(new Set([1]));
+  } finally {
+    await f.close();
+  }
+});
+
+it('carries the exact published material handle through stock VFX group-one bindings', async () => {
+  const f = await meshPublicationFixture();
+  try {
+    const first = f.publish(true);
+    const row = required(first.packet.assets.find((asset) => asset.guid === f.materialGuid));
+    const bindings = planResources(first.planned).filter(
+      (resource) =>
+        resource.kind === 'graphics-bindings' && resource.name.includes('.material-bindings.'),
+    );
+    expect(bindings.length).toBeGreaterThan(0);
+    for (const binding of bindings) {
+      if (binding.kind !== 'graphics-bindings') throw new Error('Expected material bindings');
+      expect(binding.values.material).toEqual({
+        world: 0,
+        guid: f.materialGuid,
+        assetHandle: row.handle,
+      });
+    }
+    expect(f.source.assetDependencies?.(first.data)).toContain(row.handle);
+    expect(f.source.assetDependencies?.(first.data)).toContain(f.materialGuid);
+  } finally {
+    await f.close();
+  }
+});
+
+it('keeps uncooked custom material providers on the original GUID path without new reference reads', async () => {
+  const f = await meshPublicationFixture('custom');
+  try {
+    const referenceAsset = vi.fn((_index: number, identity: unknown) => {
+      if (identity === f.materialGuid)
+        throw new Error('custom material reference was not requested');
+      return undefined;
+    });
+    const frame = f.source
+      .extract({
+        worlds: [f.world],
+        owner: 0,
+        frameNumber: 1,
+        views: [{ identity: 'main', render: true }],
+        referenceAsset,
+      })
+      .unwrap();
+    expect(frame.worlds[0]?.materials.get(f.materialGuid)?.assetHandle).toBeUndefined();
+    expect(referenceAsset.mock.calls.some((call) => call[1] === f.materialGuid)).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+it.each([
+  'paused',
+  'disabled',
+] as const)('retains exact assets for the submitted emitter when a %s replacement changes materials', async (state) => {
+  const f = await meshPublicationFixture();
+  const nextGuid = '019e9c00-0000-7000-8000-000000000093';
+  try {
+    const first = f.publish(true);
+    const oldHandle = required(first.data.worlds[0]?.materials.get(f.materialGuid)?.assetHandle);
+    f.assets.catalog(nextGuid, Materials.unlit([1, 0, 0, 1])).unwrap();
+    const replacement = await loadEffect({
+      ...f.definition,
+      program: {
+        ...f.definition.program,
+        emitters: f.definition.program.emitters.map((emitter) => ({
+          ...emitter,
+          renderers: emitter.renderers.map((renderer) => ({ ...renderer, material: nextGuid })),
+        })),
+      },
+    });
+    const effectHandle = f.world.allocSharedRef('ParticleEffectAsset', replacement);
+    const runtime = f.world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    if (state === 'disabled') runtime.setEmitterSessionEnabled(f.player, 'emitter', false);
+    f.world
+      .set(f.player, ParticleEffectPlayer, {
+        effect: effectHandle,
+        playing: state !== 'paused',
+        preparePipelines: state === 'disabled',
+      })
+      .unwrap();
+    f.world.sharedRefs.release(effectHandle).unwrap();
+    f.world.update(1 / 60).unwrap();
+    const retained = f.publish(true);
+    expect(retained.data.worlds[0]?.intents).toEqual([]);
+    expect(retained.data.worlds[0]?.retained[0]?.intent.emitter.id).toBe('emitter');
+    expect(planPasses(retained.planned).some((pass) => pass.kind === 'raster')).toBe(
+      state === 'paused',
+    );
+    expect(retained.data.worlds[0]?.materials.get(f.materialGuid)?.assetHandle).toBe(oldHandle);
+    expect(f.source.assetDependencies?.(retained.data)).toContain(oldHandle);
+    expect(retained.resources.resolveAsset(oldHandle).ok).toBe(true);
+    expect(retained.packet.retiredAssets).not.toContain(oldHandle);
+    const bindings = planResources(retained.planned).filter(
+      (resource) => resource.kind === 'graphics-bindings' && resource.values.group === 1,
+    );
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.kind === 'graphics-bindings' && bindings[0].values.material).toEqual({
+      world: 0,
+      guid: f.materialGuid,
+      assetHandle: oldHandle,
+    });
+    runtime.setEmitterSessionEnabled(f.player, 'emitter', true);
+    f.world.set(f.player, ParticleEffectPlayer, { playing: true }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    f.publish(true);
+    f.world.update(1 / 60).unwrap();
+    const changed = f.publish(true);
+    expect(changed.data.worlds[0]?.materials.has(f.materialGuid)).toBe(false);
+    expect(changed.resources.resolveAsset(oldHandle).ok).toBe(false);
   } finally {
     await f.close();
   }

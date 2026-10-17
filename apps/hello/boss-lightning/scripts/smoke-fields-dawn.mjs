@@ -102,7 +102,7 @@ if(!performanceRun){
       pass.setPipeline=pipeline=>{entryPoint=entryPoints.get(pipeline);setPipeline(pipeline);};
       for(const method of ['dispatchWorkgroups','dispatchWorkgroupsIndirect']){
         const dispatch=pass[method].bind(pass);
-        pass[method]=(...args)=>{if(entryPoint==='forgeax_vfx_update_main')simulationUpdates++;dispatch(...args);};
+        pass[method]=(...args)=>{if(/^forgeax_vfx_update(?:_compact)?_main$/.test(entryPoint??''))simulationUpdates++;dispatch(...args);};
       }
       return pass;
     };
@@ -292,7 +292,7 @@ try{
     assert.equal(report.verdict,'pass', 'Frozen full-frame p95 budget or real GPU timing failed');
   }else{
     const tape=unwrap(decodeTape(tapeBytes));const model=buildFrameModel(tape);
-    const update=model.works.find(w=>w.pipeline?.shaders?.some(s=>s.entryPoint==='forgeax_vfx_update_main'));assert(update);
+    const update=model.works.find(w=>w.pipeline?.shaders?.some(s=>/^forgeax_vfx_update(?:_compact)?_main$/.test(s.entryPoint ?? '')));assert(update);
     const particles=update.bindings.find(b=>b.binding===0);assert(particles);
     const field=update.bindings.find(b=>b.binding===17);
     assert.equal(field!==undefined,key!=='off');

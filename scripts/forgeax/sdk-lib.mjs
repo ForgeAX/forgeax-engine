@@ -525,14 +525,21 @@ export function stable(value) {
 }
 
 /**
- * Remove runner-specific workspace prefixes from the pnpm license report.
+ * Normalize workspace prefixes and unordered pnpm license inventory collections.
  * The report is shipped inside the SDK, so absolute checkout paths would make
  * otherwise identical builds differ between self-hosted runners.
  */
 export function normalizeLicenseReport(value, workspaceRoot) {
   const root = resolve(workspaceRoot);
   const visit = (entry, field) => {
-    if (Array.isArray(entry)) return entry.map((child) => visit(child, field));
+    if (Array.isArray(entry))
+      return entry
+        .map((child) => visit(child, field))
+        .sort((left, right) => {
+          const a = JSON.stringify(stable(left));
+          const b = JSON.stringify(stable(right));
+          return a < b ? -1 : a > b ? 1 : 0;
+        });
     if (entry === null || typeof entry !== 'object') {
       if (field !== 'paths' || typeof entry !== 'string') return entry;
       if (!isAbsolute(entry)) return entry.split(sep).join('/');

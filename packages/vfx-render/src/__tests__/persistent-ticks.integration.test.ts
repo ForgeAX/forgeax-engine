@@ -149,14 +149,12 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     const entries = planPasses(first.plan).flatMap((pass) =>
       pass.kind === 'compute' ? pass.dispatches.map((dispatch) => dispatch.entryPoint) : [],
     );
-    const eventIndex = entries.indexOf('forgeax_vfx_event_main');
-    if (events) {
-      expect(eventIndex).toBeGreaterThan(0);
-      expect(entries.slice(eventIndex + 1, eventIndex + 3)).toEqual([
-        'forgeax_vfx_scan_blocks_main',
-        'forgeax_vfx_compact_main',
-      ]);
-    } else expect(eventIndex).toBe(-1);
+    expect(entries).toEqual([
+      'forgeax_vfx_spawn_main',
+      'forgeax_vfx_update_compact_main',
+      ...(events ? ['forgeax_vfx_event_main', 'forgeax_vfx_scan_compact_main'] : []),
+      'forgeax_vfx_billboard_main',
+    ]);
     expect(runtime.snapshot()).toHaveLength(1);
     const retry = frame();
     expect(particleName(retry.plan)).toBe(particleName(first.plan));
@@ -172,9 +170,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         .unwrap(),
     );
     consumer.onFrameSubmitted?.(retry.extracted);
-    // Initial spawn + update/compact, then one billboard projection.
-    // Event emitters retain their event and second compact sequence.
-    expect(consumer.inspect().dispatches).toBe(events ? 8 : 5);
+    // Initial spawn + fused update/compact, then one billboard projection.
+    // Event emitters retain their event and fused second compaction.
+    expect(consumer.inspect().dispatches).toBe(events ? 5 : 3);
     const successor = consumer
       .plan(
         sealed,
@@ -223,7 +221,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     consumer.onFrameSubmitted?.(catchup.extracted);
     // Both later ticks have zero scheduled spawns; their update/event work
     // remains active and neither empty spawn is counted as a GPU command.
-    expect(consumer.inspect().dispatches).toBe(events ? 13 : 7);
+    expect(consumer.inspect().dispatches).toBe(events ? 7 : 3);
     feature.onSourceFrameSubmitted?.(
       catchup.extracted,
       structuredClone(catchup.plan.sourceFeedback),

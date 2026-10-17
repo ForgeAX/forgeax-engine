@@ -1424,6 +1424,11 @@ export function gpuParticleRenderFeature(
         const latestTransform = latest?.localToWorld ?? group.preparation?.localToWorld;
         if (latestTransform === undefined) return err(planFailure());
         const prepareOnly = group.preparation !== undefined;
+        const renderEnabled =
+          !prepareOnly &&
+          (group.entry.emitterState.get(`${Number(firstIntent.player)}:${firstIntent.emitter.id}`)
+            ?.enabled ??
+            true);
         const prefix = group.key;
         let sharedProgramId = immutableEmitters.has(firstIntent.emitter)
           ? computeProgramIds.get(firstIntent.emitter)
@@ -1967,6 +1972,7 @@ export function gpuParticleRenderFeature(
             view.targets.find((target) => target.kind === 'swapchain');
           const depthTarget = view.targets.find((target) => target.kind === 'depth');
           const visible =
+            renderEnabled &&
             latest !== undefined &&
             emitterVisible(latest.intent.emitter, camera, latestTransform) &&
             latest.visible;
@@ -2086,7 +2092,7 @@ export function gpuParticleRenderFeature(
             passes.push({
               kind: 'copy',
               name: `${rendererPrefix}.copy`,
-              enabled: !prepareOnly && (visible || castsShadow),
+              enabled: renderEnabled && (visible || castsShadow),
               copies,
             });
             resources.push(
@@ -2160,7 +2166,7 @@ export function gpuParticleRenderFeature(
               passes.push({
                 kind: 'compute',
                 name: `${rendererPrefix}.project`,
-                enabled: !prepareOnly && (visible || castsShadow),
+                enabled: renderEnabled && (visible || castsShadow),
                 program,
                 bindings: projectionBindings,
                 dispatches: projectionDispatches,
@@ -2314,7 +2320,7 @@ export function gpuParticleRenderFeature(
               passes.push({
                 kind: 'shadow-caster',
                 name: `${rendererPrefix}.shadow`,
-                enabled: !prepareOnly,
+                enabled: renderEnabled,
                 draws: [
                   {
                     program: shadowProgram,

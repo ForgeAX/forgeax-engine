@@ -338,7 +338,11 @@ together from the published receipt. It never overwrites the authored write flag
   Order within each group and each renderer's GPU particle sorting stay unchanged.
 - Fixed bounds suppress the main-camera raster when culled, not an enabled Mesh
   shadow contribution. Simulation follows the source culling policy.
-- Camera-frustum results publish through `setEmitterCameraVisibility`; session mute/isolate is a separate mask that suppresses compute and draw contribution while retaining prepared bindings as warm state. A paused player can therefore be isolated and restored without a new simulation intent or GPU-resource reallocation.
+- Camera-frustum results publish through `setEmitterCameraVisibility`; session mute/isolate
+  and Player render consumption independently suppress simulation and retained color,
+  shadow, and projection work while retaining prepared bindings as warm state. A paused
+  player can therefore be isolated and restored without a new simulation intent or
+  GPU-resource reallocation. Camera culling alone still allows enabled mesh shadows.
 - WGSL runtime time is the effect-relative `phaseTick`; the world-global tick remains an internal ring-selection and correlation clock. Replay and deterministic seek therefore restart shader time as well as CPU scheduling.
 
 Billboard texture sheets, pivot, and soft-particle depth sampling execute from

@@ -1,16 +1,16 @@
 {
   "schema": "forgeax-repository-export/2",
   "policy": "engine-public-source/1",
-  "producerSha256": "3c4992ac874e179b1f7281b98258f2a2c3f58cd32194eb2e3bc70fc637fa365f",
+  "producerSha256": "b9ff325f46e8bed54e60123a47fbb883b113709a8b4b34f0110418aa9a417d39",
   "release": {
-    "version": "0.4.10",
+    "version": "0.4.11",
     "channel": "stable",
-    "candidateSha256": "7cfe8fa1f9243e81f71a7345ca80774eb8b3827decd7d0b63a1c3172c52c8dc8"
+    "candidateSha256": "f31a0426a5e839ac91f39ca304e79de67bd4c0c0a29e7de1b8b132be8cdd2559"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "3c7dd5f8af6378d8ba96daeb281b0b1a5b469205"
+      "commit": "c8bfbd1fa001a54585b32864a823eba2fd2219c9"
     },
     {
       "root": "forgeax-engine-assets",
@@ -10775,9 +10775,9 @@
     },
     {
       "path": "apps/hello/boss-lightning/scripts/field-lifecycle.mjs",
-      "bytes": 9975,
+      "bytes": 9998,
       "executable": false,
-      "sha256": "bccc8d3ae0056304d1b60e45677e8a140ded1f7504581ff82f02f4ae6bb8d1cf"
+      "sha256": "a27c7eb17eb246ace880df45c3047b2666d695f885d12e6901223025f3f9deaa"
     },
     {
       "path": "apps/hello/boss-lightning/scripts/field-matrix-cases.json",
@@ -10859,9 +10859,9 @@
     },
     {
       "path": "apps/hello/boss-lightning/scripts/smoke-fields-dawn.mjs",
-      "bytes": 29750,
+      "bytes": 29798,
       "executable": false,
-      "sha256": "4fea0c6a8065e2aca63a40d11366e3058cf6b718cc7edc907117dc72de33aadc"
+      "sha256": "75988ba08a2ef0bece25d9fa1ad3945555ec159337b69ab23853506b247e7204"
     },
     {
       "path": "apps/hello/boss-lightning/scripts/smoke-m11-browser.mjs",
@@ -10889,9 +10889,9 @@
     },
     {
       "path": "apps/hello/boss-lightning/scripts/smoke-sdf-dawn.mjs",
-      "bytes": 54340,
+      "bytes": 54478,
       "executable": false,
-      "sha256": "7929efd5c750cc24991e4b22e9315b84e0724f070c1b834e78d7f8db21f91c9e"
+      "sha256": "09fde20da8e6fc88a9159ac4fd5383cbff213c41246418bdce53066b44291526"
     },
     {
       "path": "apps/hello/boss-lightning/sdf.html",
@@ -28055,9 +28055,9 @@
     },
     {
       "path": "packages/app/src/__tests__/render-worker-protocol.unit.test.ts",
-      "bytes": 41512,
+      "bytes": 41541,
       "executable": false,
-      "sha256": "5294265752e61bc5175a7474e12b2d6ef61a25291dc97bddd13028fc0586e03c"
+      "sha256": "3aa3bc2dc3a7d71bf7293f7a89a8d6ea211a29c44cec8c976ba301addffa9bf4"
     },
     {
       "path": "packages/app/src/__tests__/renderer-completion-failure.integration.test.ts",
@@ -57131,9 +57131,9 @@
     },
     {
       "path": "packages/runtime/src/__tests__/multi-camera-vfx.fixture.ts",
-      "bytes": 24552,
+      "bytes": 24584,
       "executable": false,
-      "sha256": "e84955f18a8fce4a5060481d20815ccece091633bf70096d1ed756053e41e865"
+      "sha256": "32bde1bb99fcf752f762f1aaea1fbbed8ede65ee3cc7f0e7bda84d8b3bf004bd"
     },
     {
       "path": "packages/runtime/src/__tests__/multi-camera.browser.test.ts",
@@ -59147,9 +59147,9 @@
     },
     {
       "path": "packages/runtime/src/__tests__/vfx-mesh-lighting.fixture.ts",
-      "bytes": 50755,
+      "bytes": 50780,
       "executable": false,
-      "sha256": "d1e32dcf67c6ffa0f1cc73fe2d08db6dd3476baa1f3c4f8b491b6b245255eab0"
+      "sha256": "9cc64610d4a64a59363570fff819920e980bf12dbf234128cb64912a5609c8ab"
     },
     {
       "path": "packages/runtime/src/__tests__/vfx-mesh-lighting.transport.ts",
@@ -65111,9 +65111,9 @@
     },
     {
       "path": "packages/vfx-render/README.md",
-      "bytes": 31670,
+      "bytes": 31781,
       "executable": false,
-      "sha256": "807dddfe0947b24a0e633f606ae9a18ae81201556514b8f4493d9f56b12da2b9"
+      "sha256": "7ae2aef95be249a15cf746bfd22f3183e073a6237991a411b8e401500d52d18f"
     },
     {
       "path": "packages/vfx-render/src/__tests__/billboard-advanced.integration.test.ts",
@@ -65201,9 +65201,9 @@
     },
     {
       "path": "packages/vfx-render/src/__tests__/mesh-contracts.integration.test.ts",
-      "bytes": 11975,
+      "bytes": 16643,
       "executable": false,
-      "sha256": "2751877d143aa6a592070a870702d39ab793f07add605d3eb544e037e149404d"
+      "sha256": "a5ff87ee553fbb17de5e797c5ffae483d324151d355c8e55e6ed648d3dfa899f"
     },
     {
       "path": "packages/vfx-render/src/__tests__/multi-view.integration.test.ts",
@@ -65243,15 +65243,15 @@
     },
     {
       "path": "packages/vfx-render/src/__tests__/persistent-ticks.integration.test.ts",
-      "bytes": 17009,
+      "bytes": 16922,
       "executable": false,
-      "sha256": "8fa94268cd7510717134c5af9330881484458612202d13a62708e822edb406d9"
+      "sha256": "902efca73860bd071a2f8b440e91cf6e4943b0bfe4fef911377a0fe78165c4b4"
     },
     {
       "path": "packages/vfx-render/src/__tests__/player-mesh-source.integration.test.ts",
-      "bytes": 10789,
+      "bytes": 11163,
       "executable": false,
-      "sha256": "8140946439f1c6c3e9d1652c0e44e739deda167aac3a5ecd56a10f40ca7f11e9"
+      "sha256": "1eb320f2c26fd4eeb2283b8464cc336751675abfb4f65dca84c48e7ad8436b42"
     },
     {
       "path": "packages/vfx-render/src/__tests__/raster-passes.unit.test.ts",
@@ -65363,9 +65363,9 @@
     },
     {
       "path": "packages/vfx-render/src/feature/gpu-particle-feature.ts",
-      "bytes": 112759,
+      "bytes": 112990,
       "executable": false,
-      "sha256": "42c37edb5fa321d06d794b0706693d92a0adf01808672259702c6d2551347961"
+      "sha256": "55b136019a477ac553ae6d1c3c4222ea5b2377c079c9ee725466902c67480939"
     },
     {
       "path": "packages/vfx-render/src/feature/particle-resources.ts",
@@ -69376,6 +69376,12 @@
       "sha256": "5039bc44e4f5e6c273f528682c2963e684a93ea76ebb22110eee10dcd06c501f"
     },
     {
+      "path": "scripts/ci/__tests__/vfx-field-dispatch.test.mjs",
+      "bytes": 2049,
+      "executable": false,
+      "sha256": "869d5441b6917aace77d1e555db1891ed9ca7a53d8d6df677199f132f47ea560"
+    },
+    {
       "path": "scripts/ci/__tests__/vfx-sdf-timing.test.mjs",
       "bytes": 1853,
       "executable": false,
@@ -70295,9 +70301,9 @@
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-lib.test.mjs",
-      "bytes": 47071,
+      "bytes": 48520,
       "executable": false,
-      "sha256": "897f77b2be48cfdf1426fbdf5f1598c7620a1024ce8cf71525b8f71601272875"
+      "sha256": "05163bb82eb00e04c770a4485012b79b8aa299a5987b187f3eb70fd45e0ee282"
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-live-progress.test.mjs",
@@ -70739,9 +70745,9 @@
     },
     {
       "path": "scripts/forgeax/sdk-lib.mjs",
-      "bytes": 28366,
+      "bytes": 28578,
       "executable": false,
-      "sha256": "b56e7ab578e5cc1cdeccc2adfd509c96904ec231a2e0945b066c7ee8127fa18e"
+      "sha256": "8b6a4257f5627f8958b7f0a7e167f939f2994b9ab315a05ca9c83bb84225b921"
     },
     {
       "path": "scripts/forgeax/sdk-pr-preflight.mjs",

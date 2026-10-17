@@ -29,6 +29,7 @@ import {
   normalizePnpmStore,
   normalizeSdkRegistryLockfile,
   prepareWasmPackageForPack,
+  stable,
   waitForNpmPublications,
   writePackageArchive,
 } from '../sdk-lib.mjs';
@@ -118,6 +119,40 @@ it('normalizes workspace-specific license report paths', () => {
   expect(() => normalizeLicenseReport({ paths: ['/other/example'] }, root)).toThrow(
     'sdk-license-path-outside-workspace',
   );
+});
+
+it('equivalent license enumeration orders produce identical SDK carrier archive bytes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-license-repro-'));
+  tempRoots.push(root);
+  const archives = [];
+  for (const reverse of [false, true]) {
+    const checkout = join(root, reverse ? 'second-runner' : 'first-runner');
+    const packageRoot = join(checkout, 'package');
+    await mkdir(join(packageRoot, 'sdk/licenses'), { recursive: true });
+    const rows = ['alpha', 'beta'].map((name) => ({
+      name,
+      versions: reverse ? ['2.0.0', '1.0.0'] : ['1.0.0', '2.0.0'],
+      paths: (reverse ? ['b', 'a'] : ['a', 'b']).map((path) => join(checkout, path, name)),
+      license: 'MIT',
+    }));
+    const report = stable(
+      normalizeLicenseReport({ MIT: reverse ? rows.reverse() : rows }, checkout),
+    );
+    expect(report.MIT).toHaveLength(2);
+    expect(report.MIT.flatMap((entry) => entry.paths)).toHaveLength(4);
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({ name: '@forgeax/engine-sdk', version: '1.2.3' }),
+    );
+    await writeFile(
+      join(packageRoot, 'sdk/licenses/THIRD_PARTY_NOTICES.json'),
+      `${JSON.stringify(report, null, 2)}\n`,
+    );
+    const archive = join(checkout, 'carrier.tgz');
+    await writePackageArchive(checkout, archive);
+    archives.push(await readFile(archive));
+  }
+  expect(archives[0].equals(archives[1])).toBe(true);
 });
 
 it('stages a self-contained WASM package for npm pack', async () => {

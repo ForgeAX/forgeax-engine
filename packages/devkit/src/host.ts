@@ -103,7 +103,12 @@ import {
 } from './host-binding.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
-import { commandError, readProjectFacts } from './project.js';
+import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
+import {
+  DEV_EXECUTION_TIMEOUT_MS,
+  DEV_PREPARATION_TIMEOUT_MS,
+  PRODUCTION_EXECUTION_TIMEOUT_MS,
+} from './startup-budget.js';
 import { projectToolProjection } from './tools/project-tools.js';
 import type {
   BuildOptions,
@@ -862,7 +867,7 @@ function hostSource(
       : [`webAudioPlugin(mainAudio)`, `audioPlugin()`, `skinningPlugin()`];
   const startupTimeout =
     facts.startupTimeoutMs === undefined
-      ? '(import.meta.env.DEV ? 120_000 : 30_000)'
+      ? `(import.meta.env.DEV ? ${DEV_EXECUTION_TIMEOUT_MS} : ${PRODUCTION_EXECUTION_TIMEOUT_MS})`
       : JSON.stringify(facts.startupTimeoutMs);
   return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
@@ -2095,8 +2100,11 @@ export async function startDevProjectWithHost(
   let started = false;
   let host: BackendHost | undefined;
   try {
+    const startupPolicy = await readProjectStartupTimeoutMs(options.root);
+    if (!startupPolicy.ok) return startupPolicy;
     host = await createBackendHost({
-      startupTimeoutMs: 30 * 60_000,
+      startupTimeoutMs:
+        startupPolicy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : startupPolicy.value,
       startupPlugins: [
         {
           name: 'forgeax:devkit-dev-server',
@@ -2198,8 +2206,11 @@ export async function startPreviewProjectWithHost(
   let started = false;
   let host: BackendHost | undefined;
   try {
+    const startupPolicy = await readProjectStartupTimeoutMs(options.root);
+    if (!startupPolicy.ok) return startupPolicy;
     host = await createBackendHost({
-      startupTimeoutMs: 30 * 60_000,
+      startupTimeoutMs:
+        startupPolicy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : startupPolicy.value,
       startupPlugins: [
         {
           name: 'forgeax:devkit-preview-server',

@@ -78,6 +78,12 @@ The CLI waits up to 120 seconds for the backend to become ready by default.
 `package.json#forgeax.startupTimeoutMs` overrides that wait for a project; set
 it to `null` to wait until startup completes or the backend process exits.
 
+Live dev waits for source preparation within the same 30-minute default as its
+server Host, then uses the generated development App's 120-second first-frame
+budget. The project startup override also reaches these waits; `null` disables
+them. A visible Engine fatal ends first-frame waiting immediately and reports
+failure even when page/console error lists are empty. It is never a waiting bridge.
+
 Generated browser realms derive one startup budget from the project setting or
 the existing environment default (120 seconds in development, 30 in production).
 Frontend preparation, the frontend Host, App, GameHost and Engine root activation
@@ -887,6 +893,12 @@ requires current producer evidence and loadable artifacts. Query operations do
 not build or write; mutations use the shared request-id and source-revision CAS
 contract owned by `@forgeax/engine-pack`.
 
+Operation receipts use `FORGEAX_HISTORY_DIR`, otherwise
+`$XDG_DATA_HOME/ForgeaX/operations` (default `~/.local/share/ForgeaX/operations`),
+with one canonical-project hash directory. A failed initial receipt write returns
+`operation-history-write-failed` before command execution; make that data root
+writable and retry. It is a storage failure, not a command syntax error.
+
 ## Browser compositor capture
 
 On Windows, launch captures from the signed-in user's desktop session. Session 0
@@ -902,8 +914,9 @@ native compiler is needed for this Browser capture route.
 > is not a player or release-acceptance gate.
 
 The command starts the source-development host on an ephemeral loopback port, creates an Xvfb display
-when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
-and non-flat **canvas** pixels, then takes a Playwright **page screenshot**. A page screenshot
+for a headed capture when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
+and non-flat **canvas** pixels, then takes a Playwright **page screenshot**.
+Explicit `--headless true` bypasses Xvfb/X11 entirely. See [Linux unattended validation](../../skills/forgeax-engine-cli/references/linux-unattended.md) for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
 composites the WebGPU canvas with normal DOM and open ShadowRoot UI;
 `canvas.toDataURL()` cannot provide that proof. `--wait-ms` is an additional settle interval after the
 first non-flat canvas frame, not a guess for CPU startup time.

@@ -84,6 +84,10 @@ For an explicitly requested Engine/SDK change, SDK archive verification or SDK
 publication, read [SDK production](references/sdk-production.md). Its exact-ZIP
 subject is the SDK distribution. Game ZIP packaging belongs to the game's release
 route; ordinary game creation does not enter Candidate, Promotion or SDK consumers.
+For channel/source and publication ordering, read the
+[release contract](../../packages/engine/RELEASING.md). GitHub and npm publish
+independently after stable source qualification; the source mirror retains its
+formal GitHub Release identity check. Delivery requires every enabled stage.
 
 ## Plugin asset authoring
 

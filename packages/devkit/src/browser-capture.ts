@@ -300,7 +300,14 @@ async function startVirtualDisplay(width: number, height: number): Promise<Virtu
         child.once('error', (error) => {
           clearTimeout(timeout);
           clearInterval(poll);
-          rejectReady(error);
+          rejectReady(
+            new BrowserCaptureError(
+              'browser-capture-display-unavailable',
+              'Xvfb installed for a headed capture when Linux has no DISPLAY',
+              'Use --headless true for unattended capture without X11, or install Xvfb for a virtual headed display. Keep Chromium sandboxing enabled and run as a non-root user.',
+              { executable: 'Xvfb', reason: error.message },
+            ),
+          );
         });
         child.once('exit', (code, signal) => {
           clearTimeout(timeout);
@@ -912,7 +919,8 @@ async function openBrowserCaptureSession(
         }
       }
     }
-    display = await startVirtualDisplay(width, height);
+    display =
+      options.headless === true ? { async close() {} } : await startVirtualDisplay(width, height);
     const captureDisplay = display;
     const icd = await lavapipeIcd();
     const consoleErrors: string[] = [];

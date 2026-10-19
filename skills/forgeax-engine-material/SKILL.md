@@ -28,6 +28,17 @@ same GUID, and verify receipt, artifact, and provenance.
 > [!IMPORTANT]
 > The visible-object recipe is `MeshFilter` + `MeshRenderer` + `MaterialAsset`. Author one material payload, cook its effective contract, load it by GUID, and allocate the World handle. The recovery route is structured error inspection. Do not create an app-local shader artifact or bypass an engine resource defect in a demo.
 
+## Shadow receiver bias
+
+For a bright patch on a shaded surface, first capture the failing frame through
+RHI Debug. Inspect the receiver, shadow-map depth and actual light UBO before
+changing roughness, emission or shader code. Directional/Spot `depthBias` is a
+normalized light-depth offset (default `0.00001`); it is not the Point shadow's
+world-meter bias. A large normalized offset grows with the cascade depth span
+and can erase an overhead occluder. Start from the component defaults, then
+verify both the occluded surface and a directly lit control for self-shadow acne.
+See [directional shadow units](../../packages/render/README.md#directional-shadow-quality-author--inspect--recover).
+
 ## Color-lighting parity handoff
 
 For a direct-light material issue, use the [color-lighting parity entry](../../apps/parity/color-lighting/README.md), then follow its [status recovery map](../../apps/parity/color-lighting/status-index.md). The `SceneCase` and `CaseReport` schemas are the report contract; repair the named material or producer owner and rerun the same case. Do not turn a missing producer capture into a material pass.

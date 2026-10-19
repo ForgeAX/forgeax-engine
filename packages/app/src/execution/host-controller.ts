@@ -521,6 +521,9 @@ export async function createWorkerExecutionApp(
     } as const;
     frameAdmission = admission;
     if (state !== 'running') return;
+    // Initial source publication can still perform deferred preparation.
+    const timeoutMs = frameId === 1 ? startupTimeoutMs : frameTimeoutMs;
+    if (timeoutMs === null) return;
     frameDeadline = setTimeout(() => {
       // The callback can remain queued after a matching submitted message
       // clears the timer. Keep the identity fence so it cannot fault a
@@ -533,11 +536,11 @@ export async function createWorkerExecutionApp(
         code: 'app-execution-deadline-exceeded',
         expected: APP_EXPECTED['app-execution-deadline-exceeded'],
         hint: APP_ERROR_HINTS['app-execution-deadline-exceeded'],
-        detail: { phase: 'frame', timeoutMs: frameTimeoutMs },
+        detail: { phase: 'frame', timeoutMs },
         partialWrite: false,
         retryable: false,
       });
-    }, frameTimeoutMs);
+    }, timeoutMs);
   };
 
   // Source frame IDs are monotonic across renderer replacement. A lost epoch

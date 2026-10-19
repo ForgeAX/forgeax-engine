@@ -139,7 +139,14 @@ it('renders the same Standard scene through local World and transferred publicat
         .unwrap();
       world.update(1 / 60).unwrap();
       const shadowClaims: import('@forgeax/engine-render').GpuDrivenLaneSummary[] = [];
-      for (let frame = 0; frame < 3; frame++) {
+      if (!local.renderer.requestObservation || !remote.renderer.requestObservation)
+        throw new Error('Receipt observation is unavailable');
+      // Arming a color observation can change the graph and asynchronously
+      // prepare its output pipeline. Queue completion alone is not readiness.
+      let observationsReady = false;
+      for (let frame = 0; frame < 60; frame++) {
+        value(local.renderer.requestObservation(['linear-ldr']));
+        value(remote.renderer.requestObservation(['linear-ldr']));
         const direct = value(
           local.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
         );
@@ -167,7 +174,15 @@ it('renders the same Standard scene through local World and transferred publicat
             }),
           )
           .unwrap();
+        if (direct.presentation === 'ready')
+          value(await local.renderer.observe(direct, { include: ['linear-ldr'] }));
+        if (draw.presentation === 'ready')
+          value(await remote.renderer.observe(draw, { include: ['linear-ldr'] }));
+        observationsReady = direct.presentation === 'ready' && draw.presentation === 'ready';
+        if (frame >= 2 && observationsReady) break;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
+      expect(observationsReady, `observation pipeline readiness for scene ${x}`).toBe(true);
       // Static depth submissions have no dynamic lane channel. A real pose
       // change must promote the caster and publish its GPU shadow ownership.
       if (x === 1 || x === -1) {
@@ -217,6 +232,10 @@ it('renders the same Standard scene through local World and transferred publicat
         });
         candidate.accept();
         const draw = value(remote.renderer.draw({ publication: packet }));
+        expect(direct.presentation, `local receipt for scene ${x} offset ${offset}`).toBe('ready');
+        expect(draw.presentation, `published receipt for scene ${x} offset ${offset}`).toBe(
+          'ready',
+        );
         return {
           direct,
           draw,

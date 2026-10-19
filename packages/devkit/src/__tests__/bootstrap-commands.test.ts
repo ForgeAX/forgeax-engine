@@ -833,9 +833,9 @@ describe('newCommand', () => {
     );
   });
 
-  it('accepts explicit identity fields and rejects an unsafe target basename before side effects', async () => {
+  it('accepts explicit identity in arbitrary directory names and validates default identity before side effects', async () => {
     const sdk = await sdkFixture(false);
-    const targetRoot = resolve(sdk.root, '..', 'explicit-game');
+    const targetRoot = resolve(sdk.root, '..', 'cap-perf-01@forgeax-test');
     const explicit = await newCommand({
       root: targetRoot,
       template: 'empty',

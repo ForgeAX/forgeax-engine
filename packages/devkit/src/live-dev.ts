@@ -18,12 +18,14 @@ import type {
   ExecutionSelection,
   ExecutionWorkersOptions,
 } from '@forgeax/engine-app';
+import type { JSHandle } from 'playwright';
 import { WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
 import type { BrowserCapture, BrowserCaptureSession } from './browser-capture.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { readLiveProjectInputs } from './live-project-inputs.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
+import { DEV_EXECUTION_TIMEOUT_MS, DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import type {
   BrowserCarrierAdapter,
   BrowserCarrierRunIdentity,
@@ -163,7 +165,6 @@ interface LiveDevDaemonState {
 // Vite can publish its endpoint. Keep the caller's polling window aligned with
 // the bounded project-process build timeout below instead of failing exactly
 // when a cold, valid project becomes ready.
-const LIVE_DEV_STARTUP_TIMEOUT_MS = 300_000;
 const LIVE_DEV_POLL_INTERVAL_MS = 100;
 const LIVE_DEV_REQUEST_TIMEOUT = 'live-request-timeout: the owner did not respond';
 
@@ -239,20 +240,40 @@ async function writeSessionFile(state: LiveDevDaemonState): Promise<void> {
   );
 }
 
-async function waitForFirstFrame(session: BrowserCaptureSession): Promise<boolean> {
+export async function waitForFirstFrame(
+  session: BrowserCaptureSession,
+  timeoutMs: number | null = DEV_EXECUTION_TIMEOUT_MS,
+): Promise<boolean> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
+  let observation: JSHandle<unknown>;
   try {
-    await realm.waitForFunction(
-      () => document.documentElement.dataset.forgeaxFrameSubmitted !== undefined,
+    observation = await realm.waitForFunction(
+      () => {
+        const fatal = document.querySelector('#forgeax-fatal');
+        if (fatal?.checkVisibility())
+          return (
+            document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
+            fatal.textContent?.trim() ||
+            'Engine startup failed'
+          ).slice(0, 16_384);
+        return document.documentElement.dataset.forgeaxFrameSubmitted !== undefined;
+      },
       undefined,
-      // Ordinary projects may hydrate separate source and render realms.
-      // Match the generated App's 30-second startup budget before deciding
-      // that its execution bridge is unavailable.
-      { timeout: 30_000 },
+      { timeout: timeoutMs ?? 0 },
     );
-    return true;
   } catch {
     return false;
+  }
+  try {
+    const result: unknown = await observation.jsonValue();
+    if (typeof result === 'string')
+      throw Object.assign(new Error(`live-startup-failed: ${result}`), {
+        code: 'live-startup-failed',
+        detail: { reason: result },
+      });
+    return result === true;
+  } finally {
+    await observation.dispose();
   }
 }
 
@@ -794,7 +815,13 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
     if (!state.status.headless && state.status.carrier === 'private-browser') {
       await state.session.page.bringToFront();
     }
-    const firstFrame = await waitForFirstFrame(state.session);
+    const { readProjectStartupTimeoutMs } = await import('./project.js');
+    const startupPolicy = await readProjectStartupTimeoutMs(state.executionRoot);
+    if (!startupPolicy.ok) throw startupPolicy.error;
+    const firstFrame = await waitForFirstFrame(
+      state.session,
+      startupPolicy.value === undefined ? DEV_EXECUTION_TIMEOUT_MS : startupPolicy.value,
+    );
     if (stopped()) return;
     const connected = firstFrame && (await refreshBridgeStatus(state).catch(() => false));
     if (stopped()) return;
@@ -2365,6 +2392,11 @@ export async function startLiveDev(
         ),
       };
   }
+  const { readProjectStartupTimeoutMs } = await import('./project.js');
+  const startupPolicy = await readProjectStartupTimeoutMs(root);
+  if (!startupPolicy.ok) return startupPolicy;
+  const startupTimeout =
+    startupPolicy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : startupPolicy.value;
   const portProbe = createServer();
   await once(portProbe.listen(0, '127.0.0.1'), 'listening');
   const address = portProbe.address();
@@ -2426,7 +2458,7 @@ export async function startLiveDev(
   // the same startup path as an ordinary `project preview`; a cold SDK tree
   // can take longer than a short CLI polling window. Keep the daemon detached
   // while the caller waits for its terminal starting state.
-  const deadline = Date.now() + LIVE_DEV_STARTUP_TIMEOUT_MS;
+  const deadline = startupTimeout === null ? Infinity : Date.now() + startupTimeout;
   while (Date.now() < deadline) {
     try {
       await access(file);

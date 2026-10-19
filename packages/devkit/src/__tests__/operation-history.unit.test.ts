@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOperationHistoryStore } from '../operation-history.js';
 
 const cleanup: string[] = [];
@@ -12,9 +12,48 @@ async function fixture() {
   return { root, directory: join(root, 'data') };
 }
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 describe('Engine command history', () => {
+  it('uses the writable XDG data directory and lets an explicit history root override it', async () => {
+    const options = await fixture();
+    const xdg = join(options.root, 'xdg');
+    vi.stubEnv('FORGEAX_HISTORY_DIR', undefined);
+    vi.stubEnv('XDG_DATA_HOME', xdg);
+    const store = await createOperationHistoryStore(options.root);
+    await store.track('project.check', {}, async () => ({
+      outcome: 'succeeded',
+      result: {},
+      artifacts: [],
+    }));
+    const directory = join(
+      xdg,
+      'ForgeaX',
+      'operations',
+      createHash('sha256').update(store.root).digest('hex'),
+    );
+    const record = (await store.list()).items[0];
+    if (!record) throw new Error('Missing XDG history record');
+    expect(await readFile(join(directory, record.id, 'record.json'), 'utf8')).toContain(
+      'project.check',
+    );
+    vi.stubEnv('FORGEAX_HISTORY_DIR', options.directory);
+    const override = await createOperationHistoryStore(options.root);
+    expect((await override.list()).items).toEqual([]);
+  });
+
+  it('reports an unwritable history directory before executing the operation', async () => {
+    const options = await fixture();
+    await writeFile(options.directory, 'not a directory');
+    const store = await createOperationHistoryStore(options.root, options.directory);
+    const execute = vi.fn();
+    await expect(store.track('project.check', {}, execute)).rejects.toMatchObject({
+      code: 'operation-history-write-failed',
+      detail: { directory: options.directory },
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
   it('never exposes an incompletely published record to concurrent readers', async () => {
     const options = await fixture();
     const store = await createOperationHistoryStore(options.root, options.directory);

@@ -1,8 +1,47 @@
 diff --git a/src/control/character_controller.rs b/src/control/character_controller.rs
-index 742684e..08506ce 100644
 --- a/src/control/character_controller.rs
 +++ b/src/control/character_controller.rs
-@@ -696,11 +696,16 @@ impl KinematicCharacterController {
+@@ -324,19 +324,22 @@ impl KinematicCharacterController {
+         }
+ 
+         let mut translation_remaining = desired_translation;
++        let mut kinematic_friction_translation = Vector::ZERO;
+ 
++        // Carry an already-contacting support even when the desired motion has
++        // no shape-cast hit (for example a descending platform). The same
++        // accumulator prevents a later collision from applying that carry twice.
+         let grounded_at_starting_pos = self.detect_grounded_status_and_apply_friction(
+             dt,
+             queries,
+             character_shape,
+             &(Pose::from_translation(result.translation) * *character_pos),
+             dims,
+-            None,
+-            None,
++            Some(&mut kinematic_friction_translation),
++            Some(&mut translation_remaining),
+         );
+ 
+         let mut max_iters = 20;
+-        let mut kinematic_friction_translation = Vector::ZERO;
+         let offset = self.offset.eval(dims.y);
+         let mut is_moving = false;
+ 
+@@ -557,8 +560,11 @@ impl KinematicCharacterController {
+                                 let normal_current_mvt = translation_remaining.dot(normal);
+ 
+                                 manifold_center += contact_point;
+-                                *translation_remaining +=
+-                                    normal * (normal_target_mvt - normal_current_mvt);
++                                // A contact can push, but never pull the character
++                                // toward a receding support or cancel a jump. Snapping
++                                // owns following a descending floor after the solve.
++                                *translation_remaining += normal
++                                    * (normal_target_mvt.max(0.0) - normal_current_mvt).max(0.0);
+                             }
+                         }
+ 
+@@ -696,11 +702,16 @@ impl KinematicCharacterController {
          let tangent = translation - normal_part - penetration_part;
          #[cfg(feature = "dim3")]
          let horizontal_tangent_dir = hit.normal1.cross(self.up);
@@ -23,7 +62,7 @@ index 742684e..08506ce 100644
          let vertical_tangent = tangent - horizontal_tangent;
  
          HitDecomposition {
-@@ -995,6 +1000,52 @@ mod test {
+@@ -995,6 +1006,52 @@ mod test {
      };
      use std::dbg;
  

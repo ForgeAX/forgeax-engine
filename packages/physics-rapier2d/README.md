@@ -5,6 +5,8 @@ Install `physicsPlugin('rapier-2d')`; fixed systems project Scene/RigidBody/Coll
 state, perform one solver step per fixed iteration, and write dynamic poses back
 to Scene. Two-dimensional writeback preserves the authored Transform z coordinate.
 World owns scheduling and time; the backend owns native bodies and their cleanup.
+The KCC enables native contact impulses for dynamic-body pushing, matching 3D;
+sensor obstacles remain excluded without game-side duplicate impulses.
 
 The default `loadRapier2D()` uses the self-contained package-local browser module.
 Native targets select `forgeax-native` and call `initializeNativeRapier2D(host)`

@@ -62,12 +62,12 @@ const fixtures = vi.hoisted(() => {
     gpu: 'hardware' as const,
   };
   const page = {
-    waitForFunction: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async () => ({ jsonValue: async () => true, dispose: async () => {} })),
     evaluate: vi.fn(async (): Promise<unknown> => undefined),
     bringToFront: vi.fn(async () => undefined),
   };
   const frame = {
-    waitForFunction: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async () => ({ jsonValue: async () => true, dispose: async () => {} })),
     evaluate: vi.fn(async () => '9'),
     waitForTimeout: vi.fn(async () => undefined),
   };
@@ -586,8 +586,8 @@ it('recovers cached run observation after its existing App bridge reconnects', a
   let allowFirstFrame: () => void = () => {};
   fixtures.frame.waitForFunction.mockImplementation(
     () =>
-      new Promise<undefined>((resolve) => {
-        allowFirstFrame = () => resolve(undefined);
+      new Promise<{ jsonValue(): Promise<boolean>; dispose(): Promise<void> }>((resolve) => {
+        allowFirstFrame = () => resolve({ jsonValue: async () => true, dispose: async () => {} });
       }),
   );
   const sessionFile = join(directory, 'session.json');
@@ -668,7 +668,10 @@ it('recovers cached run observation after its existing App bridge reconnects', a
     lifetime.abort();
     await daemon;
     fixtures.session.execution = undefined;
-    fixtures.frame.waitForFunction.mockImplementation(async () => undefined);
+    fixtures.frame.waitForFunction.mockImplementation(async () => ({
+      jsonValue: async () => true,
+      dispose: async () => {},
+    }));
     delete (fixtures.page as typeof fixtures.page & { on?: unknown }).on;
     if (previous === undefined) delete process.env.FORGEAX_RUNS_DIR;
     else process.env.FORGEAX_RUNS_DIR = previous;

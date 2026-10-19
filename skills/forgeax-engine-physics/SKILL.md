@@ -38,27 +38,60 @@ Physics consumes resolved world TRS, so child colliders follow parent translatio
 
 ## Kinematic characters: moveAndSlide
 
-Character movement is explicitly driven each frame with `PhysicsWorld.moveAndSlide(entity, desiredDelta)`, using `Vec3` in 3D and `Vec2` in 2D. Attach kinematic `RigidBody`, `Collider`, and `CharacterController`; combine input, gravity, and jump into `desiredDelta`. The method resolves collisions, slopes, autostep, and ground snapping; writes resolved position to `Transform` and contacts to `CharacterController.grounded`; returns actual displacement. There are no options or `dt` argument because displacement already includes time. Parameters are reread from components every frame (D-7 full reset).
+Character movement is explicitly driven once per fixed tick with `PhysicsWorld.moveAndSlide(entity, desiredDelta)`, using `Vec3` in 3D and `Vec2` in 2D. Attach kinematic `RigidBody`, `Collider`, and `CharacterController`; combine input, gravity, and jump into `desiredDelta`. The method resolves collisions, slopes, autostep, and ground snapping; writes resolved position to `Transform` and contacts to `CharacterController.grounded`; returns actual displacement. There are no options or `dt` argument because displacement already includes time. Parameters are reread from components every frame (D-7 full reset).
 
 ```ts
-import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
+import { FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, type PhysicsWorld } from '@forgeax/engine-physics';
+import { Transform } from '@forgeax/engine-scene';
 
 const char = world.spawn(
-  { component: Transform, data: { pos: [0, 0.45, 0] } }, // Rest height: ground top + radius + halfHeight.
+  { component: Transform, data: { pos: [0, 0.81, 0] } }, // Rest height: ground top + radius + halfHeight + offset.
   { component: RigidBody, data: { type: RigidBodyTypeValue.kinematic } },
   { component: Collider, data: { shape: ColliderShapeValue.capsule, radius: 0.3, halfHeight: 0.5 } },
   { component: CharacterController, data: {} },
 ).unwrap();
 
-app.registerUpdate(() => {
-  const pw = world.getResource('PhysicsWorld'); // Catch and return early until WASM is ready.
-  if (!pw.hasBody(char)) return;              // Async body creation may not have completed.
-  pw.moveAndSlide(char, [dx, dy, dz]); // Writes Transform and grounded.
-});
+let verticalVelocity = 0;
+world.addSystem(FixedUpdate, {
+  name: 'move-character',
+  after: ['physicsSyncBackend'],
+  before: ['physicsStepSimulation'],
+  queries: [],
+  fn() {
+    if (!world.hasResource('PhysicsWorld')) return;
+    const pw = world.getResource<PhysicsWorld>('PhysicsWorld');
+    if (!pw.hasBody(char)) return;
+    const dt = world.getResource(FixedTime).delta;
+    if (world.get(char, CharacterController).unwrap().grounded) verticalVelocity = 0;
+    verticalVelocity -= 9.81 * dt;
+    pw.moveAndSlide(char, [0, verticalVelocity * dt, 0]); // Add input displacement once.
+  },
+}).unwrap();
 ```
 
 > [!CAUTION]
 > Common pitfalls: compare boolean `grounded` with `=== true`, never `!== 0` (always true). Spawn capsules at rest height (ground top + radius + halfHeight); embedding them in ground degenerates KCC contact. Check trajectory Y for continuous-slope snapping rather than relying on `computedGrounded()`. Guard asynchronous initialization with `if (!pw.hasBody(entity)) return;`, not by catching `body-not-found`. `physicsSyncBackend` skips kinematic mirroring for CharacterController archetypes to avoid double writes. Demo: `apps/hello/character`.
+
+## Moving supports and dynamic pushes
+
+Keep platform motion, contact queries and the character solve on the same fixed
+timeline. Author platform Transform before physics sync; resolve the character
+after sync and before step. Rapier KCC already accounts for contacted moving supports. Do not add platform
+displacement again to `desiredDelta`: this duplicates the native carry and causes
+relative drift. Pass input plus integrated gravity once per fixed tick. Do not copy
+an interpolated render/camera pose into Physics or add a second post-solve
+Transform translation. Clear support identity on jump, lost contact or
+entity removal; reversal must not replay a stale delta. Scene's presentation
+sampler supplies the matching camera/render pose.
+
+Rapier controllers apply native dynamic-body contact impulses during movement.
+Verify actual crate displacement and remove generic game-side contact-push
+workarounds when adopting this backend. Explicit game forces such as knockback can use the public
+impulse route; never translate a dynamic body's Transform each frame. Keep the
+selected material/color and body mass in the acceptance fixture. Test sustained
+standing, reversal, edge departure, jump and support deletion in the real game,
+not only controller arithmetic.
 
 ## Three-phase tick order
 

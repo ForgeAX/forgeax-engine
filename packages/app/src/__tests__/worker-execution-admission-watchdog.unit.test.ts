@@ -2,7 +2,11 @@ import type { DisplayFacts, PlatformEvent } from '@forgeax/engine-platform';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionDiagnosticEvent } from '../execution/diagnostic-events';
-import type { EngineToHostMessage, ExecutionFrameMessage } from '../execution/protocol';
+import type {
+  EngineToHostMessage,
+  ExecutionFrameCompletion,
+  ExecutionFrameMessage,
+} from '../execution/protocol';
 import { FrameCreditLedger } from '../execution/protocol';
 import { workerSelection } from './execution-fixtures';
 
@@ -167,6 +171,7 @@ async function createRunningApp(
   tier: 'engine-worker' | 'render-worker' = 'engine-worker',
   renderPipelineCapacity: 2 | 3 | 4 = 2,
   syncCanvas?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['syncCanvas'],
+  startupTimeoutMs: number | null = 2_000,
 ) {
   const { callbacks, raf } = makeRaf();
   vi.stubGlobal('requestAnimationFrame', raf);
@@ -177,6 +182,7 @@ async function createRunningApp(
     appOptions: {
       execution: {
         bootstrap: 'https://example.test/game.js',
+        startupTimeoutMs,
         diagnostics: { renderPipelineCapacity },
       },
     } as never,
@@ -209,7 +215,7 @@ function frames(): ExecutionFrameMessage[] {
     .filter((message) => message.kind === 'frame');
 }
 
-function completeMessage(frame: ExecutionFrameMessage): EngineToHostMessage {
+function completeMessage(frame: ExecutionFrameMessage): ExecutionFrameCompletion {
   return {
     kind: 'frame-complete',
     worldIdentity: frame.worldIdentity,
@@ -239,6 +245,61 @@ describe('Worker frame admission watchdog', () => {
       safeArea: { x: 0, y: 0, width: 800, height: 600 },
     };
     probes.sessionDispose.mockResolvedValue(ok(undefined));
+  });
+
+  it.each([
+    'engine-worker',
+    'render-worker',
+  ] as const)('uses the startup budget for the first %s frame, then retains the steady deadline', async (tier) => {
+    const { app, callbacks, frame } = await createRunningApp(tier, 2, undefined, 10_000);
+    try {
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(app.lastError).toBeUndefined();
+      listener()({
+        ...completeMessage(frame),
+        kind: tier === 'render-worker' ? 'simulation-complete' : 'frame-complete',
+      });
+      callbacks.at(-1)?.(16);
+      expect(app.execution.report().frame).toMatchObject({ completed: 1, inFlight: 1 });
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('still bounds a first frame that never completes by the configured startup budget', async () => {
+    const { app } = await createRunningApp('engine-worker', 2, undefined, 1_000);
+    try {
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 1_000 },
+      });
+      expect(probes.sessionDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('honors an unbounded startup without disabling the subsequent frame deadline', async () => {
+    const { app, callbacks, frame } = await createRunningApp('engine-worker', 2, undefined, null);
+    try {
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(app.lastError).toBeUndefined();
+      listener()(completeMessage(frame));
+      callbacks.at(-1)?.(16);
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
   });
 
   it('uses native display notifications for subsequent admissions and retires them with the host', async () => {

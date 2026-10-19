@@ -128,7 +128,21 @@ function errorResult(error: unknown, command?: string): UnifiedCliResult {
       readonly code?: unknown;
       readonly detail?: unknown;
       readonly message?: unknown;
+      readonly expected?: unknown;
+      readonly hint?: unknown;
     };
+    if (candidate.code === 'operation-history-write-failed') {
+      return {
+        ok: false,
+        ...(command === undefined ? {} : { command }),
+        error: {
+          code: candidate.code,
+          expected: String(candidate.expected),
+          hint: String(candidate.hint),
+          detail: candidate.detail,
+        },
+      };
+    }
     if (typeof candidate.code === 'string' && candidate.code.startsWith('tool-command-')) {
       return {
         ok: false,

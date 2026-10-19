@@ -40,7 +40,9 @@
 //   #13 quat.fromUnitVectors(v, v)                 → out = identity
 
 import { EPS_NORMALIZE, EPS_QUAT_PARALLEL, EPS_SLERP_DOT_LIMIT } from './_internal/epsilon';
+import { rotationToQuat } from './_internal/rotation';
 import { lengthSq4, normalize4 } from './_internal/scalar';
+import * as mat4 from './mat4';
 import type { EulerOrder, Mat3Like, Quat, QuatLike, Vec3, Vec3Like } from './types';
 
 export type { Quat, QuatLike };
@@ -209,40 +211,7 @@ export function fromRotationMatrix(out: Quat, m: Mat3Like): Quat {
   const m21 = m[7] as number;
   const m22 = m[8] as number;
 
-  // m is column-major: m[col*3+row] → m00 is col=0,row=0; m01 is col=0,row=1.
-  // Rotation matrix R[row][col]:
-  //   R[0][0]=m00, R[1][0]=m01, R[2][0]=m02
-  //   R[0][1]=m10, R[1][1]=m11, R[2][1]=m12
-  //   R[0][2]=m20, R[1][2]=m21, R[2][2]=m22
-  // Shepperd's formulas use R[i][j]; here the column-major indices are equivalent:
-  //   trace = R[0][0]+R[1][1]+R[2][2] = m00+m11+m22
-  const trace = m00 + m11 + m22;
-  if (trace > 0) {
-    const s = 0.5 / Math.sqrt(trace + 1);
-    out[0] = (m12 - m21) * s; // (R[2][1] - R[1][2])
-    out[1] = (m20 - m02) * s; // (R[0][2] - R[2][0])
-    out[2] = (m01 - m10) * s; // (R[1][0] - R[0][1])
-    out[3] = 0.25 / s;
-  } else if (m00 > m11 && m00 > m22) {
-    const s = 2 * Math.sqrt(1 + m00 - m11 - m22);
-    out[0] = 0.25 * s;
-    out[1] = (m10 + m01) / s;
-    out[2] = (m20 + m02) / s;
-    out[3] = (m12 - m21) / s;
-  } else if (m11 > m22) {
-    const s = 2 * Math.sqrt(1 + m11 - m00 - m22);
-    out[0] = (m10 + m01) / s;
-    out[1] = 0.25 * s;
-    out[2] = (m21 + m12) / s;
-    out[3] = (m20 - m02) / s;
-  } else {
-    const s = 2 * Math.sqrt(1 + m22 - m00 - m11);
-    out[0] = (m20 + m02) / s;
-    out[1] = (m21 + m12) / s;
-    out[2] = 0.25 * s;
-    out[3] = (m01 - m10) / s;
-  }
-  return out;
+  return rotationToQuat(out, m00, m01, m02, m10, m11, m12, m20, m21, m22);
 }
 
 /**
@@ -255,8 +224,9 @@ export function fromRotationMatrix(out: Quat, m: Mat3Like): Quat {
  * wrong (notably `fromRotationMatrix` takes a mat3, but `Mat4Like`≡`Mat3Like`≡`ArrayLike<number>`,
  * so passing a mat4 typechecks and silently reads garbage → NaN → nothing renders).
  *
- * Convenience composition (like `mat4.computeViewProj`), not a primitive: it builds the same
- * right/newUp/forward basis as `mat4.lookAt` and reuses `fromRotationMatrix` for the extraction.
+ * Convenience composition (like `mat4.computeViewProj`), not a primitive: it uses `mat4.lookAt`
+ * and extracts its transposed rotation with the shared quaternion kernel. One
+ * temporary 16-float matrix is allocated per call; inputs and output may alias.
  *
  * @degrade eye ≈ target (|eye-target| < EPS_NORMALIZE) → out = identity (same convention as
  *          `mat4.lookAt` degenerate #4; no throw, AC-06).
@@ -271,72 +241,21 @@ export function fromRotationMatrix(out: Quat, m: Mat3Like): Quat {
  * ```
  */
 export function fromLookAt(out: Quat, eye: Vec3Like, target: Vec3Like, up: Vec3Like): Quat {
-  const ex = eye[0] as number;
-  const ey = eye[1] as number;
-  const ez = eye[2] as number;
-
-  // forward = normalize(eye - target): the object's local -z points at the target, so +z = eye - target
-  // (right-handed camera convention, identical to mat4.lookAt).
-  let fx = ex - (target[0] as number);
-  let fy = ey - (target[1] as number);
-  let fz = ez - (target[2] as number);
-  const fLenSq = fx * fx + fy * fy + fz * fz;
-  if (fLenSq < EPS_NORMALIZE) {
-    return identity(out);
-  }
-  const fInv = 1 / Math.sqrt(fLenSq);
-  fx *= fInv;
-  fy *= fInv;
-  fz *= fInv;
-
-  const upx = up[0] as number;
-  const upy = up[1] as number;
-  const upz = up[2] as number;
-
-  // right = normalize(cross(up, forward)); degrade path mirrors mat4.lookAt (#5 alternative up).
-  let rx = upy * fz - upz * fy;
-  let ry = upz * fx - upx * fz;
-  let rz = upx * fy - upy * fx;
-  let rLenSq = rx * rx + ry * ry + rz * rz;
-  if (rLenSq < EPS_NORMALIZE) {
-    // up collinear with forward: pick alternative up = (0, 0, 1); if still collinear pick (0, 1, 0)
-    rx = -fy;
-    ry = fx;
-    rz = 0;
-    rLenSq = rx * rx + ry * ry + rz * rz;
-    if (rLenSq < EPS_NORMALIZE) {
-      rx = 0;
-      ry = -fz;
-      rz = fy;
-      rLenSq = rx * rx + ry * ry + rz * rz;
-    }
-  }
-  const rInv = 1 / Math.sqrt(rLenSq);
-  rx *= rInv;
-  ry *= rInv;
-  rz *= rInv;
-
-  // newUp = cross(forward, right)
-  const ux = fy * rz - fz * ry;
-  const uy = fz * rx - fx * rz;
-  const uz = fx * ry - fy * rx;
-
-  // World rotation columns are the basis vectors themselves (col0=right, col1=up, col2=forward) —
-  // this is the transpose of mat4.lookAt's view rotation, i.e. the camera's world orientation.
-  // Pack column-major into a length-9 mat3 for fromRotationMatrix (SSOT for the Shepperd extraction).
-  // Per-call alloc mirrors mat4.computeViewProj's convenience-composition grain (camera orientation
-  // is set rarely; no module-scoped mutable state to reason about).
-  const m3 = new Float32Array(9);
-  m3[0] = rx;
-  m3[1] = ry;
-  m3[2] = rz;
-  m3[3] = ux;
-  m3[4] = uy;
-  m3[5] = uz;
-  m3[6] = fx;
-  m3[7] = fy;
-  m3[8] = fz;
-  return fromRotationMatrix(out, m3);
+  const view = mat4.lookAt(mat4.create(), eye, target, up);
+  // The world rotation is the transpose of the view rotation. Both entry
+  // points consume the same f32 basis and the same degenerate look-at policy.
+  return rotationToQuat(
+    out,
+    view[0] as number,
+    view[4] as number,
+    view[8] as number,
+    view[1] as number,
+    view[5] as number,
+    view[9] as number,
+    view[2] as number,
+    view[6] as number,
+    view[10] as number,
+  );
 }
 
 /**

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { readFile, writeFile } from 'node:fs/promises';
 import { create as createDawn, globals as dawnGlobals } from '@forgeax/engine-dawn-node';
 import { PNG } from 'pngjs';
@@ -9,7 +10,7 @@ import {
 } from '@forgeax/engine-rhi-null';
 import { createShaderModule, disposeDevice, rhi as webgpuRhi } from '@forgeax/engine-rhi-webgpu';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const [artifactPath, livePngPath] = process.argv.slice(2);
 if (artifactPath === undefined) {
@@ -111,7 +112,7 @@ try {
         : totalDelta / (dawnReadback.bytes.length / 4);
     await writeFile(
       `${livePngPath}.dawn.png`,
-      writeReferencePng(dawnReadback.bytes, dawnReadback.width, dawnReadback.height),
+      encodePng(dawnReadback.width, dawnReadback.height, dawnReadback.bytes),
     );
     if (livePixelDelta > 0.1) {
       throw new Error(`Dawn/live pixel delta too large: ${livePixelDelta.toFixed(5)} > 0.1`);

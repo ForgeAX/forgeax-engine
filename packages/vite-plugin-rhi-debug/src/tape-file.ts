@@ -13,7 +13,7 @@ import {
 
 const READ_WINDOW = 16 * 1024 * 1024;
 
-export type TapeFileResult =
+type TapeFileResult =
   | { readonly ok: true; readonly digest: string; readonly bytes: number }
   | { readonly ok: false; readonly hint: string };
 

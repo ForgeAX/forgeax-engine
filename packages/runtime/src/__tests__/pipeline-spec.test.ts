@@ -577,8 +577,8 @@ describe('passKindPolicyTable (M4-T1)', () => {
       'point-shadow-caster',
       'skybox',
       'tonemap',
-      'bloom-downsample',
-      'bloom-upsample',
+      'bloom-horizontal',
+      'bloom-vertical',
       'bloom-composite',
       'fxaa',
       'post-process',
@@ -599,8 +599,8 @@ describe('passKindPolicyTable (M4-T1)', () => {
     for (const k of [
       'skybox',
       'tonemap',
-      'bloom-downsample',
-      'bloom-upsample',
+      'bloom-horizontal',
+      'bloom-vertical',
       'bloom-composite',
       'fxaa',
       'post-process',
@@ -748,11 +748,11 @@ describe('buildBeginRenderPassDescriptor (M4-T1)', () => {
     });
   });
 
-  it('Case 6: bloom-downsample (color-only HDR intermediate, clear black)', () => {
+  it('Case 6: bloom-horizontal (color-only HDR intermediate, clear black)', () => {
     const desc = buildBeginRenderPassDescriptor(
       { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
       { colorViews: [colorView] },
-      'bloom-downsample',
+      'bloom-horizontal',
     );
     expect(desc).toEqual({
       colorAttachments: [
@@ -766,11 +766,11 @@ describe('buildBeginRenderPassDescriptor (M4-T1)', () => {
     });
   });
 
-  it('Case 7: bloom-upsample (color-only, same shape as bloom-downsample)', () => {
+  it('Case 7: bloom-vertical (color-only, same shape as bloom-horizontal)', () => {
     const desc = buildBeginRenderPassDescriptor(
       { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
       { colorViews: [colorView] },
-      'bloom-upsample',
+      'bloom-vertical',
     );
     expect(desc.colorAttachments).toEqual([
       {

@@ -12,6 +12,7 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: stub RHI mock objects at test boundary
 // biome-ignore-all lint/style/noNonNullAssertion: test assertions on mock stubs guarded by expect
 
+import { createShaderModule } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import type { RhiDebugError } from '../errors';
 import { type DebugRhiInstance, wrap } from '../recorder';
@@ -152,7 +153,7 @@ async function bootstrapWithRealDevice(): Promise<{
   realDevice: any;
 }> {
   const { inst } = buildMockInstanceWithRealDevice();
-  const debugInst = wrap(inst);
+  const debugInst = wrap(inst, createShaderModule);
   const adapterRes = await debugInst.requestAdapter();
   if (!adapterRes.ok) throw new Error('adapter');
   const adapter = (adapterRes as any).value;

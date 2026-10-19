@@ -714,8 +714,8 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     try {
       world
         .set(camera, Camera, {
+          // Omitted strength must apply the LUT at full strength.
           colorLut: lutHandle,
-          colorLutStrength: 1,
         })
         .unwrap();
     } catch (cause) {

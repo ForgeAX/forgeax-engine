@@ -1,5 +1,6 @@
 import {
   DeepSeekHarness,
+  type DeepSeekHarnessOptions,
   type HarnessClientOptions,
   type HarnessNotification,
 } from '@deepseek-ai/dsh-sdk-client';
@@ -13,38 +14,23 @@ import type {
 import { IntelligenceError as IntelligenceErrorValue } from '@forgeax/engine-intelligence';
 import { err, ok, type Result } from '@forgeax/engine-types';
 
-export interface DshLaunchOptions {
-  readonly command: string;
+export interface DshLaunchOptions extends Readonly<Omit<HarnessClientOptions, 'args' | 'env'>> {
   readonly args?: readonly string[];
-  readonly cwd?: string;
-  readonly env?: Readonly<Record<string, string | undefined>>;
-  readonly requestTimeoutMs?: number;
-  readonly shutdownTimeoutMs?: number;
-  readonly disposeEofGraceMs?: number;
-  readonly disposeGraceMs?: number;
+  readonly env?: Readonly<NonNullable<HarnessClientOptions['env']>>;
 }
 
-export interface DshIntelligenceProviderOptions {
+export interface DshHarnessOptions extends Readonly<Omit<DeepSeekHarnessOptions, 'launch'>> {
   readonly launch: DshLaunchOptions;
-  readonly cwd?: string;
-  readonly provider?: string;
-  readonly model?: string;
-  readonly maxTokens?: number;
+}
+
+export interface DshIntelligenceProviderOptions extends DshHarnessOptions {
   /** Test/integration seam; production uses the pinned SDK client. */
   readonly createHarness?: (options: DshHarnessOptions) => DshHarness;
 }
 
-export interface DshHarnessOptions {
-  readonly launch: DshLaunchOptions;
-  readonly cwd?: string;
-  readonly provider?: string;
-  readonly model?: string;
-  readonly maxTokens?: number;
-}
-
-export interface DshRunResult {
-  readonly finalResponse: string;
-}
+export type DshRunResult = Readonly<
+  Pick<Awaited<ReturnType<DeepSeekHarness['run']>>, 'finalResponse'>
+>;
 
 export interface DshHarness {
   run(
@@ -57,10 +43,7 @@ export interface DshHarness {
   close(): Promise<void>;
 }
 
-export interface DshNotification {
-  readonly method: string;
-  readonly params: Record<string, unknown>;
-}
+export type DshNotification = Readonly<HarnessNotification>;
 
 interface DshActivity {
   readonly harness: DshHarness;
@@ -101,30 +84,14 @@ function textDelta(notification: DshNotification): string | undefined {
 }
 
 function defaultHarness(options: DshHarnessOptions): DshHarness {
-  const launch = {
-    command: options.launch.command,
-    ...(options.launch.args === undefined ? {} : { args: [...options.launch.args] }),
-    ...(options.launch.env === undefined ? {} : { env: { ...options.launch.env } }),
-    ...(options.launch.cwd === undefined ? {} : { cwd: options.launch.cwd }),
-    ...(options.launch.requestTimeoutMs === undefined
-      ? {}
-      : { requestTimeoutMs: options.launch.requestTimeoutMs }),
-    ...(options.launch.shutdownTimeoutMs === undefined
-      ? {}
-      : { shutdownTimeoutMs: options.launch.shutdownTimeoutMs }),
-    ...(options.launch.disposeEofGraceMs === undefined
-      ? {}
-      : { disposeEofGraceMs: options.launch.disposeEofGraceMs }),
-    ...(options.launch.disposeGraceMs === undefined
-      ? {}
-      : { disposeGraceMs: options.launch.disposeGraceMs }),
-  } satisfies HarnessClientOptions;
+  const { args, env, ...launch } = options.launch;
   return new DeepSeekHarness({
-    launch,
-    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    ...(options.provider === undefined ? {} : { provider: options.provider }),
-    ...(options.model === undefined ? {} : { model: options.model }),
-    ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+    ...options,
+    launch: {
+      ...launch,
+      ...(args === undefined ? {} : { args: [...args] }),
+      ...(env === undefined ? {} : { env: { ...env } }),
+    },
   });
 }
 

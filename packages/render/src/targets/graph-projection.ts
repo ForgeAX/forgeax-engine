@@ -13,6 +13,7 @@ import {
   type RenderTarget,
   type RenderTargetDescriptor,
   renderTargetLayerCount,
+  renderTargetMipCount,
 } from './contracts';
 
 export interface RenderTargetGraphInput {
@@ -54,11 +55,6 @@ function operationFailed(generation: number, cause: unknown): RenderResult<never
   };
 }
 
-function mipCount(descriptor: RenderTargetDescriptor): number {
-  if (descriptor.mipLevels === 1) return 1;
-  return Math.floor(Math.log2(Math.max(descriptor.width, descriptor.height))) + 1;
-}
-
 function viewDescriptor(
   descriptor: RenderTargetDescriptor,
   subresource: RenderTargetGraphSubresource,
@@ -79,7 +75,7 @@ function validateSubresource(
   subresource: RenderTargetGraphSubresource,
 ): RenderResult<void, RenderError> {
   const mipLevel = subresource.mipLevel ?? 0;
-  if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= mipCount(descriptor)) {
+  if (!Number.isInteger(mipLevel) || mipLevel < 0 || mipLevel >= renderTargetMipCount(descriptor)) {
     return {
       ok: false,
       error: new RenderTargetStateInvalidError({
@@ -133,7 +129,7 @@ export function projectRenderTargetGraph<FrameCtx extends RenderGraphFrame>(
         height: input.descriptor.height,
         depthOrArrayLayers: renderTargetLayerCount(input.descriptor),
       },
-      mipLevelCount: mipCount(input.descriptor),
+      mipLevelCount: renderTargetMipCount(input.descriptor),
       sampleCount: input.descriptor.sampleCount,
       dimension: input.descriptor.shape === '3d' ? '3d' : '2d',
       usage: 0x10 | 0x04 | (input.descriptor.readback ? 0x01 : 0),

@@ -47,7 +47,6 @@ export {
   type DisplayOptions,
   decodeImage,
   depthImage,
-  encodePng,
   extractTile,
   type FloatImage,
   type ImageLayout,
@@ -66,12 +65,15 @@ export {
   readTapePreamble,
   TAPE_PREAMBLE_BYTES,
 } from './protocol/codec';
-export type { EventCategory, EventSemantics } from './protocol/event-semantics';
+export type { EventCategory } from './protocol/event-semantics';
 export {
-  EVENT_SEMANTICS,
+  categoryFor,
+  createdHandles,
   eventKinds,
+  handleAccess,
   isWorkEvent,
   resourceKindForEvent,
+  retiredHandles,
   workEventKinds,
 } from './protocol/event-semantics';
 export type {
@@ -96,6 +98,13 @@ export {
   TAPE_FORMAT_VERSION as V7_TAPE_FORMAT_VERSION,
   TAPE_MAGIC,
 } from './protocol/types';
+export {
+  CHUNK_DIGEST_HEADER,
+  RAW_TAPE_ROUTE,
+  type RawTapeArtifactRef,
+  RHITAPE_MIME,
+  type TapeChunk,
+} from './protocol/upload';
 export { readbackTexturePixels } from './readback';
 export {
   attachRecorder,
@@ -129,7 +138,7 @@ export {
   type WorkOutputRead,
   workOutputs,
 } from './replay/session';
-export { decodeTexelRaw, decodeToRgba8, halfToFloat } from './texel-decode';
+export { decodeTexelRaw, decodeToRgba8 } from './texel-decode';
 export {
   bytesPerTexel,
   type ChannelType,

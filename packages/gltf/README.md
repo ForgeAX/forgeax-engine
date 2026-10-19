@@ -122,9 +122,14 @@ if (!parsed.ok) {
 }
 ```
 
-The complete closed error/detail union remains owned by
+The glTF error/detail union remains owned by
 [`src/errors.ts`](src/errors.ts); `detail.semantic` and
 `detail.accessorIndex` identify a failing `COLOR_0` accessor.
+The public JSON, GLB and Node file parsers return `GltfParseError`
+(`GltfError | ImportError`). Importer and CLI use those same parsers.
+Malformed buffer data URIs retain `source-validation-failed` and their
+source/index diagnostics on every entry; malformed headers retain
+`gltf-malformed-header`.
 
 ### MaterialIr (standard PBR)
 
@@ -432,3 +437,12 @@ records size/timing data under `artifacts/raytracing/mesh-distance-field/`.
 `KHR_materials_unlit` publishes the ordinary built-in Unlit material program and its own parameter schema. It retains base color/texture, alpha mode/cutoff and double-sided coverage, with no Deferred PBR pass or irrelevant lighting-texture dependencies. `KHR_materials_emissive_strength` multiplies the authored emissive color and texture; its finite nonnegative strength is validated. Both values pass through normal Material Cook, Catalog and runtime loading.
 
 The parity application verifies real source admission, Cook, loaded scene projection, non-key cubic poses, image values and RHI Debug replay. See [mesh-io acceptance](../mesh-io/README.md#implementation-and-acceptance). No extension acceptance alone establishes pixel fidelity.
+
+Importer skeleton and animation outputs derive from the shared Types POD contracts.
+Source node indices remain format-specific; skeleton GUIDs are assigned from sub-asset
+metadata when publishing, never from a provisional identifier in the parsed skin.
+
+Accessor component storage and scalar/vector/matrix shapes live in one layout owner.
+The ordinary decoder derives byte widths from those constructors; Draco uses the
+same constructors and vector dimensions for native extraction and output admission.
+Matrix padding and normalized conversion remain with the ordinary accessor decoder.

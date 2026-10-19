@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
   type AuthenticatedLoopbackTransport,
@@ -104,19 +105,7 @@ export async function createAuthenticatedLoopbackService(
       reply(response, 400, { error: message });
     }
   });
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error) => {
-      server.off('listening', onListening);
-      reject(error);
-    };
-    const onListening = () => {
-      server.off('error', onError);
-      resolve();
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(0, host);
-  });
+  await once(server.listen(0, host), 'listening');
   const address = server.address();
   if (address === null || typeof address === 'string') {
     await new Promise<void>((resolve) => server.close(() => resolve()));

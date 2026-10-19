@@ -17,11 +17,15 @@ import type { PluginServerContext, PluginServerLike, PluginServerState } from '.
 import type { ProductionBridge } from './production-bridge.js';
 import { createProductionRouteBridge } from './production-bridge.js';
 import {
+  classifyWatchedPath,
+  createRevisionObserver,
+  type WatchBatch,
+} from './revision-observer.js';
+import {
   catalogDiagnosticForSourcePackageError,
   createTransportRouteHandler,
   projectSourcePackageFailure,
 } from './transport-routes.js';
-import { classifyWatchedPath, type WatchBatch, watchDevRoots } from './watcher.js';
 
 export interface PluginServerLifecycleState {
   roots: string[];
@@ -543,7 +547,7 @@ export function createConfigureServer(input: ConfigureServerInput) {
     const watchLifecycle =
       opts.watch === false
         ? undefined
-        : watchDevRoots({
+        : createRevisionObserver({
             roots: lifecycle.roots,
             onBatch: (batch) => {
               return activeDevSession.track(
@@ -584,15 +588,7 @@ export function createConfigureServer(input: ConfigureServerInput) {
               });
             },
           });
-    // Keep the async close owner on the lifecycle state. The callable handle
-    // remains available to legacy direct watcher users, but plugin close and
-    // rebind must await the underlying resource fence.
-    lifecycle.stopWatcher =
-      typeof watchLifecycle?.stop === 'function'
-        ? watchLifecycle.stop
-        : async () => {
-            watchLifecycle?.();
-          };
+    lifecycle.stopWatcher = watchLifecycle?.close ?? (async () => {});
     const startup = activeDevSession.start().then((value) => {
       timing('dev-session-started');
       return value;
@@ -616,7 +612,7 @@ export function createConfigureServer(input: ConfigureServerInput) {
       // drain owns the fresh stat snapshot and its publication fence, including
       // writes racing an earlier crawl. Preceding it with reconcile walks the
       // entire source closure twice for every Catalog or asset request.
-      await watchLifecycle?.drain?.();
+      await watchLifecycle?.drain();
       await activeDevSession.waitForRebuild();
     };
     const routeCallbacks = createProductionRouteBridge({

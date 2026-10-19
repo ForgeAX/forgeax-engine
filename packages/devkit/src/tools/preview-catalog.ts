@@ -1,4 +1,4 @@
-import { bindPreviewHost, type NativePreviewHost } from '@forgeax/engine-preview';
+import { bindPreviewHost, type PreviewHost } from '@forgeax/engine-preview';
 import materialPreviewPlugin, { materialPreview } from '@forgeax/engine-preview/material';
 import meshPreviewPlugin, { meshPreview } from '@forgeax/engine-preview/mesh';
 import texturePreviewPlugin, { texturePreview } from '@forgeax/engine-preview/texture';
@@ -17,7 +17,7 @@ export const nativePreviewTools = nativePreviewPlugins.map(
 export const nativePreviewDescriptors: readonly ToolDescriptor[] = nativePreviewTools.map(
   ({ descriptor }) => descriptor,
 );
-export function createNativePreviewPlugin(host: NativePreviewHost, name: string) {
+export function createNativePreviewPlugin(host: PreviewHost, name: string) {
   const selected = nativePreviewPlugins.find(([candidate]) => candidate === name);
   if (!selected) throw new TypeError(`unknown preview plugin ${name}`);
   return bindPreviewHost(selected[1], host);

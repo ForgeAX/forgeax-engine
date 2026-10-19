@@ -184,7 +184,7 @@ async function readCatalogRows(binding: RuntimeAssetBinding): Promise<readonly C
   // Enumeration retains degraded rows for the existing diagnostic/recovery path.
   const rows =
     raw !== null && typeof raw === 'object' && !Array.isArray(raw) &&
-    (raw as { schemaVersion?: unknown }).schemaVersion !== 'pack-index-publications/1'
+    (raw as { schemaVersion?: unknown }).schemaVersion !== 'pack-index-tables/1'
       ? (raw as { entries?: unknown }).entries
       : raw;
   return decodeCatalogWire(rows).unwrap();
@@ -273,7 +273,7 @@ function populateSceneFromBlob(world: World, blob: ReelGameBlob): void {
   world
     .spawn({
       component: DirectionalLight,
-      data: {
+      data: { castShadow: true,
         direction: [-0.5, -1, -0.3],
         color: [1, 1, 1],
         intensity: 1,

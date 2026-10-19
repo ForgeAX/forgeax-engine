@@ -188,6 +188,11 @@ import {
   LoadGameError,
 } from './load-game-errors';
 
+export type {
+  TextureViewControl,
+  TextureViewInfo,
+  TextureViewOptions,
+} from '@forgeax/engine-preview';
 export {
   createRhiCapture,
   createRhiInstrumentation,
@@ -209,6 +214,7 @@ export {
   type RuntimePackAssembly,
   type RuntimePackOptions,
 } from './runtime-packs.js';
+export { createTextureWorkspacePreview } from './texture-preview';
 export {
   createToolPreviewHost,
   replayToolPreviewCapture,

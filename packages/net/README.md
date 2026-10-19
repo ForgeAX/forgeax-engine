@@ -277,6 +277,12 @@ set. Hardware timings are diagnostic evidence, not a portable CI threshold.
 Expected failures are `Result` values with `.code`, `.expected`, `.hint`, and
 code-narrowed `.detail`. Branch on the code; do not parse error messages.
 
+Construct transport failures with `new EndpointError({ code, detail })`. The Net
+owner supplies `.expected`, `.hint`, and the message from the closed code policy;
+all memory, WebSocket, and WeChat adapters use that same policy. The former
+`ENDPOINT_EXPECTED` and `ENDPOINT_ERROR_HINTS` exports are removed. Keep contextual
+facts in the code-specific detail; session `NetError` diagnostics remain contextual.
+
 | Code | Meaning | Next action |
 |:--|:--|:--|
 | `protocol-unsupported-version` | The peer sent a version other than `2`. | Align the peer build before sending bytes. |
@@ -357,3 +363,9 @@ terminal failure, connector cancellation, and plugin teardown.
 - Endpoint capability and memory transport: `src/endpoint/`
 - Packet manifest, codec, and structured errors: `src/replication/`
 - Deterministic public consumers: `__tests__/fixtures/`
+
+Encoding and decoding apply the same maximum message size to every protocol-v2
+kind, including session controls, acknowledgments and rejections. Application
+payload and replication-entity budgets share one packet admission path; decoding
+still rejects oversized bytes before parsing. Nested component arrays are walked
+once, preserving their existing string, buffer and element limits.

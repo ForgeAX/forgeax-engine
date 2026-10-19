@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -11,7 +12,6 @@ import {
 import {
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -32,7 +32,7 @@ const delta = (a: readonly number[], b: readonly number[]) =>
 const sampleHdr = (bytes: Uint8Array, bytesPerRow: number, x = 32, y = 32) => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return [0, 1, 2].map((channel) =>
-    halfToFloat(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true)),
+    halfFloat.f16ToF32(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true)),
   );
 };
 

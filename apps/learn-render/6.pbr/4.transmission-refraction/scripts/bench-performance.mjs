@@ -1,4 +1,5 @@
-import { numMipLevels } from '@forgeax/engine-assets-runtime';
+
+import { numMipLevels } from '@forgeax/engine-types';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 

@@ -19,7 +19,7 @@ export const SIZE_CLASSES: readonly number[] = Object.freeze([
 ]);
 
 /** Result envelope for a fresh alloc - id + initial view. */
-export interface BufferAllocResult {
+interface BufferAllocResult {
   /** Stable slot id; archetype columns store this u32 in their `buffer:<N>` field. */
   readonly id: number;
   /** Live Uint8Array view of length `byteLength` (D-5 rounding visible only via `view.buffer.byteLength`). */

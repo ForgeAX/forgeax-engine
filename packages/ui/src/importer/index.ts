@@ -5,13 +5,10 @@ import {
   type ImportResult,
 } from '@forgeax/engine-types';
 import type { UiAsset } from '../asset.js';
-import { classifyUiAuthoring, validateUiAuthoring } from '../authoring/validate.js';
+import { classifyUiAuthoring, validateUiAuthoring } from '../authoring/index.js';
 import { isUiBrowserExtensions, type UiBrowserExtension } from '../browser-extensions.js';
 import { isUiLocalization, type UiLocalization } from '../localization/resources.js';
 import { uiResourceMimeType, uiResourcePath } from '../resources.js';
-
-export { cssAssetUrls, validateCssSource } from './css.js';
-export { htmlAssetUrls, validateHtmlSource } from './html.js';
 
 export interface UiSource {
   readonly browserExtensions?: readonly UiBrowserExtension[];

@@ -110,7 +110,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   );
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.5, -1, -0.3],
       color: [1, 1, 1],
       intensity: 1,

@@ -8,10 +8,10 @@ import {
   deriveVertexLayoutProjectionFromMask,
   packInterleavedVertexAttributes,
   SKIN_VERTEX_ATTRIBUTE_MAP,
-  unpackInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
 import type { VertexAttributeMap } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { unpackInterleavedVertexAttributes } from '../vertex-attribute-layout';
 
 const makeBuffer = (): Float32Array => new Float32Array(0);
 
@@ -54,6 +54,29 @@ describe('vertex attribute layout owner', () => {
     expect(
       unpackInterleavedVertexAttributes(new Float32Array(1), packed.projection),
     ).toBeUndefined();
+  });
+
+  it('transfers owned attribute storage together without sharing bytes with another mesh', () => {
+    const source = {
+      position: new Float32Array([1, 2, 3]),
+      skinIndex: new Uint16Array([65535, 256, 1, 0]),
+      skinWeight: new Float32Array([0.5, 0.25, 0.125, 0.125]),
+    };
+    const packed = packInterleavedVertexAttributes(source, 1).unwrap();
+    const first = unpackInterleavedVertexAttributes(packed.vertices, packed.projection);
+    const second = unpackInterleavedVertexAttributes(packed.vertices, packed.projection);
+    if (first === undefined || second === undefined) throw new Error('Invalid test mesh');
+    const position = first.position as Float32Array;
+    position[0] = 9;
+    expect(first.skinIndex).toEqual(source.skinIndex);
+    expect(first.skinWeight).toEqual(source.skinWeight);
+    expect(second).toEqual(source);
+    const received = structuredClone(first, { transfer: [position.buffer] });
+    expect((first.skinIndex as Uint16Array).byteLength).toBe(0);
+    expect((first.skinWeight as Float32Array).byteLength).toBe(0);
+    expect(received).toEqual({ ...source, position: new Float32Array([9, 2, 3]) });
+    expect(second).toEqual(source);
+    expect(unpackInterleavedVertexAttributes(packed.vertices, packed.projection)).toEqual(source);
   });
 
   it('shares immutable layouts by attribute presence while observing mutable map edits', () => {

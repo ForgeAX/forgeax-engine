@@ -38,6 +38,7 @@ import type {
 } from '../inspection-types';
 import { type InstanceProjectionStore, uniqueInstanceIdentities } from '../instances';
 import { fingerprintNumericArray, InstanceBoundsCache } from '../instances-derived-bounds';
+import { isReflectedTransform } from '../material-render-state';
 import type { PointsLinesInspection } from '../points-lines/inspection';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderPublicationIdentity } from '../publication/contract';
@@ -199,7 +200,7 @@ export interface RenderSceneSubmissionCapture {
     readonly slot: number;
     readonly current: RenderSceneSlot | undefined;
   }[];
-  readonly visible: ReadonlySet<string>;
+  readonly visible: ReadonlyMap<number, number>;
 }
 
 export interface RenderSceneSubmissionDelta {
@@ -448,7 +449,7 @@ export class RenderScene {
   private readonly slotsByAsset = new Map<number, Set<number>>();
   private readonly dirtySinceSubmitted = new Set<number>();
   private temporalTracking = false;
-  private lastSubmittedVisible = new Set<string>();
+  private lastSubmittedVisible = new Map<number, number>();
   private submittedEpoch = 0;
   // Bounds are a derived column of the stable render slot, not metadata of a
   // transient snapshot wrapper. Undefined means dirty; null means that the
@@ -545,6 +546,7 @@ export class RenderScene {
     const updateWorld = (pending: PendingIdentity, source: Float32Array, offset: number): void => {
       const target = pending.current?.transform.world;
       if (target === undefined) return;
+      const reflected = isReflectedTransform(target);
       for (let lane = 0; lane < 16; lane += 1) {
         const value = source[offset + lane] ?? 0;
         if (target[lane] !== value) {
@@ -552,6 +554,8 @@ export class RenderScene {
           pending.transformChanged = true;
         }
       }
+      // Winding changes move this draw to a different raster batch even on a pose-only update.
+      if (reflected !== isReflectedTransform(target)) pending.contentChanged = true;
     };
     for (const operation of preparedOperations) {
       const pending = pendingFor(operation.worldId, operation.entityKey);
@@ -821,7 +825,7 @@ export class RenderScene {
     const submitted = this.lastSubmittedSlots[slot.slot];
     const wasVisible =
       submitted?.generation === slot.generation &&
-      this.lastSubmittedVisible.has(`${slot.slot}:${slot.generation}`);
+      this.lastSubmittedVisible.get(slot.slot) === slot.generation;
     const previousWorld = this.previousWorldBySlot[slot.slot];
     const memo = this.temporalBySlot[slot.slot];
     if (
@@ -849,16 +853,16 @@ export class RenderScene {
   }
 
   wasLastSubmittedVisible(slot: number, generation: number): boolean {
-    return this.lastSubmittedVisible.has(`${slot}:${generation}`);
+    return this.lastSubmittedVisible.get(slot) === generation;
   }
 
   captureSubmission(
     visible: readonly Pick<RenderableSnapshot, 'worldId' | 'entityKey'>[],
   ): RenderSceneSubmissionCapture {
-    const visibleSlots = new Set<string>();
+    const visibleSlots = new Map<number, number>();
     for (const snapshot of visible) {
       const slot = this.lookup(snapshot.worldId, snapshot.entityKey);
-      if (slot !== undefined) visibleSlots.add(`${slot.slot}:${slot.generation}`);
+      if (slot !== undefined) visibleSlots.set(slot.slot, slot.generation);
     }
     return {
       revision: this.revision,
@@ -887,7 +891,7 @@ export class RenderScene {
       }
       this.dirtySinceSubmitted.delete(update.slot);
     }
-    this.lastSubmittedVisible = new Set(capture.visible);
+    this.lastSubmittedVisible = new Map(capture.visible);
     this.submittedEpoch += 1;
     return {
       epoch: this.submittedEpoch,
@@ -1097,7 +1101,7 @@ export class RenderScene {
     const submitted = this.lastSubmittedSlots[slot.slot];
     const sameGeneration = submitted?.generation === slot.generation;
     const wasVisible =
-      sameGeneration && this.lastSubmittedVisible.has(`${slot.slot}:${slot.generation}`);
+      sameGeneration && this.lastSubmittedVisible.get(slot.slot) === slot.generation;
     const reasons: RenderableReactiveReason[] = [];
     if (!sameGeneration) {
       reasons.push(submitted === undefined ? 'new-slot' : 'generation-reuse');
@@ -1506,6 +1510,8 @@ interface PersistentCullMemo {
   readonly shadowOnly: ReadonlySet<number>;
   readonly renderables: RenderableSnapshot[];
   readonly dispatch: DispatchEntry[];
+  /** Private address scratch; published entries themselves stay immutable. */
+  readonly dispatchRemapping: (DispatchEntry | undefined)[];
 }
 
 function sameCullProjection(
@@ -1652,17 +1658,41 @@ function cullPersistentFrame(
   }
 
   const dispatch: DispatchEntry[] = [];
-  for (const entry of frame.dispatch) {
+  const dispatchRemapping = previous?.dispatchRemapping ?? [];
+  dispatchRemapping.length = frame.dispatch.length;
+  for (let index = 0; index < frame.dispatch.length; index += 1) {
+    const entry = frame.dispatch[index];
+    if (entry === undefined) {
+      dispatchRemapping[index] = undefined;
+      continue;
+    }
     const candidateIndex = entry.renderableIndex;
     // Shadow-only candidates must never enter the main forward/transparent
     // dispatch. Their ShadowCaster entries remain available to the depth
     // passes, which consume the same validated ordered list.
-    if (shadowOnly.has(candidateIndex) && entry.tags.LightMode !== 'ShadowCaster') continue;
+    if (shadowOnly.has(candidateIndex) && entry.tags.LightMode !== 'ShadowCaster') {
+      dispatchRemapping[index] = undefined;
+      continue;
+    }
     const renderableIndex = projectedIndex[candidateIndex];
-    if (renderableIndex === undefined || renderableIndex < 0) continue;
-    dispatch.push(
-      renderableIndex === entry.renderableIndex ? entry : { ...entry, renderableIndex },
-    );
+    if (renderableIndex === undefined || renderableIndex < 0) {
+      dispatchRemapping[index] = undefined;
+      continue;
+    }
+    if (renderableIndex === entry.renderableIndex) {
+      dispatchRemapping[index] = undefined;
+      dispatch.push(entry);
+    } else {
+      let mapped = dispatchRemapping[index];
+      if (
+        previous?.sourceDispatch[index] !== entry ||
+        mapped?.renderableIndex !== renderableIndex
+      ) {
+        mapped = { ...entry, renderableIndex };
+        dispatchRemapping[index] = mapped;
+      }
+      dispatch.push(mapped);
+    }
   }
   if (memo !== undefined) {
     memo.value = {
@@ -1672,6 +1702,7 @@ function cullPersistentFrame(
       shadowOnly,
       renderables: visible,
       dispatch,
+      dispatchRemapping,
     };
   }
   return {

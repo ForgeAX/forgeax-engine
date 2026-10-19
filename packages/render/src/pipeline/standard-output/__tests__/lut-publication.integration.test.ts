@@ -47,7 +47,7 @@ it('resolves a transferred LUT through the accepted publication GUID and Catalog
       { component: Transform, data: {} },
       {
         component: Camera,
-        data: { colorLut: handle, colorLutStrength: 0.75 },
+        data: { colorLut: handle },
       },
     )
     .unwrap();
@@ -74,7 +74,7 @@ it('resolves a transferred LUT through the accepted publication GUID and Catalog
     const direct = prepareStandardLutGpu({
       world,
       handle,
-      strength: 0.75,
+      strength: 1,
       assets,
       gpuStore,
       device,
@@ -96,14 +96,14 @@ it('resolves a transferred LUT through the accepted publication GUID and Catalog
     const prepared = prepareStandardLutGpu({
       world: received.resources,
       handle,
-      strength: 0.75,
+      strength: 1,
       assets: new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
       gpuStore,
       device,
     });
     expect(prepared, JSON.stringify(prepared)).toMatchObject({
       ok: true,
-      value: { sourceKey: 'fixture/color-lut', size: 2, strength: 0.75 },
+      value: { sourceKey: 'fixture/color-lut', size: 2, strength: 1 },
     });
     sourceKeys.mockClear();
     const next = publisher.prepare(0).unwrap();

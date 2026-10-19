@@ -4,7 +4,13 @@ import { describe, expect, it } from 'vitest';
 import { buildMeshAsset } from '../to-asset-pack';
 
 describe('FBX mesh material slots', () => {
-  it('projects repeated material indices through one stable slot table', () => {
+  it.each([
+    { names: ['Body', 'Trim'], expected: ['Body', 'Trim'] },
+    { names: [' Paint ', ' Paint '], expected: ['Paint', 'Paint_2'] },
+  ])('projects repeated material indices through one stable slot table: $names', ({
+    names,
+    expected,
+  }) => {
     const pod: MeshPod = {
       name: 'MultiMaterial',
       vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
@@ -25,15 +31,15 @@ describe('FBX mesh material slots', () => {
         [1, '019d0000-0000-7000-8000-000000000012'],
       ]),
       nameByIndex: new Map([
-        [0, 'Body'],
-        [1, 'Trim'],
+        [0, names[0] ?? ''],
+        [1, names[1] ?? ''],
       ]),
     });
     if (asset.kind !== 'mesh') throw new Error('expected mesh');
     const mesh = asset.payload as MeshAsset;
 
     expect(mesh.submeshes.map((submesh) => submesh.materialSlot)).toEqual([0, 1, 0]);
-    expect(mesh.materialSlots.map((slot) => slot.slotName)).toEqual(['Body', 'Trim']);
+    expect(mesh.materialSlots.map((slot) => slot.slotName)).toEqual(expected);
     expect(asset.refs.map((ref) => ref.guid)).toEqual([
       '019d0000-0000-7000-8000-000000000011',
       '019d0000-0000-7000-8000-000000000012',

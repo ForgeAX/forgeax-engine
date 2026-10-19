@@ -1,10 +1,11 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildFrameModel, openReplay, tapeDigest } from '@forgeax/engine-rhi-debug';
 import { rhi, createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { verifyDemoCapture, requestReplayDeviceForTape } from '../../../../shared/scripts/rhi-debug-verify.mjs';
-import { writeReferencePng } from '../../../../shared/png-codec.mjs';
+
 
 const appDir = resolve(import.meta.dirname, '..');
 const lifted = process.argv.includes('--lifted');
@@ -81,7 +82,7 @@ try {
     const name = work === calc ? 'gtao-raw' : 'gtao-filtered';
     const rgba = new Uint8Array(attachment.width * attachment.height * 4);
     for (let i = 0; i < bytes.length; i++) rgba.set([bytes[i], bytes[i], bytes[i], 255], i * 4);
-    writeFileSync(resolve(appDir, '.forgeax-debug', result.runId, `${name}.png`), writeReferencePng(rgba, attachment.width, attachment.height));
+    writeFileSync(resolve(appDir, '.forgeax-debug', result.runId, `${name}.png`), encodePng(attachment.width, attachment.height, rgba));
     evidence.push({ name, workIndex: work.workIndex, eventIndex: work.eventIndex, bindings: inspection.bindings, min, max, width: attachment.width, height: attachment.height });
   }
 } finally {

@@ -2,11 +2,7 @@ import { err, ok, type Result } from '../result.js';
 import type { TextureMipPolicy, TextureShape } from './asset.js';
 import { isCompressedFormat } from './block.js';
 
-export type TextureErrorCode =
-  | 'texture-shape-invalid'
-  | 'texture-packing-invalid'
-  | 'texture-mip-policy-invalid'
-  | 'texture-format-dimension-unsupported';
+export type TextureErrorCode = keyof TextureErrorDetailMap;
 
 type TextureErrorDetailMap = {
   'texture-shape-invalid': {

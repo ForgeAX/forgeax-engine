@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { create, globals } from '@forgeax/engine-dawn-node';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+import { encodePng } from '@forgeax/engine-image/png';
+
 import {
   buildFrameModel,
   decodeTape,
@@ -44,7 +45,7 @@ try {
     if (label.endsWith('.rgba'))
       await writeFile(
         resolve(directory, `${name}-dawn-${label.replace('.rgba', '.png')}`),
-        writeReferencePng(data, stages.width, stages.height),
+        encodePng(stages.width, stages.height, data),
       );
   const report = {
     ...stages,

@@ -12,7 +12,7 @@ import {
   type Texture,
   type TextureView,
 } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import type { RhiBackendPack } from '../backend-contract';
 import { deviceOptionsForAdapter } from '../device-feature-admission';
 import {
@@ -208,7 +208,7 @@ export async function probeCandidateDeviceExecution(
       return outcome;
     }
     mapped = mappedResult.value;
-    const rangeResult = mapped.getMappedRange(0, format === 'rgba16float' ? 8 : 4);
+    const rangeResult = mapped.getMappedRange(0, textureFormatBlock(format).bytesPerBlock);
     if (!rangeResult.ok) {
       outcome = err(
         recoveryDeviceProbeFailure(
@@ -401,7 +401,7 @@ async function probeCandidateGraphTarget(
       return outcome;
     }
     mapped = mappedResult.value;
-    const rangeResult = mapped.getMappedRange(0, target.format === 'rgba16float' ? 8 : 4);
+    const rangeResult = mapped.getMappedRange(0, textureFormatBlock(target.format).bytesPerBlock);
     if (!rangeResult.ok) {
       outcome = err(
         recoveryDeviceProbeFailure(

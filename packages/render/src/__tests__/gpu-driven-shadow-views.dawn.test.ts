@@ -400,9 +400,9 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         ],
         encode: ({ encoder, resources }) =>
           encoder.copyTextureToBuffer(
-            { texture: resources.texture(targets.spot.texture).unwrap() as unknown as GPUTexture },
+            { texture: resources.texture(targets.spot.texture).unwrap() },
             {
-              buffer: resources.buffer(output).unwrap() as unknown as GPUBuffer,
+              buffer: resources.buffer(output).unwrap(),
               bytesPerRow: 256,
               rowsPerImage: spotSize,
             },

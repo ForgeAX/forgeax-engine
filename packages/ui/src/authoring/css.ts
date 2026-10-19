@@ -7,19 +7,13 @@ import {
   walk,
 } from 'css-tree/dist/csstree.esm';
 import type { UiBrowserExtension } from '../browser-extensions.js';
-import { sourceRange } from './diagnostics.js';
-import { UI_AUTHORING_PROFILE, type UiAuthoringCategory } from './profile.js';
-
-export interface CssAuthoringParse {
-  readonly sourcePath: string;
-  readonly source: string;
-  readonly category: UiAuthoringCategory;
-  readonly diagnostics: readonly ImportDiagnostic[];
-  readonly references: readonly {
-    readonly value: string;
-    readonly range: ReturnType<typeof sourceRange>;
-  }[];
-}
+import { sourceRange, type UiAuthoringParse } from './diagnostics.js';
+import {
+  authoringUrlCategory,
+  pickAuthoringCategory,
+  UI_AUTHORING_PROFILE,
+  type UiAuthoringCategory,
+} from './profile.js';
 
 export interface CssAuthoringOptions {
   readonly browserExtensions?: readonly UiBrowserExtension[];
@@ -28,20 +22,14 @@ export interface CssAuthoringOptions {
   readonly context?: 'stylesheet' | 'declarationList' | 'declaration';
 }
 
-function urlCategory(value: string): UiAuthoringCategory {
-  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value)) return 'runtime-bound';
-  if (value.startsWith('/') || value.startsWith('../')) return 'normalizable';
-  return 'native';
-}
-
 /** Parse once; grammar and the implementation profile are independent authorities. */
 export function parseCssAuthoring(
   source: string,
   sourcePath: string,
   options: CssAuthoringOptions = {},
-): CssAuthoringParse {
+): UiAuthoringParse {
   const diagnostics: ImportDiagnostic[] = [];
-  const references: { value: string; range: ReturnType<typeof sourceRange> }[] = [];
+  const references: UiAuthoringParse['references'][number][] = [];
   const browserCss = options.browserExtensions?.includes('css') ?? false;
   let category: UiAuthoringCategory = browserCss ? 'runtime-bound' : 'native';
   const profile = UI_AUTHORING_PROFILE.css;
@@ -54,11 +42,7 @@ export function parseCssAuthoring(
     classification: UiAuthoringCategory = 'runtime-bound',
     severity: 'error' | 'warning' = 'error',
   ) => {
-    if (
-      severity === 'error' &&
-      (category !== 'runtime-bound' || classification === 'runtime-bound')
-    )
-      category = classification;
+    if (severity === 'error') category = pickAuthoringCategory(category, classification);
     diagnostics.push({
       code,
       severity,
@@ -263,7 +247,7 @@ export function parseCssAuthoring(
             node.loc?.end.offset ?? source.length,
           );
           references.push({ value: node.value, range });
-          const urlClass = urlCategory(node.value);
+          const urlClass = authoringUrlCategory(node.value);
           if (!options.portableOnly && urlClass !== 'native')
             report(
               urlClass === 'runtime-bound' ? 'runtime-url' : 'root-absolute-url',

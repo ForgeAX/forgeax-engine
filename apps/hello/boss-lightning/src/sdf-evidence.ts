@@ -1,3 +1,4 @@
+import { encodeBase64 } from '@forgeax/engine/types';
 import { buildFrameModel, decodeTape, imageStats, openReplay, readbackImage, replayDeviceRequest, tapeDigest, toRgba8 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { VFX_PARTICLE_CORE_LAYOUT, vfxParticleCoreField } from '@forgeax/engine-vfx';
@@ -35,15 +36,11 @@ export async function replaySdfEvidence(bytes: Uint8Array, collision: boolean) {
     const image = readbackImage(pixels).unwrap();
     if (imageStats(image).nonFinite !== 0) throw new Error('Fresh replay has non-finite pixels');
     const rgba = toRgba8(image);
-    let binary = '';
-    for (let offset = 0; offset < rgba.length; offset += 8192) {
-      binary += String.fromCharCode(...rgba.subarray(offset, offset + 8192));
-    }
     return { tapeDigest: tapeDigest(bytes), bindings: update.bindings, updateWorkIndex: update.workIndex,
       particle, sdf, coreLayout: { stride, fingerprint }, originalDisposedBeforeReplay: true,
       records, green: records.filter(record => (record.color[1] ?? 0) > 0.9 && (record.color[0] ?? 0) < 0.3).length,
       red: records.filter(record => (record.color[0] ?? 0) > 0.9).length,
-      pixels: { bytes: btoa(binary), width: image.width, height: image.height, encoding: 'rgba8',
+      pixels: { bytes: encodeBase64(rgba), width: image.width, height: image.height, encoding: 'rgba8',
         format: pixels.format, resourceId: pixels.resourceId, provenance: { ...pixels.provenance,
           subresource: pixels.provenance.subresource === null ? null : { ...pixels.provenance.subresource } },
         display: { exposure: 1, range: [0, 1], tonemap: 'clamp' } } };

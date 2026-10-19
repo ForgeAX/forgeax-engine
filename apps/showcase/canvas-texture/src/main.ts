@@ -109,7 +109,7 @@ async function start() {
   world
     .spawn({
       component: DirectionalLight,
-      data: { direction: [-0.5, -0.8, -1], color: [1, 1, 1], intensity: 3 },
+      data: { castShadow: true, direction: [-0.5, -0.8, -1], color: [1, 1, 1], intensity: 3 },
     })
     .unwrap();
 

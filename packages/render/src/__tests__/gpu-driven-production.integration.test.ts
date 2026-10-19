@@ -3116,7 +3116,7 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
         }).ok,
       ).toBe(true);
       const world = new World();
-      renderer.attach(world).unwrap();
+      expect(renderer.attach(world).ok).toBe(true);
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -3166,7 +3166,7 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
     const pbrInputs = standardPbrInputs(device, shader, viewLayout);
     const baseArtifact = pbrInputs.standardPbrArtifact;
     const pipelineLayout = pbrInputs.standardPbrPipelineState?.gpuDrivenPbrPipelineLayout;
-    if (baseArtifact === undefined || pipelineLayout === undefined)
+    if (baseArtifact === undefined || pipelineLayout === undefined || pipelineLayout === null)
       throw Error('missing fixture material pipeline');
     const forwardArtifact = {
       ...baseArtifact,
@@ -3240,7 +3240,8 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
                 : (index: number) => {
                     const slot = projection.slotAt(index);
                     if (slot === undefined) return undefined;
-                    const source = slot.snapshot;
+                    const source = { ...slot.snapshot };
+                    if (sourceFailure === 'bounds') delete source.localAabb;
                     return {
                       ...slot,
                       snapshot: {
@@ -3248,7 +3249,6 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
                         ...(sourceFailure === 'morph'
                           ? { morph: {} as NonNullable<RenderableSnapshot['morph']> }
                           : {}),
-                        ...(sourceFailure === 'bounds' ? { localAabb: undefined } : {}),
                         ...(sourceFailure === 'displacement'
                           ? {
                               materials: [],
@@ -3276,6 +3276,7 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
               }),
         })
         .unwrap();
+      if (prepared === undefined) throw new Error('Missing prepared GPU fixture');
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const formats = ['r32uint', 'r32uint', 'r32uint', 'r32uint', 'rg32uint'] as const;
       const gpu = prepared

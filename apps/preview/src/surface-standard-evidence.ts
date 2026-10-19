@@ -1,3 +1,4 @@
+import { encodeBase64 } from '@forgeax/engine/types';
 import type { App } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
@@ -109,10 +110,6 @@ async function exportPixels(
     globalThis as { __forgeaxCapturePixels?: (payload: Record<string, unknown>) => Promise<void> }
   ).__forgeaxCapturePixels;
   if (receive === undefined) return;
-  const chunks: string[] = [];
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
-  }
   await receive({
     backend,
     width,
@@ -120,7 +117,7 @@ async function exportPixels(
     bytesPerRow,
     format,
     origin,
-    base64: btoa(chunks.join('')),
+    base64: encodeBase64(bytes),
   });
 }
 

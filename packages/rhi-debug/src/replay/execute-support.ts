@@ -1,18 +1,11 @@
 // @forgeax/engine-rhi-debug/src/replay/execute-support -- replay event helpers.
 
-import type {
-  Buffer,
-  RhiCommandEncoder,
-  RhiComputePassEncoder,
-  RhiRenderPassEncoder,
-} from '@forgeax/engine-rhi';
+import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
-import type { RhiCallEvent, Tape, TapeBlob } from '../protocol/types';
+import type { InitialDataSlice, RhiCallEvent, Tape, TapeBlob } from '../protocol/types';
 import type { ReplayExecutionContext } from './execute';
-import type { ReplayResource } from './resources';
-
-type ReplayPass = RhiRenderPassEncoder & RhiComputePassEncoder;
+import type { ReplayResource, ReplayResourceValues } from './resources';
 
 /** Decoded tape events are immutable replay input, so entries borrow them uncopied. */
 export function eventRecord(event: RhiCallEvent): Record<string, unknown> {
@@ -59,20 +52,39 @@ export function blob(
     : ok(found.bytes);
 }
 
+export function bootstrapBlob(
+  tape: Tape,
+  slice: InitialDataSlice,
+  event: RhiCallEvent,
+  eventIndex: number,
+): Result<Uint8Array, RhiDebugError> {
+  const bytes = blob(tape, slice.hash, event, eventIndex);
+  if (!bytes.ok) return bytes;
+  const end = slice.byteOffset + slice.byteLength;
+  if (
+    !Number.isSafeInteger(slice.byteOffset) ||
+    !Number.isSafeInteger(slice.byteLength) ||
+    slice.byteOffset < 0 ||
+    slice.byteLength < 0 ||
+    end > bytes.value.byteLength
+  ) {
+    return eventFailure(
+      eventIndex,
+      event,
+      'lookup',
+      `blob ${slice.hash} does not contain initialData slice [${slice.byteOffset}, ${end})`,
+    );
+  }
+  return ok(bytes.value.subarray(slice.byteOffset, end));
+}
+
 export function clearBuffer(
   context: ReplayExecutionContext,
   event: Extract<RhiCallEvent, { kind: 'clearBuffer' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
-  const buffer = requireResource<Buffer>(context, event.handleId, 'buffer', eventIndex, event.kind);
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
+  const buffer = requireResource(context, event.handleId, 'buffer', eventIndex, event.kind);
   if (!encoder.ok) return encoder;
   if (!buffer.ok) return buffer;
   encoder.value.clearBuffer(buffer.value, event.offset, event.size);
@@ -85,14 +97,7 @@ export function commandEncoderCall(
   eventIndex: number,
   call: (encoder: RhiCommandEncoder) => void,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
   if (!encoder.ok) return encoder;
   call(encoder.value);
   return ok(undefined);
@@ -103,20 +108,13 @@ export function finish(
   event: Extract<RhiCallEvent, { kind: 'finish' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
   if (!encoder.ok) return encoder;
   const result = encoder.value.finish();
   if (!result.ok) return eventFailure(eventIndex, event, 'finish', result.error);
   return context.table.set(
     event.cmdHandleId,
-    { kind: 'encoder', role: 'command-buffer', value: result.value },
+    { kind: 'command-buffer', value: result.value },
     eventRecord(event),
   );
 }
@@ -125,16 +123,9 @@ export function endPass(
   context: ReplayExecutionContext,
   event: Extract<RhiCallEvent, { kind: 'endRenderPass' | 'endComputePass' }>,
   eventIndex: number,
-  role: 'render-pass' | 'compute-pass',
+  kind: 'render-pass' | 'compute-pass',
 ): Result<void, RhiDebugError> {
-  const pass = requireResource<RhiRenderPassEncoder | RhiComputePassEncoder>(
-    context,
-    event.passHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    role,
-  );
+  const pass = requireResource(context, event.passHandleId, kind, eventIndex, event.kind);
   if (!pass.ok) return pass;
   pass.value.end();
   context.table.delete(event.passHandleId);
@@ -161,69 +152,43 @@ export function seedInitialData(
   );
 }
 
-export function requireResource<T>(
+export function requireResource<K extends ReplayResource['kind']>(
   context: ReplayExecutionContext,
   resourceId: string,
-  kind: ReplayResource['kind'] | string,
+  kind: K,
   eventIndex: number,
   eventKind: RhiCallEvent['kind'],
-  role?: string,
-): Result<T, RhiDebugError> {
-  const resource = requireReplayResource(context, resourceId, kind, eventIndex, eventKind, role);
-  return resource.ok ? ok(resource.value.value as T) : resource;
-}
-
-export function requireReplayResource(
-  context: ReplayExecutionContext,
-  resourceId: string,
-  kind: ReplayResource['kind'] | string,
-  eventIndex: number,
-  eventKind: RhiCallEvent['kind'],
-  role?: string,
-): Result<ReplayResource, RhiDebugError> {
+): Result<ReplayResourceValues[K], RhiDebugError> {
   const entry = context.table.get(resourceId);
-  if (
-    entry === undefined ||
-    entry.resource.kind !== kind ||
-    (role !== undefined && entry.resource.role !== role)
-  ) {
-    return missingResource(
-      eventIndex,
-      { kind: eventKind } as RhiCallEvent,
-      resourceId,
-      `${kind}${role === undefined ? '' : `/${role}`}`,
-    );
+  if (entry === undefined || entry.resource.kind !== kind) {
+    return missingResource(eventIndex, { kind: eventKind } as RhiCallEvent, resourceId, kind);
   }
-  return ok(entry.resource);
+  return ok(entry.resource.value as ReplayResourceValues[K]);
 }
 
-export function passCall(
+export function passCall<K extends 'render-pass' | 'compute-pass' | 'pass'>(
   context: ReplayExecutionContext,
   event: RhiCallEvent,
   eventIndex: number,
-  role: 'render-pass' | 'compute-pass' | 'pass',
-  call: (pass: ReplayPass) => Result<void, RhiDebugError>,
+  kind: K,
+  call: (
+    pass: ReplayResourceValues[K extends 'pass' ? 'render-pass' | 'compute-pass' : K],
+  ) => Result<void, RhiDebugError>,
 ): Result<void, RhiDebugError> {
   const passId = 'passHandleId' in event ? event.passHandleId : undefined;
   if (passId === undefined)
     return eventFailure(eventIndex, event, 'lookup', 'pass handle is missing');
-  const entry = context.table.get(passId);
-  const valid =
-    entry?.resource.kind === 'encoder' && (role === 'pass' || entry.resource.role === role);
-  if (!valid || entry === undefined || entry.resource.kind !== 'encoder') {
-    return missingResource(eventIndex, event, passId, role);
+  const resource = context.table.get(passId)?.resource;
+  if (
+    resource === undefined ||
+    (resource.kind !== 'render-pass' && resource.kind !== 'compute-pass') ||
+    (kind !== 'pass' && resource.kind !== kind)
+  ) {
+    return missingResource(eventIndex, event, passId, kind);
   }
-  return call(entry.resource.value as ReplayPass);
-}
-
-export function pipelineError<T>(
-  result: Result<T, RhiDebugError>,
-  event: RhiCallEvent,
-  eventIndex: number,
-): Result<never, RhiDebugError> {
-  return result.ok
-    ? eventFailure(eventIndex, event, 'lookup', 'resource has the wrong role')
-    : result;
+  return call(
+    resource.value as ReplayResourceValues[K extends 'pass' ? 'render-pass' | 'compute-pass' : K],
+  );
 }
 
 export function missingResource(

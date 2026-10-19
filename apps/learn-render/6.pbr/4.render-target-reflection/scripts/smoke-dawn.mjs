@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 import { dirname, resolve } from 'node:path';
@@ -7,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeReferencePng } from '../../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../../shared/scripts/smoke-receipt.mjs';
 import {
   deriveReflectionFallbackEvidence,
@@ -1080,7 +1081,7 @@ if (REFLECTION_EVIDENCE) {
     resolve(manifestDir, 'validation.log'),
     reflectionFallbackValidationLog('dawn', report, evidence),
   );
-  writeFileSync(resolve(manifestDir, 'frame.png'), writeReferencePng(manifestPixels.bytes, WIDTH, HEIGHT));
+  writeFileSync(resolve(manifestDir, 'frame.png'), encodePng(WIDTH, HEIGHT, manifestPixels.bytes));
   writeFileSync(
     resolve(manifestDir, 'manifest.json'),
     `${JSON.stringify({

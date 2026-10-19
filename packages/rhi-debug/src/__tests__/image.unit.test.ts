@@ -1,8 +1,7 @@
-import { inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { decodeBufferRecords } from '../buffer-records';
 import type { WorkEntry } from '../frame-model';
-import { decodeImage, encodePng, extractTile, imageStats, readbackImage, toRgba8 } from '../image';
+import { decodeImage, extractTile, imageStats, readbackImage, toRgba8 } from '../image';
 import { bindingReadRequest } from '../replay/batch';
 import type { ReplayReadbackResult } from '../replay/readback';
 
@@ -113,18 +112,6 @@ describe('image decode', () => {
       170, 219, 128, 255,
     ]);
     expect(Array.from(toRgba8(image, { range: [-1, 3] })).slice(8, 12)).toEqual([80, 64, 0, 255]);
-  });
-
-  it('encodes a deterministic, valid RGBA8 PNG', () => {
-    const rgba = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 9, 9, 9, 9]);
-    const png = encodePng(2, 2, rgba);
-    expect(Array.from(png.subarray(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
-    expect(encodePng(2, 2, rgba)).toEqual(png);
-    const view = new DataView(png.buffer, png.byteOffset);
-    expect(view.getUint32(16)).toBe(2);
-    const idatLength = view.getUint32(33);
-    const raw = inflateSync(png.subarray(41, 41 + idatLength));
-    expect(Array.from(raw)).toEqual([0, ...rgba.subarray(0, 8), 0, ...rgba.subarray(8)]);
   });
 });
 

@@ -2,17 +2,14 @@ import type {
   ArtifactRef,
   JsonValue,
   SnapshotRef,
+  ToolCleanupCensus,
+  ToolCleanupReport,
   ToolDomainFailure,
   ToolEvidenceKind,
   ToolExecutionContext,
   ToolSubjectRef,
 } from '@forgeax/engine-tool-runtime';
-import {
-  createPreviewHost as createNativePreviewHost,
-  type PreviewHost as NativePreviewHost,
-  type PreviewHostMechanisms,
-} from './host/preview-host.js';
-
+import { toolCleanupFailure } from '@forgeax/engine-tool-runtime';
 export interface PreviewHostRequest {
   readonly subject: ToolSubjectRef;
   readonly snapshot: SnapshotRef;
@@ -33,18 +30,6 @@ export interface PreviewCapture {
   readonly bytes: number;
 }
 
-export interface PreviewResourceCensus {
-  readonly worlds: number;
-  readonly renderers: number;
-  readonly canvases: number;
-  readonly leases: number;
-}
-
-export interface PreviewCleanupReport {
-  readonly census: PreviewResourceCensus;
-  readonly failures: readonly string[];
-}
-
 /**
  * The only resource surface exposed to a preview contribution. The adapter owns
  * the actual Engine resources; callers receive POD bindings and bounded actions.
@@ -55,19 +40,12 @@ export interface PreviewHostSession {
   readonly loadAsset: (guid: string) => Promise<PreviewAssetBinding>;
   readonly frame: (input: PreviewFrameInput) => Promise<void>;
   readonly capture: () => Promise<PreviewCapture & { readonly artifact?: ArtifactRef }>;
-  readonly census: () => PreviewResourceCensus;
+  readonly census: () => ToolCleanupCensus;
   readonly dispose: () => Promise<void>;
 }
 
 export interface PreviewHostAdapter {
   readonly open: (request: PreviewHostRequest) => PreviewHostSession | Promise<PreviewHostSession>;
-}
-
-export interface PreviewHost {
-  readonly withSession: <TResult>(
-    request: PreviewHostRequest,
-    run: (session: PreviewHostSession) => TResult | Promise<TResult>,
-  ) => Promise<{ readonly value: TResult; readonly cleanup: PreviewCleanupReport }>;
 }
 
 export interface PreviewDomainValue<TReport = unknown> {
@@ -163,9 +141,9 @@ export function validateDomainValue<TReport>(
 
 export class PreviewCleanupError extends Error {
   readonly code = 'preview-cleanup-live-resources';
-  readonly census: PreviewResourceCensus;
+  readonly census: ToolCleanupCensus;
 
-  constructor(census: PreviewResourceCensus, failures: readonly string[] = []) {
+  constructor(census: ToolCleanupCensus, failures: readonly string[] = []) {
     super(
       failures.length === 0
         ? 'preview session left live resources after disposal'
@@ -176,36 +154,22 @@ export class PreviewCleanupError extends Error {
   }
 }
 
-function hasLiveResources(census: PreviewResourceCensus): boolean {
-  return Object.values(census).some((count) => count !== 0);
-}
-
-export function createPreviewHost(adapter: PreviewHostAdapter): PreviewHost;
-export function createPreviewHost(input: PreviewHostMechanisms): NativePreviewHost;
-export function createPreviewHost(
-  adapterOrInput: PreviewHostAdapter | PreviewHostMechanisms,
-): PreviewHost | NativePreviewHost {
-  if ('runId' in adapterOrInput) return createNativePreviewHost(adapterOrInput);
-  const adapter = adapterOrInput;
-  const withSession = async <TResult>(
-    request: PreviewHostRequest,
-    run: (session: PreviewHostSession) => TResult | Promise<TResult>,
-  ): Promise<{ readonly value: TResult; readonly cleanup: PreviewCleanupReport }> => {
-    const session = await adapter.open(request);
-    let result: TResult;
-    try {
-      result = await run(session);
-    } finally {
-      await session.dispose();
-    }
-    const cleanup: PreviewCleanupReport = { census: session.census(), failures: [] };
-    if (hasLiveResources(cleanup.census)) {
-      throw new PreviewCleanupError(cleanup.census, cleanup.failures);
-    }
-    return { value: result, cleanup };
-  };
-
-  return {
-    withSession,
-  };
+/** Open, use and dispose one adapter-owned resource lease. */
+export async function withPreviewSession<TResult>(
+  adapter: PreviewHostAdapter,
+  request: PreviewHostRequest,
+  run: (session: PreviewHostSession) => TResult | Promise<TResult>,
+): Promise<{ readonly value: TResult; readonly cleanup: ToolCleanupReport }> {
+  const session = await adapter.open(request);
+  let result: TResult;
+  try {
+    result = await run(session);
+  } finally {
+    await session.dispose();
+  }
+  const cleanup: ToolCleanupReport = { census: session.census(), failures: [] };
+  if (toolCleanupFailure(cleanup) !== undefined) {
+    throw new PreviewCleanupError(cleanup.census, cleanup.failures);
+  }
+  return { value: result, cleanup };
 }

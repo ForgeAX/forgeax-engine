@@ -1,4 +1,6 @@
+import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { AmbientOcclusion, ambientOcclusionParameters } from '../components/ambient-occlusion';
 import {
   getSsaoParameters,
   resolveSsaoParameters,
@@ -14,8 +16,12 @@ describe('SSAO parameter authority', () => {
       bias: SSAO_DEFAULT_BIAS,
       intensity: SSAO_DEFAULT_INTENSITY,
       quality: 'high',
-      algorithm: 'ssao',
+      algorithm: 'gtao',
       directLightingStrength: 0,
+      thickness: 1,
+      distanceExponent: 1,
+      distanceFallOff: 1,
+      resolutionScale: 1,
     });
   });
 
@@ -25,8 +31,12 @@ describe('SSAO parameter authority', () => {
       bias: 0.025,
       intensity: 1.4,
       quality: 'high',
-      algorithm: 'ssao',
+      algorithm: 'gtao',
       directLightingStrength: 0,
+      thickness: 1,
+      distanceExponent: 1,
+      distanceFallOff: 1,
+      resolutionScale: 1,
     });
   });
 
@@ -75,5 +85,25 @@ it.each([0, 0.5, 1])('preserves valid direct AO strength (%s)', (directLightingS
   expect(resolveSsaoParameters({ directLightingStrength })).toMatchObject({
     ok: true,
     value: { directLightingStrength },
+  });
+});
+
+it('resolves component and profile authoring to the same AO defaults', () => {
+  const world = new World();
+  const entity = world.spawn({ component: AmbientOcclusion, data: {} }).unwrap();
+  const data = world.get(entity, AmbientOcclusion).unwrap();
+  expect(ambientOcclusionParameters(data).unwrap()).toEqual(getSsaoParameters({}));
+  expect(getSsaoParameters({ algorithm: 'ssao' }).algorithm).toBe('ssao');
+});
+
+it.each([
+  ['thickness', -1],
+  ['distanceExponent', NaN],
+  ['distanceFallOff', 1.01],
+  ['resolutionScale', 0],
+])('rejects invalid %s before GPU projection', (name, value) => {
+  expect(resolveSsaoParameters({ [name]: value })).toMatchObject({
+    ok: false,
+    error: { code: 'ssao-parameter-invalid', detail: { paramName: name } },
   });
 });

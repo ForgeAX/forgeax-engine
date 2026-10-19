@@ -1,5 +1,10 @@
 import { halfFloat } from '@forgeax/engine-math';
-import { deriveTextureLayout, isCompressedFormat, type TextureAsset } from '@forgeax/engine-types';
+import {
+  deriveTextureLayout,
+  isCompressedFormat,
+  srgbChannelToLinear,
+  type TextureAsset,
+} from '@forgeax/engine-types';
 import {
   COOKIE_MIP_LEVEL_COUNT,
   COOKIE_SLICE_MIP_CHAIN_BYTES,
@@ -23,17 +28,13 @@ export type LightTextureSource =
   | { readonly kind: 'mip-chain'; readonly data: Uint8Array }
   | { readonly kind: 'gpu-resample'; readonly asset: TextureAsset };
 
-export interface CookieProjection {
+interface CookieProjection {
   readonly source: LightTextureSource;
   readonly matrix: Float32Array;
   readonly aspect: number;
 }
 
 const COOKIE_PROJECTION_CACHE = new WeakMap<TextureAsset, CookieProjection | null>();
-
-function srgbToLinear(value: number): number {
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -50,7 +51,7 @@ interface SourceDecoder {
 }
 
 function unorm8Decoder(srgb: boolean, bgra: boolean): SourceDecoder {
-  const toLinear = (value: number) => (srgb ? srgbToLinear(value / 255) : value / 255);
+  const toLinear = (value: number) => (srgb ? srgbChannelToLinear(value / 255) : value / 255);
   return {
     bytesPerTexel: 4,
     colorSpace: srgb ? 'srgb' : 'linear',

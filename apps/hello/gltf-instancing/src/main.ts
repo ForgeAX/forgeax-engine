@@ -11,6 +11,7 @@
 //   (3) loadByGuid<MaterialAsset>(matGuid)
 //   (4) loadByGuid<SceneAsset>(sceneGuid) + sceneInstances.instantiate
 
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { gltfDocToSceneAsset, type GltfMaterialIr, type GltfMeshIr, parseGltf } from '@forgeax/engine-gltf';
@@ -24,8 +25,6 @@ import { scenePlugin } from '@forgeax/engine-scene';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import gltfUrl from '../assets/instanced-box.gltf?url';
 import metaJson from '../assets/instanced-box.gltf.meta.json' with { type: 'json' };
-
-type SubAssetEntry = { readonly guid: string; readonly kind: string; readonly sourceIndex: number };
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-gltf-instancing: missing <canvas id="app"> in index.html');
@@ -70,7 +69,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  const subAssets = metaJson.subAssets as readonly SubAssetEntry[];
+  const subAssets = metaJson.subAssets as readonly ImportSubAsset[];
   const meshGuid = parseSubAssetGuid(subAssets, 'mesh');
   const materialGuid = parseSubAssetGuid(subAssets, 'material');
   const sceneGuid = parseSubAssetGuid(subAssets, 'scene');
@@ -137,7 +136,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 }
 
 function parseSubAssetGuid(
-  subs: readonly SubAssetEntry[],
+  subs: readonly ImportSubAsset[],
   kind: 'mesh' | 'material' | 'scene',
 ): AssetGuid | null {
   const entry = subs.find((s) => s.kind === kind);

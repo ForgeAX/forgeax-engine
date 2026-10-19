@@ -33,7 +33,6 @@ import type {
   BindGroupLayout,
   BindGroupLayoutDescriptor,
   Buffer,
-  BufferCopyDestination,
   BufferDescriptor,
   CanvasConfiguration,
   CommandBuffer,
@@ -67,27 +66,26 @@ import type {
   RhiRenderPassEncoder,
   Sampler,
   SamplerDescriptor,
+  TexelCopyBufferInfo,
+  TexelCopyTextureInfo,
   Texture,
-  TextureCopySource,
   TextureDescriptor,
   TextureView,
   TextureViewDescriptor,
-  TextureWriteDestination,
-} from '@forgeax/engine-rhi';
-import {
-  err,
-  ok,
-  RhiError as RhiErrorClass,
-  rayQueryUnsupported,
-  validateRayQueryBindGroupLayout,
-  validateRayQueryBufferUsage,
 } from '@forgeax/engine-rhi';
 import {
   commandEncoderFinished,
+  err,
+  ok,
   queueSubmitFailed,
   queueWriteBufferOutOfBounds,
+  RhiError as RhiErrorClass,
+  rayQueryUnsupported,
   renderPassNotEnded,
-} from './errors';
+  validateRayQueryBindGroupLayout,
+  validateRayQueryBufferUsage,
+} from '@forgeax/engine-rhi';
+
 import { probeR32FloatCapability } from './internal/r32float-capability';
 import {
   hasExternalTextureCapability,
@@ -692,7 +690,7 @@ function makeRenderPassEncoder(
       // K-2: end without active begin maps to render-pass-not-ended (existing
       // 14-member union).
       if (!state.occlusionQueryActive) {
-        return renderPassNotEnded();
+        return err(renderPassNotEnded());
       }
       try {
         rawPass.endOcclusionQuery();
@@ -733,15 +731,9 @@ function makeRenderPassEncoder(
   return pass;
 }
 
-const ENCODER_FINISHED_ERROR_ARGS = {
-  code: 'command-encoder-finished' as const,
-  expected: 'command encoder must not be finished before recording new commands',
-  hint: 'create a new command encoder via device.createCommandEncoder() for each frame; do not reuse a finished encoder',
-};
-
 function throwIfFinished(state: EncoderState | undefined): void {
   if (state?.finished) {
-    throw new RhiErrorClass(ENCODER_FINISHED_ERROR_ARGS);
+    throw commandEncoderFinished();
   }
 }
 
@@ -990,37 +982,29 @@ function makeCommandEncoder(
       }
     },
     copyBufferToTexture(
-      source: GPUTexelCopyBufferInfo,
-      destination: GPUTexelCopyTextureInfo,
+      source: TexelCopyBufferInfo,
+      destination: TexelCopyTextureInfo,
       copySize: GPUExtent3DStrict,
     ): void {
       const state = ENCODER_STATE.get(enc);
       throwIfFinished(state);
       const rawSrc = {
         ...source,
-        buffer:
-          BUFFER_RAW_MAP.get(source.buffer as unknown as Buffer) ??
-          (source.buffer as unknown as GPUBuffer),
+        buffer: BUFFER_RAW_MAP.get(source.buffer) ?? (source.buffer as unknown as GPUBuffer),
       };
-      rawEncoder.copyBufferToTexture(rawSrc, destination, copySize);
+      rawEncoder.copyBufferToTexture(rawSrc, rawTextureCopy(destination), copySize);
     },
     copyTextureToBuffer(
-      source: GPUTexelCopyTextureInfo | TextureCopySource,
-      destination: GPUTexelCopyBufferInfo | BufferCopyDestination,
+      source: TexelCopyTextureInfo,
+      destination: TexelCopyBufferInfo,
       copySize: GPUExtent3DStrict,
     ): void {
       const state = ENCODER_STATE.get(enc);
       throwIfFinished(state);
-      const rawSource: GPUTexelCopyTextureInfo = {
-        texture: source.texture as unknown as GPUTexture,
-      };
-      if (source.mipLevel !== undefined) rawSource.mipLevel = source.mipLevel;
-      if (source.origin !== undefined) rawSource.origin = source.origin;
-      if (source.aspect !== undefined) rawSource.aspect = source.aspect;
+      const rawSource = rawTextureCopy(source);
       const rawDst: GPUTexelCopyBufferInfo = {
         buffer:
-          BUFFER_RAW_MAP.get(destination.buffer as unknown as Buffer) ??
-          (destination.buffer as unknown as GPUBuffer),
+          BUFFER_RAW_MAP.get(destination.buffer) ?? (destination.buffer as unknown as GPUBuffer),
       };
       if (destination.offset !== undefined) rawDst.offset = destination.offset;
       if (destination.bytesPerRow !== undefined) rawDst.bytesPerRow = destination.bytesPerRow;
@@ -1028,13 +1012,17 @@ function makeCommandEncoder(
       rawEncoder.copyTextureToBuffer(rawSource, rawDst, copySize);
     },
     copyTextureToTexture(
-      source: GPUTexelCopyTextureInfo,
-      destination: GPUTexelCopyTextureInfo,
+      source: TexelCopyTextureInfo,
+      destination: TexelCopyTextureInfo,
       copySize: GPUExtent3DStrict,
     ): void {
       const state = ENCODER_STATE.get(enc);
       throwIfFinished(state);
-      rawEncoder.copyTextureToTexture(source, destination, copySize);
+      rawEncoder.copyTextureToTexture(
+        rawTextureCopy(source),
+        rawTextureCopy(destination),
+        copySize,
+      );
     },
     clearBuffer(buffer: Buffer, offset?: number | undefined, size?: number | undefined): void {
       const state = ENCODER_STATE.get(enc);
@@ -1052,7 +1040,7 @@ function makeCommandEncoder(
     ): Result<void, RhiError> {
       const state = ENCODER_STATE.get(enc);
       if (state?.finished) {
-        return commandEncoderFinished();
+        return err(commandEncoderFinished());
       }
       // Step 6 (research §2.3): destinationOffset is a multiple of 256.
       // K-2: alignment violation maps to webgpu-runtime-error.
@@ -1129,15 +1117,15 @@ function makeCommandEncoder(
       const state = ENCODER_STATE.get(enc);
       if (state === undefined) {
         // Should not happen in practice; treat as a finished encoder.
-        return commandEncoderFinished();
+        return err(commandEncoderFinished());
       }
       if (state.finished) {
-        return commandEncoderFinished();
+        return err(commandEncoderFinished());
       }
       if (state.activePass !== null) {
         const passState = PASS_STATE.get(state.activePass);
         if (passState !== undefined && !passState.ended) {
-          return renderPassNotEnded();
+          return err(renderPassNotEnded());
         }
       }
       const rawCommandBuffer = rawEncoder.finish();
@@ -1387,12 +1375,14 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
           : Number.MAX_SAFE_INTEGER;
       // 4-byte alignment validation (W3C WebGPU 23.2 writeBuffer).
       if (bufferOffset % 4 !== 0) {
-        return queueWriteBufferOutOfBounds({
-          offset: bufferOffset,
-          byteLength:
-            data instanceof ArrayBuffer ? data.byteLength : (data as ArrayBufferView).byteLength,
-          bufferSize,
-        });
+        return err(
+          queueWriteBufferOutOfBounds({
+            offset: bufferOffset,
+            byteLength:
+              data instanceof ArrayBuffer ? data.byteLength : (data as ArrayBufferView).byteLength,
+            bufferSize,
+          }),
+        );
       }
       const dataByteLength =
         data instanceof ArrayBuffer ? data.byteLength : (data as ArrayBufferView).byteLength;
@@ -1400,11 +1390,13 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
       const writeSize = size ?? dataByteLength - writeStart;
       // Bounds validation: bufferOffset + writeSize <= bufferSize.
       if (bufferOffset + writeSize > bufferSize) {
-        return queueWriteBufferOutOfBounds({
-          offset: bufferOffset,
-          byteLength: writeSize,
-          bufferSize,
-        });
+        return err(
+          queueWriteBufferOutOfBounds({
+            offset: bufferOffset,
+            byteLength: writeSize,
+            bufferSize,
+          }),
+        );
       }
       try {
         if (size !== undefined) {
@@ -1431,13 +1423,15 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
         // GPU validation may surface bounds errors; wrap as out-of-bounds for
         // AI-user routing parity (charter proposition 4 explicit failure).
         if (/out of (bounds|range)|exceed/i.test(message)) {
-          return queueWriteBufferOutOfBounds({
-            offset: bufferOffset,
-            byteLength: writeSize,
-            bufferSize,
-          });
+          return err(
+            queueWriteBufferOutOfBounds({
+              offset: bufferOffset,
+              byteLength: writeSize,
+              bufferSize,
+            }),
+          );
         }
-        return queueSubmitFailed(message);
+        return err(queueSubmitFailed(message));
       }
     },
     submit(commandBuffers: readonly CommandBuffer[]): Result<void, RhiError> {
@@ -1455,11 +1449,11 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
         return ok(undefined);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        return queueSubmitFailed(message);
+        return err(queueSubmitFailed(message));
       }
     },
     writeTexture(
-      destination: TextureWriteDestination,
+      destination: TexelCopyTextureInfo,
       data: ArrayBufferView | ArrayBuffer,
       dataLayout: GPUTexelCopyBufferLayout,
       size: GPUExtent3DStrict,
@@ -1479,14 +1473,8 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
         // structural compatibility lets us forward verbatim with a cast.
         // The data + size casts cover @webgpu/types polymorphism that the
         // forgeax form normalises to the strict spec subset.
-        const rawDestination: GPUTexelCopyTextureInfo = {
-          texture: destination.texture as unknown as GPUTexture,
-        };
-        if (destination.mipLevel !== undefined) rawDestination.mipLevel = destination.mipLevel;
-        if (destination.origin !== undefined) rawDestination.origin = destination.origin;
-        if (destination.aspect !== undefined) rawDestination.aspect = destination.aspect;
         rawQueue.writeTexture(
-          rawDestination,
+          rawTextureCopy(destination),
           data as unknown as GPUAllowSharedBufferSource,
           dataLayout,
           size as unknown as GPUExtent3D,
@@ -2132,14 +2120,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
         return ok({
           ...makeRenderCommands(raw),
           finish(descriptor) {
-            if (finished)
-              return err(
-                new RhiErrorClass({
-                  code: 'command-encoder-finished',
-                  expected: 'an unfinished render bundle encoder',
-                  hint: 'create a new bundle encoder',
-                }),
-              );
+            if (finished) return err(commandEncoderFinished('render bundle'));
             finished = true;
             try {
               return ok(
@@ -2345,4 +2326,12 @@ export function makeCanvasContext(rawContext: GpuCanvasContextLike): RhiCanvasCo
       }
     },
   };
+}
+
+function rawTextureCopy(info: TexelCopyTextureInfo): GPUTexelCopyTextureInfo {
+  const raw: GPUTexelCopyTextureInfo = { texture: info.texture as unknown as GPUTexture };
+  if (info.mipLevel !== undefined) raw.mipLevel = info.mipLevel;
+  if (info.origin !== undefined) raw.origin = info.origin;
+  if (info.aspect !== undefined) raw.aspect = info.aspect;
+  return raw;
 }

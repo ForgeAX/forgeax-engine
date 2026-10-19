@@ -37,7 +37,7 @@ export function makeMockShaderRegistry(): ShaderRegistry {
     paramSchema: [
       { name: 'baseColor', type: 'color' },
       { name: 'baseColorTexture', type: 'texture2d' },
-      { name: 'sampler', type: 'sampler', default: null },
+      { name: 'sampler', type: 'sampler' },
       { name: 'lightIntensity', type: 'f32' }, // required — no default
     ],
   });
@@ -68,7 +68,7 @@ export function makeMockShaderRegistry(): ShaderRegistry {
     paramSchema: [
       { name: 'baseColor', type: 'color' },
       { name: 'baseColorTexture', type: 'texture2d' },
-      { name: 'sampler', type: 'sampler', default: null },
+      { name: 'sampler', type: 'sampler' },
     ],
   });
   // test::dummy used by M1 test (c)
@@ -86,7 +86,7 @@ export function makeMockShaderRegistry(): ShaderRegistry {
       { name: 'tintColor', type: 'color', default: [1.0, 1.0, 1.0, 1.0] },
       { name: 'distanceRange', type: 'f32', default: 4.0 },
       { name: 'baseColorTexture', type: 'texture2d' },
-      { name: 'sampler', type: 'sampler', default: null },
+      { name: 'sampler', type: 'sampler' },
     ],
   });
   // feat-20260609-pipeline-driven-pass-selector-shadowcaster-via-mat M3 / T-007:
@@ -105,7 +105,7 @@ export function makeMockShaderRegistry(): ShaderRegistry {
     paramSchema: [
       { name: 'baseColor', type: 'color', default: [1.0, 1.0, 1.0, 1.0] },
       { name: 'texture', type: 'texture2d' },
-      { name: 'sampler', type: 'sampler', default: null },
+      { name: 'sampler', type: 'sampler' },
       { name: 'region', type: 'vec4', default: [0.0, 0.0, 1.0, 1.0] },
       { name: 'pivot', type: 'vec2', default: [0.5, 0.5] },
       { name: 'flipX', type: 'f32', default: 0.0 },

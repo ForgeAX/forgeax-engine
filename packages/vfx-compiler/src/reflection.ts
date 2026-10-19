@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { MaterialParticleInput } from '@forgeax/engine-types';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  err,
+  ok,
+  type Result,
+  stripWgslComments,
+  WGSL_NUMERIC_LAYOUT,
+} from '@forgeax/engine-types';
 import type {
   ParticleRendererSourceV3,
   VfxDataInterfaceRequirement,
@@ -19,7 +25,6 @@ import {
   PARTICLE_RENDERER_SEMANTICS,
   VFX_PARTICLE_CORE_LAYOUT,
 } from '@forgeax/engine-vfx';
-import { stripWgslComments } from './wgsl-comments.js';
 
 /** Kind-derived renderer facts, before material inputs, attributes and lighting are reflected. */
 export type ParticleRendererReflection = Omit<
@@ -90,14 +95,6 @@ interface ParsedStruct {
 }
 
 const STRUCT_NAMES = new Set(['VfxParameters', 'VfxCustom', 'VfxParticleData']);
-const TYPE_LAYOUT: Readonly<Record<VfxValueType, { alignment: number; size: number }>> = {
-  f32: { alignment: 4, size: 4 },
-  i32: { alignment: 4, size: 4 },
-  u32: { alignment: 4, size: 4 },
-  'vec2<f32>': { alignment: 8, size: 8 },
-  'vec3<f32>': { alignment: 16, size: 12 },
-  'vec4<f32>': { alignment: 16, size: 16 },
-};
 const MAX_PACKED_SIZE = 64 * 1024;
 /** Program v3 allocates reflected external resources after managed event bindings (8/9). */
 const DATA_INTERFACE_DEFINITIONS_V3: readonly VfxDataInterfaceRequirement[] = [
@@ -200,7 +197,7 @@ function parseType(
   detail: VfxReflectionErrorDetail,
 ): Result<VfxValueType, VfxReflectionError> {
   const type = rawType.replace(/\s+/g, '');
-  if (type in TYPE_LAYOUT) return ok(type as VfxValueType);
+  if (Object.hasOwn(WGSL_NUMERIC_LAYOUT, type)) return ok(type as VfxValueType);
   if (type.startsWith('array<')) {
     return failure(
       'vfx-reflection-invalid-dimension',
@@ -315,7 +312,7 @@ function buildStruct(
   let alignment = 1;
   const reflected: VfxReflectedField[] = [];
   for (const field of selected) {
-    const layout = TYPE_LAYOUT[field.type];
+    const layout = WGSL_NUMERIC_LAYOUT[field.type];
     offset = alignUp(offset, layout.alignment);
     const next = offset + layout.size;
     if (!Number.isSafeInteger(next) || next > MAX_PACKED_SIZE) {

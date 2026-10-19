@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
@@ -311,7 +312,7 @@ async function createBrowserOutputReceiver() {
       }
     });
   });
-  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   if (address === null || typeof address === 'string')
     throw new Error('browser producer receiver did not bind');

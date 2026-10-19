@@ -111,6 +111,17 @@ fn taaAccumulationWeight(frameIndex : u32, steadyWeight : f32) -> f32 {
 // T(C)=C/(1+luma(C)), temporal blending, then T^-1(C)=C/(1-luma(C)).
 // One scalar per color preserves chroma and avoids an unstable explicit
 // inverse near one. History and the post-processing output remain HDR.
+// Three r184 motion uses input pixels per frame, independent of viewport size.
+// TRAA raises the current weight for subpixel motion; TAAU starts at 0.025.
+fn taaMotionCurrentWeight(velocityUv: vec2<f32>, inputSize: vec2<f32>, upscale: bool) -> f32 {
+  let velocityPixels = velocityUv * inputSize;
+  let motion = clamp(length(velocityPixels) / 128.0, 0.0, 1.0);
+  let phase = abs(fract(velocityPixels));
+  let phaseWeight = max(phase, vec2<f32>(1.0) - phase);
+  let subpixel = (1.0 - phaseWeight.x * phaseWeight.y) / 0.75;
+  return clamp(select(0.05 + 0.25 * subpixel, 0.025, upscale) + motion, 0.0, 1.0);
+}
+
 fn blendTaaHistory(current : vec3<f32>, history : vec3<f32>, historyWeight : f32) -> vec3<f32> {
   let currentWeight = (1.0 - historyWeight) / (1.0 + max(0.0, luminance(current)));
   let previousWeight = historyWeight / (1.0 + max(0.0, luminance(history)));
@@ -326,11 +337,12 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
   let clipping = resolveTaaClipping(clipped, history.rgb, priorStability, stableAge);
   let clippedHistoryRgb = clipping.history;
   let reactiveFactor = 1.0 - clamp(temporal.w, 0.0, 1.0);
-  let velocityFactor = 1.0 - clamp(length(temporal.xy) * 64.0, 0.0, 1.0);
+  let upscale = params.hasOutputTemporal != 0u;
+  let movingWeight = 1.0 - taaMotionCurrentWeight(temporal.xy, vec2<f32>(dimensions), upscale);
   // Motion ending is not the same as settled radiance. Keep fast recovery
   // for 64 stationary frames before reducing the residual jitter response.
   // Any rejection, receiver motion, or secondary reactivity resets this age.
-  let steadyWeight = mix(0.95, 0.99, smoothstep(64.0, TAA_HISTORY_SETTLE_FRAMES, stableAge));
+  let steadyWeight = mix(select(0.95, 0.975, upscale), 0.99, smoothstep(64.0, TAA_HISTORY_SETTLE_FRAMES, stableAge));
   var progressiveWeight = taaAccumulationWeight(params.temporalFrameIndex, steadyWeight);
   if (params.hasOutputTemporal != 0u && length(temporal.xy) < 1e-5 && temporal.w == 0.0 && stableAge < TAA_STABILITY_FRAMES) {
     // A late stop has an old global frame index but a fresh local lattice.
@@ -342,7 +354,8 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
   // Depth is a disocclusion gate, not a continuous history fade. A sloped
   // static surface changes sampled depth under jitter without changing its
   // identity; attenuating accepted history makes those edges oscillate.
-  let historyWeight = progressiveWeight * reactiveFactor * velocityFactor;
+  let motionWeight = select(1.0, movingWeight, length(temporal.xy) > 1e-7);
+  let historyWeight = min(progressiveWeight, motionWeight) * reactiveFactor;
   let resolved = select(blendTaaHistory(current.rgb, clippedHistoryRgb, historyWeight), current.rgb, rejected);
   return TaaResolveOutput(
     vec4<f32>(roundTaaHistory(resolved, taaRoundingNoise(vec2<u32>(in.position.xy), params.temporalFrameIndex)), current.a),

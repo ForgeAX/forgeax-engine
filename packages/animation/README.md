@@ -72,6 +72,13 @@ Only `ENTITY_NULL_RAW` is absent from that mapping; entity handle `0` is valid.
 Adding an `AnimationPlayer` does not scan the scene tree. `AnimationGraph`
 playback uses the same player, target IDs, channels, and update system.
 
+The existing target binding cache assigns dense joint indices. Evaluation reuses
+numeric accumulators and output vectors through those indices, with independent
+scratch for nested calls. Each player starts a new accumulator generation; absent
+channels retain their current Transform values. World still receives at most one
+changed Transform write per target, with f32 and signed-zero comparisons. Scratch
+retains no component or asset objects; diagnostic and property maps remain local.
+
 ## Presentation timing
 
 AnimationTargetId requires Scene's transient TransformInterpolation marker,

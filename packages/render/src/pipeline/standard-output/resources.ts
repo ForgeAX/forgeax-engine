@@ -73,7 +73,7 @@ export function prepareStandardOutputResources(
     state.pendingAutoExposureGpuResources = undefined;
     state.autoExposureGpuResources = undefined;
   }
-  if (output !== undefined && output.colorLutStrength > 0) {
+  if (output !== undefined && output.colorLut > 0 && output.colorLutStrength > 0) {
     const lut = prepareStandardLutGpu({
       world,
       handle: toShared<'TextureAsset'>(output.colorLut),

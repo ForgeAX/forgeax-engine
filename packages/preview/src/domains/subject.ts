@@ -5,15 +5,23 @@ import type {
   ToolDescriptor,
   ToolSchema,
 } from '@forgeax/engine-tool-runtime';
-import type { PreviewHostMechanisms } from '../host/preview-host.js';
+import type { ResourcePreviewFailure } from '../evidence/errors.js';
+import type { PreviewAssetLoadResult, PreviewHostMechanisms } from '../host/preview-host.js';
 import { previewHostCapability } from '../host/preview-host.js';
+import { REQUIRED_PREVIEW_EVIDENCE } from '../host.js';
 import type { PreviewSubjectKind } from '../kit/presentation.js';
+import { isNonemptyString, isRecord } from '../request-schema.js';
 
 /** Mechanisms sampled once by the existing preview Host session. */
 export type ResourcePreviewInput = Pick<
   PreviewHostMechanisms,
   'assets' | 'renderer' | 'runId' | 'artifacts'
 >;
+
+export interface ResourceSubject extends Pick<PreviewAssetLoadResult, 'digest' | 'ownerFacts'> {
+  readonly guid: string;
+  readonly asset: unknown;
+}
 
 export async function loadResourceSubject(
   guid: string,
@@ -64,33 +72,25 @@ export function isResourcePreviewSize(value: unknown): value is number {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
-
 /** Keep the public result contract concrete at the ToolRuntime boundary. */
 function isResourcePreviewResult(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const subject = value.subject;
   if (
     !isRecord(subject) ||
-    !isString(subject.kind) ||
-    !isString(subject.guid) ||
-    !isString(subject.digest)
+    !isNonemptyString(subject.kind) ||
+    !isNonemptyString(subject.guid) ||
+    !isNonemptyString(subject.digest)
   )
     return false;
-  if (!isRecord(value.presentation) || !isString(value.presentation.kind)) return false;
+  if (!isRecord(value.presentation) || !isNonemptyString(value.presentation.kind)) return false;
   if (
     !isRecord(value.recipe) ||
-    !isString(value.recipe.schemaVersion) ||
-    !isString(value.recipe.recipeDigest)
+    !isNonemptyString(value.recipe.schemaVersion) ||
+    !isNonemptyString(value.recipe.recipeDigest)
   )
     return false;
-  if (!isRecord(value.oracle) || !isString(value.oracle.status)) return false;
+  if (!isRecord(value.oracle) || !isNonemptyString(value.oracle.status)) return false;
   return Array.isArray(value.artifacts);
 }
 
@@ -109,16 +109,12 @@ export const resourcePreviewResultSchema: ToolSchema<unknown> = {
 
 export const resourcePreviewArgsSchema: ToolSchema<ResourcePreviewArgs> = {
   parse(value) {
-    if (
-      value === null ||
-      typeof value !== 'object' ||
-      typeof Reflect.get(value, 'guid') !== 'string'
-    ) {
+    if (!isRecord(value) || typeof value.guid !== 'string') {
       return { ok: false, error: 'expected { guid: string }' };
     }
-    const guid = Reflect.get(value, 'guid');
+    const guid = value.guid;
     if (guid.length === 0) return { ok: false, error: 'guid must not be empty' };
-    const size = Reflect.get(value, 'size');
+    const size = value.size;
     if (size === undefined) return { ok: true, value: { guid } };
     return isResourcePreviewSize(size)
       ? { ok: true, value: { guid, size } }
@@ -140,21 +136,13 @@ export function subjectDescriptor(
     realm: 'host',
     argsSchema: resourcePreviewArgsSchema,
     resultSchema: resourcePreviewResultSchema,
-    evidence: ['rhi-tape', 'profile-capture', 'png'],
+    evidence: REQUIRED_PREVIEW_EVIDENCE,
   };
 }
 
 export interface ResourceSubjectFailure {
   readonly ok: false;
-  readonly error: {
-    readonly code:
-      | 'resource-preview-subject-invalid'
-      | 'resource-preview-kind-mismatch'
-      | 'resource-preview-oracle-failed';
-    readonly expected: string;
-    readonly hint: string;
-    readonly detail: Readonly<Record<string, JsonValue>>;
-  };
+  readonly error: ResourcePreviewFailure;
 }
 
 export function subjectFailure(

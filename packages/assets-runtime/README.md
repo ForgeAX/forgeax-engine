@@ -66,6 +66,17 @@ resources stay explicitly unavailable.
 
 ## Material contract index
 
+Resource packages parsed from platform JSON retain published `material-cook/4`
+records as immutable facts. Complete equal ABI values share one deeply frozen
+representation within the package; receipt names alone never establish equality.
+Decoder payloads and material values remain detached copies while their `cooked`
+record stays shared and immutable. Ready snapshots retain these admitted ABI
+facts but keep independent writable program bytes. Every publication still runs
+the existing record, selection and artifact integrity checks. Custom JSON
+adapters and caller-owned metadata retain their original copy and validation path.
+The temporary equality index ends with package parsing; weak ownership markers
+do not extend a package's lifetime.
+
 The runtime loader reads the Pack publication by GUID and exposes a read-only
 projection to render. Root and child material loading preserve validated explicit
 `staticSwitches`, including `false`, so extraction consumes the published feature
@@ -412,12 +423,13 @@ World handles or GPU resources. Pack bodies also retain adopted publication
 metadata and deferred plugin definitions, so this operation retains them. A Host
 can call it under memory pressure even while its App is paused.
 
-## Mesh binary v4 loading
+## Mesh binary v4/v5 loading
 
-[`loaders/mesh-bin.ts`](src/loaders/mesh-bin.ts) is the sole runtime decoder.
+[Geometry `unpackMeshBin`](../geometry/src/assets/mesh-bin.ts) owns binary decoding
+and `MeshBinAssetError`; the existing Assets Runtime entries re-export that owner.
 It rebuilds the geometry projection from the wire mask, compares schema version,
 stride, and digest, validates every byte/cardinality bound, then publishes the
-mesh and metadata as one result. Inline-pack loading uses the same loader.
+mesh and metadata as one result. Inline-pack loading and Geometry mesh decoding use the same parser.
 
 | Failure | Runtime behavior | Next action |
 |:--|:--|:--|
@@ -649,7 +661,7 @@ export async function decodeImageBytes(
   build-time `packages/image/src/image-importer.ts` `colorSpaceToFormat`
   rule -- one SSOT, no drift).
 - `opts.mipmap` -- `true` (default) or `false`. When `true`, `mipLevelCount`
-  is computed by the existing `numMipLevels({ width, height })`; when
+  is computed by the Types-owned `numMipLevels({ width, height })`; when
   `false`, `mipLevelCount === 1`.
 
 ### v1 boundaries (explicit non-goals)
@@ -938,7 +950,11 @@ flipping; Canvas sources can explicitly preserve top-left UVs. A successful uplo
 failed initial upload publishes nothing and a failed resize retains the previous
 view. Source disposal, renderer teardown and device replacement invalidate the
 corresponding GPU entries and remove their lifetime listeners. This transient
-store remains separate from static TextureAsset residency. Public Canvas authoring
+store remains separate from static TextureAsset residency. Canvas uploads request
+complete mip chains; video keeps one level. Dirty chains encode through the
+existing mip generator before scene work in the Renderer encoder. Submission
+commits the version; abort retains dirty state, and scratch resources retire on
+either outcome. Sampling and writing sRGB mips filters in linear light. Public Canvas authoring
 is [`CanvasTexture` in Render](../render/README.md#canvas-textures).
 
 ## Runtime publication preparation
@@ -1053,6 +1069,17 @@ absence of WebCrypto never disables verification.
 
 ## GPU mip generation
 
+All mipmap entrypoints consume `RhiDevice` and opaque RHI resource handles. The
+injected shader factory accepts that same device and returns `ShaderModule`, so
+backend factories pass directly through initialization and recovery. Async
+generation prewarms the pipeline and uses the synchronous submission path; errors
+remain `RhiError` throughout.
+
+The internal `encodeMipmaps` helper records into a caller encoder and returns
+scratch cleanup without finishing or submitting. `prepareMipmaps` delegates to
+it and retains its finish/discard transaction. Dynamic Canvas updates share the
+Renderer's submission rather than opening a separate queue path.
+
 `prepareMipmaps` and `blitMipmapsSync` accept `arrayLayerCount` for 2D array and
 cube textures; omission retains the single-layer 2D path. Every layer samples
 only its preceding mip and copies the result back into the same layer. All
@@ -1060,3 +1087,7 @@ layers share one transient 2D scratch chain, preserving sRGB conversion and the
 WebGL2 feedback-loop workaround. Renderer residency supplies the layer count
 from the existing texture layout. Recovery preparation still records without
 submitting, and its owner finishes or discards the same transaction.
+
+Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
+root membership, monotonicity and single-step rules in Pack production and Runtime
+replica admission. Shape validation and replica row/scope checks remain separate.

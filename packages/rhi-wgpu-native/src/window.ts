@@ -2,7 +2,8 @@ import { type RhiCanvasTarget, RhiError, type RhiInstance } from '@forgeax/engin
 import { type GpuLike, requestAdapterFrom, rhi as webgpuRhi } from '@forgeax/engine-rhi-webgpu';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { NativeWindowBinding } from './binding';
-import { NativeGPU, NativeGPUDevice, NativeGPUTexture } from './gpu';
+import { NativeGPU, NativeGPUDevice } from './gpu';
+import { NativeGPUTexture } from './objects';
 
 export interface NativeWindowOptions {
   readonly title?: string;

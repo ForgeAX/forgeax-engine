@@ -30,6 +30,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@forgeax/engine-math": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "@forgeax/engine-rhi": "workspace:*",
     "@forgeax/engine-types": "workspace:*",

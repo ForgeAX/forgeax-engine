@@ -49,7 +49,7 @@ function must<T>(result: { ok: true; value: T } | { ok: false; error: { hint: st
 }
 
 async function recordFrame(pack: DawnPack): Promise<Tape> {
-  const recorder = wrap(pack.rhi);
+  const recorder = wrap(pack.rhi, pack.createShaderModule);
   const createShaderModule = wrapCreateShaderModule(pack.createShaderModule, recorder);
   const adapter = must(await recorder.requestAdapter());
   const device = must(await adapter.requestDevice());
@@ -115,11 +115,11 @@ async function recordFrame(pack: DawnPack): Promise<Tape> {
   pass.end();
   // A closure copy that writes `copy` after the pass forces a standalone replay
   // for reads of `copy` at the render works.
-  encoder.copyTextureToBuffer(
-    { texture: target } as never,
-    { buffer: copy, bytesPerRow: SIZE * 4 } as never,
-    [SIZE, SIZE, 1],
-  );
+  encoder.copyTextureToBuffer({ texture: target }, { buffer: copy, bytesPerRow: SIZE * 4 }, [
+    SIZE,
+    SIZE,
+    1,
+  ]);
   const computePass = encoder.beginComputePass();
   computePass.setPipeline(pipeline);
   computePass.setBindGroup(0, bindGroup);

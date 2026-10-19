@@ -1,20 +1,5 @@
-import type { World } from '@forgeax/engine-ecs';
 import { AtmosphereInvalidParameterError, type AtmosphereParameterRange } from '../errors/render';
 import type { TemporalView } from '../temporal/view';
-
-/** The retained projection's environment extraction owner. */
-export interface EnvironmentExtractionContext {
-  readonly resourceOwner: number;
-  readonly world: World;
-}
-
-/** Keep environment reads at the resource-owner frame boundary. */
-export function createEnvironmentExtractionContext(
-  world: World,
-  resourceOwner: number,
-): EnvironmentExtractionContext {
-  return Object.freeze({ world, resourceOwner });
-}
 
 export type EnvironmentCandidate =
   | { readonly kind: 'image'; readonly entityKey: number; readonly sourceKey: string }

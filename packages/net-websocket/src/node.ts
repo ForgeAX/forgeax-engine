@@ -1,6 +1,4 @@
 import {
-  ENDPOINT_ERROR_HINTS,
-  ENDPOINT_EXPECTED,
   EndpointError,
   type EndpointEvent,
   type NetEndpoint,
@@ -15,7 +13,10 @@ import {
   DEFAULT_MAX_QUEUED_EVENTS,
 } from './event-queue';
 import type { WebSocketConstructor } from './websocket-client-core';
-import { createWebSocketConnectorAdapter } from './websocket-connector';
+import {
+  type ConnectWebSocketClientEndpointOptions,
+  createWebSocketConnectorAdapter,
+} from './websocket-connector';
 
 export interface ListenWebSocketEndpointOptions {
   readonly port: number;
@@ -26,9 +27,7 @@ export interface ListenWebSocketEndpointOptions {
   readonly maxQueuedEvents?: number | undefined;
 }
 
-export interface ConnectWebSocketClientEndpointOptions {
-  readonly maxQueuedEvents?: number | undefined;
-}
+export type { ConnectWebSocketClientEndpointOptions } from './websocket-connector';
 
 /**
  * Creates the Node WebSocket adapter for the public NetEndpointConnector.
@@ -126,8 +125,6 @@ export function listenWebSocketEndpoint(
           return err(
             new EndpointError({
               code: 'peer-not-found',
-              expected: ENDPOINT_EXPECTED['peer-not-found'],
-              hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
               detail: { peerId },
             }),
           );
@@ -141,8 +138,6 @@ export function listenWebSocketEndpoint(
           return err(
             new EndpointError({
               code: 'send-failed',
-              expected: ENDPOINT_EXPECTED['send-failed'],
-              hint: ENDPOINT_ERROR_HINTS['send-failed'],
               detail: { peerId, cause: normalizeCause(cause) },
             }),
           );
@@ -155,8 +150,6 @@ export function listenWebSocketEndpoint(
           return err(
             new EndpointError({
               code: 'peer-not-found',
-              expected: ENDPOINT_EXPECTED['peer-not-found'],
-              hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
               detail: { peerId },
             }),
           );

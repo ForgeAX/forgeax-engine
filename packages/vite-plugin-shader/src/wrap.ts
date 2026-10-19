@@ -10,8 +10,6 @@
 // - exactOptionalPropertyTypes: missing vs explicit-undefined strictly
 //   distinguished (the 'x' in src guard).
 
-/// <reference types="@webgpu/types" />
-
 import type { ShaderError, ShaderErrorDetail } from '@forgeax/engine-shader-compiler';
 
 /**
@@ -26,14 +24,9 @@ import type { ShaderError, ShaderErrorDetail } from '@forgeax/engine-shader-comp
  *
  * forgeax extension: `hint` (top-level surface, runtime/build-time consistent).
  */
-export interface ForgeaXShaderRollupLog {
-  readonly code: string;
-  readonly message: string;
-  readonly hint: string;
-  readonly expected: string;
-  readonly lineNum?: number | undefined;
-  readonly linePos?: number | undefined;
-  readonly detail?: ShaderErrorDetail | undefined;
+export interface ForgeaXShaderRollupLog
+  extends Pick<ShaderError, 'code' | 'message' | 'hint' | 'expected'>,
+    Partial<Pick<ShaderError, 'lineNum' | 'linePos' | 'detail'>> {
   readonly loc?:
     | {
         readonly line: number;
@@ -42,13 +35,13 @@ export interface ForgeaXShaderRollupLog {
       }
     | undefined;
   readonly id?: string | undefined;
-  readonly meta: {
-    readonly hint: string;
-    readonly expected: string;
-    readonly detail: {
-      readonly compilerMessages?: readonly GPUCompilationMessage[] | undefined;
-      readonly reason?: string | undefined;
-    };
+  readonly meta: Pick<ShaderError, 'hint' | 'expected'> & {
+    readonly detail: Partial<
+      Pick<
+        Extract<ShaderErrorDetail, { code: 'shader-compile-failed' }>,
+        'compilerMessages' | 'reason'
+      >
+    >;
   };
 }
 
@@ -67,64 +60,35 @@ export interface ForgeaXShaderRollupLog {
  *   at the top level).
  */
 export function toRollupLog(err: ShaderError): ForgeaXShaderRollupLog {
-  const log: {
-    code: string;
-    message: string;
-    hint: string;
-    expected: string;
-    lineNum?: number;
-    linePos?: number;
-    detail?: ShaderErrorDetail;
-    loc?: { line: number; column: number };
-    meta: {
-      hint: string;
-      expected: string;
-      detail: {
-        compilerMessages?: readonly GPUCompilationMessage[];
-        reason?: string;
-      };
-    };
-  } = {
+  const detail = err.detail;
+  const reason =
+    detail?.code === 'shader-compile-failed' ||
+    detail?.code === 'compiler-init-failed' ||
+    detail?.code === 'manifest-malformed'
+      ? detail.reason
+      : undefined;
+  return {
     code: err.code,
     message: err.message,
-    hint: err.hint, // top-level surface (forgeax custom, charter proposition 5)
+    hint: err.hint,
     expected: err.expected,
+    ...(err.lineNum === undefined ? {} : { lineNum: err.lineNum }),
+    ...(err.linePos === undefined ? {} : { linePos: err.linePos }),
+    ...(detail === undefined ? {} : { detail }),
+    ...(err.lineNum === undefined || err.linePos === undefined
+      ? {}
+      : {
+          loc: { line: err.lineNum, column: err.linePos },
+        }),
     meta: {
-      hint: err.hint, // Rollup spec forwarding contract
+      hint: err.hint,
       expected: err.expected,
-      detail: {},
+      detail: {
+        ...(detail?.code === 'shader-compile-failed'
+          ? { compilerMessages: detail.compilerMessages }
+          : {}),
+        ...(reason === undefined ? {} : { reason }),
+      },
     },
   };
-
-  // exactOptionalPropertyTypes: only attach loc when both values are defined
-  // (in the spirit of the research F-3 'x' in src guard).
-  if (err.lineNum !== undefined && err.linePos !== undefined) {
-    log.loc = { line: err.lineNum, column: err.linePos };
-  }
-  if (err.lineNum !== undefined) log.lineNum = err.lineNum;
-  if (err.linePos !== undefined) log.linePos = err.linePos;
-  if (err.detail !== undefined) log.detail = err.detail;
-
-  // Forward detail.compilerMessages / detail.reason (byte-for-byte aligned with
-  // RhiError.detail). The typed ShaderErrorDetail union narrows
-  // `compilerMessages` to the `shader-compile-failed` variant and `reason` to
-  // the 3 prose-bearing variants (feat-small-20260513-dx-docs-types-cleanup
-  // M1-T1 / D-9 6-variant union).
-  if (err.detail !== undefined) {
-    if (err.detail.code === 'shader-compile-failed') {
-      log.meta.detail.compilerMessages = err.detail.compilerMessages;
-      if (err.detail.reason !== undefined) {
-        log.meta.detail.reason = err.detail.reason;
-      }
-    } else if (
-      err.detail.code === 'compiler-init-failed' ||
-      err.detail.code === 'manifest-malformed'
-    ) {
-      if (err.detail.reason !== undefined) {
-        log.meta.detail.reason = err.detail.reason;
-      }
-    }
-  }
-
-  return log;
 }

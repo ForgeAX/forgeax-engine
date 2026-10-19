@@ -1,6 +1,6 @@
 import { isAbsolute, relative, sep } from 'node:path';
 
-export interface FilesystemPathApi {
+interface FilesystemPathApi {
   readonly sep: string;
   relative(from: string, to: string): string;
   isAbsolute(path: string): boolean;

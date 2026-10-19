@@ -10,11 +10,12 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { UI_AUTHORING_PROFILE, type UiAuthoringProfile } from '@forgeax/engine-ui/authoring';
 import { parseDocument } from 'yaml';
 import { execFileCommand } from './child-process.js';
 import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
+import { isFilesystemPathWithin } from './filesystem-path.js';
 import { applyInitPlan, createInitPlan } from './init.js';
 import { commandError, readProjectFacts } from './project.js';
 import { inspectRunDependencyClosure } from './run-snapshot.js';
@@ -63,11 +64,6 @@ async function configureSdkStore(root: string, store: string | undefined): Promi
   if (settings.errors.length > 0) throw settings.errors[0];
   settings.set('storeDir', store);
   await writeFile(path, settings.toString());
-}
-
-function containsOrEquals(parent: string, child: string): boolean {
-  const path = relative(parent, child);
-  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 export interface DoctorReport {
@@ -289,7 +285,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
     }
     const root = resolve(options.root ?? process.cwd());
     if (
-      containsOrEquals(
+      isFilesystemPathWithin(
         await canonicalProspectivePath(sdk.root),
         await canonicalProspectivePath(root),
       )

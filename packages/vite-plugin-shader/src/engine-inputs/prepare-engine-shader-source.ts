@@ -9,6 +9,7 @@ import {
   lowerStandardPhysicalBindings,
   type MaterialCookError,
   prepareStandardSource,
+  projectShaderConditionals,
 } from '@forgeax/engine-shader-compiler';
 import { derive, type MaterialError, type ParamSchemaEntry } from '@forgeax/engine-types';
 import { toRollupLog } from '../wrap.js';
@@ -179,51 +180,13 @@ export function throwAuthoredMaterialError(error: MaterialCookError | MaterialEr
 }
 
 function activeImportModuleIds(source: string, defines: Record<string, boolean>): Set<string> {
+  // Only directives affect reachability. Keep body-sized allocations out of
+  // variant closure traversal, but let the compiler own conditional nesting.
+  const directives = [...source.matchAll(/^[^\S\r\n]*(?:#|\/\/[^\S\r\n]*#import)[^\r\n]*/gm)]
+    .map((match) => match[0])
+    .join('\n');
   const activeModules = new Set<string>();
-  // Track disabled depth: each element is [disabled: boolean, seenElse: boolean].
-  // This must be applied to every module in the closure, not just the entry:
-  // naga_oil parses the supplied module map before resolving imports, so a
-  // resource helper behind a false axis can otherwise poison an unrelated
-  // variant even when its entry import was stripped.
-  const disableStack: Array<[boolean, boolean]> = [];
-  // Only directives affect import reachability. Avoid allocating and scanning
-  // every WGSL body line for every capability variant and closure module.
-  for (const match of source.matchAll(/^[^\S\r\n]*(?:#|\/\/[^\S\r\n]*#import)[^\r\n]*/gm)) {
-    const line = match[0];
-    const ifMatch = /^\s*#if\s+(\w+)\s*(?:==\s*(true|false))?\s*$/.exec(line);
-    const ifdefMatch = /^\s*#ifdef\s+(\w+)/.exec(line);
-    const ifndefMatch = /^\s*#ifndef\s+(\w+)/.exec(line);
-    if (ifMatch || ifdefMatch || ifndefMatch) {
-      const axis = ifMatch?.[1] ?? ifdefMatch?.[1] ?? ifndefMatch?.[1] ?? '';
-      const expected = ifMatch?.[2] !== 'false';
-      const parentDisabled = disableStack.length > 0 && disableStack[disableStack.length - 1]?.[0];
-      const enabled = ifMatch
-        ? (defines[axis] ?? false) === expected
-        : ifdefMatch
-          ? (defines[axis] ?? false)
-          : !(defines[axis] ?? false);
-      disableStack.push([parentDisabled || !enabled, false]);
-      continue;
-    }
-    if (/^\s*#else\b/.exec(line)) {
-      if (disableStack.length > 0) {
-        const top = disableStack[disableStack.length - 1];
-        if (top !== undefined && !top[1]) {
-          // Only flip once per #else and never re-enable a branch whose
-          // parent is disabled.
-          const parentDisabled =
-            disableStack.length > 1 && disableStack[disableStack.length - 2]?.[0];
-          if (!parentDisabled) top[0] = !top[0];
-          top[1] = true;
-        }
-      }
-      continue;
-    }
-    if (/^\s*#endif/.exec(line)) {
-      if (disableStack.length > 0) disableStack.pop();
-      continue;
-    }
-    if (disableStack.length > 0 && disableStack[disableStack.length - 1]?.[0]) continue;
+  for (const line of projectShaderConditionals(directives, defines, 'all').split('\n')) {
     const importMatch = /^\s*(?:\/\/\s*)?#import\s+([A-Za-z0-9_:]+)/.exec(line);
     if (importMatch?.[1]) activeModules.add(importMatch[1].replace(/::$/, ''));
   }

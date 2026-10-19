@@ -1,11 +1,13 @@
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
+import { isFiniteBounds3 } from '@forgeax/engine-types';
 import {
   materialArtifactProgramIdentity,
   sameMaterialArtifactProgram,
 } from '../assembly/material/artifact-program-identity';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenDrawKey, gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
+import { transformRenderState } from '../material-render-state';
 import { isStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import { FirstEntryMap } from '../record/first-entry-map';
 import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
@@ -43,35 +45,11 @@ export interface PreparedBatch {
   readonly slotGeneration: number;
 }
 
-function hasFiniteOrderedBounds(bounds: Float32Array | undefined): boolean {
-  if (bounds === undefined || bounds.length < 6) return false;
-  for (let index = 0; index < 6; index += 1) {
-    if (!Number.isFinite(bounds[index])) return false;
-  }
-  const minX = bounds[0];
-  const minY = bounds[1];
-  const minZ = bounds[2];
-  const maxX = bounds[3];
-  const maxY = bounds[4];
-  const maxZ = bounds[5];
-  return (
-    minX !== undefined &&
-    minY !== undefined &&
-    minZ !== undefined &&
-    maxX !== undefined &&
-    maxY !== undefined &&
-    maxZ !== undefined &&
-    minX <= maxX &&
-    minY <= maxY &&
-    minZ <= maxZ
-  );
-}
-
 export function skinLaneReason(
   snapshot: RenderableSnapshot,
 ): 'skin-bounds-missing' | 'skin-address-missing' | undefined {
   if (snapshot.skin === undefined) return undefined;
-  if (!hasFiniteOrderedBounds(snapshot.skin.bounds)) return 'skin-bounds-missing';
+  if (!isFiniteBounds3(snapshot.skin.bounds)) return 'skin-bounds-missing';
   if (
     snapshot.skin.storageOrUniform !== 'storage' ||
     !Number.isInteger(snapshot.skin.customDataStart) ||
@@ -116,7 +94,7 @@ export function preparedPbrCandidateEligible(
       snapshot.skin.customDataStart >= 0 &&
       Number.isInteger(snapshot.skin.customDataStart) &&
       snapshot.skin.buffer !== undefined &&
-      hasFiniteOrderedBounds(snapshot.skin.bounds));
+      isFiniteBounds3(snapshot.skin.bounds));
   return (
     publishedAbiMatches &&
     !alphaBlend &&
@@ -350,7 +328,10 @@ export function prepareBatchRows(
         lodHysteresis: lod?.hysteresis ?? null,
         lodRanges: lod?.ranges ?? null,
       });
-    const renderState = geometryRenderStateForTopology(batch.key.topology, material.renderState);
+    const renderState = geometryRenderStateForTopology(
+      batch.key.topology,
+      transformRenderState(material.renderState, slot.snapshot.transform.world),
+    );
     const fact: PreparedDrawFacts = Object.freeze({
       drawKey,
       activeKey,

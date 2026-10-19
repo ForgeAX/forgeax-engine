@@ -112,7 +112,7 @@ describe('Atmosphere sun extraction', () => {
       const firstSun = world
         .spawn({
           component: DirectionalLight,
-          data: { direction: [0, -0.25, 1], color: [1, 1, 1], intensity: 1 },
+          data: { castShadow: true, direction: [0, -0.25, 1], color: [1, 1, 1], intensity: 1 },
         })
         .unwrap();
       const recovered = extractFrame(world, prepareExtractContext(world, { renderables: 'none' }));
@@ -129,7 +129,7 @@ describe('Atmosphere sun extraction', () => {
     const sunEntity = world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0, -0.25, 1], color: [0.2, 0.4, 0.6], intensity: 4 },
+        data: { castShadow: true, direction: [0, -0.25, 1], color: [0.2, 0.4, 0.6], intensity: 4 },
       })
       .unwrap() as unknown as number;
     spawnCamera(world, 1);
@@ -152,7 +152,7 @@ describe('Atmosphere sun extraction', () => {
     world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0, -0.25, 1], color: [0.2, 0.4, 0.6], intensity: 0 },
+        data: { castShadow: true, direction: [0, -0.25, 1], color: [0.2, 0.4, 0.6], intensity: 0 },
       })
       .unwrap();
     spawnCamera(world, 1);

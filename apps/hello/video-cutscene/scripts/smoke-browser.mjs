@@ -34,6 +34,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
 import { chromium } from 'playwright';
+import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { observeViteHttpReadiness } from '../../../../scripts/lib/vite-http-readiness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -156,14 +157,8 @@ try {
 console.log(`[smoke-browser] using ${portUrl}`);
 
 const browser = await chromium.launch({
-  headless: true,
-  channel: 'chrome',
-  args: [
-    '--enable-unsafe-webgpu',
-    '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-    '--ignore-gpu-blocklist',
-    '--autoplay-policy=no-user-gesture-required',
-  ],
+  ...browserLaunch,
+  headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
   chromiumSandbox: true,
 });
 const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 });

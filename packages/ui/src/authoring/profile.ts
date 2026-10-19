@@ -482,17 +482,17 @@ export const UI_AUTHORING_PROFILE: UiAuthoringProfile = {
   precedence: ['runtime-bound', 'normalizable', 'native'],
 };
 
-export interface UiClassification {
-  readonly category: UiAuthoringCategory;
-  readonly blocking: boolean;
+/** Authored companion URL policy shared by HTML attributes and CSS url(). */
+export function authoringUrlCategory(value: string): UiAuthoringCategory {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value)) return 'runtime-bound';
+  if (value.startsWith('/') || value.startsWith('../')) return 'normalizable';
+  return 'native';
 }
 
-export function pickClassification(
-  ...classifications: readonly UiClassification[]
-): UiClassification {
-  for (const category of UI_AUTHORING_PROFILE.precedence) {
-    const match = classifications.find((entry) => entry.category === category);
-    if (match !== undefined) return match;
-  }
-  return { category: 'native', blocking: false };
+export function pickAuthoringCategory(
+  ...categories: readonly UiAuthoringCategory[]
+): UiAuthoringCategory {
+  return (
+    UI_AUTHORING_PROFILE.precedence.find((category) => categories.includes(category)) ?? 'native'
+  );
 }

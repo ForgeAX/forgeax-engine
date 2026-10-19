@@ -31,7 +31,8 @@
 //   - `[smoke] pixelSamples=<json>`
 //   - `[smoke] PASS - 6 criteria GREEN: ...`
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +52,7 @@ const COMPARISON_CONTROL_FLAGS = {
   FALSIFY_NO_SPECULAR_MAP: process.env.FALSIFY_NO_SPECULAR_MAP ?? '0',
 };
 const ORACLE_READBACK_PLACEMENT = 'after-target-frame-workload';
-const PERSISTENCE_BASELINE = 'finalize-plus-retained-report-and-artifact-validation';
+const PERSISTENCE_BASELINE = 'encoded-tape-persistence-and-decode-validation';
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -262,34 +263,10 @@ let assets;
 try {
   let rendererOptions = {};
   if (RHI_DEBUG_DAWN_CAPTURE || RHI_DEBUG_DAWN_IDLE) {
-    const { rhi: realRhi, createShaderModule } = await import('@forgeax/engine-rhi-webgpu');
-    const { wrap, wrapCreateShaderModule } = await import('@forgeax/engine-rhi-debug');
-    debugInst = wrap(realRhi);
-    const debugExtras = debugInst;
-    debugExtras.createShaderModule = wrapCreateShaderModule(createShaderModule, debugInst);
-    const realAcquireCanvasContext = realRhi.acquireCanvasContext.bind(realRhi);
-    debugExtras.acquireCanvasContext = (canvasArg) => {
-      const contextResult = realAcquireCanvasContext(canvasArg);
-      if (!contextResult.ok) return contextResult;
-      const realContext = contextResult.value;
-      const wrappedContext = Object.create(realContext);
-      wrappedContext.configure = (desc) => {
-        const device = desc.device;
-        const realDevice = device?._realDevice;
-        return realContext.configure(
-          realDevice === undefined ? desc : { ...desc, device: realDevice },
-        );
-      };
-      return { ...contextResult, value: wrappedContext };
-    };
-    if (RHI_DEBUG_DAWN_CAPTURE) {
-      const armResult = debugInst.arm(RHI_DEBUG_CAPTURE_FRAMES);
-      if (!armResult.ok) {
-        console.error(`[smoke] FAIL - Dawn RHI-debug arm failed: ${armResult.error.code}`);
-        process.exit(1);
-      }
-    }
-    rendererOptions = { rhi: debugInst };
+    const backend = await import('@forgeax/engine-rhi-webgpu');
+    const { attachRecorder } = await import('@forgeax/engine-rhi-debug');
+    debugInst = attachRecorder(backend).unwrap();
+    rendererOptions = { rhi: debugInst.backend.rhi };
   }
   const constructed = await constructRuntimeRendererHost(
     mockCanvas,
@@ -426,27 +403,19 @@ let telemetryReadback;
 if (debugInst !== undefined) {
   if (RHI_DEBUG_DAWN_CAPTURE) {
     const captureStart = performance.now();
+    const pendingCapture = debugInst.captureFrame();
     const snapshotStart = performance.now();
-    const snapshotResult = await debugInst.snapshotAllLiveResources();
+    const snapshotResult = await debugInst.frameBoundary();
     const snapshotWallMs = Math.max(0, Math.round(performance.now() - snapshotStart));
     if (!snapshotResult.ok) {
       console.error(`[smoke] FAIL - Dawn RHI-debug snapshot failed: ${snapshotResult.error.code}`);
       process.exit(1);
     }
     world.update().unwrap();
-    const captureDraw = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
+    await drawReadyFrame(renderer, {
+      leases: [lease], camera: { lease }, environment: { lease },
     });
-    if (!captureDraw.ok) {
-      console.error(`[smoke] draw capture frame error: ${captureDraw.error.code}`);
-    } else {
-      const completed = await captureDraw.value.completed;
-      if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-      else framesObserved++;
-    }
-    debugInst.onFrameEnd();
+    framesObserved++;
     const queueWaitStart = performance.now();
     await sharedDevice.queue.onSubmittedWorkDone();
     const queueWaitWallMs = Math.max(0, Math.round(performance.now() - queueWaitStart));
@@ -461,24 +430,23 @@ if (debugInst !== undefined) {
     }
     const captureWallMs = Math.max(0, Math.round(performance.now() - captureStart));
     const finalizeStart = performance.now();
-    const finalizeResult = debugInst.finalize();
+    (await debugInst.frameBoundary()).unwrap();
+    const captured = (await pendingCapture).unwrap();
+    const bytes = captured.bytes;
+    const digest = captured.digest;
     const serializationWallMs = Math.max(0, Math.round(performance.now() - finalizeStart));
-    if (!finalizeResult.ok) {
-      console.error(`[smoke] FAIL - Dawn RHI-debug finalize failed: ${finalizeResult.error.code}`);
-      process.exit(1);
-    }
     const persistenceStart = performance.now();
-    const persistedReport = JSON.parse(readFileSync(finalizeResult.value.reportPath, 'utf8'));
-    statSync(finalizeResult.value.tapePath);
-    statSync(finalizeResult.value.reportPath);
-    if (persistedReport.valid !== true) {
-      console.error('[smoke] FAIL - retained RHI-debug report is not valid');
-      process.exit(1);
-    }
+    const output = resolve(here, '..', 'artifacts', 'rhi-debug-dawn');
+    mkdirSync(output, { recursive: true });
+    const tapePath = resolve(output, 'frame.rhitape');
+    writeFileSync(tapePath, bytes);
+    const { decodeTape } = await import('@forgeax/engine-rhi-debug');
+    const persisted = decodeTape(new Uint8Array(readFileSync(tapePath))).unwrap();
     const persistenceWallMs = Math.max(0, Math.round(performance.now() - persistenceStart));
     const finalizeWallMs = serializationWallMs + persistenceWallMs;
     rhiDebugCapture = {
-      ...finalizeResult.value,
+      tapePath, digest, byteLength: captured.byteLength,
+      eventCount: persisted.events.length,
       requestedFrames: RHI_DEBUG_CAPTURE_FRAMES,
       captureWallMs,
       finalizeWallMs,
@@ -512,18 +480,12 @@ if (debugInst !== undefined) {
 }
 for (let i = framesObserved; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
-  }
+  framesObserved++;
 }
 const device = sharedDevice;
 if (!device) {

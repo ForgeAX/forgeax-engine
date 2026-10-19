@@ -45,6 +45,22 @@ export interface PreparedRenderPublication {
   readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
 }
 
+function finiteFloats(values: Float32Array): boolean {
+  for (let index = 0; index < values.length; index++) {
+    if (!Number.isFinite(values[index])) return false;
+  }
+  return true;
+}
+
+function validPoseMatrices(matrices: readonly Float32Array[]): boolean {
+  for (let index = 0; index < matrices.length; index++) {
+    const matrix = matrices[index];
+    if (!(matrix instanceof Float32Array) || matrix.length !== 16 || !finiteFloats(matrix))
+      return false;
+  }
+  return true;
+}
+
 /** Assets live for this source session; the Renderer owns all retained scene/GPU state. */
 export class RenderPublicationReceiver {
   private revision = 0;
@@ -195,7 +211,7 @@ export class RenderPublicationReceiver {
       !(packet.transformEntities instanceof Uint32Array) ||
       !(packet.transforms instanceof Float32Array) ||
       packet.transforms.length !== packet.transformEntities.length * 16 ||
-      !packet.transforms.every(Number.isFinite) ||
+      !finiteFloats(packet.transforms) ||
       !Number.isFinite(packet.sampleTimeSeconds)
     )
       return reject('shape', 'numeric columns');
@@ -388,12 +404,8 @@ export class RenderPublicationReceiver {
           pose.jointCount <= 0 ||
           pose.inverseBindMatrices.length !== pose.jointCount ||
           pose.jointWorlds.length !== pose.jointCount ||
-          [...pose.inverseBindMatrices, ...pose.jointWorlds].some(
-            (matrix) =>
-              !(matrix instanceof Float32Array) ||
-              matrix.length !== 16 ||
-              !matrix.every(Number.isFinite),
-          ))
+          !validPoseMatrices(pose.inverseBindMatrices) ||
+          !validPoseMatrices(pose.jointWorlds))
       )
         return reject('shape', 'skin pose');
       const capsuleShadow = template.snapshot.capsuleShadow;
@@ -401,7 +413,7 @@ export class RenderPublicationReceiver {
         capsuleShadow?.status === 'ready' &&
         (!(capsuleShadow.capsules instanceof Float32Array) ||
           capsuleShadow.capsules.length % WORLD_CAPSULE_STRIDE !== 0 ||
-          !capsuleShadow.capsules.every(Number.isFinite))
+          !finiteFloats(capsuleShadow.capsules))
       )
         return reject('shape', 'capsule shadow');
       updated.add(entityKey);

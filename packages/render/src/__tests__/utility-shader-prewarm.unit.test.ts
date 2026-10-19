@@ -2,10 +2,12 @@ import type { ShaderModule } from '@forgeax/engine-rhi';
 import type { ManifestEntry } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ATMOSPHERE_SHADER_STAGES,
   DEPTH_PYRAMID_SHADER_STAGES,
   prewarmSsrWithDepthPyramid,
   prewarmUtilityShaders,
   SSR_SHADER_STAGES,
+  VOLUMETRIC_FOG_SHADER_STAGES,
 } from '../assembly/utility-shader-prewarm';
 
 const ssrEntries = ['ssr_trace', 'ssr_temporal', 'vs_ssr_compose'].map(
@@ -96,5 +98,66 @@ describe('utility shader bundle preparation', () => {
     );
     expect(both?.pyramid.seed).toBe('fn depth_pyramid_seed() {}');
     expect(both?.ssr.trace).toBe('fn ssr_trace() {}');
+  });
+});
+
+describe.each([
+  ['atmosphere', ATMOSPHERE_SHADER_STAGES],
+  ['volumetric fog', VOLUMETRIC_FOG_SHADER_STAGES],
+] as const)('%s shader publication', (bundle, stages) => {
+  const entries: ManifestEntry[] = stages.map(([, label, entry]) => ({
+    hash: label,
+    wgsl: `fn ${entry}() {}`,
+    glsl: undefined,
+    bindings: '[]',
+  }));
+  const prewarm = (
+    inputs: readonly ManifestEntry[],
+    compile: (label: string, source: string) => Promise<ShaderModule>,
+    seed: (label: string, module: ShaderModule) => void,
+  ) => prewarmUtilityShaders<string>(bundle, stages, inputs, compile, seed);
+
+  it('admits absence and rejects every partial bundle before compilation', async () => {
+    const compile = vi.fn(),
+      seed = vi.fn();
+    expect(await prewarm([], compile, seed)).toBeUndefined();
+    for (let missing = 0; missing < entries.length; missing++) {
+      await expect(
+        prewarm(
+          entries.filter((_, i) => i !== missing),
+          compile,
+          seed,
+        ),
+      ).rejects.toMatchObject({ code: 'shader-compile-failed' });
+    }
+    expect(compile).not.toHaveBeenCalled();
+    expect(seed).not.toHaveBeenCalled();
+  });
+
+  it('publishes only after all modules compile, and leaves failure unpublished', async () => {
+    const seed = vi.fn();
+    const finalLabel = stages.at(-1)?.[1];
+    await expect(
+      prewarm(
+        entries,
+        async (label) => {
+          if (label === finalLabel) throw new Error('last compile failed');
+          return {} as ShaderModule;
+        },
+        seed,
+      ),
+    ).rejects.toThrow('last compile failed');
+    expect(seed).not.toHaveBeenCalled();
+    const sources = await prewarm(
+      entries,
+      async () => {
+        expect(seed).not.toHaveBeenCalled();
+        return {} as ShaderModule;
+      },
+      seed,
+    );
+    expect(Object.keys(sources ?? {})).toEqual(stages.map(([key]) => key));
+    expect(seed.mock.calls.map(([label]) => label)).toEqual(stages.map(([, label]) => label));
+    expect(Object.values(sources ?? {})).toEqual(entries.map((entry) => entry.wgsl));
   });
 });

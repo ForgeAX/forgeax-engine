@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
@@ -116,10 +117,7 @@ function listenerPids(port) {
 
 async function allocateFreePort() {
   const server = createServer();
-  await new Promise((resolvePromise, reject) => {
-    server.once('error', reject);
-    server.listen(0, DEFAULT_HOST, resolvePromise);
-  });
+  await once(server.listen(0, DEFAULT_HOST), 'listening');
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : null;
   await new Promise((resolvePromise) => server.close(resolvePromise));

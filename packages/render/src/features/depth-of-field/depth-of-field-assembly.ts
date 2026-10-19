@@ -6,7 +6,7 @@ import type {
 import type { DepthOfFieldInspection } from '../../inspection-types';
 import { DEPTH_OF_FIELD_POST_PROCESS_IDS } from './depth-of-field-feature';
 
-export interface DepthOfFieldShaderSources {
+interface DepthOfFieldShaderSources {
   readonly singleSample?: string;
   readonly multisampled?: string;
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/4.advanced-opengl/3.blending/scripts/smoke-dawn.mjs
 //
 // LearnOpenGL section 4.advanced-opengl 3.blending dawn-node smoke.
@@ -394,9 +395,11 @@ const grassMatHandle = world.allocSharedRef('MaterialAsset', {
     {
       name: 'Forward',
       program: { module: 'learn_render::alpha_test' },
-      renderState: { tags: { LightMode: 'Forward' } },
-      queue: 3000, // RenderQueue.Transparent
-      renderState: { depthWriteEnabled: false },
+      renderState: {
+        tags: { LightMode: 'Forward' },
+        queue: 3000,
+        depthWriteEnabled: false,
+      },
     },
   ],
   values: {
@@ -414,9 +417,9 @@ const windowMatHandle = world.allocSharedRef('MaterialAsset', {
     {
       name: 'Forward',
       program: { module: 'forgeax::default-standard-pbr' },
-      renderState: { tags: { LightMode: 'Forward' } },
-      queue: 3000, // RenderQueue.Transparent
       renderState: {
+        tags: { LightMode: 'Forward' },
+        queue: 3000,
         depthWriteEnabled: false,
         blend: {
           color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -511,7 +514,7 @@ for (const p of TRANSPARENT_POSITIONS) {
 // Directional light.
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.5, -1.0, -0.3],
     color: [1.0, 1.0, 1.0],
     intensity: 1.0,
@@ -538,14 +541,8 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
-  }
+  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  framesObserved++;
 }
 const device = sharedDevice;
 if (!device) {

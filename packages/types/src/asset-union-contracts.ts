@@ -59,13 +59,21 @@ export interface RenderPipelineAsset {
     readonly clusterGrid?: { readonly x: number; readonly y: number; readonly z: number };
     readonly ssao?: {
       readonly enabled: boolean;
-      /** Screen-space AO estimator; defaults to hemisphere SSAO. */
+      /** Screen-space AO estimator; defaults to GTAO. */
       readonly algorithm?: 'ssao' | 'gtao' | undefined;
       /** Fraction of screen-space AO applied to direct light, in [0, 1]; default 0. */
       readonly directLightingStrength?: number | undefined;
       readonly radius?: number | undefined;
       readonly bias?: number | undefined;
       readonly intensity?: number | undefined;
+      /** GTAO view-space depth rejection; default 1 world unit. */
+      readonly thickness?: number | undefined;
+      /** GTAO radial distribution exponent; default 1 (linear). */
+      readonly distanceExponent?: number | undefined;
+      /** GTAO horizon update falloff in [0, 1]; default 1. */
+      readonly distanceFallOff?: number | undefined;
+      /** AO extent relative to internal scene color, in [0.25, 1]; default 1. */
+      readonly resolutionScale?: number | undefined;
       readonly quality?: 'low' | 'medium' | 'high' | undefined;
     };
     /** Final display-encoded RGBA8 dither; defaults to true when omitted. */

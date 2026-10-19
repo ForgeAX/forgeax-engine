@@ -27,7 +27,7 @@ import {
   createShaderModule,
   createShaderModuleImmediate,
   requestAdapter,
-  requestDevice,
+  requestAdapterFrom,
 } from '../index';
 import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gpu-device';
 
@@ -55,7 +55,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('MVP-1.2 runtime — caps / features / limits exposed as three independent layers + non-null', () => {
     it('device.caps is a readonly object with the boolean flag fields declared in this loop', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -74,7 +74,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('M2 w10 — device.caps.backendKind === "webgpu" (backend self-report)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -83,7 +83,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('device.features is a ReadonlySet<GPUFeatureName>, size is readable (non-null set interface object)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -99,7 +99,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('device.limits is a readonly object containing the key numeric fields of GPUSupportedLimits', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -115,7 +115,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('caps / features / limits are three independent references (not aliases / no shared identity)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -128,7 +128,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('AI-user capability-probe path example — if (device.caps.compute) ... compiles without errors', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -172,7 +172,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w2 - RhiCommandEncoder lifecycle (red until w3)', () => {
     it('device.createCommandEncoder(desc?) returns Result.ok<RhiCommandEncoder>', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: { label?: string | undefined } | undefined) => {
@@ -189,7 +189,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('encoder.finish() yields Result.ok<CommandBuffer>; subsequent beginRenderPass yields command-encoder-finished', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: unknown) => {
@@ -270,7 +270,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('keeps the finished-encoder failure channel', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const encoderResult = r.value.createCommandEncoder();
       if (!encoderResult.ok) throw new Error('mock createCommandEncoder failed');
@@ -307,7 +307,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w24 - resolveQuerySet destinationOffset alignment maps to webgpu-runtime-error (K-2 / spec normative)', () => {
     it('destinationOffset = 8 returns webgpu-runtime-error with .expected literal (F-3)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value;
 
@@ -336,7 +336,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w24 - resolveQuerySet destination.usage missing QUERY_RESOLVE maps to webgpu-runtime-error', () => {
     it('destination usage = COPY_DST without QUERY_RESOLVE returns webgpu-runtime-error with .expected literal (F-3)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value;
 
@@ -365,7 +365,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w24 - resolveQuerySet firstQuery + queryCount range bounds', () => {
     it('firstQuery + queryCount > querySet.count returns webgpu-runtime-error with .expected literal (F-3)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value;
 
@@ -568,7 +568,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     it('normalizes omitted dynamic Dawn limits from the adapter without mutating the descriptor', async () => {
       const gpu = createMockGpu();
       const descriptor: GPUDeviceDescriptor = { label: 'dynamic-limit-probe' };
-      const r = await requestDevice({ gpu, deviceDescriptor: descriptor });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice(descriptor);
       expect(r.ok).toBe(true);
       expect(descriptor).toEqual({ label: 'dynamic-limit-probe' });
 
@@ -585,7 +585,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     it('preserves explicit dynamic limits while filling only the omitted adapter-backed limit', async () => {
       const gpu = createMockGpu();
       const requiredLimits = { maxDynamicUniformBuffersPerPipelineLayout: 2 };
-      const r = await requestDevice({ gpu, deviceDescriptor: { requiredLimits } });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice({ requiredLimits });
       expect(r.ok).toBe(true);
 
       const ev = lastOf(gpu.__captured, 'requestDevice');
@@ -602,7 +602,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
         maxDynamicUniformBuffersPerPipelineLayout: 1_000_000,
         maxDynamicStorageBuffersPerPipelineLayout: 1_000_000,
       };
-      const r = await requestDevice({ gpu, deviceDescriptor: { requiredLimits } });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice({ requiredLimits });
       expect(r.ok).toBe(true);
 
       const ev = lastOf(gpu.__captured, 'requestDevice');
@@ -636,7 +636,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('BufferDescriptor passes through size / usage / label / mappedAtCreation', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const device = r.value;
@@ -658,7 +658,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('TextureDescriptor passes through size / format / usage / textureBindingViewDimension (R8 follow-up)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -680,7 +680,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('SamplerDescriptor passes through magFilter / minFilter / compare / maxAnisotropy', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -701,7 +701,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('BindGroupLayoutDescriptor passes through the entries array reference', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -718,7 +718,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('RenderPipelineDescriptor passes through vertex / fragment / layout', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -748,7 +748,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('converts a synchronous render-pipeline failure into a structured Result.err', async () => {
       const gpu = createMockGpu({ renderPipelineError: 'pipeline validation failed' });
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -778,7 +778,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('S-7 + hard constraint 10 — `?: T | undefined` guard (omitted vs explicit undefined)', () => {
     it('when label is omitted, the descriptor passed to the mock does not contain the label key (the `"x" in src` guard fires)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -789,7 +789,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('when label: undefined is explicitly passed, the descriptor passed to the mock contains the label key with value undefined', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -815,7 +815,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w04 createTextureView - verbatim pass-through of 9 TextureViewDescriptor fields', () => {
     it('passes through label / format / dimension / usage / aspect / mip / array layer fields', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -858,7 +858,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w04 createTextureView - S-7 + hard constraint 10 - `?: T | undefined` guard', () => {
     it('when label is omitted, the descriptor passed to the mock does not contain the label key', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -876,7 +876,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('when label: undefined is explicit, the descriptor passed to the mock contains the label key with value undefined', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -901,7 +901,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w04 createTextureView - cross-resource validation maps to webgpu-runtime-error (research §1.1)', () => {
     it("format not in source.format ∪ source.viewFormats returns 'webgpu-runtime-error'", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -928,7 +928,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it("usage not a subset of source.usage returns 'webgpu-runtime-error'", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -980,7 +980,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w08 createComputePipeline - layout / compute pass-through', () => {
     it("layout: 'auto' is forwarded verbatim to the underlying device", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -1004,7 +1004,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('layout: PipelineLayout brand is forwarded verbatim', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -1030,7 +1030,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('compute.constants is forwarded verbatim', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -1066,7 +1066,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w11 createQuerySet - count boundary 0 / 4096 / 4097', () => {
     it('count = 0 is legal (research §1.3 lower bound)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -1080,7 +1080,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('count = 4096 is legal (research §1.3 upper bound)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -1093,7 +1093,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it("count = 4097 returns 'limit-exceeded' with the contracted templates", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
 
@@ -1112,7 +1112,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w11 createQuerySet - timestamp feature gate (boundary case row 2)', () => {
     it("type: 'timestamp' + caps.timestampQuery === false returns 'feature-not-enabled'", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice failed');
       const device = r.value;
       // The default mock features set is empty -> deriveCaps yields
@@ -1195,7 +1195,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     rawContext: MockGpuCanvasContext;
   }> {
     const gpu = createMockGpu();
-    const r = await requestDevice({ gpu });
+    const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
     if (!r.ok) throw new Error('mock requestDevice should not fail');
     const device = r.value;
     const rawContext = makeMockCanvasContext();
@@ -1365,7 +1365,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('AC-04 — createX returns Result synchronously (Result.ok | Result.err)', () => {
     it('createBuffer returns Result<Buffer, RhiError> synchronously (not Promise)', async () => {
       const gpu = createMockGpu({});
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const device = r.value;
@@ -1380,7 +1380,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('createBindGroupLayout returns Result synchronously', async () => {
       const gpu = createMockGpu({});
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const device = r.value;
@@ -1449,7 +1449,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('adapter null -> code=adapter-unavailable + three non-empty string fields', async () => {
       const gpu = createMockGpu({ adapterNull: true });
-      const e = unwrapErr(await requestDevice({ gpu }));
+      const e = unwrapErr(await requestAdapterFrom(gpu));
       expect(e).toBeInstanceOf(RhiError);
       expect(e.code).toBe('adapter-unavailable');
       expect(typeof e.expected).toBe('string');
@@ -1481,7 +1481,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('feature not enabled -> code=feature-not-enabled + three non-empty string fields', async () => {
       const gpu = createMockGpu({ requestDeviceFeatureNotEnabled: true });
-      const e = unwrapErr(await requestDevice({ gpu }));
+      const e = unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice());
       expect(e.code).toBe('feature-not-enabled');
       expect(e.expected.length).toBeGreaterThan(0);
       expect(e.hint.length).toBeGreaterThan(0);
@@ -1489,7 +1489,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('limit exceeded -> code=limit-exceeded + three non-empty string fields', async () => {
       const gpu = createMockGpu({ requestDeviceLimitExceeded: true });
-      const e = unwrapErr(await requestDevice({ gpu }));
+      const e = unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice());
       expect(e.code).toBe('limit-exceeded');
       expect(e.expected.length).toBeGreaterThan(0);
       expect(e.hint.length).toBeGreaterThan(0);
@@ -1505,7 +1505,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
         length: 5,
       });
       const gpu = createMockGpu({ shaderCompileMessages: [compileMsg] });
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value;
 
@@ -1537,7 +1537,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('other 4 paths have detail === undefined (charter proposition 4 baseline / shader-compile-failed exclusive)', async () => {
       const gpu = createMockGpu({ adapterNull: true });
-      const e = unwrapErr(await requestDevice({ gpu }));
+      const e = unwrapErr(await requestAdapterFrom(gpu));
       expect(e.detail).toBeUndefined();
     });
   });
@@ -1548,19 +1548,23 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
       {
         const gpu = createMockGpu({ adapterNull: true });
-        triggered.add(unwrapErr(await requestDevice({ gpu })).code);
+        triggered.add(unwrapErr(await requestAdapterFrom(gpu)).code);
       }
       {
         const gpu = createMockGpu({ requestDeviceFeatureNotEnabled: true });
-        triggered.add(unwrapErr(await requestDevice({ gpu })).code);
+        triggered.add(
+          unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).code,
+        );
       }
       {
         const gpu = createMockGpu({ requestDeviceLimitExceeded: true });
-        triggered.add(unwrapErr(await requestDevice({ gpu })).code);
+        triggered.add(
+          unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).code,
+        );
       }
       {
         const gpu = createMockGpu({ shaderCompileMessages: [makeShaderError()] });
-        const r = await requestDevice({ gpu });
+        const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
         if (!r.ok) throw new Error('mock requestDevice should not fail');
         const sr = await createShaderModule(r.value, { code: 'bad' });
         triggered.add(unwrapErr(sr).code);
@@ -1589,7 +1593,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     // 2.lighting browser tests; charter proposition 9 graceful degradation).
     it('returns ok instead of rejecting when getCompilationInfo() rejects', async () => {
       const gpu = createMockGpu({ getCompilationInfoRejects: true });
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
 
       // Must resolve (not reject) and yield Result.ok.
@@ -1599,7 +1603,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('immediate render-path entry returns the module without awaiting compilation info', async () => {
       const gpu = createMockGpu({ getCompilationInfoRejects: true });
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
 
       const sr = createShaderModuleImmediate(r.value, {
@@ -1670,7 +1674,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w6 - RhiQueue.submit real-path', () => {
     it('submit() with empty list returns Result.ok(undefined)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLike;
       const out = device.queue.submit([]);
@@ -1679,7 +1683,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('submit() with command buffer from finished encoder returns Result.ok', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLike;
       const encResult = device.createCommandEncoder();
@@ -1694,7 +1698,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w6 - RhiQueue.writeBuffer real-path + bounds validation', () => {
     it('writeBuffer with aligned offset + in-bounds data returns Result.ok', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLike;
       const bufResult = device.createBuffer({ size: 256, usage: 0 });
@@ -1706,7 +1710,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('writeBuffer with non-4-byte-aligned offset returns queue-write-buffer-out-of-bounds', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLike;
       const bufResult = device.createBuffer({ size: 256, usage: 0 });
@@ -1725,7 +1729,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('writeBuffer with offset + byteLength > buffer.size returns queue-write-buffer-out-of-bounds', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLike;
       const bufResult = device.createBuffer({ size: 16, usage: 0 });
@@ -1747,7 +1751,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('writeBuffer with offset + size > buffer.size (using explicit size arg) is rejected', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLike;
       const bufResult = device.createBuffer({ size: 64, usage: 0 });
@@ -1803,7 +1807,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     mappedAtCreation?: boolean;
   }): Promise<BufferLikeWithMap> {
     const gpu = createMockGpu();
-    const r = await requestDevice({ gpu });
+    const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
     if (!r.ok) throw new Error('mock requestDevice should not fail');
     const device = r.value as unknown as {
       createBuffer: (d: typeof desc) => ResultLike<BufferLikeWithMap>;
@@ -1952,7 +1956,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w36 (M5) - RhiQueue.writeTexture / copyExternalImageToTexture / onSubmittedWorkDone surface', () => {
     it('writeTexture exists on queue and returns Result<void, RhiError>', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLikeM5;
       expect(typeof device.queue.writeTexture).toBe('function');
@@ -1967,7 +1971,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('writeTexture accepts non-256-aligned bytesPerRow (spec says no alignment on this path)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLikeM5;
       // bytesPerRow=100 and 2000 are both NOT multiples of 256.
@@ -1991,7 +1995,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('copyExternalImageToTexture exists on queue and returns Result<void, RhiError>', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLikeM5;
       expect(typeof device.queue.copyExternalImageToTexture).toBe('function');
@@ -1999,7 +2003,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('onSubmittedWorkDone returns Promise<void> (NOT Result; spec has no reject path)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLikeM5;
       expect(typeof device.queue.onSubmittedWorkDone).toBe('function');
@@ -2011,7 +2015,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('onSubmittedWorkDone FIFO: p1 (called first) settles before p2 (constraint #1)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as DeviceLikeM5;
       const order: number[] = [];
@@ -2057,7 +2061,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('RhiRenderPassEncoder bundle execution and lifecycle', () => {
     it('executeBundles forwards the empty state-reset operation', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: unknown) => ResultLike<MockEncoder>;
@@ -2073,7 +2077,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('beginOcclusionQuery without occlusionQuerySet now returns webgpu-runtime-error (w23 retired the rhi-not-available placeholder)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: unknown) => ResultLike<MockEncoder>;
@@ -2096,7 +2100,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it('encoder.finish() with active pass returns render-pass-not-ended (D-S3 template 2)', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: unknown) => ResultLike<MockEncoder>;
@@ -2146,7 +2150,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w22 - beginOcclusionQuery without occlusionQuerySet returns webgpu-runtime-error (F-3 hint literal)', () => {
     it('begin when RPDesc.occlusionQuerySet missing returns webgpu-runtime-error with the contracted .hint literal', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: unknown) => ResultLike<MockEncoderWithOcc>;
@@ -2172,7 +2176,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w22 - nested beginOcclusionQuery returns webgpu-runtime-error (K-2 + F-3 expected literal)', () => {
     it('begin while another begin is active returns webgpu-runtime-error with the contracted .expected literal', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       // Mock pipeline cannot create a real QuerySet, so the unit test cannot
       // reach the nested-begin path purely with the mock; it asserts the error
@@ -2205,7 +2209,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('w22 - endOcclusionQuery without active begin returns render-pass-not-ended (existing 14-member union, K-2)', () => {
     it('end without active begin returns render-pass-not-ended', async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createCommandEncoder?: (desc?: unknown) => ResultLike<MockEncoderWithOcc>;
@@ -2382,7 +2386,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   describe('destroy-after-destroy.test.ts (rhi-webgpu)', () => {
     it("destroyBuffer: first call returns ok(undefined); second call returns 'destroy-after-destroy'", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createBuffer: (desc: { size: number; usage: number }) => {
@@ -2417,7 +2421,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
     it("destroyTexture: first call returns ok(undefined); second call returns 'destroy-after-destroy'", async () => {
       const gpu = createMockGpu();
-      const r = await requestDevice({ gpu });
+      const r = await (await requestAdapterFrom(gpu)).unwrap().requestDevice();
       if (!r.ok) throw new Error('mock requestDevice should not fail');
       const device = r.value as unknown as {
         createTexture: (desc: { size: readonly number[]; format: string; usage: number }) => {

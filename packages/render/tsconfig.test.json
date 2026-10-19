@@ -4,7 +4,14 @@
     "composite": false,
     "noEmit": true,
     "types": ["node", "@webgpu/types", "vite/client"],
-    "rootDir": "../.."
+    "rootDir": "../..",
+    "paths": {
+      "@forgeax/engine-render": ["./src/index.ts"],
+      "@forgeax/engine-render/authoring": ["./src/authoring.ts"],
+      "@forgeax/engine-render/internal": ["./src/internal.ts"],
+      "@forgeax/engine-render/internal/temporal": ["./src/temporal/index.ts"],
+      "@forgeax/engine-render/internal/construct-renderer": ["./src/construct-renderer.ts"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.json"],
   "exclude": [],

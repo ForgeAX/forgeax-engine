@@ -17,6 +17,8 @@
     "dev": "vite",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
+    "typecheck:scene-authoring": "tsc --noEmit -p tsconfig.scene-authoring.json",
+    "verify:scene-authoring": "node scripts/verify-scene-authoring.mjs",
     "test:extended-lighting:consumer": "vitest run cases/extended-lighting/__tests__ --typecheck.enabled=false",
     "falsify:hdrp-spot-shadow": "node scripts/falsify-hdrp-spot-shadow.mjs"
   },
@@ -35,6 +37,7 @@
     }
   },
   "dependencies": {
+    "@forgeax/engine": "workspace:*",
     "@forgeax/apps-shared": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",

@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   LensFlare,
@@ -14,7 +15,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   type ReplayReadbackResult,
@@ -50,7 +50,7 @@ function rgba(read: ReplayReadbackResult): Image {
     width,
     height,
     pixels: Array.from({ length: width * height * 4 }, (_, i) =>
-      halfToFloat(
+      halfFloat.f16ToF32(
         data.getUint16(Math.floor(i / (width * 4)) * rowBytes + (i % (width * 4)) * 2, true),
       ),
     ),
@@ -196,7 +196,7 @@ export async function verifyLensFlare(
       width,
       height,
       pixels: Array.from({ length: width * height * 4 }, (_, i) =>
-        halfToFloat(
+        halfFloat.f16ToF32(
           data.getUint16(Math.floor(i / (width * 4)) * bytesPerRow + (i % (width * 4)) * 2, true),
         ),
       ),

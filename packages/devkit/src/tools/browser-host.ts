@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { type AddressInfo, createServer as createTcpServer } from 'node:net';
 import { join, relative, sep } from 'node:path';
@@ -28,15 +29,15 @@ import {
   type Response,
 } from 'playwright';
 import { createServer, type ViteDevServer } from 'vite';
-import type { BootstrapRoot } from '../host/base-host.js';
-import { createViteConfig } from '../host.js';
-import { readProjectFacts } from '../project.js';
 import {
+  type BrowserCaptureOpenOptions,
   browserLaunchArgs,
   captureBrowserExecutionSurface,
   resolveBrowserExecutable,
-  type SoftwareBrowserOpenOptions,
-} from '../software-capture.js';
+} from '../browser-capture.js';
+import type { BootstrapRoot } from '../host/base-host.js';
+import { createViteConfig } from '../host.js';
+import { readProjectFacts } from '../project.js';
 import type { CaptureBackend } from '../types.js';
 import {
   acquireBrowserCarrierPage,
@@ -123,7 +124,7 @@ export interface ResourcePreviewReportInput {
 
 export interface BrowserHostOptions
   extends Pick<
-    SoftwareBrowserOpenOptions,
+    BrowserCaptureOpenOptions,
     'backend' | 'headless' | 'carrier' | 'carrierRun' | 'carrierGeneration'
   > {
   readonly publish?: boolean;
@@ -182,19 +183,7 @@ async function observeBrowserAdapter(realm: Page | Frame): Promise<{
 export async function allocateLoopbackPort(): Promise<number> {
   const probe = createTcpServer();
   try {
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error): void => {
-        probe.off('listening', onListening);
-        reject(error);
-      };
-      const onListening = (): void => {
-        probe.off('error', onError);
-        resolve();
-      };
-      probe.once('error', onError);
-      probe.once('listening', onListening);
-      probe.listen(0, '127.0.0.1');
-    });
+    await once(probe.listen(0, '127.0.0.1'), 'listening');
     const address = probe.address();
     if (address === null || typeof address === 'string') {
       throw new Error('loopback port probe did not expose a TCP address');

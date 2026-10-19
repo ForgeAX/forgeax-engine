@@ -134,10 +134,10 @@ export function createMigrationRecipe(input: {
 }
 
 export function validateMigrationPayload(value: unknown): MigrationPayloadValidation {
-  const visit = (candidate: unknown, path: string): MigrationPayloadValidation => {
-    if (!isSerializableValue(candidate)) {
-      return { ok: false, error: liveStateError(path, path.split('.').at(-1) ?? '<root>') };
-    }
+  if (!isSerializableValue(value)) {
+    return { ok: false, error: liveStateError('$', '$') };
+  }
+  const visit = (candidate: JsonValue, path: string): MigrationPayloadValidation => {
     if (candidate === null || typeof candidate !== 'object') return { ok: true };
     if (Array.isArray(candidate)) {
       for (const [index, child] of candidate.entries()) {

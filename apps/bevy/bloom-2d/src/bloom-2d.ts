@@ -39,7 +39,7 @@ export function buildBloom2dWorld(world: World): Bloom2dScene {
 
   const camera = world.spawn(
     { component: Transform, data: { pos: [0, 0, 100], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: Camera, data: { ...orthographic(ORTHO), tonemap: TONEMAP_REINHARD_EXTENDED, bloom: BLOOM_DISABLED, bloomThreshold: 1, bloomIntensity: 1, bloomSoftKnee: 0.5, bloomScatter: 0.7 } },
+    { component: Camera, data: { ...orthographic(ORTHO), tonemap: TONEMAP_REINHARD_EXTENDED, bloom: BLOOM_DISABLED, bloomThreshold: 1, bloomIntensity: 1, bloomSmoothWidth: 0.01, bloomRadius: 0 } },
   ).unwrap();
 
   return { camera, quadCount: colors.length, brightCount };

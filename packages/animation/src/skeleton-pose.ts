@@ -14,8 +14,13 @@ interface TransformRow {
 /** A shared read view over live Transform columns; World remains the authority. */
 export class SkeletonTransformReader {
   private readonly query: Query<readonly [typeof Transform]>;
-  private readonly references = new Map<EntityHandle, number>();
-  private readonly rows = new Map<EntityHandle, TransformRow>();
+  private readonly entries = new Map<
+    EntityHandle,
+    {
+      references: number;
+      row: TransformRow | undefined;
+    }
+  >();
   private structureEpoch = -1;
 
   constructor(private readonly world: World) {
@@ -24,23 +29,19 @@ export class SkeletonTransformReader {
 
   register(entities: readonly EntityHandle[]): void {
     for (const entity of entities) {
-      const references = this.references.get(entity);
-      if (references === undefined) {
-        this.references.set(entity, 1);
+      const entry = this.entries.get(entity);
+      if (entry === undefined) {
+        this.entries.set(entity, { references: 1, row: undefined });
         this.structureEpoch = -1;
-      } else this.references.set(entity, references + 1);
+      } else entry.references += 1;
     }
   }
 
   unregister(entities: readonly EntityHandle[]): void {
     for (const entity of entities) {
-      const references = this.references.get(entity);
-      if (references === undefined) continue;
-      if (references > 1) this.references.set(entity, references - 1);
-      else {
-        this.references.delete(entity);
-        this.rows.delete(entity);
-      }
+      const entry = this.entries.get(entity);
+      if (entry === undefined) continue;
+      if (--entry.references === 0) this.entries.delete(entity);
     }
   }
 
@@ -48,8 +49,8 @@ export class SkeletonTransformReader {
     const structureEpoch = this.world.getStructureEpoch();
     if (structureEpoch === this.structureEpoch) return;
 
-    this.rows.clear();
-    if (this.references.size === 0) {
+    for (const entry of this.entries.values()) entry.row = undefined;
+    if (this.entries.size === 0) {
       this.structureEpoch = structureEpoch;
       return;
     }
@@ -57,13 +58,14 @@ export class SkeletonTransformReader {
       const columns = span.get(Transform);
       for (let row = 0; row < span.length; row++) {
         const entity = span.entities[row] as EntityHandle;
-        if (!this.references.has(entity)) continue;
-        this.rows.set(entity, {
+        const entry = this.entries.get(entity);
+        if (entry === undefined) continue;
+        entry.row = {
           position: columns.pos,
           rotation: columns.quat,
           scale: columns.scale,
           row,
-        });
+        };
       }
     }
     this.structureEpoch = structureEpoch;
@@ -74,7 +76,7 @@ export class SkeletonTransformReader {
   }
 
   read(entity: EntityHandle, position: Vec3, rotation: Quat, scale: Vec3): boolean {
-    const row = this.rows.get(entity);
+    const row = this.entries.get(entity)?.row;
     if (row === undefined) return false;
     const positionOffset = row.row * 3;
     const rotationOffset = row.row * 4;

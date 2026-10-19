@@ -1,5 +1,11 @@
-import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import {
+  applyMeshMaterialSlotTopology,
+  meshMaterialSlotsFromTopology,
+  meshMaterialSlotsToTopology,
+  packInterleavedVertexAttributes,
+} from '@forgeax/engine-geometry';
 import { cookMeshCollision } from '@forgeax/engine-import';
+import type { ImportSubAsset } from '@forgeax/engine-types';
 // to-asset-pack.ts — aggregate parsed sub-assets into ImportedAsset[] (t31).
 //
 // GUID import-stable iron law: GUIDs come from `ctx.subAssets[]` (the external
@@ -9,6 +15,7 @@ import { cookMeshCollision } from '@forgeax/engine-import';
 // The import-runner then validates produced == declared and rejects mismatches.
 
 import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
+import { reconcileMeshLodMeta } from '@forgeax/engine-import';
 import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { box3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -21,7 +28,6 @@ import type {
   MaterialPod,
   MeshAsset,
   MeshLodLevel,
-  MeshMaterialSlot,
   MeshMaterialSlotTopologyEntry,
   MeshPod,
   SceneAsset,
@@ -32,27 +38,20 @@ import type {
   TexturePod,
 } from '@forgeax/engine-types';
 import {
+  createMeshMaterialSlotTable,
   IMPORT_ERROR_HINTS,
   ImportError,
+  type MeshMaterialSlotSource,
   reconcileMeshMaterialSlotTopology,
-  resolveMeshMaterialSlotDefaultGuid,
   standardMaterialParameters,
   standardSurfaceParameters,
 } from '@forgeax/engine-types';
 import type { FbxLodGroupPod } from './lod/parse-lod-group.js';
-import { projectFbxLodMeta } from './lod/project-meta.js';
 import { buildFbxNodePaths } from './parse-scene.js';
-
-type SubAsset = {
-  readonly guid: string;
-  readonly sourceIndex: number;
-  readonly kind: string;
-  readonly sourceKey?: string;
-};
 
 /** Resolve the meta-declared GUID for a parsed (kind, sourceIndex) pair. */
 function makeGuidResolver(
-  subAssets: readonly SubAsset[],
+  subAssets: readonly ImportSubAsset[],
 ): (kind: string, sourceIndex: number) => string | undefined {
   const byKey = new Map<string, string>();
   for (const sub of subAssets) byKey.set(`${sub.kind}:${sub.sourceIndex}`, sub.guid);
@@ -63,10 +62,7 @@ export function buildMeshAsset(
   pod: MeshPod,
   guid: string,
   influences?: readonly { jointIndices: Uint16Array; jointWeights: Float32Array }[],
-  materialContext: {
-    readonly guidByIndex?: ReadonlyMap<number, string>;
-    readonly nameByIndex?: ReadonlyMap<number, string>;
-    readonly sourceKeyByIndex?: ReadonlyMap<number, string>;
+  materialContext: MeshMaterialSlotSource & {
     readonly previousMaterialSlots?: readonly MeshMaterialSlotTopologyEntry[];
     readonly materialSlotDefaultOverrides?: Readonly<Record<string, string | null>>;
     readonly meshSourceKey?: string;
@@ -131,40 +127,7 @@ export function buildMeshAsset(
   const packed = packInterleavedVertexAttributes(wireAttributes, vc);
   if (!packed.ok) throw packed.error;
 
-  const materialSlots: MeshMaterialSlot[] = [];
-  const slotByMaterial = new Map<number | null, number>();
-  const usedNames = new Set<string>();
-  const uniqueName = (raw: string): string => {
-    const base = raw.trim() || 'Material';
-    let candidate = base;
-    let suffix = 2;
-    while (usedNames.has(candidate)) candidate = `${base}_${suffix++}`;
-    usedNames.add(candidate);
-    return candidate;
-  };
-  const materialSlotFor = (materialIndex: number | null): number => {
-    const existing = slotByMaterial.get(materialIndex);
-    if (existing !== undefined) return existing;
-    const guidString =
-      materialIndex === null ? undefined : materialContext.guidByIndex?.get(materialIndex);
-    const parsed = guidString === undefined ? undefined : AssetGuid.parse(guidString);
-    const slotIndex = materialSlots.length;
-    materialSlots.push({
-      slotName: uniqueName(
-        materialIndex === null
-          ? 'Default'
-          : (materialContext.nameByIndex?.get(materialIndex) ?? `Material_${materialIndex}`),
-      ),
-      sourceKey:
-        materialIndex === null
-          ? 'fbx:default'
-          : (materialContext.sourceKeyByIndex?.get(materialIndex) ??
-            `fbx:material:${materialIndex}`),
-      ...(parsed?.ok ? { defaultMaterial: parsed.value } : {}),
-    });
-    slotByMaterial.set(materialIndex, slotIndex);
-    return slotIndex;
-  };
+  const materialTable = createMeshMaterialSlotTable('fbx', materialContext);
   const currentMesh: MeshAsset = {
     kind: 'mesh',
     vertices: packed.value.vertices,
@@ -188,20 +151,14 @@ export function buildMeshAsset(
       indexCount: sm.indexCount,
       vertexCount: vc,
       topology: sm.topology,
-      materialSlot: materialSlotFor(sm.materialIndex),
+      materialSlot: materialTable.slotFor(sm.materialIndex),
     })),
-    materialSlots,
+    materialSlots: meshMaterialSlotsFromTopology(materialTable.slots),
     ...(materialContext.lods === undefined ? {} : { lods: materialContext.lods }),
   };
 
   const reconciled = reconcileMeshMaterialSlotTopology(
-    currentMesh.materialSlots.map((slot) => ({
-      slotName: slot.slotName,
-      ...(slot.sourceKey === undefined ? {} : { sourceKey: slot.sourceKey }),
-      ...(slot.defaultMaterial === undefined
-        ? {}
-        : { defaultMaterialGuid: AssetGuid.format(slot.defaultMaterial) }),
-    })),
+    meshMaterialSlotsToTopology(currentMesh.materialSlots),
     materialContext.previousMaterialSlots,
   );
   if (!reconciled.ok) {
@@ -219,28 +176,11 @@ export function buildMeshAsset(
       },
     });
   }
-  const sourceMesh: MeshAsset = {
-    ...currentMesh,
-    submeshes: currentMesh.submeshes.map((submesh) => ({
-      ...submesh,
-      materialSlot: reconciled.currentToStableSlot[submesh.materialSlot] as number,
-    })),
-    materialSlots: reconciled.slots.map((slot, stableIndex) => {
-      const active = reconciled.currentToStableSlot.includes(stableIndex);
-      const effectiveDefault = resolveMeshMaterialSlotDefaultGuid(
-        slot,
-        active
-          ? materialContext.materialSlotDefaultOverrides?.[slot.sourceKey ?? slot.slotName]
-          : undefined,
-      );
-      const parsed = effectiveDefault === undefined ? undefined : AssetGuid.parse(effectiveDefault);
-      return {
-        slotName: slot.slotName,
-        ...(slot.sourceKey === undefined ? {} : { sourceKey: slot.sourceKey }),
-        ...(active && parsed?.ok ? { defaultMaterial: parsed.value } : {}),
-      };
-    }),
-  };
+  const sourceMesh = applyMeshMaterialSlotTopology(
+    currentMesh,
+    reconciled,
+    materialContext.materialSlotDefaultOverrides,
+  );
 
   const mesh = cookMeshCollision(sourceMesh, materialContext.meshCollision).unwrap();
 
@@ -496,7 +436,7 @@ export function toAssetPack(params: {
   readonly skeleton: SkeletonPod;
   readonly skin: SkinPod;
   readonly animationClips: readonly AnimationClipPod[];
-  readonly subAssets: readonly SubAsset[];
+  readonly subAssets: readonly ImportSubAsset[];
   /** Meta-owned canonical Standard root for imported material inheritance. */
   readonly standardMaterialGuid?: string;
   readonly sourceOverrides?: SourceOverrideMap;
@@ -546,7 +486,7 @@ export function toAssetPack(params: {
         (entry) => entry.kind === 'mesh' && entry.sourceIndex === sourceIndex,
       );
       if (declaration?.guid === undefined || declaration.sourceKey === undefined) return [];
-      return [{ sourceKey: declaration.sourceKey, guid: declaration.guid }];
+      return [{ sourceKey: declaration.sourceKey, meshGuid: declaration.guid }];
     });
     if (levels.length !== lowerMeshIndices.length) continue;
     const previousRaw = params.sourceOverrides?.[rootDeclaration.sourceKey]?.lods;
@@ -558,7 +498,7 @@ export function toAssetPack(params: {
             ? [
                 {
                   sourceKey: value.sourceKey,
-                  guid: value.meshGuid,
+                  meshGuid: value.meshGuid,
                   ...(typeof value.screenCoverage === 'number'
                     ? { screenCoverage: value.screenCoverage }
                     : {}),
@@ -567,11 +507,7 @@ export function toAssetPack(params: {
             : [];
         })
       : undefined;
-    const projected = projectFbxLodMeta({
-      rootSourceKey: rootDeclaration.sourceKey,
-      levels,
-      ...(previous === undefined ? {} : { previous }),
-    });
+    const projected = reconcileMeshLodMeta(previous ?? [], levels);
     if (!projected.ok) {
       throw new ImportError({
         code: 'mesh-lod-contract-invalid',
@@ -581,7 +517,7 @@ export function toAssetPack(params: {
       });
     }
     const parsed = projected.value.lods.flatMap((level) => {
-      const guid = AssetGuid.parse(level.guid);
+      const guid = AssetGuid.parse(level.meshGuid);
       return guid.ok && Number.isFinite(level.screenCoverage)
         ? [{ mesh: guid.value, screenCoverage: level.screenCoverage }]
         : [];

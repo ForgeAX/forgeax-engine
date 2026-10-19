@@ -6,7 +6,7 @@ import {
   RenderGraphError,
   type ResolveContext,
 } from '@forgeax/engine-render-graph';
-import { RhiError, type TextureView } from '@forgeax/engine-rhi';
+import { type BindGroup, RhiError, type TextureView } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
 import { atmosphereTextures } from './environment/luts';
@@ -34,8 +34,8 @@ import { registerScenePipelinePreparation } from './record/scene-pipeline-prepar
 import {
   encodeSkyboxPass,
   recordBloomCompositePass,
-  recordBloomDownsamplePass,
-  recordBloomUpsamplePass,
+  recordBloomHorizontalPass,
+  recordBloomVerticalPass,
 } from './record/skybox-post-pass';
 import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
@@ -86,17 +86,14 @@ export function typedFrameClearColor(frame: RenderPipelineFrame): GPUColor {
   };
 }
 
-function resolvedDepthView(
-  frame: RenderPipelineFrame,
-  resources: GraphResourceResolver,
+function depthSampleView(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
   target: RenderPipelineTarget,
-): TextureView {
-  const texture = resources.texture(target.texture);
-  if (!texture.ok) throw texture.error;
-  const view = frame.runtime.device.createTextureView(texture.value, {
-    label: 'typed-ssao-depth-only-view',
-    // Multisampled WebGPU textures still use a `2d` view dimension; the
-    // sample count is carried by the source texture and WGSL type.
+  label: string,
+): Result<GraphTextureView, RenderGraphError> {
+  return graph.view(target.texture, {
+    label,
+    // Multisampling belongs to the texture; its sampled view stays 2d.
     dimension: '2d',
     aspect: 'depth-only',
     baseMipLevel: 0,
@@ -104,8 +101,6 @@ function resolvedDepthView(
     baseArrayLayer: 0,
     arrayLayerCount: 1,
   });
-  if (!view.ok) throw view.error;
-  return view.value;
 }
 
 export function addObservationCapturePass(
@@ -630,9 +625,7 @@ export function addTypedScenePass(
 export function addTypedFrameObservationPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   target: RenderPipelineTarget,
-  pipelineId: 'forgeax::standard',
 ): Result<void, RenderGraphError> {
-  void pipelineId;
   return addObservationCapturePass(graph, target, 'linear-hdr');
 }
 
@@ -670,19 +663,19 @@ export function addReflectionFallbackObservationPass(
 export interface TypedBloomTargets {
   readonly scene: RenderPipelineTarget;
   readonly composited: RenderPipelineTarget;
-  readonly downsample: readonly RenderPipelineTarget[];
-  readonly upsample: readonly RenderPipelineTarget[];
+  readonly horizontal: readonly RenderPipelineTarget[];
+  readonly vertical: readonly RenderPipelineTarget[];
   readonly levelDimensions: readonly { readonly width: number; readonly height: number }[];
 }
 
 /** The semantic Bloom pass owner; graph inspection consumes these same identities. */
 export const TYPED_BLOOM_PASS_NAMES = {
-  downsample: 'bloom-downsample',
-  upsample: 'bloom-upsample',
+  horizontal: 'bloom-horizontal',
+  vertical: 'bloom-vertical',
   composite: 'bloom-composite',
 } as const;
 
-export function typedBloomLevelPassName(kind: 'downsample' | 'upsample', level: number): string {
+export function typedBloomLevelPassName(kind: 'horizontal' | 'vertical', level: number): string {
   return `${TYPED_BLOOM_PASS_NAMES[kind]}-${level}`;
 }
 
@@ -694,11 +687,11 @@ export function addTypedBloomPasses(
     hdrColor: targets.scene,
     hdrComposited: targets.composited,
   };
-  targets.downsample.forEach((target, level) => {
-    named[`bloomDownsample${level}`] = target;
+  targets.horizontal.forEach((target, level) => {
+    named[`bloomHorizontal${level}`] = target;
   });
-  targets.upsample.forEach((target, level) => {
-    named[`bloomUpsample${level}`] = target;
+  targets.vertical.forEach((target, level) => {
+    named[`bloomVertical${level}`] = target;
   });
 
   const add = (
@@ -749,75 +742,40 @@ export function addTypedBloomPasses(
     return added.ok ? ok(undefined) : added;
   };
 
-  for (const [level, write] of targets.downsample.entries()) {
-    const source = level === 0 ? targets.scene : targets.downsample[level - 1];
-    if (source === undefined) {
+  for (const [level, horizontal] of targets.horizontal.entries()) {
+    const source = level === 0 ? targets.scene : targets.vertical[level - 1];
+    const vertical = targets.vertical[level];
+    if (source === undefined || vertical === undefined) {
       return err(
         new RenderGraphError({
           code: 'resource-resolution-failed',
-          expected: 'Bloom downsample levels form one adjacent pyramid',
-          hint: 'rebuild the Standard Bloom target declaration from one level list',
+          expected: 'five adjacent Gaussian Bloom levels',
+          hint: 'derive horizontal and vertical targets from the same level list',
           detail: { resourceLabel: `bloom-level-${level}` },
         }),
       );
     }
-    const added = add(
-      typedBloomLevelPassName('downsample', level),
+    const h = add(
+      typedBloomLevelPassName('horizontal', level),
       [source],
-      write,
-      (frame, resolve, pass, passLevel) =>
-        recordBloomDownsamplePass(
-          frame,
-          resolve,
-          pass,
-          passLevel ?? level,
-          targets.levelDimensions[passLevel ?? level],
-        ),
+      horizontal,
+      (frame, resolve, pass) =>
+        recordBloomHorizontalPass(frame, resolve, pass, level, targets.levelDimensions[level]),
       level,
     );
-    if (!added.ok) return added;
-  }
-  for (let level = targets.upsample.length - 1; level >= 0; level -= 1) {
-    const current = targets.downsample[level];
-    const coarse =
-      level === targets.downsample.length - 2
-        ? targets.downsample[level + 1]
-        : targets.upsample[level + 1];
-    const write = targets.upsample[level];
-    if (current === undefined || coarse === undefined || write === undefined) {
-      return err(
-        new RenderGraphError({
-          code: 'resource-resolution-failed',
-          expected: 'Bloom downsample and upsample levels form one adjacent pyramid',
-          hint: 'rebuild the Standard Bloom target declaration from one level list',
-          detail: { resourceLabel: `bloom-level-${level}` },
-        }),
-      );
-    }
-    const added = add(
-      typedBloomLevelPassName('upsample', level),
-      [current, coarse],
-      write,
-      (frame, resolve, pass, passLevel) =>
-        recordBloomUpsamplePass(frame, resolve, pass, passLevel ?? level),
+    if (!h.ok) return h;
+    const v = add(
+      typedBloomLevelPassName('vertical', level),
+      [horizontal],
+      vertical,
+      (frame, resolve, pass) => recordBloomVerticalPass(frame, resolve, pass, level),
       level,
     );
-    if (!added.ok) return added;
-  }
-  const finest = targets.upsample[0] ?? targets.downsample[0];
-  if (finest === undefined) {
-    return err(
-      new RenderGraphError({
-        code: 'resource-resolution-failed',
-        expected: 'Bloom has at least one downsample level',
-        hint: 'derive Bloom levels from a positive output extent',
-        detail: { resourceLabel: 'bloom-downsample-0' },
-      }),
-    );
+    if (!v.ok) return v;
   }
   return add(
     TYPED_BLOOM_PASS_NAMES.composite,
-    [targets.scene, finest],
+    [targets.scene, ...targets.vertical],
     targets.composited,
     (frame, resolve, pass) => recordBloomCompositePass(frame, resolve, pass),
   );
@@ -834,10 +792,12 @@ export function addTypedSsaoPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   targets: TypedSsaoTargets,
 ): Result<void, RenderGraphError> {
+  const depth = depthSampleView(graph, targets.depth, 'typed-ssao-depth-only-view');
+  if (!depth.ok) return depth;
   const calc = graph.addRasterPass('ssao-calc', {
     accesses: [
       { resource: targets.normal.view, usage: 'sampled-read' },
-      { resource: targets.depth.view, usage: 'sampled-read' },
+      { resource: depth.value, usage: 'sampled-read' },
       { resource: targets.raw.view, usage: 'color-attachment' },
     ],
     colorAttachments: [
@@ -850,7 +810,7 @@ export function addTypedSsaoPasses(
     ],
     encode: ({ pass, frame, resources }) => {
       const normal = resolvedView(resources, targets.normal.view);
-      const depthCacheKey = resolvedView(resources, targets.depth.view);
+      const depthView = resolvedView(resources, depth.value);
       recordSsaoCalcPass(
         frame as _InternalRenderPipelineContext,
         undefined,
@@ -861,8 +821,8 @@ export function addTypedSsaoPasses(
         {
           output: resolvedView(resources, targets.raw.view),
           normal,
-          depth: resolvedDepthView(frame, resources, targets.depth),
-          depthCacheKey,
+          depth: depthView,
+          depthCacheKey: depthView,
         },
       );
     },
@@ -873,7 +833,7 @@ export function addTypedSsaoPasses(
     accesses: [
       { resource: targets.raw.view, usage: 'sampled-read' },
       { resource: targets.normal.view, usage: 'sampled-read' },
-      { resource: targets.depth.view, usage: 'sampled-read' },
+      { resource: depth.value, usage: 'sampled-read' },
       { resource: targets.blurred.view, usage: 'color-attachment' },
     ],
     colorAttachments: [
@@ -886,7 +846,7 @@ export function addTypedSsaoPasses(
     ],
     encode: ({ pass, frame, resources }) => {
       const normal = resolvedView(resources, targets.normal.view);
-      const depthCacheKey = resolvedView(resources, targets.depth.view);
+      const depthView = resolvedView(resources, depth.value);
       recordSsaoBlurPass(
         frame as _InternalRenderPipelineContext,
         undefined,
@@ -899,8 +859,8 @@ export function addTypedSsaoPasses(
           output: resolvedView(resources, targets.blurred.view),
           raw: resolvedView(resources, targets.raw.view),
           normal,
-          depth: resolvedDepthView(frame, resources, targets.depth),
-          depthCacheKey,
+          depth: depthView,
+          depthCacheKey: depthView,
         },
       );
     },
@@ -955,6 +915,9 @@ export function addTypedTemporalResolvePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   targets: TypedTemporalResolveTargets,
 ): Result<void, RenderGraphError> {
+  // This graph has two alternating history inputs. Retain only those exact
+  // physical bindings; a changed state, view or resource replaces the oldest.
+  const bindings: { sources: readonly unknown[]; group: BindGroup }[] = [];
   const added = graph.addRasterPass('taa-resolve', {
     accesses: [
       { resource: targets.scene.view, usage: 'sampled-read' },
@@ -1027,44 +990,69 @@ export function addTypedTemporalResolvePass(
       const written = frame.runtime.device.queue.writeBuffer(params, 0, new Uint8Array(payload));
       if (!written.ok)
         throwTemporalEncodeFailure('TAA resolve params upload succeeds', written.error);
-      const bindGroup = frame.runtime.device.createBindGroup({
-        label: 'taa-resolve-bind-group',
-        layout: built.layout,
-        entries: [
-          { binding: 0, resource: { kind: 'textureView', value: current } },
-          { binding: 1, resource: { kind: 'sampler', value: built.sampler } },
-          { binding: 2, resource: { kind: 'textureView', value: historyColor } },
-          { binding: 3, resource: { kind: 'sampler', value: built.sampler } },
-          { binding: 4, resource: { kind: 'textureView', value: historyTemporal } },
-          { binding: 5, resource: { kind: 'sampler', value: built.temporalSampler } },
-          { binding: 6, resource: { kind: 'textureView', value: currentTemporal } },
-          { binding: 7, resource: { kind: 'sampler', value: built.temporalSampler } },
-          { binding: 8, resource: { kind: 'buffer', value: { buffer: params } } },
-          { binding: 9, resource: { kind: 'textureView', value: historyStability } },
-          {
-            binding: 10,
-            resource: {
-              kind: 'textureView',
-              value:
-                targets.secondaryReactivity === undefined
-                  ? currentTemporal
-                  : resolvedView(resources, targets.secondaryReactivity),
+      const secondary =
+        targets.secondaryReactivity === undefined
+          ? currentTemporal
+          : resolvedView(resources, targets.secondaryReactivity);
+      const coverage =
+        targets.coverage === undefined
+          ? currentTemporal
+          : resolvedView(resources, targets.coverage.view);
+      const sources = [
+        state,
+        frame.runtime.device,
+        built.layout,
+        built.sampler,
+        built.temporalSampler,
+        params,
+        current,
+        currentTemporal,
+        historyColor,
+        historyTemporal,
+        historyStability,
+        secondary,
+        coverage,
+      ];
+      let binding = bindings.find((candidate) =>
+        candidate.sources.every((source, index) => source === sources[index]),
+      );
+      if (binding === undefined) {
+        const bindGroup = frame.runtime.device.createBindGroup({
+          label: 'taa-resolve-bind-group',
+          layout: built.layout,
+          entries: [
+            { binding: 0, resource: { kind: 'textureView', value: current } },
+            { binding: 1, resource: { kind: 'sampler', value: built.sampler } },
+            { binding: 2, resource: { kind: 'textureView', value: historyColor } },
+            { binding: 3, resource: { kind: 'sampler', value: built.sampler } },
+            { binding: 4, resource: { kind: 'textureView', value: historyTemporal } },
+            { binding: 5, resource: { kind: 'sampler', value: built.temporalSampler } },
+            { binding: 6, resource: { kind: 'textureView', value: currentTemporal } },
+            { binding: 7, resource: { kind: 'sampler', value: built.temporalSampler } },
+            { binding: 8, resource: { kind: 'buffer', value: { buffer: params } } },
+            { binding: 9, resource: { kind: 'textureView', value: historyStability } },
+            {
+              binding: 10,
+              resource: {
+                kind: 'textureView',
+                value: secondary,
+              },
             },
-          },
-          {
-            binding: 11,
-            resource: {
-              kind: 'textureView',
-              value:
-                targets.coverage === undefined
-                  ? currentTemporal
-                  : resolvedView(resources, targets.coverage.view),
+            {
+              binding: 11,
+              resource: {
+                kind: 'textureView',
+                value: coverage,
+              },
             },
-          },
-        ] as never,
-      });
-      if (!bindGroup.ok) {
-        throwTemporalEncodeFailure('TAA resolve bind group creation succeeds', bindGroup.error);
+          ] as never,
+        });
+        if (!bindGroup.ok) {
+          throwTemporalEncodeFailure('TAA resolve bind group creation succeeds', bindGroup.error);
+        }
+        binding = { sources, group: bindGroup.value };
+        if (bindings.length === 2) bindings.shift();
+        bindings.push(binding);
       }
       const pipeline = frame.runtime.getPostProcessPipeline?.('forgeax.taa-resolve', built.layout, [
         targets.writeColor.format,
@@ -1075,7 +1063,7 @@ export function addTypedTemporalResolvePass(
         throwTemporalEncodeFailure('TAA resolve pipeline is ready before frame encoding');
       }
       pass.setPipeline(pipeline);
-      pass.setBindGroup(1, bindGroup.value);
+      pass.setBindGroup(1, binding.group);
       pass.draw(3, 1, 0, 0);
       stageTemporalGpuWrite(internal.frameState, state);
     },
@@ -1087,6 +1075,11 @@ export function addTypedFullscreenPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   options: TypedFullscreenPassOptions,
 ): Result<void, RenderGraphError> {
+  const depth =
+    options.depth === undefined
+      ? undefined
+      : depthSampleView(graph, options.depth, `${options.name}.depth-only-view`);
+  if (depth !== undefined && !depth.ok) return depth;
   const output = options.outputs[0];
   const outputFormats = options.outputs.map((target) => target.format as GPUTextureFormat);
   return graph.addRasterPass(options.name, {
@@ -1096,9 +1089,7 @@ export function addTypedFullscreenPass(
         resource: target.view,
         usage: 'color-attachment' as const,
       })),
-      ...(options.depth === undefined
-        ? []
-        : [{ resource: options.depth.view, usage: 'sampled-read' as const }]),
+      ...(depth === undefined ? [] : [{ resource: depth.value, usage: 'sampled-read' as const }]),
       ...(options.additionalReads?.map((read) => ({
         resource: read.target.view,
         usage: 'sampled-read' as const,
@@ -1135,9 +1126,7 @@ export function addTypedFullscreenPass(
             : Object.fromEntries(options.additionalReads.map((read) => [read.key, read.target]))),
         }),
         outputFormats,
-        ...(options.depth === undefined
-          ? {}
-          : { depthView: resolvedDepthView(frame, resources, options.depth) }),
+        ...(depth === undefined ? {} : { depthView: resolvedView(resources, depth.value) }),
         ...(options.rawSwapchainOutput === undefined
           ? {}
           : { rawSwapchainOutput: options.rawSwapchainOutput }),
@@ -1198,8 +1187,8 @@ export function addTypedCompositePostEffects(
         const destination = resources.texture(scratch.value.texture);
         if (!destination.ok) throw destination.error;
         encoder.copyTextureToTexture(
-          { texture: source.value as never, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-          { texture: destination.value as never, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+          { texture: source.value, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+          { texture: destination.value, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
           { width: size.width, height: size.height, depthOrArrayLayers: 1 },
         );
       },

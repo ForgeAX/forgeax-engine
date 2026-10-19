@@ -1,17 +1,17 @@
-import type { DdcErrorRootKind } from './errors.js';
+import {
+  type BrowserDdcRecoveryAction,
+  type DdcErrorRootKind,
+  type DdcRecoveryAction,
+  projectDdcRecoveryActionsForBrowser,
+} from './errors.js';
+
+export type { BrowserDdcRecoveryAction, DdcRecoveryAction } from './errors.js';
 
 export const DDC_STATUS_SCHEMA = 'forgeax-ddc-status/v2' as const;
 
 export type DdcStatusHealth = 'ready' | 'blocked' | 'missing' | 'stale' | 'failed';
 export type DdcStatusLayerKind = 'build' | 'project' | 'runtime';
 export type DdcStatusRootKind = DdcErrorRootKind;
-
-export interface DdcRecoveryAction {
-  readonly kind: 'inspect' | 'allocate-generation' | 'retry' | 'cold-rebuild' | 'prune';
-  readonly executable: boolean;
-  readonly exactTarget?: string;
-  readonly reason?: string;
-}
 
 export interface DdcStatusLayer {
   readonly kind: DdcStatusLayerKind;
@@ -32,7 +32,6 @@ export interface DdcStatus {
   readonly projectDdcRoot?: string;
 }
 
-export type BrowserDdcRecoveryAction = Omit<DdcRecoveryAction, 'exactTarget'>;
 export type BrowserDdcStatusLayer = Omit<DdcStatusLayer, 'actions'> & {
   readonly actions: readonly BrowserDdcRecoveryAction[];
 };
@@ -50,7 +49,7 @@ export function projectDdcStatusForBrowser(status: DdcStatus): BrowserDdcStatus 
     health: status.health,
     layers: status.layers.map((layer) => ({
       ...layer,
-      actions: layer.actions.map(({ exactTarget: _exactTarget, ...action }) => action),
+      actions: projectDdcRecoveryActionsForBrowser(layer.actions),
     })),
   };
 }

@@ -97,4 +97,32 @@ describe('World semantic read seam', () => {
     expect(read.getArrayLength(entity, values, 'dynamic')).toBe(0);
     expect(read.getArrayElement(entity, values, 'dynamic', 0)).toBeUndefined();
   });
+
+  it('keeps live array counts after table growth, migration and swap removal', () => {
+    const values = defineComponent('WorldReadGrowingArrays', {
+      dynamic: { type: 'array<f32>' },
+    });
+    const marker = defineComponent('WorldReadMigrationMarker', {});
+    const world = new World();
+    const entities = Array.from({ length: 140 }, (_, index) =>
+      world.spawn({ component: values, data: { dynamic: [index, index + 1] } }).unwrap(),
+    );
+    const read = world[worldRead];
+    for (const entity of entities)
+      world.addComponent(entity, { component: marker, data: {} }).unwrap();
+    const removed = entities[0];
+    const last = entities.at(-1);
+    if (removed === undefined || last === undefined) throw Error('expected grown table');
+    world.despawn(removed).unwrap();
+    expect(read.getArrayLength(removed, values, 'dynamic')).toBeUndefined();
+    expect(read.getArrayLength(last, values, 'dynamic')).toBe(2);
+    expect(read.getArrayElement(last, values, 'dynamic', 1)).toBe(140);
+    world.set(last, values, { dynamic: [7, 8, 9] }).unwrap();
+    world.removeComponent(last, marker).unwrap();
+    expect(read.getArrayLength(last, values, 'dynamic')).toBe(3);
+    expect(read.getArrayElement(last, values, 'dynamic', 2)).toBe(9);
+    world.set(last, values, { dynamic: [] }).unwrap();
+    expect(read.getArrayLength(last, values, 'dynamic')).toBe(0);
+    expect(read.getArrayElement(last, values, 'dynamic', 0)).toBeUndefined();
+  });
 });

@@ -13,7 +13,7 @@ expectTypeOf<BrowserCarrierRequest>().toEqualTypeOf<{
 expectTypeOf<BrowserCarrierRequest>().not.toHaveProperty('leaseId');
 expectTypeOf<BrowserCarrierRequest>().not.toHaveProperty('surfaceId');
 
-import type { SoftwareBrowserOpenOptions } from '../software-capture.js';
+import type { BrowserCaptureOpenOptions } from '../browser-capture.js';
 import type { BrowserHostOptions } from '../tools/browser-host.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
@@ -32,8 +32,8 @@ expectTypeOf<BrowserHostOptions>().toEqualTypeOf<{
   readonly carrierRun?: { readonly serviceId: string; readonly runId: string };
   readonly carrierGeneration?: number;
 }>();
-expectTypeOf<Pick<SoftwareBrowserOpenOptions, keyof HostInput>>().toEqualTypeOf<HostInput>();
-expectTypeOf<SoftwareBrowserOpenOptions['width']>().toEqualTypeOf<number | undefined>();
-expectTypeOf<SoftwareBrowserOpenOptions['software']>().toEqualTypeOf<boolean | undefined>();
+expectTypeOf<Pick<BrowserCaptureOpenOptions, keyof HostInput>>().toEqualTypeOf<HostInput>();
+expectTypeOf<BrowserCaptureOpenOptions['width']>().toEqualTypeOf<number | undefined>();
+expectTypeOf<BrowserCaptureOpenOptions>().not.toHaveProperty('software');
 expectTypeOf<BrowserHostOptions>().not.toHaveProperty('width');
 expectTypeOf<BrowserHostOptions>().not.toHaveProperty('timeoutMs');

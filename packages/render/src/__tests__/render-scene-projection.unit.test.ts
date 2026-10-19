@@ -945,10 +945,10 @@ describe('RenderScene canonical owner', () => {
         .spawn(
           { component: Transform, data: { pos: position } },
           { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
-          { component: DirectionalLight, data: { direction: [0.2, -1, 0.3] } },
+          { component: DirectionalLight, data: { castShadow: true, direction: [0.2, -1, 0.3] } },
           { component: PointLight, data: {} },
           { component: PointLightShadow, data: {} },
-          { component: SpotLight, data: { direction: [0, -1, 0] } },
+          { component: SpotLight, data: { castShadow: true, direction: [0, -1, 0] } },
           {
             component: LightProbe,
             data: { irradiance: new Float32Array(27).fill(0.25), radius: 10 },

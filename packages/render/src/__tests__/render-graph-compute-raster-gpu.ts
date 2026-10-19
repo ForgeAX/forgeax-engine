@@ -313,9 +313,9 @@ export async function runComputeRasterGraph(): Promise<ComputeRasterEvidence> {
       ],
       encode: ({ encoder, resources }) => {
         encoder.copyTextureToBuffer(
-          { texture: resources.texture(outputTexture).unwrap() as unknown as GPUTexture },
+          { texture: resources.texture(outputTexture).unwrap() },
           {
-            buffer: resources.buffer(readback).unwrap() as unknown as GPUBuffer,
+            buffer: resources.buffer(readback).unwrap(),
             bytesPerRow: 256,
             rowsPerImage: 1,
           },

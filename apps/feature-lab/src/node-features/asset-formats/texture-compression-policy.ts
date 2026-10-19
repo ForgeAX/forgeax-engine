@@ -1,11 +1,11 @@
 import { parseKtx2 } from '@forgeax/engine/codec';
-import { basisEncodeParamsFor, resolveEncodeMode } from '@forgeax/engine/image/ktx2-encode';
+import { basisEncodeParamsFor } from '@forgeax/engine/image/ktx2-encode';
 import { defineFeature } from '../../lab/feature';
 import { CHECKER_PNG, importImage, TEXTURE_SUB } from './support/image-import';
 
 const LDR_SRGB = { colorSpace: 'srgb', isHdr: false, mipmap: false } as const;
-const LDR_LINEAR = { colorSpace: 'linear', isHdr: false } as const;
-const HDR = { colorSpace: 'linear', isHdr: true } as const;
+const LDR_LINEAR = { colorSpace: 'linear', isHdr: false, mipmap: false } as const;
+const HDR = { colorSpace: 'linear', isHdr: true, mipmap: false } as const;
 
 export default defineFeature({
   title: 'Texture compression policy',
@@ -14,12 +14,12 @@ export default defineFeature({
   summary:
     'compressionMode auto/etc1s/uastc/none resolves once from color space and HDR-ness, and the image importer emits either a raw rgba8 body or a Basis KTX2 body accordingly.',
   expect:
-    'auto picks etc1s for srgb, uastc for linear and uastc-hdr for HDR; an explicit uastc on a PNG yields a parseable image/ktx2 body with codec basis, none keeps rgba8, and two runs are byte-identical.',
+    'auto picks etc1s for srgb, uastc-ldr for linear and uastc-hdr for HDR; an explicit uastc on a PNG yields a parseable image/ktx2 body with codec basis, none keeps rgba8, and two runs are byte-identical.',
   async run(checks) {
-    checks.equal('auto + srgb', resolveEncodeMode('auto', LDR_SRGB), 'etc1s');
-    checks.equal('auto + linear', resolveEncodeMode('auto', LDR_LINEAR), 'uastc');
-    checks.equal('auto + HDR', resolveEncodeMode('auto', HDR), 'uastc-hdr');
-    checks.equal('uastc + HDR upgrades', resolveEncodeMode('uastc', HDR), 'uastc-hdr');
+    checks.equal('auto + srgb', basisEncodeParamsFor('auto', LDR_SRGB)?.mode, 'etc1s');
+    checks.equal('auto + linear', basisEncodeParamsFor('auto', LDR_LINEAR)?.mode, 'uastc-ldr');
+    checks.equal('auto + HDR', basisEncodeParamsFor('auto', HDR)?.mode, 'uastc-hdr');
+    checks.equal('uastc + HDR upgrades', basisEncodeParamsFor('uastc', HDR)?.mode, 'uastc-hdr');
     checks.equal('none never encodes', basisEncodeParamsFor('none', LDR_SRGB), null);
     checks.equal('etc1s srgb encoder params', basisEncodeParamsFor('etc1s', LDR_SRGB)?.srgb, true);
 
@@ -32,7 +32,7 @@ export default defineFeature({
     checks.equal(
       'uastc body codec',
       [body?.assetCodec?.name, body?.assetCodec?.profile],
-      ['basis', 'uastc'],
+      ['basis', 'uastc-ldr'],
     );
     const parsed = body === undefined ? undefined : await parseKtx2(body.bytes);
     checks.ok('uastc body parses as KTX2', parsed?.ok === true);

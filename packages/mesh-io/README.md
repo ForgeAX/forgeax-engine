@@ -109,3 +109,9 @@ Source admission reads the OBJ/MTL/image closure once and declares stable `mesh:
 | All other `map_*`, bump and displacement maps | Explicit parse failure until a faithful material mapping exists |
 
 This contract does not advertise full Phong material equivalence. Static export accepts geometry, world placement and the finite scalar `MeshExportMaterial` surface. glTF/GLB preserve those fields and all eight UV sets; texture/hierarchy/skin/animation closure is outside that input type. Skin/morph meshes fail unless explicitly baked first. These bounds are narrower than the upstream scene exporters and are visible at admission.
+
+`parseMeshSource(format, bytes, readCompanion, curveSegments?)` returns one
+`MeshSourcePackage` with meshes, materials, textures and source dependencies.
+File admission and all three Importers consume that same closure. OBJ includes
+its MTL/image companions; STL and SVG return empty companion collections. The
+geometry-only `parseObj`, `parseStl` and `parseSvg` entries remain available.

@@ -28,18 +28,6 @@ function interpolateHorizontal(source: Lm63TypeC, angle: number, verticalIndex: 
   return a + (b - a) * factor;
 }
 
-function toFloat16(value: number): number {
-  if (value === 0) return 0;
-  const sign = value < 0 ? 0x8000 : 0;
-  const absolute = Math.abs(value);
-  if (!Number.isFinite(absolute)) return sign | 0x7c00;
-  const exponent = Math.floor(Math.log2(absolute));
-  if (exponent < -14) return sign | Math.round(absolute / 2 ** -24);
-  if (exponent > 15) return sign | 0x7c00;
-  const mantissa = Math.round((absolute / 2 ** exponent - 1) * 1024);
-  return sign | ((exponent + 15) << 10) | Math.min(mantissa, 1023);
-}
-
 export function readFloat16LE(bytes: Uint8Array, offset: number): number {
   const bits = (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
   return halfFloat.f16ToF32(bits);
@@ -73,7 +61,7 @@ export function resampleTypeC(source: Lm63TypeC): Uint8Array {
   }
   const divisor = peak > 0 ? peak : 1;
   for (let index = 0; index < samples.length; index++) {
-    const bits = toFloat16((samples[index] ?? 0) / divisor);
+    const bits = halfFloat.f32ToF16((samples[index] ?? 0) / divisor);
     output[index * 2] = bits & 0xff;
     output[index * 2 + 1] = bits >>> 8;
   }

@@ -1,6 +1,6 @@
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack';
+import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
 import {
   type FrameReceipt,
   type FrameReceiptObservation,
@@ -188,7 +188,11 @@ export async function verifySurfaceMaterialPublication(options: {
   const readCatalog = async (): Promise<CatalogSnapshot> => {
     const response = await fetch(options.binding.catalogUrl, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Surface Catalog HTTP ${response.status}`);
-    return (await response.json()) as CatalogSnapshot;
+    const snapshot = (await response.json()) as Omit<CatalogSnapshot, 'entries'> & {
+      readonly entries: unknown;
+    };
+    // The recovery journey also inspects accepted rows from degraded scopes.
+    return { ...snapshot, entries: decodeCatalogWire(snapshot.entries).unwrap() };
   };
   const hot =
     options.baseUrl === undefined || options.hmrToken === undefined

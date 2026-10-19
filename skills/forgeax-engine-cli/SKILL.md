@@ -180,7 +180,7 @@ frame pixels and no browser errors; the report preserves it in `runtime.fatalErr
 Engine/browser ShadowRoots do not count as game UI.
 
 backend auto falls back to software when a WebGPU adapter is unavailable; hardware requires a non-software adapter;
-software pins SwiftShader/lavapipe-compatible flags. --software remains an alias.
+software pins SwiftShader/lavapipe-compatible flags.
 The CLI waits for non-flat canvas pixels before additional --wait-ms settling. A uniform black frame fails even
 when Canvas, adapter, and ShadowRoot exist. Sidecar pixels record canvas-only sampled
 luma range; witness screenshots temporarily hide non-canvas elements, preventing HUD color changes from

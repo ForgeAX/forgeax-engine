@@ -13,6 +13,35 @@ describe('preview.resize workspace contract', () => {
 });
 
 describe('attachViewportRenderResizeSync', () => {
+  it('submits the initial extent before later target commands, while debouncing layout changes', async () => {
+    const original = globalThis.ResizeObserver;
+    let notify;
+    globalThis.ResizeObserver = class {
+      constructor(callback) { notify = callback; }
+      observe() {}
+      disconnect() {}
+    };
+    const calls = [];
+    const surface = { clientWidth: 400, clientHeight: 300 };
+    const detach = attachPreviewRenderResizeSync({
+      api: { async resizePreview(input) { calls.push(input); } },
+      surface,
+      target: { targetId: 'starting-play', generation: 1 },
+    });
+    try {
+      await Promise.resolve();
+      assert.equal(calls.length, 1, 'Initial placement must not leave a resize timer behind later capture/pick commands');
+      assert.deepEqual([calls[0].width, calls[0].height], [400, 300]);
+      surface.clientWidth = 500;
+      notify();
+      await Promise.resolve();
+      assert.equal(calls.length, 1, 'Subsequent layout changes retain their debounce');
+      await new Promise(done => setTimeout(done, 130));
+      assert.equal(calls.length, 2);
+      assert.deepEqual([calls[1].width, calls[1].height], [500, 300]);
+    } finally { detach(); globalThis.ResizeObserver = original; }
+  });
+
   it('cancels an in-flight resize when its surface attachment is revoked', async () => {
     const original = globalThis.ResizeObserver;
     globalThis.ResizeObserver = class { observe() {} disconnect() {} };
@@ -70,17 +99,25 @@ describe('attachViewportRenderResizeSync', () => {
     } finally { detach(); globalThis.ResizeObserver = original; }
   });
 
-  it('retries a resize blocked by an open camera interaction without reporting it', async () => {
+  it('retries a resize blocked by an open camera interaction without reporting it', async (test) => {
+    test.mock.timers.enable({ apis: ['setTimeout'] });
     const original = globalThis.ResizeObserver;
-    globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+    globalThis.ResizeObserver = class {
+      constructor(callback) { this.callback = callback; }
+      observe() { this.callback(); }
+      disconnect() {}
+    };
     let calls = 0;
     const notices = [];
     const unsubscribe = subscribeWorkspaceCommandErrors((error) => notices.push(error));
     const api = {
-      resizePreview() {
+      async resizePreview() {
         calls += 1;
         if (calls === 1) {
-          return Promise.reject(Object.assign(new Error('camera busy'), { code: 'view-workspace-target-busy' }));
+          // The native observer's initial notification flushes while this
+          // request is waiting for its camera-busy retry, at the same extent.
+          await new Promise(done => setTimeout(done, 50));
+          throw Object.assign(new Error('camera busy'), { code: 'view-workspace-target-busy' });
         }
         return Promise.resolve({});
       },
@@ -89,13 +126,18 @@ describe('attachViewportRenderResizeSync', () => {
       api,
       surface: { clientWidth: 400, clientHeight: 300 },
       target: { targetId: 'mesh-preview', generation: 4 },
-      debounceMs: 0,
     });
     try {
-      await new Promise((done) => setTimeout(done, 20));
+      await new Promise(done => setImmediate(done));
       assert.equal(calls, 1);
       assert.equal(notices.length, 0);
-      await new Promise((done) => setTimeout(done, 150));
+      test.mock.timers.tick(50);
+      await new Promise(done => setImmediate(done));
+      test.mock.timers.tick(50);
+      await new Promise(done => setImmediate(done));
+      assert.equal(calls, 1, 'The initial observer flush shares the pending retry');
+      test.mock.timers.tick(50);
+      await new Promise(done => setImmediate(done));
       assert.equal(calls, 2);
       assert.equal(notices.length, 0);
     } finally {

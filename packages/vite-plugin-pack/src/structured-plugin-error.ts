@@ -1,4 +1,4 @@
-export interface StructuredPluginFailure {
+interface StructuredPluginFailure {
   readonly code: string;
   readonly expected: string;
   readonly hint: string;

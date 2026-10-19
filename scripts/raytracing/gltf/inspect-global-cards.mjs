@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import { buildFrameModel, decodeTape } from '../../../packages/rhi-debug/dist/index.mjs';
 import { sdfStorageCode } from './sdf-storage.mjs';
 
@@ -28,13 +29,7 @@ assert.deepEqual(report.gpuErrors, []);
 assert.deepEqual(report.errors, []);
 assert(report.works.every((w) => w.differentBytes === 0));
 const half = (n) => {
-  const sign = n & 32768 ? -1 : 1,
-    e = (n >> 10) & 31,
-    m = n & 1023;
-  return (
-    sign *
-    (e === 0 ? m * 2 ** -24 : e === 31 ? (m ? NaN : Infinity) : (1 + m / 1024) * 2 ** (e - 15))
-  );
+  return halfFloat.f16ToF32(n);
 };
 const rows = [];
 for (let wi = 0; wi < model.works.length; wi += 4) {

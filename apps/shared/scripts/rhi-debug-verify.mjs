@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { teardownDawnInstance } from '../../../scripts/lib/dawn-teardown.mjs';
 // @forgeax/apps-shared/scripts/rhi-debug-verify -- reusable RHI-debug capture
 // verification harness for learn-render / hello-* demos.
@@ -36,7 +37,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { buildFrameModel, decodeTape, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
-import { writeReferencePng } from '../png-codec.mjs';
+
 import { createOwnedProcessGroupStopper } from './rhi-debug-process.mjs';
 import { pnpmCommand } from '../../../scripts/lib/pnpm-command.mjs';
 import browserLaunchConfig from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
@@ -1262,10 +1263,10 @@ export async function verifyDemoCapture(opts) {
   const pngDir = dirname(tapeAbs);
   const replayAligned = best.applied;
   try {
-    writeFileSync(resolve(pngDir, 'live.png'), writeReferencePng(livePixels, rw, rh));
-    writeFileSync(resolve(pngDir, 'replay.png'), writeReferencePng(replayAligned, rw, rh));
+    writeFileSync(resolve(pngDir, 'live.png'), encodePng(rw, rh, livePixels));
+    writeFileSync(resolve(pngDir, 'replay.png'), encodePng(rw, rh, replayAligned));
     const sbs = sideBySide(livePixels, replayAligned, rw, rh);
-    writeFileSync(resolve(pngDir, 'compare.png'), writeReferencePng(sbs.pixels, sbs.width, sbs.height));
+    writeFileSync(resolve(pngDir, 'compare.png'), encodePng(sbs.width, sbs.height, sbs.pixels));
     console.log(
       `[${label}] wrote PNGs: ${resolve(pngDir, 'compare.png')} ` +
         `(left=live demo, right=Node Dawn replay diagnostic)`,

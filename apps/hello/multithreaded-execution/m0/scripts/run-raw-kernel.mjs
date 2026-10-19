@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { cpus } from 'node:os';
@@ -226,10 +227,7 @@ async function startServer() {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.end(pageSource());
   });
-  await new Promise((resolvePromise, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolvePromise);
-  });
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('benchmark server has no port');
   return { server, origin: `http://127.0.0.1:${address.port}` };

@@ -51,6 +51,7 @@
     "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "pngjs": "^7.0.0",
     "vite": "8.0.16",

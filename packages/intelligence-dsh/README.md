@@ -26,3 +26,8 @@ that process. Conversation continuity remains a persisted provider-scoped
 `SessionRef`, so a later Activity may resume the same DSH session from a fresh
 runtime. Completion, failure, cancellation, and provider disposal all await the
 SDK close ladder; the Engine frame loop only polls already-buffered POD events.
+
+The Host adapter derives launch, session, notification and run-result fields
+from the pinned SDK. Its factory seam accepts the same harness options; the
+SDK receives copied argument/environment containers while each Activity retains
+its independent process and close lifecycle.

@@ -1,10 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { halfFloat } from '@forgeax/engine-math';
 import { DirectionalLight } from '@forgeax/engine-render';
 import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -72,7 +72,11 @@ async function probePlacement(h: Awaited<ReturnType<typeof createIrradianceField
     });
     const z = meta[probe * 4 + 2] ?? 0;
     const w = meta[probe * 4 + 3] ?? 0;
-    const offset = [halfToFloat(z & 0xffff), halfToFloat(z >>> 16), halfToFloat(w & 0xffff)];
+    const offset = [
+      halfFloat.f16ToF32(z & 0xffff),
+      halfFloat.f16ToF32(z >>> 16),
+      halfFloat.f16ToF32(w & 0xffff),
+    ];
     return {
       lattice,
       offset,

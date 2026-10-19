@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -8,7 +9,7 @@ import { decodeTape, buildFrameModel, openReplay, replayDeviceRequest, tapeDiges
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { fieldGuid } from '../src/field-guids.ts';
 import { initialPosition, dt } from './field-oracle.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const unwrap = result => { if (!result.ok) throw result.error; return result.value; };
 
@@ -129,8 +130,8 @@ export async function runFieldLifecycle(context) {
       const decoded = unwrap(readbackImage(image));
       const rgba = toRgba8(decoded);
       const live = await readLivePixels();
-      writeFileSync(resolve(output, 'replacement-121-replay.png'), writeReferencePng(rgba, decoded.width, decoded.height));
-      writeFileSync(resolve(output, 'replacement-121-live.png'), writeReferencePng(live, 512, 512));
+      writeFileSync(resolve(output, 'replacement-121-replay.png'), encodePng(decoded.width, decoded.height, rgba));
+      writeFileSync(resolve(output, 'replacement-121-live.png'), encodePng(512, 512, live));
       const pixelError = rgba.reduce((max, value, index) => Math.max(max, Math.abs(value - live[index]) / 255), 0);
       report.replacement = { ticks: 121, maxError, records, pixelError, digest: tapeDigest(bytes),
         workIndex: update.workIndex, bindings: update.bindings, resources: model.resources,

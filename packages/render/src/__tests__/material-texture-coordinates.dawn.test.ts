@@ -15,8 +15,14 @@ import {
 } from '../gpu-usage';
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
 import { buildPipelineForMaterialShader } from '../pipeline-builder';
+import { deriveTextureUvScale } from '../render-data';
 
-it('matches the previous GPU rotation with the shipped branch-free CPU-coefficient helper', async () => {
+it.each([
+  false,
+  true,
+])('matches GPU rotation and block-rounded physical coordinates, padded=%s', async (padded) => {
+  const physicalScale = deriveTextureUvScale(padded ? 'bc7-rgba-unorm' : 'rgba8unorm', 5, 7);
+  const expectedScale = padded ? [5 / 8, 7 / 8] : [1, 1];
   const schema = [{ name: 'albedo', type: 'texture2d' }] as const;
   const record = derive(schema).coordinateRecords[0];
   if (record === undefined) throw new Error('missing coordinate ABI');
@@ -30,11 +36,11 @@ it('matches the previous GPU rotation with the shipped branch-free CPU-coefficie
 }
 @fragment fn fs_main() -> @location(0) vec4<f32> {
   let uv = vec2<f32>(0.37,-0.22);
-  let optimized = materialUvLinear(uv, material.albedoCoordinatesTransform, material.albedoCoordinatesRotation);
+  let optimized = materialUvLinear(uv, material.albedoCoordinatesTransform, material.albedoCoordinatesRotation) * material.albedoCoordinatesMetadata.zw;
   let scaled = uv * material.albedoCoordinatesTransform.zw;
   let c = cos(material.albedoCoordinatesMetadata.y);
   let s = sin(material.albedoCoordinatesMetadata.y);
-  let previous = vec2<f32>(scaled.x*c-scaled.y*s,scaled.x*s+scaled.y*c);
+  let previous = vec2<f32>(scaled.x*c-scaled.y*s,scaled.x*s+scaled.y*c) * vec2<f32>(${expectedScale[0]}, ${expectedScale[1]});
   return vec4<f32>(optimized,previous);
 }`;
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -90,10 +96,15 @@ it('matches the previous GPU rotation with the shipped branch-free CPU-coefficie
     ).unwrap();
     for (const rotation of [0, -0, Math.PI / 2, -Math.PI / 3, 0.713]) {
       const payload = new Float32Array(record.size / 4);
-      writeMaterialTextureCoordinateRecord(payload, 0, {
-        set: 7,
-        transform: { offset: [0.2, -0.3], scale: [-2, 0.5], rotation },
-      });
+      writeMaterialTextureCoordinateRecord(
+        payload,
+        0,
+        {
+          set: 7,
+          transform: { offset: [0.2, -0.3], scale: [-2, 0.5], rotation },
+        },
+        physicalScale,
+      );
       device.queue.writeBuffer(uniform, 0, payload).unwrap();
       for (let frame = 0; frame < 60; frame++) {
         const encoder = device.createCommandEncoder().unwrap();

@@ -34,7 +34,6 @@ export {
   type FbxLodGroupPod,
   parseFbxLodGroup,
 } from './lod/parse-lod-group.js';
-export { type FbxLodMetaLevel, projectFbxLodMeta } from './lod/project-meta.js';
 export {
   type FbxRawAnimDoc,
   type FbxRawClip,
@@ -43,7 +42,6 @@ export {
 export { type FbxRawMaterial, parseMaterial } from './parse-material.js';
 export { type FbxRawDocument, type FbxRawMesh, parseMesh } from './parse-mesh.js';
 export {
-  type FbxRawLodGroup,
   type FbxRawNode,
   type FbxRawNodes,
   parseScene,

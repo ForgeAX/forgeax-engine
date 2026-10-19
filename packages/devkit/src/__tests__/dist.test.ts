@@ -180,3 +180,34 @@ it('labels partial validation material profiles and rejects unsupported identiti
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('admits dot-prefixed filenames while rejecting actual parent escapes', async () => {
+  const { mkdir, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-dist-fence-'));
+  const dist = resolve(root, 'dist');
+  await mkdir(resolve(dist, 'shaders'), { recursive: true });
+  try {
+    for (const path of ['index.html', 'pack-index.json', 'shaders/manifest.json', '..chunk.js'])
+      await writeFile(resolve(dist, path), '{}');
+    const manifest = await writeDistManifest(
+      { root, id: 'game', name: 'Game', roots: {}, assetRoots: ['assets'], packageJson: {} },
+      '/',
+    );
+    expect(await verifyDist(dist)).toMatchObject({ ok: true });
+    await writeFile(
+      resolve(dist, 'forgeax-dist.json'),
+      JSON.stringify({
+        ...manifest,
+        artifacts: manifest.artifacts.map((artifact) =>
+          artifact.path === '..chunk.js' ? { ...artifact, path: '../outside.js' } : artifact,
+        ),
+      }),
+    );
+    expect(await verifyDist(dist)).toMatchObject({
+      ok: false,
+      error: { code: 'dist-path-escape' },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

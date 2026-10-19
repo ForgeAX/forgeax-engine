@@ -1,7 +1,7 @@
 const UPDATE_MIGRATION_RISK =
   'Install a newer SDK in a separate directory. Existing games remain pinned and are not migrated automatically; review release notes and migrate and test each game before changing its Engine version.';
 
-export type SdkUpdateStatus =
+type SdkUpdateStatus =
   | {
       readonly status: 'available';
       readonly currentVersion: string;

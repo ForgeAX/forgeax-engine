@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_TAA,
   Camera,
@@ -12,7 +13,7 @@ import {
   MeshRenderer,
   type RendererOptions,
 } from '@forgeax/engine-render';
-import { halfToFloat } from '@forgeax/engine-rhi-debug';
+
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { compileShader } from '@forgeax/engine-shader-compiler';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
@@ -139,7 +140,10 @@ export async function scene(
     moving.push(entity);
   }
   world
-    .spawn({ component: DirectionalLight, data: { direction: [0, 0, -1], intensity: 2 } })
+    .spawn({
+      component: DirectionalLight,
+      data: { castShadow: true, direction: [0, 0, -1], intensity: 2 },
+    })
     .unwrap();
   let frame = 0;
   const draw = async (observe = false) => {
@@ -195,7 +199,7 @@ export async function scene(
       throw new Error('missing linear HDR pixels');
     const view = new DataView(image.bytes.buffer, image.bytes.byteOffset, image.bytes.byteLength);
     return Float32Array.from({ length: width * height * 4 }, (_, i) =>
-      halfToFloat(
+      halfFloat.f16ToF32(
         view.getUint16(
           Math.floor(i / (width * 4)) * image.metadata.bytesPerRow + (i % (width * 4)) * 2,
           true,

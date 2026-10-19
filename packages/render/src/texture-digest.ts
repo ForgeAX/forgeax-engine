@@ -1,4 +1,5 @@
 import type { TextureAsset } from '@forgeax/engine-types';
+import { fnv1a32 } from '@forgeax/engine-types';
 import { compareSkinGeometryBytes } from './skin-geometry-bytes';
 
 const MAX_BYTES = 1_048_576;
@@ -55,8 +56,7 @@ export function textureDigest(texture: TextureAsset): string {
   const previous = bytes === undefined ? undefined : entries.get(texture);
   if (bytes !== undefined && previous !== undefined && equal(bytes, previous.bytes))
     return previous.digest;
-  let hash = 2166136261;
-  for (const byte of data) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+  const hash = fnv1a32(data);
   const digest = `fnv1a:${hash.toString(16).padStart(8, '0')}`;
   if (bytes !== undefined) {
     if (!entries.has(texture) && entries.size === MAX_ENTRIES)

@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 // Real browser compositor checks; this fixture owns its frame marker and contains no Engine.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -77,7 +78,7 @@ const server = createServer((request, response) => {
       : '<canvas width="64" height="64"></canvas><script>document.querySelector("canvas").getContext("2d").fillRect(0,0,64,64);document.documentElement.dataset.forgeaxFrameSubmitted="1";</script>',
   );
 });
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+await once(server.listen(0, '127.0.0.1'), 'listening');
 const browser = createBrowserCapture(root);
 const results = [];
 let watchdog;
@@ -119,7 +120,7 @@ try {
     consoleErrors: session.report().consoleErrors,
   });
   await assert.rejects(session.capture(undefined, { timeoutMs: 3_000 }), (error) => {
-    assert.equal(error.code, 'software-capture-runtime-failed');
+    assert.equal(error.code, 'browser-capture-runtime-failed');
     results.push({ operation: 'validate', code: error.code });
     return true;
   });

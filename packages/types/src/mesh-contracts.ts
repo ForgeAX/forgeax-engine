@@ -57,6 +57,26 @@ export interface MeshCollision {
   readonly indices: Uint32Array;
 }
 
+/** Finite, ordered XYZ bounds in the first six lanes; zero-volume boxes are valid. */
+export function isFiniteBounds3(
+  bounds: ArrayLike<number> | undefined,
+): bounds is ArrayLike<number> {
+  if (bounds === undefined || bounds.length < 6) return false;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const min = bounds[axis];
+    const max = bounds[axis + 3];
+    if (
+      min === undefined ||
+      max === undefined ||
+      !Number.isFinite(min) ||
+      !Number.isFinite(max) ||
+      min > max
+    )
+      return false;
+  }
+  return true;
+}
+
 export interface MeshAsset {
   readonly kind: 'mesh';
   /** Opt-in build-time collision product; source mesh GUID and lifecycle remain authoritative. */

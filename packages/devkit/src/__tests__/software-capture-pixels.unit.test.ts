@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeCapturePixels } from '../software-capture.js';
+import { summarizeCapturePixels } from '../browser-capture.js';
 
 describe('summarizeCapturePixels', () => {
   it('rejects a structurally valid uniform black frame', () => {

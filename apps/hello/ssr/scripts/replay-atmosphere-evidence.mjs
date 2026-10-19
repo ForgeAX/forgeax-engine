@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
+import { halfFloat } from '@forgeax/engine/math';
 import { create, globals } from '@forgeax/engine-dawn-node';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -6,7 +8,7 @@ import { resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import * as webgpu from '../../../../packages/rhi-webgpu/dist/index.mjs';
 import { decodeTape, buildFrameModel, openReplay, replayDeviceRequest } from '../../../../packages/rhi-debug/dist/index.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const directory = resolve(process.env.FORGEAX_ATMOSPHERE_EVIDENCE ?? 'artifacts/atmosphere/browser');
 const output = resolve(directory, 'replay');
@@ -15,10 +17,7 @@ Object.assign(globalThis, globals);
 Object.defineProperty(globalThis, 'navigator', {value:{gpu:create(process.platform === 'darwin' ? ['backend=metal'] : [])}, configurable:true});
 const report = JSON.parse(await readFile(resolve(directory, 'report.json'), 'utf8'));
 const rows=[];
-const half = bits => {
-  const sign = bits & 32768 ? -1 : 1, exponent=(bits>>>10)&31, fraction=bits&1023;
-  return sign*(exponent===31 ? (fraction===0?Infinity:NaN) : exponent===0 ? fraction*2**-24 : (1+fraction/1024)*2**(exponent-15));
-};
+const half = bits => { return halfFloat.f16ToF32(bits); };
 for (const row of report.results.filter(row=>row.capture!==undefined)) {
   const tapePath=resolve(directory,row.capture.path);
   const stored=await readFile(tapePath);
@@ -43,7 +42,7 @@ for (const row of report.results.filter(row=>row.capture!==undefined)) {
     differences.sort((a,b)=>a-b);
     const parity={mean:differences.reduce((a,b)=>a+b,0)/differences.length,p95:differences[Math.floor(differences.length*.95)],p99:differences[Math.floor(differences.length*.99)],max:differences.at(-1)};
     if(parity.p99>2/255)throw new Error(`${row.name} fresh-device replay mismatch: ${JSON.stringify(parity)}`);
-    await writeFile(resolve(output,`${row.name}.png`),writeReferencePng(rgba,result.width,result.height));
+    await writeFile(resolve(output,`${row.name}.png`),encodePng(result.width, result.height, rgba));
     // Retain linear HDR before tone mapping. This also detects half-float
     // overflow hidden by the final display transform.
     const hdrWork=model.works.findLast(work=>work.attachments?.colorViewHandleIds?.length>0 && work.workIndex<last.workIndex && work.pipeline.status==='available' && work.pipeline.shaders.some(shader=>/atmosphere_compose|fs_resolve|volume_fs|fs_main/.test(shader.entryPoint)));

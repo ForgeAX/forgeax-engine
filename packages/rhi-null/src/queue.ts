@@ -14,7 +14,7 @@ import type {
   Result,
   RhiError as RhiErrorType,
   RhiQueue,
-  TextureWriteDestination,
+  TexelCopyTextureInfo,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
@@ -45,7 +45,7 @@ export class RhiNullQueue implements RhiQueue {
   }
 
   writeTexture(
-    _destination: TextureWriteDestination,
+    _destination: TexelCopyTextureInfo,
     _data: ArrayBufferView | ArrayBuffer,
     _dataLayout: Pick<GPUTexelCopyBufferLayout, 'offset' | 'bytesPerRow' | 'rowsPerImage'>,
     _size: GPUExtent3DStrict,

@@ -25,6 +25,10 @@
 //          wiki/sources/2026-05-05-bevy-0-19-math-transform-color §sRGB piecewise gamma;
 //          wiki/glam-rs-overview §LinearRgba.
 
+import {
+  srgbChannelToLinear as decodeSrgb,
+  linearChannelToSrgb as encodeSrgb,
+} from '@forgeax/engine-types';
 import type { Color, ColorLike } from './types';
 
 export type { Color, ColorLike };
@@ -57,18 +61,14 @@ export function clone(c: ColorLike): Color {
  * ```
  */
 function srgbChannelToLinear(v: number): number {
-  if (Number.isNaN(v)) return Number.NaN;
   if (v <= 0) return v;
-  if (v <= 0.04045) return v / 12.92;
-  return ((v + 0.055) / 1.055) ** 2.4;
+  return decodeSrgb(v);
 }
 
 /** Single-channel linear → sRGB (component-level helper). */
 function linearChannelToSrgb(v: number): number {
-  if (Number.isNaN(v)) return Number.NaN;
   if (v <= 0) return v;
-  if (v <= 0.0031308) return v * 12.92;
-  return 1.055 * v ** (1 / 2.4) - 0.055;
+  return encodeSrgb(v);
 }
 
 /**

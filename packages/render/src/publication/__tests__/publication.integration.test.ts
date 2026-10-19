@@ -104,6 +104,55 @@ function fixture(maxInFlight?: 2 | 3, features: readonly RenderFeature<unknown>[
 }
 
 describe('native render publication', () => {
+  it('transfers affine transforms and ordinary lens offsets without retaining author storage', () => {
+    const f = fixture();
+    try {
+      const camera = [...f.world.query({ read: [Camera] }).unwrap()][0]?.entity;
+      if (camera === undefined) throw new Error('missing camera');
+      f.world.set(camera, Camera, { projectionOffset: [0.25, -0.5] }).unwrap();
+      f.world.set(f.first, Transform, { shear: [0.5, 0.25, -0.2] }).unwrap();
+      f.world.update(0).unwrap();
+      const first = f.publish().frame;
+      expect(first.cameras[0]?.projectionOffset).toEqual([0.25, -0.5]);
+      const mesh = first.renderables.find((row) => row.entityKey === f.first);
+      expect(mesh?.transform.world[4]).toBeCloseTo(0.5);
+      expect(mesh?.transform.world[8]).toBeCloseTo(0.25);
+      expect(mesh?.transform.world[9]).toBeCloseTo(-0.2);
+      f.world.set(camera, Camera, { projectionOffset: [-0.25, 0.5] }).unwrap();
+      f.world.set(f.first, Transform, { shear: [0, 0, 0] }).unwrap();
+      f.world.update(0).unwrap();
+      const changed = f.publish().frame;
+      expect(changed.cameras[0]?.projectionOffset).toEqual([-0.25, 0.5]);
+      expect(changed.renderables.find((row) => row.entityKey === f.first)?.transform.world[4]).toBe(
+        0,
+      );
+      expect(first.cameras[0]?.projectionOffset).toEqual([0.25, -0.5]);
+    } finally {
+      f.publisher.dispose();
+      f.receiver.dispose();
+      f.scene.dispose();
+    }
+  });
+
+  it.each([NaN, Infinity, -Infinity])('rejects non-finite transforms atomically: %s', (value) => {
+    const f = fixture();
+    try {
+      const candidate = f.publisher.prepare(0).unwrap();
+      const packet = structuredClone(candidate.packet);
+      candidate.accept();
+      const original = packet.transforms[packet.transforms.length - 1] as number;
+      packet.transforms[packet.transforms.length - 1] = value;
+      expect(f.receiver.accept(packet)).toMatchObject({ ok: false });
+      packet.transforms[packet.transforms.length - 1] = original;
+      const accepted = f.receiver.accept(packet).unwrap();
+      expect(f.scene.consumePublication(accepted).renderables).toHaveLength(2);
+    } finally {
+      f.publisher.dispose();
+      f.receiver.dispose();
+      f.scene.dispose();
+    }
+  });
+
   it('owns dispatch membership without freezing borrowed packet rows or nested material values', () => {
     const f = fixture();
     const candidate = f.publisher.prepare(0).unwrap();
@@ -651,7 +700,10 @@ describe('native render publication', () => {
     f.world.set(f.first, MeshRenderer, { lightingChannels: 0x80000000 }).unwrap();
     f.world.set(f.second, MeshRenderer, { lightingChannels: 1 }).unwrap();
     const sun = f.world
-      .spawn({ component: DirectionalLight, data: { lightingChannels: 0x80000001 } })
+      .spawn({
+        component: DirectionalLight,
+        data: { castShadow: true, lightingChannels: 0x80000001 },
+      })
       .unwrap();
     f.world.update(0).unwrap();
     const initial = f.publish();

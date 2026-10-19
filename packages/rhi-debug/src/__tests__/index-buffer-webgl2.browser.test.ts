@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import { ensureReady, rhi } from '@forgeax/engine-rhi-wgpu';
+import { createShaderModule, ensureReady, rhi } from '@forgeax/engine-rhi-wgpu';
 import { expect, it } from 'vitest';
 import { wrap } from '../recorder';
 
@@ -10,7 +10,7 @@ it('seeds a WebGL2 INDEX buffer from recorded uploads when GPU copy returns zero
   document.body.append(canvas);
   try {
     await ensureReady();
-    const recorder = wrap(rhi);
+    const recorder = wrap(rhi, createShaderModule);
     const adapter = (await recorder.requestAdapter(undefined, canvas)).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     expect(device.caps.backendKind).toBe('wgpu-webgl2');

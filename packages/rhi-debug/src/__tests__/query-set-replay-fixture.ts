@@ -397,13 +397,13 @@ async function executeFrame(
   );
   call('encoder.copyColorToReadback', () =>
     encoder.copyTextureToBuffer(
-      { texture: colorTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } } as never,
+      { texture: colorTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
       {
         buffer: colorReadbackBuffer,
         offset: 0,
         bytesPerRow: READBACK_SIZE,
         rowsPerImage: COLOR_HEIGHT,
-      } as never,
+      },
       { width: COLOR_WIDTH, height: COLOR_HEIGHT, depthOrArrayLayers: 1 },
     ),
   );
@@ -437,13 +437,13 @@ async function executeFrame(
   call('resultPass.end', () => resultPass.end());
   call('resultEncoder.copyResultToReadback', () =>
     resultEncoder.copyTextureToBuffer(
-      { texture: queryTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } } as never,
+      { texture: queryTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
       {
         buffer: resultReadbackBuffer,
         offset: 0,
         bytesPerRow: READBACK_SIZE,
         rowsPerImage: 1,
-      } as never,
+      },
       { width: QUERY_COUNT, height: 1, depthOrArrayLayers: 1 },
     ),
   );

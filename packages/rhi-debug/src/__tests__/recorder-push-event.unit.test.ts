@@ -17,6 +17,7 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: test stubs for recorder proxy exercise need mock RHI types at the boundary; RhiCallEvent/RhiRenderPassEncoder/RhiCommandEncoder are structural shapes that vi.fn() stubs cannot type-narrow without any
 // biome-ignore-all lint/style/noNonNullAssertion: test assertions on tape event arrays are guarded by expect.length checks before indexed access
 
+import { createShaderModule } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { type DebugRhiInstance, wrap } from '../recorder';
 import type {
@@ -137,7 +138,7 @@ async function buildMockAndArm(): Promise<{
     requestAdapter: vi.fn(() => Promise.resolve(rOk(mockAdapter))),
   };
 
-  const debugInst = wrap(mockInst);
+  const debugInst = wrap(mockInst, createShaderModule);
   const adapterRes = await debugInst.requestAdapter();
   if (!adapterRes.ok) throw new Error('mock adapter failed');
   const adapter = (adapterRes as any).value;

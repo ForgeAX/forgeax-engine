@@ -1,4 +1,4 @@
-import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
+import { type RhiDevice, RhiError, type Texture, type TextureView } from '@forgeax/engine-rhi';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -15,6 +15,7 @@ interface StaticShadowLayerArray {
   readonly texture: Texture;
   readonly size: number;
   readonly layers: number;
+  readonly views: Map<number | undefined, TextureView>;
   /** Layers whose raster reached a successful submit. */
   readonly retained: Set<number>;
   /** Layers rastered by the frame being staged. */
@@ -33,6 +34,30 @@ export class StaticShadowLayers {
   private retiring: Texture[] = [];
 
   constructor(private readonly device: RhiDevice) {}
+
+  /** Views resolve after their imported array and share its lifetime. */
+  view(label: string, layer?: number): TextureView {
+    const array = this.arrays.get(label);
+    if (array === undefined) {
+      throw new RhiError({
+        code: 'webgpu-runtime-error',
+        expected: 'static shadow texture resolves before its views',
+        hint: 'import the static shadow array before resolving its views',
+      });
+    }
+    const current = array.views.get(layer);
+    if (current !== undefined) return current;
+    const created = this.device.createTextureView(array.texture, {
+      label: layer === undefined ? `${label}.view` : `${label}.layer.${layer}`,
+      dimension: layer === undefined ? '2d-array' : '2d',
+      aspect: 'depth-only',
+      baseArrayLayer: layer ?? 0,
+      arrayLayerCount: layer === undefined ? array.layers : 1,
+    });
+    if (!created.ok) throw created.error;
+    array.views.set(layer, created.value);
+    return created.value;
+  }
 
   /**
    * The array for `label`, allocated on first use and replaced when its shape
@@ -58,14 +83,16 @@ export class StaticShadowLayers {
     // Frames already submitted may still read the old array; it is destroyed
     // after the next successful submit.
     if (current !== undefined) this.retiring.push(current.texture);
-    this.arrays.set(label, {
+    const array: StaticShadowLayerArray = {
       texture: created.value,
       size,
       layers,
+      views: new Map(),
       retained: new Set(),
       pending: new Set(),
-    });
-    return created.value;
+    };
+    this.arrays.set(label, array);
+    return array.texture;
   }
 
   /** Whether `layer` of `label` holds depth from a submitted raster. */

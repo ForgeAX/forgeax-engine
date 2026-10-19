@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { teardownDawnInstance } from '../lib/dawn-teardown.mjs';
 import browserLaunch from './browser-launch.json' with { type: 'json' };
@@ -112,10 +113,7 @@ try {
       response.setHeader('Content-Type', 'text/html');
       response.end('<canvas width="64" height="64"></canvas>');
     });
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', resolve);
-    });
+    await once(server.listen(0, '127.0.0.1'), 'listening');
     browser = await chromium.launch({
       ...browserLaunch,
       headless: true,

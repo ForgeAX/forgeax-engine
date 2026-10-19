@@ -1,17 +1,15 @@
+import { once } from 'node:events';
 import { createServer } from 'node:net';
 import type { EndpointEvent, NetEndpoint } from '@forgeax/engine/net';
 import { listenWebSocketEndpoint } from '@forgeax/engine/net-websocket/node';
 
 export async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address !== null ? address.port : 0;
-      server.close(() => resolve(port));
-    });
-  });
+  const server = createServer();
+  await once(server.listen(0, '127.0.0.1'), 'listening');
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
 }
 
 export async function listen(): Promise<

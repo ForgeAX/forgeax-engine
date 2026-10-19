@@ -173,6 +173,7 @@ describe('transparent distance sort (dawn)', () => {
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [-0.4, -0.6, -0.7],

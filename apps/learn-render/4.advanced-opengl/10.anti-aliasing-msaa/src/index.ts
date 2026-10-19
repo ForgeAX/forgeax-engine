@@ -122,7 +122,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Step 4: spawn directional light with slant direction.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.4, -0.6, -0.7],
       color: [1, 1, 1],
       intensity: 1.5,

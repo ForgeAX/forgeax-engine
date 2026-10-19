@@ -228,7 +228,10 @@ describe('volumetric fog budget and recovery contract', () => {
       )
       .unwrap();
     const light = world
-      .spawn({ component: DirectionalLight, data: { direction: [-0.4, -0.8, -0.3] } })
+      .spawn({
+        component: DirectionalLight,
+        data: { castShadow: true, direction: [-0.4, -0.8, -0.3] },
+      })
       .unwrap();
     const fogs = [-3, 3].map((x) =>
       world
@@ -988,6 +991,9 @@ describe('volumetric fog budget and recovery contract', () => {
     const warmedFacts = warmup?.volumetricFog?.resourceFacts;
     expect(warmedFacts).toBeDefined();
     if (warmedFacts === undefined) return;
+    const warmedSamplers = adapter.devices[0]?.samplerDescriptors.length;
+    await draw();
+    expect(adapter.devices[0]?.samplerDescriptors.slice(warmedSamplers)).toEqual([]);
     const integrateLayout = adapter.devices[0]?.bindGroupLayoutDescriptors.find(
       (descriptor) =>
         Array.from(descriptor.entries).filter((entry) => entry.texture?.viewDimension === '3d')

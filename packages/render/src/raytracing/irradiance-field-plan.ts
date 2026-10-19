@@ -1,4 +1,4 @@
-import { ok, type Result } from '@forgeax/engine-types';
+import { isValidAssetGuidString, ok, type Result } from '@forgeax/engine-types';
 import type {
   StandardCardCapture,
   StandardDiffuseGi,
@@ -30,7 +30,7 @@ export const IRRADIANCE_FIELD_DEPTH_BYTES = IRRADIANCE_FIELD_TEXELS * 8;
 /** Per probe: updates, classification, f16 relocation offset (`IrradianceFieldProbeState`). */
 export const IRRADIANCE_FIELD_META_BYTES = 16;
 export const IRRADIANCE_FIELD_MAX_PROBES = 32768;
-export const IRRADIANCE_FIELD_MAX_LEVELS = 4;
+const IRRADIANCE_FIELD_MAX_LEVELS = 4;
 
 export interface IrradianceFieldPlan {
   readonly grid: GlobalSdfGrid;
@@ -59,7 +59,6 @@ export interface IrradianceFieldPlan {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 /** Pack asset GUID spelling (`@forgeax/engine-pack` guid). */
-const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const unknownKey = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).find((key) => !keys.includes(key));
 
@@ -277,8 +276,7 @@ export function validateDiffuseGi(gi: StandardDiffuseGi): Result<void, RayRefere
   if (!isObject(gi)) return rayReferenceFailure('Diffuse GI requires one configuration object');
   if (gi.gather === 'baked')
     return unknownKey(gi, ['gather', 'volume', 'resolution']) === undefined &&
-      typeof gi.volume === 'string' &&
-      GUID_PATTERN.test(gi.volume) &&
+      isValidAssetGuidString(gi.volume) &&
       (gi.resolution === 'full' || gi.resolution === 'half')
       ? ok(undefined)
       : rayReferenceFailure(

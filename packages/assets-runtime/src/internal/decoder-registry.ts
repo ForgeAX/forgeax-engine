@@ -16,7 +16,7 @@ interface DecoderEntry {
   references: number;
 }
 
-export interface DecoderRegistryOptions {
+interface DecoderRegistryOptions {
   readonly scopeId?: string;
 }
 

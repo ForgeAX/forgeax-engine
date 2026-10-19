@@ -19,7 +19,7 @@ import type {
 import { createRenderPipelineTarget } from '../render-pipeline';
 import { STANDARD_TEMPORAL_FORMAT } from '../standard-attachments';
 import { COLOR_PASS_SELECTOR, DEFERRED_PASS_SELECTOR } from '../systems/pass-selector';
-import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
+import { addTypedScenePass } from '../typed-render-graph-primitives';
 
 /** Scene history and the motion producer must agree on every temporal consumer. */
 export function standardSceneTemporalDemand(
@@ -255,26 +255,5 @@ export function addStandardSceneDataPass(
     clearColor: [0, 0, -1, 1],
     colorLoadOp: surfaces === 'opaque' ? 'clear' : 'load',
     depthLoadOp: 'load',
-  });
-}
-
-export function addTaaResolvePass(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  current: RenderPipelineTarget,
-  currentTemporal: RenderPipelineTarget,
-  previousColor: RenderPipelineTarget,
-  previousTemporal: RenderPipelineTarget,
-  output: RenderPipelineTarget,
-): Result<void, RenderGraphError> {
-  return addTypedFullscreenPass(graph, {
-    name: 'taa-resolve',
-    shader: 'forgeax.taa-resolve',
-    input: current,
-    outputs: [output],
-    additionalReads: [
-      { key: 'scene-temporal', target: currentTemporal },
-      { key: 'taa-history-color', target: previousColor },
-      { key: 'taa-history-temporal', target: previousTemporal },
-    ],
   });
 }

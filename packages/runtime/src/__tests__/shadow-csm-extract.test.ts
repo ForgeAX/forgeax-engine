@@ -82,7 +82,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     it('cascadeCount and cascadeBlend scalars match component defaults', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
-      expect(frame.lights.cascadeCount).toBe(4);
+      expect(frame.lights.cascadeCount).toBe(3);
       expect(frame.lights.cascadeBlend).toBeCloseTo(0.2, 5);
     });
   });
@@ -135,6 +135,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
       const spawned = world.spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           direction: [0, -1, 0],
           shadowFilter: 4,
           shadowAngularRadius: 999,
@@ -164,11 +165,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
       const world = new World();
       world.spawn({
         component: DirectionalLight,
-        data: {
-          direction: [0, -1, 0],
-          cascadeCount: 1,
-          shadowDistance: 100,
-        },
+        data: { castShadow: true, direction: [0, -1, 0], cascadeCount: 1, shadowDistance: 100 },
       });
       world.spawn(
         { component: Transform, data: {} },
@@ -216,6 +213,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
       world.spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           direction: [0, -1, 0],
           cascadeCount: 1,
           shadowDistance: 100,

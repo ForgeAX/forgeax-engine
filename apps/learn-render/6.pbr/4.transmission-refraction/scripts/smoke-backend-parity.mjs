@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 // Exercise the five positive Standard transmission cases on both browser backends.
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ const root = resolve(appDir, '../../../..');
 const output = resolve(process.env.FORGEAX_TRANSMISSION_PARITY_DIR ?? resolve(root, '.forgeax-debug/transmission-backend-matrix'));
 mkdirSync(output, { recursive: true });
 const socket = createServer();
-await new Promise((ready) => socket.listen(0, '127.0.0.1', ready));
+await once(socket.listen(0, '127.0.0.1'), 'listening');
 const address = socket.address();
 await new Promise((ready) => socket.close(ready));
 if (address === null || typeof address === 'string') throw new Error('port unavailable');

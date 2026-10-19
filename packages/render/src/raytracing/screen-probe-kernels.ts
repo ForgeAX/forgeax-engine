@@ -299,7 +299,7 @@ fn withStatus(info: u32, status: u32) -> u32 { return (info & ~(7u << 12u)) | (s
 `;
 
 /** Irradiance Field resources plus the screen-probe frame/probes/rays the world kernel reads. */
-export type ScreenProbeWorldInput =
+type ScreenProbeWorldInput =
   | Exclude<
       IrradianceFieldKernelInput,
       'lights' | 'field' | 'surfaces' | 'probeRays' | 'irradiance' | 'moments' | 'meta' | 'frame'

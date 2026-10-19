@@ -62,6 +62,9 @@ is accepted. A staged production candidate owns disposable Pack and artifact
 maps until its outer generation commits. Failed, aborted, or discarded
 candidates therefore leave the accepted Catalog, Pack body, artifact bytes,
 and imported GUID set available for the next same-source retry.
+Staged Meta imports leave Catalog diffing to the outer generation owner. Only
+direct route imports with a delta subscriber compare the accepted Catalog;
+preparing each staged source does not hash unrelated catalog payloads.
 Candidate maps share immutable accepted artifact bodies; producers replace map
 entries with new bodies instead of mutating published bytes. Unrelated lazy
 publications retain both the accepted bytes and their prepared HTTP encodings.
@@ -381,6 +384,11 @@ build input. Build mode always materializes all required declarations and emits
 only the accepted Pack v2 publication. Its runtime binding points to the single
 emitted `pack-index.json` under the Vite base. Bound builds emit the existing
 authoritative scoped snapshot; unbound builds emit their standalone row array.
+Scoped development responses also use the existing lossless Catalog wire encoder:
+shared publication envelopes appear once in its table, retaining every receipt
+and output. The domain reader restores shared readonly envelopes before admission.
+This prevents large authored packs from expanding their complete output roster
+once per Catalog row and exceeding the JavaScript string limit.
 Scope/generation checks and package publication identity remain in force, and
 production exposes no development import transport. A host that needs live updates uses
 `createCatalogClient` with the plugin's scoped Catalog stream; runtime asset
@@ -448,3 +456,7 @@ The `navigation-mesh` Scriptable Pack kind carries portable baked navigation
 polygons. Its explicit build-time producer is `@forgeax/engine/import/navigation-bake`;
 ordinary Cook/Catalog delivery preserves the GUID and producer freshness digest.
 Player loading carries no Recast compiler dependency.
+
+The revision observer exposes one asynchronous `close()` fence. Plugin shutdown and
+rebind await that fence after watcher readiness, reconciliation and pending batch
+work; there is no callable stop handle or alternate close method.

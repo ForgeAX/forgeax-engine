@@ -2,14 +2,15 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { encodeTape, halfToFloat, tapeDigest } from '@forgeax/engine-rhi-debug';
+import { halfFloat } from '@forgeax/engine-math';
+import { encodeTape, tapeDigest } from '@forgeax/engine-rhi-debug';
 import { describe, expect, it } from 'vitest';
 import { runCliRhiDebugOperation } from '../rhi-debug/cli-context';
 
 const SKIP_DAWN = process.env.FORGEAX_SKIP_DAWN === '1';
 
 function f16(value: number): number {
-  for (let bits = 0; bits < 0x7c00; bits++) if (halfToFloat(bits) === value) return bits;
+  for (let bits = 0; bits < 0x7c00; bits++) if (halfFloat.f16ToF32(bits) === value) return bits;
   throw new Error(`${value} is not an exact half`);
 }
 

@@ -76,10 +76,9 @@ describe('IBL precompute completion boundaries', () => {
 
     const result = await runIblPrecompute(options);
 
-    expect(result).toEqual({ ok: true, value: { submitted: true } });
+    expect(result.unwrap().prefilterTexture).toBeDefined();
     expect(device.framePassNames).toHaveLength(43);
     expect(device.totalDrawCount).toBe(43);
-    expect(cache.prefilterTexture).toBeDefined();
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       1, 1, 1,
     ]);
@@ -109,17 +108,20 @@ describe('IBL precompute completion boundaries', () => {
     });
     vi.spyOn(device.queue, 'onSubmittedWorkDone').mockImplementation(async () => {
       fences++;
-      expect(cache.prefilterTexture).toBeUndefined();
       expect(cache.prefilterBakeCount).toBe(0);
       if (passes.at(-1)?.includes('ibl-brdf-lut')) await lastFence;
     });
-    const result = runIblPrecompute(options);
+    let settled = false;
+    const result = runIblPrecompute(options).then((value) => {
+      settled = true;
+      return value;
+    });
     try {
       await vi.waitFor(() => expect(passes.at(-1)).toEqual(['ibl-brdf-lut']));
       expect(passes.filter((batch) => batch.includes('ibl-prefilter'))).toEqual(
         Array.from({ length: 30 }, () => ['ibl-prefilter']),
       );
-      expect(cache.prefilterTexture).toBeUndefined();
+      expect(settled).toBe(false);
       expect(passes).toHaveLength(38);
       expect(renderOpportunities).toEqual([1, 7, 13, 19, 25, 31, 37]);
       expect(fences).toBe(1);
@@ -127,9 +129,8 @@ describe('IBL precompute completion boundaries', () => {
     } finally {
       release();
     }
-    expect(await result).toEqual({ ok: true, value: { submitted: true } });
+    expect((await result).unwrap().prefilterTexture).toBeDefined();
     expect(fences, 'ordered face-sized submissions need only one final GPU fence').toBe(1);
-    expect(cache.prefilterTexture).toBeDefined();
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       1, 1, 1,
     ]);
@@ -151,7 +152,6 @@ describe('IBL precompute completion boundaries', () => {
     expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(30);
     expect(device.framePassNames).toContain('ibl-brdf-lut');
     expect(device.totalDrawCount).toBe(43);
-    expect(cache.prefilterTexture).toBeUndefined();
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,
     ]);
@@ -188,7 +188,6 @@ describe('IBL precompute completion boundaries', () => {
     expect(fence).not.toHaveBeenCalled();
     expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(1);
     expect(device.framePassNames).not.toContain('ibl-brdf-lut');
-    expect(cache.prefilterTexture).toBeUndefined();
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,
     ]);
@@ -196,7 +195,7 @@ describe('IBL precompute completion boundaries', () => {
   });
 
   it('rejects an inactive generation before allocating or submitting', async () => {
-    const { device, scope, cache, options } = await fixture();
+    const { device, scope, options } = await fixture();
     scope.abandon();
     const allocate = vi.spyOn(device, 'createTexture');
     const submit = vi.spyOn(device.queue, 'submit');
@@ -204,7 +203,6 @@ describe('IBL precompute completion boundaries', () => {
     expect(result).toMatchObject({ ok: false, error: { code: 'ibl-precompute-not-dispatched' } });
     expect(allocate).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
-    expect(cache.prefilterTexture).toBeUndefined();
     scope.dispose();
   });
 
@@ -217,11 +215,15 @@ describe('IBL precompute completion boundaries', () => {
     const fence = vi.spyOn(device.queue, 'onSubmittedWorkDone').mockImplementation(async () => {
       await held;
     });
-    const pending = runIblPrecompute(options);
+    let settled = false;
+    const pending = runIblPrecompute(options).then((value) => {
+      settled = true;
+      return value;
+    });
     try {
       await vi.waitFor(() => expect(fence).toHaveBeenCalledTimes(1));
       expect(device.totalDrawCount).toBe(43);
-      expect(cache.prefilterTexture).toBeUndefined();
+      expect(settled).toBe(false);
       scope.abandon();
     } finally {
       release();
@@ -230,7 +232,6 @@ describe('IBL precompute completion boundaries', () => {
       ok: false,
       error: { code: 'ibl-precompute-not-dispatched' },
     });
-    expect(cache.prefilterTexture).toBeUndefined();
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,
     ]);

@@ -1,7 +1,7 @@
 import type { PointShape } from '../components/points';
 import type { LinesStyleInput } from './admission';
 
-export interface PointsLinesViewport {
+interface PointsLinesViewport {
   readonly width: number;
   readonly height: number;
   readonly dpr: number;
@@ -37,7 +37,7 @@ export interface PointsLinesRetainedSnapshot {
   readonly dedicatedResourceBytes?: number;
 }
 
-export interface PointsLinesSnapshotInput
+interface PointsLinesSnapshotInput
   extends Omit<
     PointsLinesRetainedSnapshot,
     'sourceBounds' | 'viewport' | 'projection' | 'sortKey'

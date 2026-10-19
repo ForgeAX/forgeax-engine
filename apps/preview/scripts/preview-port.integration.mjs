@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
@@ -193,10 +194,7 @@ async function checkFixtureMarker(listener) {
 
 async function availablePort() {
   const server = createServer();
-  await new Promise((resolveListen, rejectListen) => {
-    server.once('error', rejectListen);
-    server.listen(0, '127.0.0.1', resolveListen);
-  });
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
   await new Promise((resolveClose, rejectClose) => {

@@ -2,12 +2,21 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureAssetPublication, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import type { CatalogEntry } from '@forgeax/engine-types';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../dev/watcher.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../dev/watcher.js')>();
-  return { ...actual, watchDevRoots: () => () => {} };
+vi.mock('../dev/revision-observer.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../dev/revision-observer.js')>();
+  return {
+    ...actual,
+    createRevisionObserver: (): import('../dev/revision-observer.js').RevisionObserver => ({
+      ready: Promise.resolve(),
+      reconcile: async () => 0,
+      drain: async () => {},
+      revision: () => 0,
+      close: async () => {},
+    }),
+  };
 });
 
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
@@ -105,10 +114,8 @@ describe('authored development pack serving', () => {
 
     const catalogResponse = await request(middlewares, binding.catalogUrl);
     expect(catalogResponse.statusCode).toBe(200);
-    const catalog = JSON.parse(catalogResponse.body) as {
-      entries: CatalogEntry[];
-    };
-    const entry = catalog.entries.find((candidate) => candidate.guid === GUID);
+    const catalog = decodeCatalogWire(JSON.parse(catalogResponse.body)).unwrap();
+    const entry = catalog.find((candidate) => candidate.guid === GUID);
     expect(entry).toBeDefined();
     if (entry === undefined) throw new Error('expected the authored pack catalog entry');
 
@@ -117,8 +124,8 @@ describe('authored development pack serving', () => {
     expect(JSON.parse(firstResponse.body).assets[0].payload.marker).toBe('initial');
     const capture = await captureAssetPublication(
       entry,
-      catalog.entries,
-      createCatalogSource({ entries: catalog.entries }),
+      catalog,
+      createCatalogSource({ entries: catalog }),
       async (url) => {
         const response = await request(middlewares, String(url));
         return new globalThis.Response(response.body, { status: response.statusCode });
@@ -178,10 +185,8 @@ describe('authored development pack serving', () => {
 
     const catalogResponse = await request(middlewares, binding.catalogUrl);
     expect(catalogResponse.statusCode).toBe(200);
-    const catalog = JSON.parse(catalogResponse.body) as {
-      entries: CatalogEntry[];
-    };
-    const entry = catalog.entries.find((candidate) => candidate.guid === GUID);
+    const catalog = decodeCatalogWire(JSON.parse(catalogResponse.body)).unwrap();
+    const entry = catalog.find((candidate) => candidate.guid === GUID);
     expect(entry).toBeDefined();
     if (entry === undefined) throw new Error('expected the legacy authored pack catalog entry');
 

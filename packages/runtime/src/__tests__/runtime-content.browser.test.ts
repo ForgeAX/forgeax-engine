@@ -60,6 +60,7 @@ it('projects managed shared material and mesh writes into two independent browse
     .spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [0, 0, -1],

@@ -1,6 +1,5 @@
 import { mat4 } from '@forgeax/engine-math';
-import { cameraLensProjection } from '../camera-projection';
-import type { CameraProjection } from '../components/camera';
+import { cameraLensProjection, jitterCameraProjection } from '../camera-projection';
 import type { CameraSnapshot } from '../render-contract';
 
 export const TEMPORAL_JITTER_SAMPLE_COUNT = 8;
@@ -15,17 +14,14 @@ export type TemporalViewResetReason =
   | 'projection-kind-changed'
   | 'projection-range-changed';
 
-export interface SubmittedTemporalView {
+export interface SubmittedTemporalView extends Pick<CameraSnapshot, 'projection' | 'near' | 'far'> {
   readonly viewId: string;
   readonly historyVersion: number;
-  readonly projection: CameraProjection;
-  readonly near: number;
-  readonly far: number;
   readonly jitterUv: readonly [number, number];
   readonly unjitteredViewProjection: Float32Array;
 }
 
-export interface TemporalView {
+export interface TemporalView extends Pick<CameraSnapshot, 'projection' | 'near' | 'far'> {
   readonly viewId: string;
   readonly historyVersion: number;
   readonly temporalFrameIndex: number;
@@ -38,9 +34,6 @@ export interface TemporalView {
   readonly currentJitteredViewProjection: Float32Array;
   readonly currentUnjitteredViewProjection: Float32Array;
   readonly previousUnjitteredViewProjection: Float32Array;
-  readonly projection: CameraProjection;
-  readonly near: number;
-  readonly far: number;
 }
 
 export interface TemporalViewInput {
@@ -118,10 +111,7 @@ export function projectTemporalView(input: TemporalViewInput): TemporalView {
   const view = mat4.invert(mat4.create(), camera.world);
   const projection = cameraLensProjection(camera);
   const currentUnjitteredViewProjection = mat4.multiply(mat4.create(), projection, view);
-  const clipJitter = mat4.identity(mat4.create());
-  clipJitter[12] = currentJitterUv[0] * 2;
-  clipJitter[13] = currentJitterUv[1] * -2;
-  const jitteredProjection = mat4.multiply(mat4.create(), clipJitter, projection);
+  const jitteredProjection = jitterCameraProjection(mat4.create(), projection, currentJitterUv);
   const currentJitteredViewProjection = mat4.multiply(mat4.create(), jitteredProjection, view);
   const reason = resetReason(camera, viewId, input.lastSubmitted);
   const historyValid = reason === undefined;

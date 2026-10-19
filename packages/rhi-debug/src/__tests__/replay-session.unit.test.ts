@@ -277,12 +277,17 @@ describe('ReplaySession', () => {
     });
   });
 
-  it('requires a recorded compression capability when the tape uses its format', async () => {
+  it.each([
+    ['bc1-rgba-unorm', 'textureCompressionBc'],
+    ['bc6h-rgb-float', 'textureCompressionBc'],
+    ['eac-r11snorm', 'textureCompressionEtc2'],
+    ['astc-5x4-unorm-srgb', 'textureCompressionAstc'],
+  ] as const)('requires the recorded compression capability for %s', async (format, capability) => {
     const result = await openReplay(
       {
         header: {
           formatVersion: 7,
-          rhiCaps: { textureCompressionBc: true },
+          rhiCaps: { [capability]: true },
           eventCount: 1,
           blobCount: 0,
         },
@@ -293,7 +298,7 @@ describe('ReplaySession', () => {
             handleId: 'texture:compressed',
             desc: {
               size: { width: 4, height: 4, depthOrArrayLayers: 1 },
-              format: 'bc1-rgba-unorm',
+              format,
               usage: 0x04,
             },
           },

@@ -71,20 +71,35 @@ export interface MeshSsboBufferWrapper {
   };
 }
 
+/** Resolve only the physical resource when a binding consumes no dynamic offset. */
+export function meshSsboBuffer(
+  storage: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
+  byteOffset: number,
+): Buffer {
+  const pages = storage.pages;
+  if (pages === undefined) {
+    if (storage.buffer === null) throw new Error('draw buffer is not allocated');
+    return storage.buffer;
+  }
+  const buffer = pages.buffers[Math.floor(byteOffset / pages.byteStride)];
+  if (buffer === undefined) throw new Error('draw buffer address exceeds allocated pages');
+  return buffer;
+}
+
 /** Resolve the physical resource and dynamic offset from the same logical address. */
 export function meshSsboBufferBinding(
   storage: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
   byteOffset: number,
 ): { readonly buffer: Buffer; readonly byteOffset: number } {
+  const buffer = meshSsboBuffer(storage, byteOffset);
   const pages = storage.pages;
-  if (pages === undefined) {
-    if (storage.buffer === null) throw new Error('draw buffer is not allocated');
-    return { buffer: storage.buffer, byteOffset };
-  }
-  const pageIndex = Math.floor(byteOffset / pages.byteStride);
-  const buffer = pages.buffers[pageIndex];
-  if (buffer === undefined) throw new Error('draw buffer address exceeds allocated pages');
-  return { buffer, byteOffset: byteOffset - pageIndex * pages.byteStride };
+  return {
+    buffer,
+    byteOffset:
+      pages === undefined
+        ? byteOffset
+        : byteOffset - Math.floor(byteOffset / pages.byteStride) * pages.byteStride,
+  };
 }
 
 /**

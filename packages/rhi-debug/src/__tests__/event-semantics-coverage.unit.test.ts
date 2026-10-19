@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EVENT_SEMANTICS, eventKinds, isWorkEvent } from '../protocol/event-semantics';
+import { handleAccess, isWorkEvent } from '../protocol/event-semantics';
 import type { RhiCallEvent, Tape } from '../protocol/types';
 import { validateTape } from '../protocol/validation';
 
@@ -13,10 +13,6 @@ function tape(events: readonly RhiCallEvent[]): Tape {
 }
 
 describe('event semantics coverage', () => {
-  it('has one semantic entry for every closed event kind', () => {
-    expect(Object.keys(EVENT_SEMANTICS).sort()).toEqual([...eventKinds].sort());
-  });
-
   it('counts direct, indexed, indirect, and compute work without draw aliases', () => {
     expect(
       [
@@ -39,8 +35,10 @@ describe('event semantics coverage', () => {
       destination: { textureHandleId: 'texture:dst' },
       copySize: { width: 1 },
     };
-    expect(EVENT_SEMANTICS[copy.kind].read(copy)).toEqual(['buffer:src', 'texture:dst']);
-    expect(EVENT_SEMANTICS[copy.kind].written(copy)).toEqual(['texture:dst']);
+    expect(handleAccess(copy)).toEqual({
+      read: ['buffer:src', 'texture:dst'],
+      written: ['texture:dst'],
+    });
   });
 
   it('validates in-frame auto-layout pipelines and undeclared draw-state handles', () => {

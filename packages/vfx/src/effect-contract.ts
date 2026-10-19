@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 import type { VfxDataInterfaceRequirement } from './data-interface.js';
 import type { VfxCustomLayout, VfxParticleCoreLayout } from './particle-layout.js';
 
@@ -64,16 +64,7 @@ export interface VfxEffectContract<Values extends VfxValueMap = VfxValueMap> {
   packCustom(values: VfxValueMap): Result<Uint8Array, VfxEffectContractError>;
 }
 
-const VECTOR_LENGTH = {
-  f32: 1,
-  i32: 1,
-  u32: 1,
-  'vec2<f32>': 2,
-  'vec3<f32>': 3,
-  'vec4<f32>': 4,
-};
-
-export type VfxValueType = keyof typeof VECTOR_LENGTH;
+export type VfxValueType = keyof typeof WGSL_NUMERIC_LAYOUT;
 
 function fieldList(
   reflection: VfxEffectReflection,
@@ -85,12 +76,12 @@ function fieldList(
 }
 
 function zeroValue(type: VfxValueType): VfxValue {
-  const length = VECTOR_LENGTH[type];
+  const length = WGSL_NUMERIC_LAYOUT[type].size / 4;
   return length === 1 ? 0 : Array.from({ length }, () => 0);
 }
 
 function valueMatches(type: VfxValueType, value: unknown): boolean {
-  const length = VECTOR_LENGTH[type];
+  const length = WGSL_NUMERIC_LAYOUT[type].size / 4;
   if (length === 1) return typeof value === 'number' && Number.isFinite(value);
   return (
     Array.isArray(value) &&

@@ -3,7 +3,13 @@
 // (allocate-once + resize-realloc + copy) / getView / destroyAll, driven by a
 // small in-memory device stub (no GPU).
 
-import type { Result, RhiError, Texture, TextureView } from '@forgeax/engine-rhi';
+import type {
+  Result,
+  RhiCommandEncoder,
+  RhiError,
+  Texture,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-rhi';
 import type { Handle } from '@forgeax/engine-types';
 import { toShared } from '@forgeax/engine-types';
@@ -185,4 +191,44 @@ describe('versioned Canvas uploads', () => {
     expect(store.getView(key)).toBeUndefined();
     expect(counters.created).toBe(counters.destroyed);
   });
+});
+
+// A rejected outer submission must retry its mips, while unchanged accepted versions do no work.
+it('records Canvas mips in the supplied frame encoder and commits only after submission', () => {
+  const counters = { created: 0, destroyed: 0, copies: 0 };
+  const device = makeDevice(counters);
+  const levels: number[] = [];
+  const encoder = {} as RhiCommandEncoder;
+  let mipDraws = 0;
+  let releases = 0;
+  const store = new DynamicTextureStore();
+  store.configureGpuDevice({
+    ...device,
+    createTexture: (descriptor) => {
+      levels.push(descriptor.mipLevelCount ?? 1);
+      return device.createTexture(descriptor);
+    },
+    encodeMipmaps: (actual, _texture, width, height) => {
+      expect(actual).toBe(encoder);
+      expect([width, height]).toEqual([17, 5]);
+      mipDraws++;
+      return ok(() => {
+        releases++;
+      });
+    },
+  });
+  const key = {};
+  const upload = (version: number) =>
+    store.uploadFrame(key, SOURCE, 17, 5, { version, generateMipmaps: true });
+  expect(upload(1)?.ok).toBe(true);
+  store.encodeMipmaps(encoder).unwrap()(false);
+  store.encodeMipmaps(encoder).unwrap()(true);
+  expect(upload(1)?.ok).toBe(true);
+  store.encodeMipmaps(encoder).unwrap()(true);
+  expect([mipDraws, releases, counters.copies]).toEqual([2, 2, 1]);
+  upload(2);
+  store.encodeMipmaps(encoder).unwrap()(true);
+  expect(mipDraws).toBe(3);
+  store.uploadFrame(CLIP, SOURCE, 17, 5);
+  expect(levels).toEqual([5, 1]); // Video keeps its single-level upload policy.
 });

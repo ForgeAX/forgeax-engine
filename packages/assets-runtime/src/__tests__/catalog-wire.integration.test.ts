@@ -1,6 +1,7 @@
 import { decodeCatalogWire, encodeCatalogWire } from '@forgeax/engine-pack';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
+  catalogOperationsFor,
   createStandaloneRuntimeAssetBinding,
   type RuntimeCatalogSnapshot,
 } from '@forgeax/engine-types';
@@ -27,7 +28,13 @@ const published = createRuntimePackPublication({
     })),
   },
 });
+const projectionFacts = {
+  subject: 'internal-asset',
+  execution: 'cooked',
+  lifecycle: 'current',
+} as const;
 const rows = published.publication.outputs.map((output) => ({
+  ...projectionFacts,
   guid: output.guid,
   kind: output.kind,
   sourcePath: published.publication.sourcePath,
@@ -35,6 +42,7 @@ const rows = published.publication.outputs.map((output) => ({
   refs: output.refs,
   sourceKey: output.sourceKey,
   publication: published.publication,
+  projection: { ...projectionFacts, operations: catalogOperationsFor(projectionFacts) },
 }));
 const binding = createStandaloneRuntimeAssetBinding('compact-catalog-fixture');
 const snapshot: RuntimeCatalogSnapshot = {
@@ -69,12 +77,14 @@ it.each([
   try {
     for (const guid of guids) {
       const loaded = await registry.loadByGuid(registry.parseGuid(guid));
-      expect(loaded.ok).toBe(true);
       if (!loaded.ok) throw loaded.error;
+      expect(loaded.ok).toBe(true);
       expect(loaded.value.kind).toBe('sampler');
     }
     const catalog = (await source.enumerate()).unwrap();
     expect(catalog.map((row) => row.publication)).toEqual(rows.map((row) => row.publication));
+    expect(catalog.map((row) => row.projection)).toEqual(rows.map((row) => row.projection));
+    expect(catalog[0]?.projection).toBe(catalog[1]?.projection);
     expect(fetcher.mock.calls.filter(([url]) => String(url) === packageUrl)).toHaveLength(1);
   } finally {
     registry.clearCatalogSource();
@@ -94,6 +104,9 @@ it('checks scoped identity and authority before admitting compact rows', () => {
     { entries: null },
     {
       entries: { ...wire.entries, entries: [{ ...wire.entries.entries[0], publicationIndex: 99 }] },
+    },
+    {
+      entries: { ...wire.entries, entries: [{ ...wire.entries.entries[0], projectionIndex: 99 }] },
     },
   ]) {
     const result = parseCatalog({ ...wire, ...change }, undefined, undefined, binding);

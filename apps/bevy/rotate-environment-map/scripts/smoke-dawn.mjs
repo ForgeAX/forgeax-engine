@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { runSmokeAppFrames, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -111,7 +112,7 @@ readback.unmap(); readback.destroy();
 const tight = new Uint8Array(width * height * 4);
 for (let y = 0; y < height; y += 1) tight.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
 const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(appRoot, 'artifacts', 'smoke-frame.png');
-mkdirSync(dirname(pngOut), { recursive: true }); writeFileSync(pngOut, writeReferencePng(tight, width, height));
+mkdirSync(dirname(pngOut), { recursive: true }); writeFileSync(pngOut, encodePng(width, height, tight));
 let maxLuma = 0;
 for (let i = 0; i < tight.length; i += 4) maxLuma = Math.max(maxLuma, ((tight[i] ?? 0) * 0.299 + (tight[i + 1] ?? 0) * 0.587 + (tight[i + 2] ?? 0) * 0.114) / 255);
 const failures = [];

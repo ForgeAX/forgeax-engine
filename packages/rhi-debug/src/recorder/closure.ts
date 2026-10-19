@@ -1,13 +1,12 @@
 // @forgeax/engine-rhi-debug/src/recorder/closure -- transitive handle closure owner.
 
-import { EVENT_SEMANTICS } from '../protocol/event-semantics';
+import { handleAccess } from '../protocol/event-semantics';
 import type { HandleId, RhiCallEvent } from '../types';
 
 /** Handles frame events name; bootstrap creates they reach become prefix seeds. */
 export function _collectFrameReferencedHandleIds(events: readonly RhiCallEvent[]): Set<HandleId> {
   const refs = new Set<HandleId>();
-  for (const event of events)
-    for (const id of EVENT_SEMANTICS[event.kind].read(event)) refs.add(id);
+  for (const event of events) for (const id of handleAccess(event).read) refs.add(id);
   return refs;
 }
 
@@ -16,7 +15,7 @@ export function _collectFrameReferencedHandleIds(events: readonly RhiCallEvent[]
  * Compute the transitive closure of handleIds from bootstrapCreates.
  *
  * Starting from the given seed set, recursively walks all referenced handleIds
- * via EVENT_SEMANTICS read edges. Returns the set of all handleIds
+ * via handleAccess read edges. Returns the set of all handleIds
  * whose create events must be included in the tape prefix for self-containment.
  *
  * If a referenced handleId is not found in bootstrapCreates, returns
@@ -41,7 +40,7 @@ export function _computeClosure(
       if (inFrameHandleIds.has(current)) continue;
       return { closure, missing: current };
     }
-    const edges = EVENT_SEMANTICS[createEvent.kind].read(createEvent);
+    const edges = handleAccess(createEvent).read;
     for (const target of edges) {
       if (!closure.has(target)) {
         closure.add(target);
@@ -74,7 +73,7 @@ export function _topoSortClosure(
   for (const hId of closure) {
     const event = bootstrapCreates.get(hId);
     if (event === undefined) continue;
-    const edges = EVENT_SEMANTICS[event.kind].read(event);
+    const edges = handleAccess(event).read;
     for (const target of edges) {
       if (closure.has(target)) {
         // hId depends on target

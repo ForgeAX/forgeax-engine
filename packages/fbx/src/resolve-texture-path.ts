@@ -70,7 +70,6 @@ function longestSuffixLength(request: readonly string[], candidate: readonly str
 
 /** Resolve an FBX-declared texture against a caller-authorized candidate tree. */
 export function resolveFbxTexturePath(
-  sourcePath: string,
   request: FbxTexturePathRequest,
   candidates: readonly FbxTextureCandidate[],
 ): FbxTextureResolution {
@@ -80,7 +79,6 @@ export function resolveFbxTexturePath(
   });
   const requestedPath =
     request.declaredRelativePath ?? request.declaredFilename ?? request.declaredAbsolutePath ?? '';
-  void sourcePath;
 
   const choose = (
     matches: readonly string[],

@@ -3,18 +3,7 @@
 /// <reference types="@webgpu/types" />
 
 /** The only error vocabulary crossing the RHI-debug core boundary. */
-export type RhiDebugErrorCode =
-  | 'capture-unavailable'
-  | 'capture-busy'
-  | 'capture-snapshot-failed'
-  | 'capture-timeout'
-  | 'tape-invalid'
-  | 'tape-version-unsupported'
-  | 'replay-capability-mismatch'
-  | 'replay-event-failed'
-  | 'replay-position-invalid'
-  | 'readback-failed'
-  | 'readback-unsupported';
+export type RhiDebugErrorCode = keyof RhiDebugDetailByCode;
 
 export type CaptureStage = 'capture' | 'snapshot';
 

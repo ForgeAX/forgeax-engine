@@ -36,7 +36,7 @@ export interface RecorderProxy {
 }
 
 export function createRecorderProxy(backend: RecordableBackend): RecorderProxy {
-  const recorder = wrap(backend.rhi);
+  const recorder = wrap(backend.rhi, backend.createShaderModule);
   const wrappedCreateShaderModule = wrapCreateShaderModule(backend.createShaderModule, recorder);
   const originalCreateShaderModuleImmediate = backend.createShaderModuleImmediate;
   const wrappedCreateShaderModuleImmediate =

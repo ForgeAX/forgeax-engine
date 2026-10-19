@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { resolveBrowserExecutable, softwareCaptureCommand } from '../software-capture.js';
+import { browserCaptureCommand, resolveBrowserExecutable } from '../browser-capture.js';
 
-describe('softwareCaptureCommand', () => {
+describe('browserCaptureCommand', () => {
   it('fails closed with actionable browser setup evidence', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-software-capture-'));
     await Promise.all([
@@ -20,15 +20,15 @@ describe('softwareCaptureCommand', () => {
       writeFile(resolve(root, 'package.json'), `${JSON.stringify({ name: 'capture-fixture' })}\n`),
       writeFile(resolve(root, 'main.ts'), 'export default {};\n'),
     ]);
-    const result = await softwareCaptureCommand({
+    const result = await browserCaptureCommand({
       root,
-      software: true,
+      backend: 'software',
       browser: resolve(root, 'missing-chrome-beta'),
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatchObject({
-        code: 'software-capture-browser-missing',
+        code: 'browser-capture-browser-missing',
         detail: { browser: resolve(root, 'missing-chrome-beta') },
       });
     }

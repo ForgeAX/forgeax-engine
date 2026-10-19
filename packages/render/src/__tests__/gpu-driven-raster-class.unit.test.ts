@@ -573,8 +573,12 @@ it('separates physical layouts, specializations and selected programs after reso
     material,
     materials: [material],
   });
+  const mirroredWorld = new Float32Array(original.transform.world);
+  mirroredWorld[0] = -1;
+  const mirrored = { ...original, transform: { world: mirroredWorld } };
   const baseline = classFor(original, originalMesh, artifact);
   const cases: readonly [string, RenderableSnapshot, MeshGpuHandles, MaterialShaderArtifact][] = [
+    ['model winding', mirrored, originalMesh, artifact],
     ['physical buffers', original, replacedMesh, artifact],
     [
       'vertex buffer',

@@ -1,4 +1,4 @@
-import { World } from '@forgeax/engine-ecs';
+import { Disabled, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
   CharacterController,
@@ -112,14 +112,46 @@ async function fixture(sensor = false) {
 }
 
 describe('real Rapier exact pair isolation', () => {
+  it('excludes disabled ECS contact owners from both current projections', async () => {
+    const f = await fixture();
+    try {
+      f.sample();
+      const queried = f.entity(1),
+        other = f.entity(0);
+      expect(f.physics.getCurrentContactNeighbors(queried).ok).toBe(false);
+      f.physics.finalizeDerivedFixedStep();
+      expect(f.physics.getCurrentContactNeighbors(queried).unwrap().entities).toContain(other);
+      f.world.addComponent(other, { component: Disabled, data: {} }).unwrap();
+      expect(f.physics.getCurrentContactNeighbors(queried).unwrap().entities).not.toContain(other);
+      expect(
+        f.physics
+          .getCurrentContacts(queried)
+          .unwrap()
+          .manifolds.some((row) => row.other === other),
+      ).toBe(false);
+      f.world.removeComponent(other, Disabled).unwrap();
+      expect(f.physics.getCurrentContactNeighbors(queried).unwrap().entities).toContain(other);
+      f.world.addComponent(queried, { component: Disabled, data: {} }).unwrap();
+      expect(f.physics.getCurrentContactNeighbors(queried).unwrap().entities).toEqual([]);
+      expect(f.physics.getCurrentContacts(queried).unwrap().manifolds).toEqual([]);
+    } finally {
+      f.physics.dispose();
+    }
+  });
+
   it('uses native defaults without leases and restores JavaScript filters only for active isolation', async () => {
     const f = await fixture();
     const step = vi.spyOn(f.raw, 'step');
+    const hooks = () => f.entities.map((_, index) => f.body(index).collider(0).activeHooks());
+    const filters =
+      f.rapier.ActiveHooks.FILTER_CONTACT_PAIRS | f.rapier.ActiveHooks.FILTER_INTERSECTION_PAIRS;
     try {
       expect(f.sample().solver).toBeGreaterThan(0);
       expect(step.mock.calls.at(-1)?.[1]).toBeUndefined();
+      expect(hooks()).toEqual([0, 0, 0, 0, 0]);
       const lease = f.acquire();
       expect(f.sample().points).toBe(0);
+      expect(hooks()).toEqual([filters, filters, 0, 0, 0]);
       expect(step.mock.calls.at(-1)?.[1]).toMatchObject({
         filterContactPair: expect.any(Function),
         filterIntersectionPair: expect.any(Function),
@@ -127,8 +159,38 @@ describe('real Rapier exact pair isolation', () => {
       lease.release().unwrap();
       expect(f.sample().solver).toBeGreaterThan(0);
       expect(step.mock.calls.at(-1)?.[1]).toBeUndefined();
+      expect(hooks()).toEqual([0, 0, 0, 0, 0]);
     } finally {
       step.mockRestore();
+      f.physics.dispose();
+    }
+  });
+  it('retains hooks for a shared body until its last distinct pair retires', async () => {
+    const f = await fixture();
+    try {
+      const first = f.acquire();
+      const duplicate = f.acquire(true);
+      const second = f.physics
+        .acquirePairIsolation({
+          worldIdentity: f.world,
+          entityA: f.entity(1),
+          entityB: f.entity(4),
+        })
+        .unwrap();
+      expect(f.sample().points).toBe(0);
+      expect(f.contact(1, 4).points).toBe(0);
+      first.release().unwrap();
+      expect(f.sample().points).toBe(0);
+      duplicate.release().unwrap();
+      expect(f.sample().solver).toBeGreaterThan(0);
+      expect(f.body(0).collider(0).activeHooks()).toBe(0);
+      expect(f.body(1).collider(0).activeHooks()).not.toBe(0);
+      expect(f.contact(1, 4).points).toBe(0);
+      second.release().unwrap();
+      f.sample();
+      for (const index of [0, 1, 4]) expect(f.body(index).collider(0).activeHooks()).toBe(0);
+      expect(f.contact(1, 4).solver).toBeGreaterThan(0);
+    } finally {
       f.physics.dispose();
     }
   });
@@ -255,6 +317,7 @@ describe('real Rapier exact pair isolation', () => {
       expect(f.body(1).numColliders()).toBeGreaterThan(1);
       expect(f.contact(0, 1).points).toBe(0);
       for (let index = 0; index < f.body(1).numColliders(); index++) {
+        expect(f.body(1).collider(index).activeHooks()).not.toBe(0);
         expect(f.raw.intersectionPair(f.body(0).collider(0), f.body(1).collider(index))).toBe(
           false,
         );
@@ -263,10 +326,52 @@ describe('real Rapier exact pair isolation', () => {
       expect(f.sample().points).toBe(0);
       lease.release().unwrap();
       expect(f.sample().solver).toBeGreaterThan(0);
+      for (let index = 0; index < f.body(1).numColliders(); index++) {
+        expect(f.body(1).collider(index).activeHooks()).toBe(0);
+      }
       const sensors = Array.from({ length: f.body(1).numColliders() }, (_, i) =>
         f.body(1).collider(i),
       ).filter((c) => c.isSensor());
       expect(sensors.some((c) => f.raw.intersectionPair(f.body(0).collider(0), c))).toBe(true);
+    } finally {
+      f.physics.dispose();
+    }
+  });
+
+  it('updates disabled staged shapes across acquire and release before their admission', async () => {
+    const f = await fixture();
+    try {
+      const candidate = f.physics
+        .prepareDerivedShapeCandidate({
+          entity: f.entity(1),
+          worldIdentity: f.world,
+          sourceKey: 'staged',
+          revision: 1,
+          shapes: [
+            {
+              id: 'staged',
+              revision: 1,
+              kind: 'convex-compound',
+              pieces: [boxPoints([0, 0, 0], [1, 1, 1])],
+            },
+          ],
+        })
+        .unwrap();
+      const staged = Array.from({ length: f.body(1).numColliders() }, (_, i) =>
+        f.body(1).collider(i),
+      ).find((collider) => !collider.isEnabled());
+      expect(staged).toBeDefined();
+      expect(staged?.activeHooks()).toBe(0);
+      const lease = f.acquire();
+      f.sample();
+      expect(staged?.activeHooks()).not.toBe(0);
+      lease.release().unwrap();
+      f.sample();
+      expect(staged?.activeHooks()).toBe(0);
+      f.physics.admitDerivedShapeCandidate(candidate).unwrap();
+      expect(f.sample().solver).toBeGreaterThan(0);
+      expect(staged?.isEnabled()).toBe(true);
+      expect(staged?.activeHooks()).toBe(0);
     } finally {
       f.physics.dispose();
     }
@@ -575,6 +680,7 @@ describe('real Rapier exact pair isolation', () => {
       f.world.set(f.entity(1), Collider, { halfExtents: [0.6, 0.5, 0.5] }).unwrap();
       f.physics._syncFromEcs(f.world, Transform, GlobalTransform);
       expect(f.body(1).collider(0).handle).not.toBe(originalHandle);
+      expect(f.body(1).collider(0).activeHooks()).not.toBe(0);
       expect(f.sample().points).toBe(0);
       expect(f.contact(1, 2).solver).toBeGreaterThan(0);
       f.world.set(f.entity(1), Collider, { collisionGroups: 0 }).unwrap();

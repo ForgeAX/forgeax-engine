@@ -3,9 +3,9 @@ import {
   standardTransmissionAdmission,
   transmissionBackdropAvailable,
 } from '../assembly/device-feature-admission';
-import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
-import { getOrCreateIblCache } from '../ibl/IblPipelineCache';
+import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 import type { _InternalRenderPipelineContext } from './render-context';
@@ -71,7 +71,7 @@ import {
   sharedMaterialBindingDeclarations,
   standardNormalInputField,
 } from '../pbr-pipeline';
-import { deriveTextureExtent } from '../render-data';
+import { deriveTextureUvScale } from '../render-data';
 import type { MaterialSnapshot, SkylightSnapshot } from '../render-system-extract';
 import {
   type RenderTargetMaterialSourceBinding,
@@ -541,6 +541,7 @@ const LEGACY_MATERIAL_TEXTURE_SCALE_FIELDS = [
   'emissiveTexture',
   'occlusionTexture',
 ] as const;
+const IDENTITY_TEXTURE_SCALE: readonly [number, number] = Object.freeze([1, 1]);
 const DEFAULT_LEGACY_TEXTURE_SCALES = new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
 
 /** Derives the logical-content UV scale for an uploaded material texture. */
@@ -548,11 +549,11 @@ export function materialTextureUvScale(
   texture: Pick<TextureAsset, 'shape' | 'format'> | undefined,
 ): readonly [number, number] {
   if (texture === undefined) return [1, 1];
-  return deriveTextureExtent(
+  return deriveTextureUvScale(
     texture.format,
     texture.shape.extent.width,
     texture.shape.extent.height,
-  ).uvScale;
+  );
 }
 
 function materialTextureForField(
@@ -597,6 +598,7 @@ export function materialCanvasTextureView(
   const height = 'displayHeight' in image ? image.displayHeight : image.height;
   const uploaded = store.uploadFrame(key, image, width, height, {
     version: local?.version ?? published?.version,
+    generateMipmaps: true,
     flipY: source.flipY,
     signal: local?.lifetime.signal ?? published?.signal,
   });
@@ -675,7 +677,7 @@ export function applyMaterialTextureUvScales(
   world: RenderResourceScope,
 ): void {
   const f32 = materialUboFloatView(payload);
-  const coordinateSchema = materialCoordinateSchema(material);
+  const coordinateSchema = materialParameterSchema(material);
   if (coordinateSchema !== undefined) {
     const coordinateRecords = derive(
       coordinateSchema,
@@ -687,7 +689,8 @@ export function applyMaterialTextureUvScales(
       const resolvedTexture =
         handle === undefined ? undefined : resolveAssetHandle<TextureAsset>(world, handle);
       const texture = resolvedTexture?.ok === true ? resolvedTexture.value : undefined;
-      const physicalScale = materialTextureUvScale(texture);
+      const physicalScale =
+        texture === undefined ? IDENTITY_TEXTURE_SCALE : materialTextureUvScale(texture);
       writeMaterialTextureCoordinateRecord(
         f32,
         record.offset / 4,
@@ -722,14 +725,14 @@ export function applyMaterialTextureUvScales(
     const resolved =
       handle === undefined ? undefined : resolveAssetHandle<TextureAsset>(world, handle);
     const texture = resolved?.ok === true ? resolved.value : undefined;
-    const [u, v] = materialTextureUvScale(texture);
+    const scale = texture === undefined ? IDENTITY_TEXTURE_SCALE : materialTextureUvScale(texture);
     const offset = textureScaleOffset / 4 + index * 2;
-    f32[offset] = u;
-    f32[offset + 1] = v;
+    f32[offset] = scale[0];
+    f32[offset + 1] = scale[1];
   }
 }
 
-function materialCoordinateSchema(
+function materialParameterSchema(
   material: MaterialSnapshot,
 ): readonly ParamSchemaEntry[] | undefined {
   if (material.materialParamSchema !== undefined && material.materialParamSchema.length > 0) {
@@ -952,7 +955,7 @@ function materialNumericFallback(
     case 'emissive':
       return material.emissive ?? ZERO_MATERIAL_VEC3;
     case 'emissiveIntensity':
-      return material.emissiveIntensity ?? 0;
+      return material.emissiveIntensity ?? entry.default;
     case 'occlusionStrength':
       return material.occlusionStrength ?? 1;
     default:
@@ -1006,10 +1009,7 @@ export function writePbrMaterialUboPayload(
   }
   buf.fill(0);
   const dataView = view ?? materialNumericView(buf);
-  const schema =
-    material.materialParamSchema === undefined || material.materialParamSchema.length === 0
-      ? STANDARD_PIPELINE_PARAM_SCHEMA
-      : material.materialParamSchema;
+  const schema = materialParameterSchema(material) ?? STANDARD_PIPELINE_PARAM_SCHEMA;
   const snapshot = material.paramSnapshot;
   const derived = derive(schema, STANDARD_PIPELINE_PARAM_SCHEMA);
   const parametersByName = materialTextureProjection(schema)?.parametersByName;
@@ -1123,7 +1123,9 @@ export function applyParamSchemaDefaultsToUbo(
     const view = materialUboDataView(payload);
     const parametersByName = materialTextureProjection(paramSchema)?.parametersByName;
     for (const entry of admitted.uboLayout.entries) {
-      const value = parametersByName?.get(entry.name)?.default;
+      const schemaEntry = parametersByName?.get(entry.name);
+      const value =
+        schemaEntry !== undefined && 'default' in schemaEntry ? schemaEntry.default : undefined;
       if (typeof value === 'number' || Array.isArray(value)) {
         writeNumericParamValue(view, entry, value as number | readonly number[]);
       }
@@ -1140,7 +1142,8 @@ export function applyParamSchemaDefaultsToUbo(
       parametersByName === undefined
         ? paramSchema.find((candidate) => candidate.name === entry.name)
         : parametersByName.get(entry.name);
-    const value = schemaEntry?.default;
+    const value =
+      schemaEntry !== undefined && 'default' in schemaEntry ? schemaEntry.default : undefined;
     if (typeof value === 'number' || Array.isArray(value)) {
       defaults[entry.name] = value as number | readonly number[];
     }
@@ -1236,6 +1239,29 @@ function recordIblMaterialBinding(
   };
 }
 
+const nativeMaterialMapIterator = Map.prototype[Symbol.iterator];
+const nativeMaterialMapForEach = Map.prototype.forEach;
+
+interface MaterialMapComparison {
+  readonly right: ReadonlyMap<string, number> | undefined;
+  same: boolean;
+}
+
+function compareMaterialMapEntry(this: MaterialMapComparison, handle: number, field: string): void {
+  if (this.same && this.right?.get(field) !== handle) this.same = false;
+}
+
+function sameCustomMaterialMap(
+  left: ReadonlyMap<string, number>,
+  right: ReadonlyMap<string, number> | undefined,
+  iterator: ReadonlyMap<string, number>[typeof Symbol.iterator],
+): boolean {
+  // Preserve a custom iterator's receiver, single acquisition and IteratorClose.
+  const entries = { [Symbol.iterator]: () => iterator.call(left) };
+  for (const [field, handle] of entries) if (right?.get(field) !== handle) return false;
+  return true;
+}
+
 function sameMaterialHandleMap(
   left: ReadonlyMap<string, number> | undefined,
   right: ReadonlyMap<string, number> | undefined,
@@ -1243,7 +1269,15 @@ function sameMaterialHandleMap(
   if (left === right) return true;
   if ((left?.size ?? 0) !== (right?.size ?? 0)) return false;
   if (left !== undefined) {
-    for (const [field, handle] of left) if (right?.get(field) !== handle) return false;
+    const iterator = left[Symbol.iterator];
+    if (iterator === nativeMaterialMapIterator) {
+      // Native Worker maps need no iterator-result and entry-pair allocations.
+      // Read live values every time; resource maps are not immutable facts.
+      const comparison: MaterialMapComparison = { right, same: true };
+      nativeMaterialMapForEach.call(left, compareMaterialMapEntry, comparison);
+      return comparison.same;
+    }
+    return sameCustomMaterialMap(left, right, iterator);
   }
   return true;
 }
@@ -1302,6 +1336,56 @@ export function isMaterialBgAssemblyCacheHit(
   );
 }
 
+interface MaterialBindingResources {
+  readonly material: MaterialSnapshot;
+  readonly world: RenderResourceScope;
+  readonly store: GpuResidencyCache;
+  readonly runtime: RenderSystemRuntime;
+  readonly pipelineState: PipelineState;
+  resident: boolean;
+}
+function materialBindingSampler(
+  sources: MaterialBindingResources,
+  field: string | undefined,
+): Sampler {
+  const handle = field === undefined ? undefined : sources.material.samplerHandles?.get(field);
+  if (handle === undefined) return sources.pipelineState.defaultSampler;
+  const sampler = residentSampler(sources.world, sources.store, sources.runtime, handle);
+  if (sampler === undefined) sources.resident = false;
+  return sampler ?? sources.pipelineState.defaultSampler;
+}
+// Cache hits must not allocate the miss factory's captured resource context.
+function materialBindingGroup(
+  runtime: RenderSystemRuntime,
+  layout: BindGroupLayout,
+  entries: BindGroupEntry[],
+  shared: Map<string, WeakMap<object, unknown>>,
+  shaderId: string | undefined,
+  handles: readonly object[],
+  backdrop: boolean,
+  counts: BindGroupCounts,
+): BindGroup {
+  const create = () => {
+    const result = runtime.device.createBindGroup({
+      label: 'pbr-material-skylight-bg',
+      layout,
+      entries,
+    });
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+  return backdrop
+    ? create()
+    : getOrCreatePerEntity(
+        shared,
+        shaderId ?? '',
+        [layout, ...handles],
+        'material-shared',
+        create,
+        counts,
+      );
+}
+
 export function buildPerSubmeshMaterialBg(
   deps: PerSubmeshMaterialBgDeps,
   submeshMaterial: MaterialSnapshot,
@@ -1328,10 +1412,10 @@ export function buildPerSubmeshMaterialBg(
     bindGroupCounts,
     frameState,
   } = deps;
-  const materialBuffer = meshSsboBufferBinding(
+  const materialBuffer = meshSsboBuffer(
     pipelineState.materialUniformBuffer,
     materialSlot * MATERIAL_PER_ENTITY_STRIDE,
-  ).buffer;
+  );
   const selectedProbe = resolveReflectionProbeResources?.(materialWorld, entityKey);
   const effectiveSkylightResources = selectedProbe?.resources ?? skylightResources;
   const smMaterialHandle = submeshMaterial.materialHandle;
@@ -1389,7 +1473,7 @@ export function buildPerSubmeshMaterialBg(
   const smMaterialBgl = smPerShaderBgl ?? pipelineState.materialBindGroupLayout;
   const hasActiveTransmissionBackdrop = transmissionBackdropView != null;
   const sceneMaterialBuffer = runtime.device.caps.storageBuffer
-    ? (deps.sceneMaterialBuffer ?? meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer)
+    ? (deps.sceneMaterialBuffer ?? meshSsboBuffer(pipelineState.meshStorageBuffer, 0))
     : undefined;
   const diagnosticsEnabled = materialDiagnosticsEnabled();
   if (smMaterialHandle !== undefined && !smHasVideoFields && !hasActiveTransmissionBackdrop) {
@@ -1477,13 +1561,13 @@ export function buildPerSubmeshMaterialBg(
             (field) => !physicalFields.includes(field),
           );
   const parameterTypes = schemaProjection?.parameterTypes;
-  let materialResourcesResident = true;
-  const smSamplerForField = (field: string | undefined): Sampler => {
-    const handle = field === undefined ? undefined : submeshMaterial.samplerHandles?.get(field);
-    if (handle === undefined) return pipelineState.defaultSampler;
-    const sampler = residentSampler(materialWorld, store, runtime, handle);
-    if (sampler === undefined) materialResourcesResident = false;
-    return sampler ?? pipelineState.defaultSampler;
+  const materialResources = {
+    material: submeshMaterial,
+    world: materialWorld,
+    store,
+    runtime,
+    pipelineState,
+    resident: true,
   };
   const smBaseEntries: BindGroupEntry[] = [
     {
@@ -1603,11 +1687,11 @@ export function buildPerSubmeshMaterialBg(
           );
     if (isExternalTextureSource(smRuntimeSource)) {
       smResource = runtime.externalTextures?.resolve(smRuntimeSource, smSlotExternal);
-      if (smResource === undefined) materialResourcesResident = false;
+      if (smResource === undefined) materialResources.resident = false;
     } else if (field !== undefined && isCanvasTextureSource(smRuntimeSource)) {
       const view = materialCanvasTextureView(submeshMaterial, field, materialWorld, runtime);
       if (view !== undefined) smView = view;
-      else materialResourcesResident = false;
+      else materialResources.resident = false;
     } else if (smTargetSource !== undefined) {
       // The Renderer host resolves the generation-checked physical view. A
       // candidate is never exposed here; until its matching FrameReceipt
@@ -1622,7 +1706,7 @@ export function buildPerSubmeshMaterialBg(
             ))
       ) {
         smView = smTargetSource.textureView;
-      } else materialResourcesResident = false;
+      } else materialResources.resident = false;
     } else if (smVideoClip !== undefined) {
       smResource = videoBindingResource(
         materialWorld,
@@ -1644,13 +1728,16 @@ export function buildPerSubmeshMaterialBg(
       if (smHandle !== undefined) {
         const view = residentTextureView(materialWorld, store, runtime, smHandle);
         if (view !== undefined) smView = view;
-        else materialResourcesResident = false;
+        else materialResources.resident = false;
       }
     }
     smBaseEntries.push(
       {
         binding: samplerBinding,
-        resource: { kind: 'sampler' as const, value: smSamplerForField(field) },
+        resource: {
+          kind: 'sampler' as const,
+          value: materialBindingSampler(materialResources, field),
+        },
       },
       {
         binding: textureBinding,
@@ -1680,27 +1767,27 @@ export function buildPerSubmeshMaterialBg(
     if (isExternalTextureSource(runtimeSource)) {
       const resolved = runtime.externalTextures?.resolve(runtimeSource, false);
       if (resolved?.kind === 'textureView') view = resolved.value;
-      else materialResourcesResident = false;
+      else materialResources.resident = false;
     } else if (isCanvasTextureSource(runtimeSource)) {
       const canvasView = materialCanvasTextureView(submeshMaterial, field, materialWorld, runtime);
       if (canvasView !== undefined) view = canvasView;
-      else materialResourcesResident = false;
+      else materialResources.resident = false;
     } else if (targetSource !== undefined) {
       if (targetSource.textureView !== undefined) view = targetSource.textureView;
-      else materialResourcesResident = false;
+      else materialResources.resident = false;
     } else {
       const handle = submeshMaterial.textureHandles?.get(field);
       if (handle !== undefined) {
         const resident = residentTextureView(materialWorld, store, runtime, handle);
         if (resident !== undefined) view = resident;
-        else materialResourcesResident = false;
+        else materialResources.resident = false;
       }
     }
     physicalTextureInjections.push({
       slot: STANDARD_PHYSICAL_TEXTURE_FIELDS.indexOf(
         field as (typeof STANDARD_PHYSICAL_TEXTURE_FIELDS)[number],
       ),
-      sampler: smSamplerForField(field),
+      sampler: materialBindingSampler(materialResources, field),
       view,
     });
   }
@@ -1750,22 +1837,11 @@ export function buildPerSubmeshMaterialBg(
       resource: {
         kind: 'buffer' as const,
         value: {
-          buffer:
-            deps.sceneMaterialBuffer ??
-            meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer,
+          buffer: deps.sceneMaterialBuffer ?? meshSsboBuffer(pipelineState.meshStorageBuffer, 0),
         },
       },
     });
   }
-  const createBindGroup = (): BindGroup => {
-    const result = runtime.device.createBindGroup({
-      label: 'pbr-material-skylight-bg',
-      layout: smMaterialBgl,
-      entries: smMergedEntries,
-    });
-    if (!result.ok) throw result.error;
-    return result.value;
-  };
   const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
   if (
     diagnosticsEnabled &&
@@ -1808,17 +1884,16 @@ export function buildPerSubmeshMaterialBg(
       })}`,
     );
   }
-  const smBindGroup = hasActiveTransmissionBackdrop
-    ? createBindGroup()
-    : getOrCreatePerEntity(
-        materialBgShared,
-        smShaderId ?? '',
-        // A replacement can retain the resources while changing its layout ABI.
-        [smMaterialBgl, ...materialCacheHandles],
-        'material-shared',
-        createBindGroup,
-        bindGroupCounts,
-      );
+  const smBindGroup = materialBindingGroup(
+    runtime,
+    smMaterialBgl,
+    smMergedEntries,
+    materialBgShared,
+    smShaderId,
+    materialCacheHandles,
+    hasActiveTransmissionBackdrop,
+    bindGroupCounts,
+  );
   if (diagnosticsEnabled) {
     recordIblMaterialBinding(
       frameState,
@@ -1833,7 +1908,7 @@ export function buildPerSubmeshMaterialBg(
     smMaterialHandle !== undefined &&
     !smHasVideoFields &&
     (submeshMaterial.textureSources?.size ?? 0) === 0 &&
-    materialResourcesResident &&
+    materialResources.resident &&
     !hasActiveTransmissionBackdrop
   ) {
     if (materialScopeIdentity !== undefined) {
@@ -1857,7 +1932,9 @@ export function buildPerSubmeshMaterialBg(
   return smBindGroup;
 }
 
-const ZERO_SKYLIGHT_PAYLOAD = new Float32Array([0, 0, 0, 0, 0, 0, 0, 1]);
+const ZERO_SKYLIGHT_PAYLOAD = new Float32Array([
+  0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+]);
 
 /** The same scene resources back material bindings in depth and color passes. */
 /**
@@ -1869,10 +1946,11 @@ const ZERO_SKYLIGHT_PAYLOAD = new Float32Array([0, 0, 0, 0, 0, 0, 0, 1]);
  * identical resources while retaining the existing frame-local write.
  */
 export function resolveMaterialSkylight(
-  runtime: Pick<RenderSystemRuntime, 'device' | 'deviceScope'>,
+  runtime: Pick<RenderSystemRuntime, 'device'>,
   pipelineState: Pick<PipelineState, 'skylightFallback'>,
   skylight: SkylightSnapshot | undefined,
   skylightCount: number,
+  imageIbl: IblPrecomputeOutput | undefined,
   environmentIbl?: _InternalRenderPipelineContext['environmentIbl'],
 ) {
   const skylightFallback = pipelineState.skylightFallback;
@@ -1883,38 +1961,21 @@ export function resolveMaterialSkylight(
       hint: 'createRenderer must allocate skylightFallback alongside the PBR pipeline (D-5 round-4)',
     });
   }
-  // feat-20260520-skylight-ibl-cubemap M4 round-4 / t60 (D-5 round-4):
-  // select active vs fallback Skylight resources by `skylightCount` from
-  // the extract stage. Active path reaches into the per-device
-  // `IblPipelineCache` slots (irradianceView / prefilterView / brdfLutView)
-  // populated by the internal equirect-to-cubemap projection; fallback uses the
-  // 1x1-zero identity bundle that converges ambient to 0 (D-4 physical
-  // convergence -- no `if (hasSkylight)` shader branch).
-  // The samplers are reused from `skylightFallback.sampler` for both
-  // paths (linear / clamp-to-edge is correct for IBL cube + 2D LUT
-  // sampling either way). The intensity uniform is rewritten per-frame
-  // when active so `sampleIblSpecular * intensity` carries the user's
-  // Skylight.intensity value; fallback keeps intensity=0 (createSkylightFallback
-  // seed) so ambient = 0 even when the same buffer is shared.
+  // Select only the completed output of this scene's authored image. Pipeline
+  // caching is device-wide; image radiance is scoped to its source resource.
   let activeViews: { irr: TextureView; pref: TextureView; brdf: TextureView } | undefined;
-  // Per-frame Skylight uniform: std140 32 B = [intensity, colorR, colorG,
-  // colorB, rotation quaternion]. Default to all-zero so a transition from "has Skylight" ->
-  // "no Skylight" does not leak the prior frame's ambient (intensity 0
-  // muzzles everything, including the white fallback irradiance cube).
-  runtime.device.queue.writeBuffer(skylightFallback.intensityBuffer, 0, ZERO_SKYLIGHT_PAYLOAD);
-  if (skylight !== undefined && skylightCount >= 1) {
-    const cache = getOrCreateIblCache(runtime.deviceScope);
-    if (
-      cache.irradianceView !== undefined &&
-      cache.prefilterView !== undefined &&
-      cache.brdfLutView !== undefined
-    ) {
-      activeViews = {
-        irr: cache.irradianceView,
-        pref: cache.prefilterView,
-        brdf: cache.brdfLutView,
-      };
-    }
+  const uniformPayload = ZERO_SKYLIGHT_PAYLOAD.slice();
+  if (
+    skylight !== undefined &&
+    skylightCount >= 1 &&
+    skylight.equirectHandle !== 0 &&
+    imageIbl !== undefined
+  ) {
+    activeViews = {
+      irr: imageIbl.irradianceView,
+      pref: imageIbl.prefilterView,
+      brdf: imageIbl.brdfLutView,
+    };
   }
   if (environmentIbl !== undefined && skylight !== undefined && skylight.equirectHandle === 0) {
     activeViews = {
@@ -1933,9 +1994,10 @@ export function resolveMaterialSkylight(
   ) {
     const [cr, cg, cb] = skylight.color;
     const [qx, qy, qz, qw] = skylight.rotation;
-    const uniformPayload = new Float32Array([skylight.intensity, cr, cg, cb, qx, qy, qz, qw]);
-    runtime.device.queue.writeBuffer(skylightFallback.intensityBuffer, 0, uniformPayload);
+    uniformPayload.set([skylight.intensity, cr, cg, cb, qx, qy, qz, qw]);
   }
+  if (skylight?.ambientIrradiance !== undefined) uniformPayload.set(skylight.ambientIrradiance, 16);
+  runtime.device.queue.writeBuffer(skylightFallback.intensityBuffer, 0, uniformPayload);
   const skylightResources = skylightBindGroupResources(skylightFallback, activeViews);
   return { skylightResources, activeViews };
 }
@@ -1947,6 +2009,9 @@ export function prepareMaterialSkylight(c: _InternalRenderPipelineContext) {
     c.pipelineState,
     c.skylight,
     c.skylightCount,
+    c.skylight === undefined
+      ? undefined
+      : c.store.getCubemapIbl(c.skylight.equirectHandle, c.world),
     c.environmentIbl,
   );
 }

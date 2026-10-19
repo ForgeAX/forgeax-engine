@@ -20,7 +20,6 @@ export {
   type DdcEntryErrorCode,
   type DdcErrorCode,
   type DdcErrorRootKind,
-  type DdcRecoveryAction as DdcErrorRecoveryAction,
   type DdcStoreErrorInit,
 } from './errors.js';
 export { collectDdcGarbage, type DdcGcInput, type DdcGcResult } from './gc.js';
@@ -51,17 +50,14 @@ export {
   type DdcRestoreFence,
   type DdcRestoreResult,
   type DdcRollbackSnapshot,
+  withDdcLock,
 } from './lifecycle.js';
 export {
   type AcceptedPublicationCandidate,
   type AcceptedPublicationStore,
-  createAcceptedPublication,
   createAcceptedPublicationStore,
-  type ScriptablePackPublicationBuildInput,
   type ScriptablePackPublicationError,
   type ScriptablePackPublicationSnapshot,
-  scriptablePackOutputSetDigest,
-  scriptablePackPublicationGeneration,
 } from './publication.js';
 export {
   assertRuntimeScope,

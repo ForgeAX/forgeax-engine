@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite`: one image-backed Sprite must produce varied visible pixels.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 240;
@@ -118,7 +119,7 @@ const png = new Uint8Array(WIDTH * HEIGHT * 4);
 for (let y = 0; y < HEIGHT; y++) png.set(bytes.subarray(y * bytesPerRow, y * bytesPerRow + WIDTH * 4), y * WIDTH * 4);
 const pngPath = process.env.SMOKE_PNG_OUT ?? resolve(here, '..', 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngPath), { recursive: true });
-writeFileSync(pngPath, writeReferencePng(png, WIDTH, HEIGHT));
+writeFileSync(pngPath, encodePng(WIDTH, HEIGHT, png));
 console.log(`[smoke] frames=${FRAMES} visiblePixels=${visiblePixels} channelSpreadPixels=${channelSpreadPixels} errors=${errors.length} png=${pngPath}`);
 if (rendererBackend(renderer) !== 'webgpu' || visiblePixels < 500 || channelSpreadPixels < 500 || errors.length > 0) {
   console.error('[smoke] FAIL - backend/visibility/color/error criterion failed');

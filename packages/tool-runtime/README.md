@@ -36,7 +36,12 @@ Terminal payloads contain only typed results, serialized `snapshotAfter`, `Artif
 values, and an optional `ToolCleanupReport`. A live handle, canvas, renderer, page,
 Fiber, or carrier is never part of the portable contract. Providers call
 `context.setCleanupReport` before terminal; the runtime publishes one terminal only
-after required evidence and lexical cleanup are complete. A non-zero resource census
+after required evidence and lexical cleanup are complete.
+Serialized commands, terminal results and migration payloads share JSON value
+admission: finite primitives, dense arrays and ordinary/null-prototype records.
+Repeated acyclic references are valid; cycles, accessors, symbols, hidden fields
+and class instances are rejected before values are read or published. Migration
+then checks its live-state key policy over the admitted JSON tree. A non-zero resource census
 turns a would-be success into `tool-cleanup-failed`.
 
 This package has no filesystem, Vite, WebGPU, Editor, or second registry dependency.
@@ -142,3 +147,19 @@ CLI help is generated from the owners' contracts. A running BackendHost exposes
 its callable ToolApi descriptors through `engine.backend.tool.list`; CLI reads
 that projection without activating plugins. Calls still enter the same owner
 through `engine.backend.call`, preserving authentication and cancellation.
+
+Carrier operations use `createAuthenticatedCarrierTransport`; stateless tool calls
+use `createAuthenticatedLoopbackTransport`. Both send actual authenticated HTTP
+requests. Local lease transitions use `createCarrierStateMachine` directly.
+
+Preview sessions and ToolRuntime terminals share `ToolCleanupCensus`,
+`ToolCleanupReport` and the post-disposal failure check. Explicit cleanup
+failures precede live-resource counts. ToolRun keeps the executor's original
+failed outcome unless lease cleanup itself fails; a successful result requires
+a clean report before terminal publication.
+
+Evidence kinds derive from `TOOL_EVIDENCE_KINDS`; command declarations and
+manifest admission use that vocabulary. Artifact construction and ToolRun
+terminal validation share one check for supported kinds, nonempty digests,
+optional string metadata and non-negative safe byte lengths. Preview role and
+kind types derive from their role mapping rather than independent lists.

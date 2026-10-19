@@ -92,6 +92,7 @@ function spawnValidatedLight(
       ['maxPenumbraTexels', 1.5],
     ] as const)('rejects invalid PCSS field %s=%s with one structured detail shape', (field, value) => {
       const result = spawnValidatedLight(new World(), DirectionalLight, {
+        castShadow: true,
         direction: [0, -1, 0],
         shadowFilter: 4,
         [field]: value,
@@ -127,6 +128,7 @@ function spawnValidatedLight(
       });
       expect(point.ok).toBe(true);
       const spot = validateSpotLightData({
+        castShadow: true,
         direction: [0, -1, 0],
         pcfKernelSize: 3,
       });
@@ -257,7 +259,7 @@ function spawnValidatedLight(
     ] as const) {
       it(`${name}: explicit zero-vector direction is rejected with field='direction'`, () => {
         const world = new World();
-        const r = spawnValidatedLight(world, component, { direction: [0, 0, 0] });
+        const r = spawnValidatedLight(world, component, { castShadow: true, direction: [0, 0, 0] });
         expect(r.ok).toBe(false);
         if (!r.ok) {
           expect(r.error.code).toBe('spawn-light-invalid-bounds');
@@ -271,7 +273,7 @@ function spawnValidatedLight(
 
       it(`${name}: omitted direction (layer-3 all-zero) is rejected with field='direction'`, () => {
         const world = new World();
-        const r = spawnValidatedLight(world, component, {});
+        const r = spawnValidatedLight(world, component, { castShadow: true });
         expect(r.ok).toBe(false);
         if (!r.ok) {
           expect(r.error.code).toBe('spawn-light-invalid-bounds');
@@ -342,8 +344,8 @@ function spawnValidatedLight(
         // biome-ignore lint/style/noNonNullAssertion: defaults asserted defined just above
         const defaults = componentDefinition(dl).defaults!;
 
-        expect(defaults.cascadeCount).toBe(4);
-        expect(defaults.splitLambda).toBeCloseTo(0.75, 5);
+        expect(defaults.cascadeCount).toBe(3);
+        expect(defaults.splitLambda).toBeCloseTo(0.5, 5);
         expect(defaults.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(defaults.mapSize).toBe(2048);
         expect(defaults.depthBias).toBeCloseTo(0.00001, 7);
@@ -390,8 +392,8 @@ function spawnValidatedLight(
         const lightData = light.unwrap();
 
         expect(lightData.mapSize).toBe(2048);
-        expect(lightData.cascadeCount).toBe(4);
-        expect(lightData.splitLambda).toBeCloseTo(0.75, 5);
+        expect(lightData.cascadeCount).toBe(3);
+        expect(lightData.splitLambda).toBeCloseTo(0.5, 5);
         expect(lightData.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(lightData.depthBias).toBeCloseTo(0.00001, 7);
         expect(lightData.normalBias).toBeCloseTo(0.05, 5);
@@ -409,8 +411,8 @@ function spawnValidatedLight(
         const e = r.unwrap();
 
         const light = world.get(e, DirectionalLight).unwrap();
-        expect(light.cascadeCount).toBe(4);
-        expect(light.splitLambda).toBeCloseTo(0.75, 5);
+        expect(light.cascadeCount).toBe(3);
+        expect(light.splitLambda).toBeCloseTo(0.5, 5);
         expect(light.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(light.mapSize).toBeCloseTo(2048, 5);
         expect(light.depthBias).toBeCloseTo(0.00001, 7);
@@ -867,7 +869,7 @@ function spawnValidatedLight(
             },
             {
               component: SpotLight,
-              data: { direction: [0, -1, 0] },
+              data: { castShadow: true, direction: [0, -1, 0] },
             },
           )
           .unwrap();
@@ -1647,7 +1649,7 @@ function spawnValidatedLight(
         const view = world.get(e, PointLight).unwrap();
         expect(Array.from(view.color)).toEqual([1, 1, 1]);
         expect(view.intensity).toBe(1);
-        expect(view.range).toBe(10.0);
+        expect(view.range).toBe(Number.POSITIVE_INFINITY);
       });
 
       it('explicit fields override defaults', () => {
@@ -1727,17 +1729,17 @@ function spawnValidatedLight(
         expect(Array.from(view.direction)).toEqual([0, -1, 0]);
         expect(Array.from(view.color)).toEqual([1, 1, 1]);
         expect(view.intensity).toBe(1);
-        expect(view.range).toBe(10.0);
-        expect(view.innerConeDeg).toBe(0);
-        expect(view.outerConeDeg).toBe(45);
+        expect(view.range).toBe(Number.POSITIVE_INFINITY);
+        expect(view.innerConeDeg).toBe(60);
+        expect(view.outerConeDeg).toBe(60);
       });
 
-      it('innerConeDeg=0 + outerConeDeg=45 matches KHR pi/4 equivalent', () => {
+      it('explicit glTF cone 0/45 preserves the KHR pi/4 equivalent', () => {
         const world = new World();
         const e = world
           .spawn({
             component: SpotLight,
-            data: { direction: [0, -1, 0] },
+            data: { direction: [0, -1, 0], innerConeDeg: 0, outerConeDeg: 45 },
           })
           .unwrap();
         const view = world.get(e, SpotLight).unwrap();
@@ -1796,7 +1798,7 @@ function spawnValidatedLight(
   // ─── from feat-20260625-spot-light-shadow-mapping M1 w1 ───
   describe('feat-20260625-spot-light-shadow-mapping M1 w1', () => {
     describe('SpotLight embedded shadow schema defaults', () => {
-      it('castShadow defaults to true (embedded, AC-02)', () => {
+      it('castShadow defaults to false (embedded, AC-02)', () => {
         const world = new World();
         const e = world
           .spawn({
@@ -1805,7 +1807,7 @@ function spawnValidatedLight(
           })
           .unwrap();
         const view = world.get(e, SpotLight).unwrap();
-        expect(view.castShadow).toBe(true);
+        expect(view.castShadow).toBe(false);
       });
 
       it('6 shadow fields retain SpotLight defaults', () => {
@@ -1820,8 +1822,8 @@ function spawnValidatedLight(
         expect(view.mapSize).toBe(1024);
         expect(view.depthBias).toBeCloseTo(0.005, 5);
         expect(view.normalBias).toBeCloseTo(0.05, 5);
-        expect(view.nearPlane).toBeCloseTo(0.1, 5);
-        expect(view.farPlane).toBeCloseTo(50, 5);
+        expect(view.nearPlane).toBeCloseTo(0.5, 5);
+        expect(view.farPlane).toBeCloseTo(500, 5);
         expect(view.pcfKernelSize).toBe(3);
       });
 
@@ -1834,12 +1836,12 @@ function spawnValidatedLight(
           })
           .unwrap();
         const view = world.get(e, SpotLight).unwrap();
-        expect(view.castShadow).toBe(true);
+        expect(view.castShadow).toBe(false);
         expect(view.mapSize).toBe(1024);
         expect(view.depthBias).toBeCloseTo(0.005, 5);
         expect(view.normalBias).toBeCloseTo(0.05, 5);
-        expect(view.nearPlane).toBeCloseTo(0.1, 5);
-        expect(view.farPlane).toBeCloseTo(50, 5);
+        expect(view.nearPlane).toBeCloseTo(0.5, 5);
+        expect(view.farPlane).toBeCloseTo(500, 5);
         expect(view.pcfKernelSize).toBe(3);
       });
     });
@@ -1850,7 +1852,7 @@ function spawnValidatedLight(
   // ─── from feat-20260621-merge-directionallightshadow-into-directionallight M1-t1 ───
   describe('feat-20260621-merge-directionallightshadow-into-directionallight M1-t1', () => {
     describe('DirectionalLight merged shadow field defaults', () => {
-      it('castShadow defaults to true', () => {
+      it('castShadow defaults to false', () => {
         const world = new World();
         const e = world
           .spawn({
@@ -1859,7 +1861,7 @@ function spawnValidatedLight(
           })
           .unwrap();
         const view = world.get(e, DirectionalLight).unwrap();
-        expect(view.castShadow).toBe(true);
+        expect(view.castShadow).toBe(false);
       });
 
       it('spawn with omitted shadow fields fills 8 merged defaults', () => {
@@ -1871,8 +1873,8 @@ function spawnValidatedLight(
           })
           .unwrap();
         const view = world.get(e, DirectionalLight).unwrap();
-        expect(view.cascadeCount).toBe(4);
-        expect(view.splitLambda).toBeCloseTo(0.75, 5);
+        expect(view.cascadeCount).toBe(3);
+        expect(view.splitLambda).toBeCloseTo(0.5, 5);
         expect(view.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
@@ -1887,8 +1889,8 @@ function spawnValidatedLight(
           .spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } })
           .unwrap();
         const view = world.get(e, DirectionalLight).unwrap();
-        expect(view.cascadeCount).toBe(4);
-        expect(view.splitLambda).toBeCloseTo(0.75, 5);
+        expect(view.cascadeCount).toBe(3);
+        expect(view.splitLambda).toBeCloseTo(0.5, 5);
         expect(view.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
@@ -1956,6 +1958,7 @@ function spawnValidatedLight(
       it('rejects mapSize < 1 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           mapSize: 0,
         });
@@ -1969,6 +1972,7 @@ function spawnValidatedLight(
       it('rejects cascadeCount < 1 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           cascadeCount: 0,
         });
@@ -1982,6 +1986,7 @@ function spawnValidatedLight(
       it('rejects cascadeCount > 4 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           cascadeCount: 5,
         });
@@ -1996,6 +2001,7 @@ function spawnValidatedLight(
       it('rejects non-integer cascadeCount (1.5) with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           cascadeCount: 1.5,
         });
@@ -2009,6 +2015,7 @@ function spawnValidatedLight(
       it('rejects splitLambda < 0 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           splitLambda: -0.1,
         });
@@ -2022,6 +2029,7 @@ function spawnValidatedLight(
       it('rejects splitLambda > 1 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           splitLambda: 1.1,
         });
@@ -2053,6 +2061,7 @@ function spawnValidatedLight(
       it('rejects cascadeBlend < 0 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           cascadeBlend: -0.01,
         });
@@ -2066,6 +2075,7 @@ function spawnValidatedLight(
       it('rejects cascadeBlend > 0.5 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, DirectionalLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           cascadeBlend: 0.51,
         });
@@ -2316,6 +2326,7 @@ function spawnValidatedLight(
       it('rejects even pcfKernelSize (2) with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, SpotLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           pcfKernelSize: 2,
         });
@@ -2332,6 +2343,7 @@ function spawnValidatedLight(
       it('rejects pcfKernelSize < 1 (0) with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, SpotLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           pcfKernelSize: 0,
         });
@@ -2345,6 +2357,7 @@ function spawnValidatedLight(
       it('rejects mapSize < 1 with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, SpotLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           mapSize: 0,
         });
@@ -2358,6 +2371,7 @@ function spawnValidatedLight(
       it('rejects farPlane <= nearPlane with ShadowInvalidConfigError', () => {
         const world = new World();
         const r = spawnValidatedLight(world, SpotLight, {
+          castShadow: true,
           direction: [0, -1, 0],
           nearPlane: 10,
           farPlane: 5,

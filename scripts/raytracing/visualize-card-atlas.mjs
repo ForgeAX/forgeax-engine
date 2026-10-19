@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { halfFloat } from '@forgeax/engine/math';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 import UPNG from 'upng-js';
 
 const planeNames = ['albedoRoughness', 'normals', 'emissionMetallic', 'f0Validity', 'depth'];
@@ -24,22 +26,9 @@ const statusColors = [
   [190, 0, 170],
 ];
 const byte = (value) => Math.round(Math.max(0, Math.min(1, value)) * 255);
-const srgb = (value) =>
-  byte(value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055);
+const srgb = (value) => byte(linearChannelToSrgb(value));
 function half(view, offset) {
-  const bits = view.getUint16(offset, true),
-    exponent = (bits >> 10) & 31,
-    mantissa = bits & 1023;
-  return (
-    (bits & 32768 ? -1 : 1) *
-    (exponent === 0
-      ? mantissa * 2 ** -24
-      : exponent === 31
-        ? mantissa
-          ? NaN
-          : Infinity
-        : (1 + mantissa / 1024) * 2 ** (exponent - 15))
-  );
+  return halfFloat.f16ToF32(view.getUint16(offset, true));
 }
 function normal(x, y) {
   const z = 1 - Math.abs(x) - Math.abs(y);

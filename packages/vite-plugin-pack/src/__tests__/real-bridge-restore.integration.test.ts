@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DdcEntryStore, DdcLifecycle } from '@forgeax/engine-ddc';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
-import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
+import { type CatalogEntry, createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { createServer, type ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { pluginPack } from '../plugin-pack.js';
@@ -85,8 +86,8 @@ async function waitForCatalog(baseUrl: string, catalogUrl: string): Promise<void
     const response = await request(baseUrl, catalogUrl);
     if (response.status === 200) {
       try {
-        const catalog = JSON.parse(response.text) as { entries?: readonly { guid?: string }[] };
-        if (catalog.entries?.some((entry) => entry.guid?.toLowerCase() === GUID)) return;
+        const catalog = decodeCatalogWire(JSON.parse(response.text)).unwrap();
+        if (catalog.some((entry) => entry.guid?.toLowerCase() === GUID)) return;
       } catch {
         // The plugin exposes the Catalog only after the startup publication fence.
       }
@@ -100,16 +101,15 @@ async function closure(
   baseUrl: string,
   catalogUrl: string,
 ): Promise<{
-  readonly row: Record<string, unknown>;
+  readonly row: CatalogEntry;
   readonly pack: PackBody;
   readonly artifact: HttpResult;
 }> {
   const catalogResponse = await request(baseUrl, catalogUrl);
   expect(catalogResponse.status).toBe(200);
-  const catalog = JSON.parse(catalogResponse.text) as {
-    readonly entries: readonly Record<string, unknown>[];
-  };
-  const row = catalog.entries.find((entry) => entry.guid?.toString().toLowerCase() === GUID);
+  // Failure recovery deliberately reads accepted rows from a degraded scope.
+  const catalog = decodeCatalogWire(JSON.parse(catalogResponse.text).entries).unwrap();
+  const row = catalog.find((entry) => entry.guid?.toString().toLowerCase() === GUID);
   if (row === undefined || typeof row.packageUrl !== 'string') {
     throw new Error('real plugin Catalog omitted the imported GUID');
   }

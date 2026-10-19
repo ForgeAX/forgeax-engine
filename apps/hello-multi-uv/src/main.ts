@@ -827,11 +827,7 @@ if (!app.ok) {
   );
   world.spawn({
     component: DirectionalLight,
-    data: {
-      direction: [-0.3, -0.8, -1],
-      color: [1, 1, 1],
-      intensity: 1,
-    },
+    data: { castShadow: true, direction: [-0.3, -0.8, -1], color: [1, 1, 1], intensity: 1 },
   });
 
   app.value.start();

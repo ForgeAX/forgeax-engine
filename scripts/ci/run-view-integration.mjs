@@ -56,6 +56,7 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-dependency-identity.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
+  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-texture-preview.mjs']],
   [
     'diagnostics',
     'node',

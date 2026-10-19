@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { halfFloat } from '@forgeax/engine/math';
 import type { EquirectAsset } from '@forgeax/engine/types';
 import {
   errorCode,
@@ -9,12 +10,7 @@ import { defineFeature } from '../../lab/feature';
 import { EQUIRECT_SUB, importImage, WARM_HDR } from './support/image-import';
 
 function f16(bits: number): number {
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  const sign = bits & 0x8000 ? -1 : 1;
-  if (exponent === 0) return sign * 2 ** -14 * (mantissa / 1024);
-  if (exponent === 31) return mantissa === 0 ? sign * Number.POSITIVE_INFINITY : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + mantissa / 1024);
+  return halfFloat.f16ToF32(bits);
 }
 
 export default defineFeature({

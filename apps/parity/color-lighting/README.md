@@ -2,6 +2,10 @@
 
 Minimal, evidence-first parity gate for Three.js r184 and ForgeaX color and lighting.
 
+For a complete scene written independently through both public APIs, open
+`scene-authoring.html` and read the [scene authoring comparison](SCENE_AUTHORING.md).
+It includes CSM, PBR materials, post-processing, live controls and both full sources.
+
 ## Start here
 
 ```bash
@@ -186,7 +190,7 @@ flowchart TD
    [`CaseReport`](./schemas/case-report.schema.json),
    [capture/readback](./src/capture/attachment-readback.ts),
    [error routing](./src/errors.ts), or
-   [cross-pipeline audit](./src/integration/cross-pipeline-audit.test.ts).
+   [cross-pipeline audit](./src/integration/__tests__/cross-pipeline-audit.test.ts).
 
 The engine-side recovery entry points are [`forgeax-engine-material`](../../../skills/forgeax-engine-material/SKILL.md),
 [`forgeax-engine-shader`](../../../skills/forgeax-engine-shader/SKILL.md),
@@ -292,3 +296,31 @@ readback path.
 > Never accept self-comparison, final-canvas self-comparison, URP-as-HDRP
 > provenance, stale observations, missing `COPY_SRC`, guessed multiplier or
 > curve, arbitrary graph keys, or a second copy/map implementation.
+
+## Render defaults comparison
+
+Open `render-defaults.html` on this app's dev/preview server. The page runs the
+production ForgeaX FXAA and Bloom WGSL from the shader manifest and the actual
+pinned Three r184 WebGPU nodes on identical 256x128 textures. It isolates the
+post-processing kernels; it is not whole-renderer pixel parity.
+
+```sh
+pnpm --filter @forgeax/parity-color-lighting dev --host 127.0.0.1 --port 4276 --strictPort
+# In another terminal, with a configured browser GPU:
+node scripts/ci/local-graphics.mjs --probe browser -- node apps/parity/color-lighting/scripts/verify-render-defaults.mjs
+```
+
+The verifier saves `artifacts/render-defaults/comparison.png` and `.json` and
+rejects GPU errors, missing effects, FXAA drift or Bloom gain inconsistent with
+the independent truncated-Gaussian sum. Bloom visualization uses opaque alpha
+because the isolated additive component inherits the zero scene's alpha; numeric
+comparisons use raw RGB readback. The native WebGPU fixture is outside the App
+RHI recorder: its screenshot and float readbacks do not constitute an RHI tape.
+Software adapter results establish correctness, not hardware performance.
+
+## Environment response
+
+[Skylight versus Three.js environment lighting](ENVIRONMENT_RESPONSE.md) provides
+an interactive Forward/Deferred comparison of uniform and directional HDR environments,
+including rotation, material-region means, spatial errors and optional RHI capture.
+Open `environment-response.html` on this app's dev or preview server.

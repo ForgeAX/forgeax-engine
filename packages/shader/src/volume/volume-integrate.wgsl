@@ -1,7 +1,7 @@
 #define_import_path forgeax_view::volume_integrate
 // forgeax_pbr::lighting_punctual remains the surface contract; the isolated
 // attenuation module below provides its resource-free volume equivalents.
-#import forgeax_pbr::lighting_attenuation::{projectSpotUv, evalDistanceAttenuation}
+#import forgeax_pbr::lighting_attenuation::{projectSpotUv, evalDistanceAttenuation, evalSpotCone}
 #import forgeax_view::common::{DirectLightSlot, View}
 #import forgeax_atmosphere::optics::{atmosphere_solar_transmittance, atmosphere_position}
 #import forgeax_cloud::layer::{cloud_apply_direct_solar}
@@ -115,7 +115,7 @@ cosInner : f32, cosOuter : f32, invRangeSquared : f32,
   let window = clamp(1.0 - (safeDistance * invRangeSquared) * (safeDistance * invRangeSquared), 0.0, 1.0);
   let distance = window * window / safeDistance;
   let direction = normalize(select(vec3<f32>(0.0, 0.0, -1.0), toLight, dSquared > EPSILON));
-  return distance * smoothstep(cosOuter, cosInner, dot(direction, -normalize(lightDir)));
+  return distance * evalSpotCone(cosInner, cosOuter, dot(direction, -normalize(lightDir)));
 }
 
 fn shadowAtlasTile(light : DirectLightSlot) -> i32 {

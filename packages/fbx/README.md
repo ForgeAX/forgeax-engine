@@ -255,3 +255,11 @@ Build the pinned native producer with `pnpm --filter @forgeax/engine-fbx build:w
 SDK production runs `src/__tests__/animation-fidelity.integration.test.ts` after rebuilding Engine and before packaging. Its tracked source curves, frozen native timelines, JSON Cook and ordinary ECS playback reject stale native payloads without depending on contributor demo assets. Hydrate the current content-keyed bundle with `pnpm --filter @forgeax/engine-fbx fetch-wasm`, or rebuild it from the pinned native source; file presence is insufficient.
 
 FBX mesh publication retains source UV-set presence and sends a dense canonical attribute map to Geometry for interleaved vertex packing and portable encoding. Skin joints remain uint16, weights remain float32, missing intermediate UV slots are zero-filled, and FBX normal/tangent defaults remain producer-owned. Invalid attribute storage or cardinality fails through the Geometry packing error before publication.
+
+`parseMaterial(raw)` projects one source material without a synthetic source index.
+`resolveFbxTexturePath(request, candidates)` consumes paths already relative to
+the source directory; it does not need or interpret the FBX filename.
+
+Importer skeleton and animation outputs derive from the shared Types POD contracts.
+Source node indices remain format-specific; skeleton GUIDs are assigned from sub-asset
+metadata when publishing, never from a provisional identifier in the parsed skin.

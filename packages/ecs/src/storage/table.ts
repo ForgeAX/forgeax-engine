@@ -87,9 +87,11 @@ export function createTable(
       const scalarType: ScalarFieldType | null =
         metaKey === null ? null : (TYPE_METADATA[metaKey]?.storage ?? null);
       if (scalarType === null) continue;
-      fields.set(fieldName, createColumn(scalarType, capacity, 1, shared));
+      const column = createColumn(scalarType, capacity, 1, shared);
+      fields.set(fieldName, column);
       if (arrayMeta !== null && arrayMeta.length === undefined) {
-        fields.set(arrayCountColumnName(fieldName), createColumn('u32', capacity, 1, shared));
+        column.countField = arrayCountColumnName(fieldName);
+        fields.set(column.countField, createColumn('u32', capacity, 1, shared));
       }
     }
     storage.set(componentId(component), {

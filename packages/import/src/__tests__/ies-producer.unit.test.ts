@@ -102,6 +102,12 @@ async function importedSamples(source: string): Promise<(degrees: number, row?: 
 }
 
 describe('LM-63 measured-angle symmetry through import', () => {
+  it('rounds a normalized profile across a binary16 exponent boundary', async () => {
+    const sample = await importedSamples(symmetricSource([0, 90, 180], [0.24999, 1, 0.9999]));
+    expect(sample(0)).toBe(0.25);
+    expect(sample(180)).toBe(1);
+  });
+
   it('reflects quadrant symmetry around every 90-degree plane', async () => {
     const sample = await importedSamples(symmetricSource([0, 45, 90], [1, 4, 2]));
     expect(sample(0)).toBeCloseTo(0.25, 3);

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -128,7 +129,7 @@ for (let i = 0; i < early.length; i += 4) {
 const motionMeanDelta = delta / (early.length * 3) / 255;
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, '2d-shapes.png'), writeReferencePng(late, width, height));
+writeFileSync(resolve(outDir, '2d-shapes.png'), encodePng(width, height, late));
 console.log(`[smoke] frames=${frames} bright=${(bright / 255).toFixed(4)} coloredPixels=${colored} motionMeanDelta=${motionMeanDelta.toFixed(5)} errors=${errors.length}`);
 const failures = [];
 if (rendererBackend(renderer) !== 'webgpu') failures.push(`backend=${rendererBackend(renderer)}`);

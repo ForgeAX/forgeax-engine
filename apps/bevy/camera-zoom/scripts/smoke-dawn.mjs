@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-camera-zoom headless dawn smoke — proves Bevy projection_zoom behavior.
@@ -8,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const MOTION_THRESHOLD = Number.parseFloat(process.env.SMOKE_MOTION_THRESHOLD ?? '0.0005');
@@ -175,7 +176,7 @@ let earlyMaxBright = 0; for (let i = 0; i < earlyFrame.length; i += 4) earlyMaxB
 let sum = 0; for (let i = 0; i < earlyFrame.length; i++) sum += Math.abs((earlyFrame[i] ?? 0) - (lateFrame[i] ?? 0));
 const motionMeanDelta = sum / earlyFrame.length / 255;
 console.log(`[smoke] earlyMaxBright=${(earlyMaxBright/255).toFixed(4)} motionMeanDelta=${motionMeanDelta.toFixed(5)} earlyZoom=${earlyZoom.toFixed(4)} finalZoom=${finalZoom.toFixed(4)} finalCamera=${JSON.stringify(finalCamera)}`);
-try { const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts'); mkdirSync(outDir,{recursive:true}); writeFileSync(resolve(outDir,'frame-early.png'),writeReferencePng(earlyFrame,WIDTH,HEIGHT)); writeFileSync(resolve(outDir,'frame-late.png'),writeReferencePng(lateFrame,WIDTH,HEIGHT)); } catch (err) { console.warn(`[smoke] PNG dump skipped: ${String(err)}`); }
+try { const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts'); mkdirSync(outDir,{recursive:true}); writeFileSync(resolve(outDir,'frame-early.png'),encodePng(WIDTH, HEIGHT, earlyFrame)); writeFileSync(resolve(outDir,'frame-late.png'),encodePng(WIDTH, HEIGHT, lateFrame)); } catch (err) { console.warn(`[smoke] PNG dump skipped: ${String(err)}`); }
 const failures = [];
 if (rendererBackend(renderer) !== 'webgpu') failures.push(`(a) backend=${rendererBackend(renderer)} expected webgpu`);
 if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserved}`);

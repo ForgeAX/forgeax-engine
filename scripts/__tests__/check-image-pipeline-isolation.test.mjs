@@ -23,6 +23,8 @@
 // `process.cwd()` default unchanged.
 
 import { spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -65,7 +67,7 @@ describe('check-image-pipeline-isolation Path (a) -- forbidden symbols + decoder
     const r = run(fixtureRoot);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/AC-15 \(a\) OK/);
-    expect(r.stdout).toMatch(/no static @forgeax\/engine-image import/);
+    expect(r.stdout).toMatch(/owner-only image contribution import/);
     expect(r.stdout).toMatch(/imageImporter holds parseImage/);
   });
 
@@ -75,7 +77,7 @@ describe('check-image-pipeline-isolation Path (a) -- forbidden symbols + decoder
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/AC-15 \(a\) FAIL/);
     expect(r.stderr).toMatch(/decoder-strip requirement/);
-    expect(r.stderr).toMatch(/runtime static import of @forgeax\/engine-image/);
+    expect(r.stderr).toMatch(/runtime\/assets-runtime static import of @forgeax\/engine-image/);
   });
 
   it('(c) runtime declares `class CustomDecoder` -> exit 1 + forbidden-symbol marker', () => {
@@ -107,7 +109,9 @@ describe('check-image-pipeline-isolation Path (d) -- runtime codec encode isolat
     const r = run(fixtureRoot);
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/AC-15 \(d\) FAIL/);
-    expect(r.stderr).toMatch(/runtime static import of @forgeax\/engine-codec\/encode/);
+    expect(r.stderr).toMatch(
+      /runtime\/assets-runtime static import of @forgeax\/engine-codec\/encode/,
+    );
   });
 
   it('(d-pos) runtime imports @forgeax/engine-codec main entry -> exit 0', () => {
@@ -131,6 +135,34 @@ describe('check-image-pipeline-isolation Path (d) -- runtime codec encode isolat
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/AC-15 \(a\) FAIL/);
     expect(r.stderr).toMatch(/decoder-strip requirement/);
-    expect(r.stderr).toMatch(/runtime static import of @forgeax\/engine-image/);
+    expect(r.stderr).toMatch(/runtime\/assets-runtime static import of @forgeax\/engine-image/);
+  });
+});
+
+describe.each(['runtime', 'assets-runtime'])('image isolation in %s', (owner) => {
+  it('allows excluded diagnostic tests but rejects the same imports in production', () => {
+    const fixtureRoot = mkdtempSync(resolve(tmpdir(), 'forgeax-image-isolation-'));
+    try {
+      cpSync(resolve(fixturesDir, 'runtime-decoder-stripped'), fixtureRoot, { recursive: true });
+      const tests = resolve(fixtureRoot, 'packages', owner, 'src/__tests__');
+      mkdirSync(tests, { recursive: true });
+      writeFileSync(
+        resolve(tests, 'capture.fixture.ts'),
+        "import { encodePng } from '@forgeax/engine-image/png';\n" +
+          "import { parseImage } from '@forgeax/engine-image/parse-image';\n" +
+          "import { compressZstd } from '@forgeax/engine-codec/encode';\n",
+      );
+      expect(run(fixtureRoot).status).toBe(0);
+
+      renameSync(tests, resolve(fixtureRoot, 'packages', owner, 'src/capture'));
+      const production = run(fixtureRoot);
+      expect(production.status).toBe(1);
+      expect(production.stderr).toMatch(/decoder-strip requirement/);
+      expect(production.stderr).toMatch(/engine-image\/png/);
+      expect(production.stderr).toMatch(/engine-image\/parse-image/);
+      expect(production.stderr).toMatch(/AC-15 \(d\) FAIL/);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });

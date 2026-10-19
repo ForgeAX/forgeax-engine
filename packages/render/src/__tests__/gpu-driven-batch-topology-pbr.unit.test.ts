@@ -211,6 +211,33 @@ function resourceClassSnapshot(
 }
 
 describe('PBR prepared GPU-driven batch topology', () => {
+  it('splits opposite model winding and rejoins after a transform-only update', () => {
+    const projection = new RenderScene();
+    const topology = new BatchTopology();
+    const a = snapshot(1, prepared());
+    const b = snapshot(2, prepared());
+    topology.apply(projection.apply([a, b].map(updateSnapshot)));
+    expect(topology.plan().batches).toHaveLength(1);
+    const world = new Float32Array(b.transform.world);
+    world[0] = -1;
+    world[4] = 0.35;
+    const mirrored = projection.apply([{ kind: 'update', worldId: 0, entityKey: 2, world }]);
+    expect(mirrored.contentUpdatedSlots).toHaveLength(1);
+    topology.apply(mirrored);
+    expect(topology.plan().batches).toHaveLength(2);
+    expect(new Set(topology.plan().batches.map((batch) => batch.key.pipelineClass)).size).toBe(2);
+    world[12] = 1;
+    const translated = projection.apply([{ kind: 'update', worldId: 0, entityKey: 2, world }]);
+    expect(translated.contentUpdatedSlots).toHaveLength(0);
+    topology.apply(translated);
+    expect(topology.plan().batches).toHaveLength(2);
+    world[0] = 1;
+    topology.apply(projection.apply([{ kind: 'update', worldId: 0, entityKey: 2, world }]));
+    expect(topology.plan().batches).toHaveLength(1);
+    expect(a.material.renderState).toBeUndefined();
+    expect(b.material.renderState).toBeUndefined();
+  });
+
   it('preserves surviving ranges across removal, recycling and bounded growth', () => {
     const projection = new RenderScene();
     const values = Array.from({ length: 32 }, (_, i) =>

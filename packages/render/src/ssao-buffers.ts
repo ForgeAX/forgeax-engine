@@ -22,6 +22,7 @@ import { GPU_TEXTURE_USAGE_COPY_DST, GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '.
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from './gpu-usage';
 import { texelFallbackDescriptor, writeTexelFallback } from './ibl/skylight-bind-group';
 import type { RenderSystemRuntime } from './record/render-context';
+import { SSAO_UNIFORM_BYTES } from './ssao-uniform';
 
 // Deterministic host-side SSAO data is owned by the buffer allocator because
 // these values have no consumer outside the resources they initialize.
@@ -81,21 +82,6 @@ export function generateSsaoNoise(seed: number = 0): Float32Array {
 // Each vec3<f32> in a WGSL array is 16B (12B payload + 4B padding).
 // 64 samples * 16 B/sample = 1024 B.
 const BYTES_PER_KERNEL_ELEMENT = 16;
-
-// SSAO uniform layout (plan-strategy §D-1 + §D-C, M7 round-2):
-//   bytes [0..63]    view              mat4x4<f32>
-//   bytes [64..127]  projection        mat4x4<f32>
-//   bytes [128..191] inverseProjection mat4x4<f32>
-//   bytes [192..207] intensityPad      vec4<f32>  // x = intensity, y = radius, z = bias, w = sample budget
-//   bytes [208..223] algorithmPad      vec4<f32>  // x = 0 SSAO, 1 GTAO
-//   bytes [224..255] padding           // align to 256B WebGPU UBO offset
-//
-// The total is rounded to 256B so the same UBO can host an additional
-// shader-side scalar binding at the tail without re-allocation.
-const UNIFORM_INTENSITY_OFFSET_BYTES = 192;
-const UNIFORM_BYTES = 256;
-export const SSAO_UNIFORM_INTENSITY_OFFSET = UNIFORM_INTENSITY_OFFSET_BYTES;
-export const SSAO_UNIFORM_BYTES = UNIFORM_BYTES;
 
 // ── 1x1 white fallback texture (plan-strategy §D-B) ───────────────────────
 //
@@ -252,6 +238,7 @@ export interface SsaoBuffers {
   readonly kernelBytes: number;
   /** 4x4 rgba32float noise texture for per-pixel TBN rotation. */
   readonly noiseTexture: Texture;
+  readonly noiseView: TextureView;
   /** SSAO uniform UBO: view (mat4) + projection (mat4) + inverseProjection (mat4). */
   readonly uniformBuffer: Buffer;
   readonly uniformBytes: number;
@@ -396,10 +383,26 @@ export function getOrCreateSsaoBuffers(runtime: RenderSystemRuntime): SsaoBuffer
     return null;
   }
 
+  const noiseViewRes = device.createTextureView(noiseTexRes.value, {
+    label: 'hdrp-ssao-noise-view',
+    format: 'rgba32float',
+    dimension: '2d',
+    aspect: 'all',
+    baseMipLevel: 0,
+    mipLevelCount: 1,
+    baseArrayLayer: 0,
+    arrayLayerCount: 1,
+  });
+  if (!noiseViewRes.ok) {
+    runtime.errorRegistry.fire(noiseViewRes.error);
+    destroyCreatedSsaoResources(runtime, device, [kernelBufferRes.value], [noiseTexRes.value]);
+    return null;
+  }
+
   // (3) SSAO uniform UBO — 3 mat4 (192 B).
   const uniformBufRes = device.createBuffer({
     label: 'hdrp-ssao-uniform',
-    size: UNIFORM_BYTES,
+    size: SSAO_UNIFORM_BYTES,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     mappedAtCreation: false,
   });
@@ -414,8 +417,9 @@ export function getOrCreateSsaoBuffers(runtime: RenderSystemRuntime): SsaoBuffer
     kernelBuffer: kernelBufferRes.value,
     kernelBytes: SSAO_KERNEL_SAMPLE_COUNT * BYTES_PER_KERNEL_ELEMENT,
     noiseTexture: noiseTexRes.value,
+    noiseView: noiseViewRes.value,
     uniformBuffer: uniformBufRes.value,
-    uniformBytes: UNIFORM_BYTES,
+    uniformBytes: SSAO_UNIFORM_BYTES,
   };
 
   cache.set(runtime, buffers);

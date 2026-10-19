@@ -47,7 +47,7 @@ export function buildCapstoneScene(world: World): CapstoneScene {
     { component: Camera, data: { fov: Math.PI / 4, aspect: 16 / 9, near: 0.1, far: 100 } },
     { component: AudioListener, data: {} },
   ).unwrap();
-  world.spawn({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 1.1 } }).unwrap();
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 1.1 } }).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -1.1, 0], scale: [8, 0.25, 8] } },
     { component: MeshFilter, data: { assetHandle: cubeMesh } },

@@ -1,14 +1,11 @@
-import { createHash } from 'node:crypto';
 import type {
   AssetPublicationEnvelope,
-  AssetPublicationExternalEvidence,
   AssetPublicationFailure,
   AssetPublicationLocator,
-  AssetPublicationOutput,
   AssetPublicationRecovery,
   Result,
 } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { assetPublicationOutputSetDigest, err, ok } from '@forgeax/engine-types';
 
 export interface ScriptablePackPublicationSnapshot {
   readonly current?: AssetPublicationEnvelope;
@@ -25,18 +22,6 @@ export interface ScriptablePackPublicationError extends AssetPublicationFailure 
 export interface AcceptedPublicationCandidate {
   readonly envelope: AssetPublicationEnvelope;
   readonly cancelled?: boolean;
-}
-
-export interface ScriptablePackPublicationBuildInput {
-  readonly sourcePath: string;
-  readonly sourceRevision: string;
-  /** Optional caller generation; the DDC owner derives one when omitted. */
-  readonly generation?: number;
-  readonly digest: string;
-  readonly packageUrl: string;
-  readonly inputFingerprint: string;
-  readonly outputs: readonly AssetPublicationOutput[];
-  readonly externalEvidence: readonly AssetPublicationExternalEvidence[];
 }
 
 /**
@@ -57,91 +42,6 @@ export interface AcceptedPublicationStore {
   ): Promise<Result<ScriptablePackPublicationSnapshot, ScriptablePackPublicationError>>;
   discard(sourcePath: string, candidate: AssetPublicationEnvelope): void;
   restore(sourcePath: string, snapshot: ScriptablePackPublicationSnapshot): void;
-}
-
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-function digest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(stable(value)).digest('hex')}`;
-}
-
-export function scriptablePackOutputSetDigest(outputs: readonly AssetPublicationOutput[]): string {
-  return digest(
-    outputs.map((output) => ({
-      guid: output.guid.toLowerCase(),
-      sourceKey: output.sourceKey,
-      kind: output.kind,
-      digest: output.digest,
-      refs: [...output.refs].map((guid) => guid.toLowerCase()),
-    })),
-  );
-}
-
-/** Derive a stable positive generation from the accepted publication tuple. */
-export function scriptablePackPublicationGeneration(input: {
-  readonly sourceRevision: string;
-  readonly digest: string;
-  readonly outputSetDigest: string;
-}): number {
-  const hash = createHash('sha256')
-    .update(input.sourceRevision)
-    .update('\n')
-    .update(input.digest)
-    .update('\n')
-    .update(input.outputSetDigest)
-    .digest('hex');
-  const generation = Number.parseInt(hash.slice(0, 8), 16);
-  return generation > 0 ? generation : 1;
-}
-
-/** Build the complete producer-owned tuple after the package route is finalized. */
-export function createAcceptedPublication(
-  input: ScriptablePackPublicationBuildInput,
-): AssetPublicationEnvelope {
-  const outputSetDigest = scriptablePackOutputSetDigest(input.outputs);
-  const publicationGeneration =
-    input.generation ??
-    scriptablePackPublicationGeneration({
-      sourceRevision: input.sourceRevision,
-      digest: input.digest,
-      outputSetDigest,
-    });
-  return {
-    schemaVersion: 'asset-publication/1',
-    sourcePath: input.sourcePath,
-    sourceRevision: input.sourceRevision,
-    generation: publicationGeneration,
-    digest: input.digest,
-    outputSetDigest,
-    outputs: input.outputs,
-    receipt: {
-      schemaVersion: 'asset-publication-receipt/1',
-      sourcePath: input.sourcePath,
-      sourceRevision: input.sourceRevision,
-      inputFingerprint: input.inputFingerprint,
-      outputDigest: input.digest,
-      outputSetDigest,
-      externalEvidence: input.externalEvidence,
-    },
-    externalEvidence: input.externalEvidence,
-    current: {
-      generation: publicationGeneration,
-      digest: input.digest,
-      outputSetDigest,
-      packageUrl: input.packageUrl,
-      receiptKey: input.inputFingerprint,
-    },
-  };
 }
 
 function locatorFor(envelope: AssetPublicationEnvelope): AssetPublicationLocator {
@@ -212,7 +112,7 @@ function validateOutputs(
   }
   if (
     envelope.outputs.length === 0 ||
-    scriptablePackOutputSetDigest(envelope.outputs) !== envelope.outputSetDigest
+    assetPublicationOutputSetDigest(envelope.outputs) !== envelope.outputSetDigest
   ) {
     return failure(
       envelope,
@@ -225,6 +125,18 @@ function validateOutputs(
     );
   }
   return undefined;
+}
+
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 function validateReceipt(

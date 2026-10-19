@@ -22,37 +22,30 @@ import type {
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 
+/** Each physical replay tag determines exactly one native value type. */
+export interface ReplayResourceValues {
+  readonly buffer: Buffer;
+  readonly texture: Texture;
+  readonly 'query-set': QuerySet;
+  readonly blas: Blas;
+  readonly tlas: Tlas;
+  readonly 'texture-view': TextureView;
+  readonly sampler: Sampler;
+  readonly 'shader-module': ShaderModule;
+  readonly 'render-pipeline': RenderPipeline;
+  readonly 'compute-pipeline': ComputePipeline;
+  readonly 'bind-group': BindGroup;
+  readonly 'bind-group-layout': BindGroupLayout;
+  readonly 'pipeline-layout': PipelineLayout;
+  readonly command: RhiCommandEncoder;
+  readonly 'command-buffer': CommandBuffer;
+  readonly 'render-pass': RhiRenderPassEncoder;
+  readonly 'compute-pass': RhiComputePassEncoder;
+}
+
 export type ReplayResource = {
-  readonly role?: string;
-} & (
-  | { readonly kind: 'buffer'; readonly value: Buffer }
-  | { readonly kind: 'texture'; readonly value: Texture }
-  | { readonly kind: 'query-set'; readonly value: QuerySet }
-  | { readonly kind: 'acceleration-structure'; readonly role: 'blas'; readonly value: Blas }
-  | { readonly kind: 'acceleration-structure'; readonly role: 'tlas'; readonly value: Tlas }
-  | { readonly kind: 'texture-view'; readonly value: TextureView }
-  | { readonly kind: 'sampler'; readonly value: Sampler }
-  | { readonly kind: 'shader-module'; readonly value: ShaderModule }
-  | {
-      readonly kind: 'pipeline';
-      readonly role: 'render' | 'compute';
-      readonly value: RenderPipeline | ComputePipeline;
-    }
-  | {
-      readonly kind: 'binding';
-      readonly role: 'bind-group' | 'bind-group-layout' | 'pipeline-layout';
-      readonly value: BindGroup | BindGroupLayout | PipelineLayout;
-    }
-  | {
-      readonly kind: 'encoder';
-      readonly role: 'command' | 'command-buffer' | 'render-pass' | 'compute-pass';
-      readonly value:
-        | RhiCommandEncoder
-        | RhiRenderPassEncoder
-        | RhiComputePassEncoder
-        | CommandBuffer;
-    }
-);
+  [K in keyof ReplayResourceValues]: { readonly kind: K; readonly value: ReplayResourceValues[K] };
+}[keyof ReplayResourceValues];
 
 /** Destroys the GPU object a resource owns; `undefined` for kinds the device never destroys. */
 export function destroyReplayResource(
@@ -66,16 +59,22 @@ export function destroyReplayResource(
       return device.destroyTexture(resource.value);
     case 'query-set':
       return device.destroyQuerySet(resource.value);
-    case 'acceleration-structure':
-      return resource.role === 'blas'
-        ? device.destroyBlas(resource.value)
-        : device.destroyTlas(resource.value);
+    case 'blas':
+      return device.destroyBlas(resource.value);
+    case 'tlas':
+      return device.destroyTlas(resource.value);
     case 'texture-view':
     case 'sampler':
     case 'shader-module':
-    case 'pipeline':
-    case 'binding':
-    case 'encoder':
+    case 'render-pipeline':
+    case 'compute-pipeline':
+    case 'bind-group':
+    case 'bind-group-layout':
+    case 'pipeline-layout':
+    case 'command':
+    case 'command-buffer':
+    case 'render-pass':
+    case 'compute-pass':
       return undefined;
   }
 }

@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -15,7 +16,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { Terrain } from '@forgeax/engine-terrain';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 
 const renderValue = (result) => {
@@ -99,7 +100,7 @@ try {
     'distinct view-local LODs must produce distinct submitted triangle heights',
   );
   assert.equal((await query(receipt)).ok, false, 'multiple views require explicit identity');
-  writeFileSync(resolve(dir, 'split-lod.png'), writeReferencePng(await h.pixels(), 960, 540));
+  writeFileSync(resolve(dir, 'split-lod.png'), encodePng(960, 540, await h.pixels()));
   report.cases.push({
     name: 'two-view-local-lod',
     leftHeight,

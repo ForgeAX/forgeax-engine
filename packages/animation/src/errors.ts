@@ -184,11 +184,7 @@ export class AnimationGraphClipMissingError extends Error {
  * Closed union of AnimationGraph-cluster error codes. AI users perform
  * exhaustive `switch (err.code)` without default; TS guards completeness.
  */
-export type AnimationGraphErrorCode =
-  | 'animation-graph-empty'
-  | 'animation-graph-node-out-of-range'
-  | 'animation-graph-node-weight-invalid'
-  | 'animation-graph-cycle';
+export type AnimationGraphErrorCode = AnimationGraphError['code'];
 
 /**
  * Closed union of the AnimationGraph-cluster structured error classes, each

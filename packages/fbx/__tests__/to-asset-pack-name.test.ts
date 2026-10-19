@@ -18,7 +18,6 @@ function emptySkeleton(): SkeletonPod {
 
 function emptySkin(): SkinPod {
   return {
-    skeletonGuid: '',
     jointPaths: [],
     vertexCount: 0,
     influences: [],

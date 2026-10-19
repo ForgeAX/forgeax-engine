@@ -42,7 +42,8 @@ export const PointLightShadow = defineComponent('PointLightShadow', {
   mapSize: { type: 'f32', default: 512 },
   depthBias: { type: 'f32', default: 0.08 },
   normalBias: { type: 'f32', default: 0.6 },
-  nearPlane: { type: 'f32', default: 0.1 },
-  farPlane: { type: 'f32', default: 25 },
+  nearPlane: { type: 'f32', default: 0.5 },
+  // Finite positive light.range overrides this fallback, as in Three r184.
+  farPlane: { type: 'f32', default: 500 },
   pcfKernelSize: { type: 'f32', default: 3 },
 });

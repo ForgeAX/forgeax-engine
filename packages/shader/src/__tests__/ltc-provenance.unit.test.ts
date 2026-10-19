@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   generateLtcTables,
@@ -19,6 +20,15 @@ function expectSameTableBytes(left: Uint16Array, right: Uint16Array): void {
 }
 
 describe('LTC provenance and tracked data contract', () => {
+  it('hashes only the supplied view at SHA-256 block boundaries', () => {
+    for (const length of [0, 1, 27, 28, 31, 32, 33, 64]) {
+      const storage = Uint16Array.from({ length: length + 4 }, (_, i) => i * 997);
+      const table = storage.subarray(2, length + 2);
+      const expected = createHash('sha256').update(tableBytes(table)).digest('hex');
+      expect(hashLtcTable(table)).toBe(expected);
+    }
+  });
+
   it('pins the fixed Three.js reference and two 64 by 64 rgba16float tables', () => {
     expect(LTC_SOURCE_PROVENANCE.source).toBe('Three.js');
     expect(LTC_SOURCE_PROVENANCE.revision).toBe('r184');

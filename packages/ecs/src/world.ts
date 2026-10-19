@@ -29,6 +29,7 @@ import {
   type ComponentSchema,
   componentId,
   componentSchema,
+  fieldTypeToMetaKey,
   type InputShapeOf,
   isEntityField,
   isManagedArrayField,
@@ -135,12 +136,7 @@ import {
   readComponentChange,
   removeSparseTag,
 } from './storage/change-detection';
-import {
-  arrayCountColumnName,
-  type Column,
-  type FieldView,
-  normalizeBufferWrite,
-} from './storage/column';
+import { type Column, type FieldView, normalizeBufferWrite } from './storage/column';
 import { appendTableRow, markTableMembership, removeTableRow, type Table } from './storage/table';
 import {
   createWorldClock,
@@ -384,6 +380,10 @@ export class World {
   private readonly freeIndices: number[] = [];
   /** BufferPool for schema-declared variable buffers and arrays. */
   private readonly bufferPool = new BufferPool();
+  private readonly inlineArrayViews = new WeakMap<
+    Column,
+    { readonly source: FieldView; readonly rows: FieldView[] }
+  >();
   /** Per-World managed unique-ref store used by lifecycle mutations. */
   private readonly uniqueRefs: UniqueRefStore = new UniqueRefStoreImpl();
   /** Per-World shared-ref store; public read-only for direct handle operations. */
@@ -1942,11 +1942,10 @@ export class World {
     const meta = TYPE_METADATA[arrayMeta.elementType];
     /* istanbul ignore next -- arrayMeta.elementType is guaranteed in TYPE_METADATA */
     if (!meta) return err(new ComponentNotPresentError(entity as number, component.name));
-    // biome-ignore lint/style/noNonNullAssertion: every array element type has a byte size
-    const elementBytes = meta.byteSize!;
+    const elementBytes = meta.byteSize;
     const slotId = col.view[row] as number;
 
-    const countCol = fieldCols.get(arrayCountColumnName(fieldName));
+    const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
     /* istanbul ignore next -- variable arrays always allocate the count column */
     if (countCol === undefined) {
       return err(new ComponentNotPresentError(entity as number, component.name));
@@ -2056,7 +2055,7 @@ export class World {
     if (!fieldCols) return err(new ComponentNotPresentError(entity as number, component.name));
     const col = fieldCols.get(fieldName);
     const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
-    const countCol = fieldCols.get(arrayCountColumnName(fieldName));
+    const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
     if (!col || !arrayMeta || arrayMeta.length !== undefined || !countCol) {
       return err(new ComponentNotPresentError(entity as number, component.name));
     }
@@ -2629,9 +2628,26 @@ export class World {
 
     const elementCount =
       arrayMeta.length ??
-      (fieldCols.get(arrayCountColumnName(fieldName))?.view[row] as number | undefined) ??
+      ((col.countField === undefined ? undefined : fieldCols.get(col.countField)?.view[row]) as
+        | number
+        | undefined) ??
       0;
-    return this.materializeArrayView(col, row, arrayMeta, elementCount);
+    if (arrayMeta.length === undefined)
+      return this.materializeArrayView(col, row, arrayMeta, elementCount);
+
+    // The internal reader borrows a row window, not a fresh public snapshot.
+    // A live column replacement invalidates every old window after growth.
+    let cached = this.inlineArrayViews.get(col);
+    if (cached === undefined || cached.source !== col.view) {
+      cached = { source: col.view, rows: [] };
+      this.inlineArrayViews.set(col, cached);
+    }
+    let view = cached.rows[row];
+    if (view === undefined) {
+      view = this.materializeArrayView(col, row, arrayMeta, elementCount);
+      cached.rows[row] = view;
+    }
+    return view;
   }
 
   /** Read one scalar column without constructing a component snapshot. */
@@ -2664,7 +2680,8 @@ export class World {
     const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
     if (arrayMeta === undefined) return undefined;
     if (arrayMeta.length !== undefined) return arrayMeta.length;
-    const count = fieldCols.get(arrayCountColumnName(fieldName))?.view[row];
+    const countField = fieldCols.get(fieldName)?.countField;
+    const count = countField === undefined ? undefined : fieldCols.get(countField)?.view[row];
     return typeof count === 'number' ? count : 0;
   }
 
@@ -2685,12 +2702,12 @@ export class World {
     if (fieldCols === undefined) return undefined;
     const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
     if (arrayMeta === undefined) return undefined;
-    const length =
-      arrayMeta.length ??
-      (fieldCols.get(arrayCountColumnName(fieldName))?.view[row] as number | undefined);
-    if (length === undefined || index >= length) return undefined;
     const col = fieldCols.get(fieldName);
     if (col === undefined) return undefined;
+    const length =
+      arrayMeta.length ??
+      (col.countField === undefined ? undefined : fieldCols.get(col.countField)?.view[row]);
+    if (length === undefined || index >= length) return undefined;
     if (arrayMeta.length !== undefined) return col.view[row * col.arity + index] as number;
 
     const slotId = col.view[row] as number;
@@ -2727,7 +2744,9 @@ export class World {
     }
     const definition = componentDefinition(component);
     const fields = definition.fields;
-    for (const fieldName of definition.fieldNames) {
+    const fieldNames = definition.fieldNames;
+    for (let index = 0; index < fieldNames.length; index++) {
+      const fieldName = fieldNames[index] as string;
       const field = fields[fieldName];
       if (field === undefined) continue;
       const fieldType = field.type;
@@ -2781,7 +2800,9 @@ export class World {
           // through the World mutation API.
           const elementCount =
             arrayMeta.length ??
-            (fieldCols.get(arrayCountColumnName(fieldName))?.view[row] as number | undefined) ??
+            ((col.countField === undefined
+              ? undefined
+              : fieldCols.get(col.countField)?.view[row]) as number | undefined) ??
             0;
           const materialized = this.materializeArrayView(col, row, arrayMeta, elementCount);
           // Relationship target arrays are a read-only projection. Keep the
@@ -2982,7 +3003,7 @@ export class World {
         // releasing the slot bytes (feat-20260614 M4 / D-3 — slot bytes
         // are only valid until the slot is recycled).
         const slotId = col.view[row] as number;
-        const countCol = fieldCols.get(arrayCountColumnName(fieldName));
+        const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
         if (isSharedElement && slotId !== 0) {
           const liveCount = countCol !== undefined ? (countCol.view[row] as number) : 0;
           const slotView = liveCount > 0 ? this.bufferPool.view(slotId) : null;
@@ -3001,7 +3022,7 @@ export class World {
       // window so subsequent writes do not double-release.
       if (isSharedElement) {
         const arity = col.arity;
-        const elementBytes = (TYPE_METADATA.shared?.byteSize ?? 4) as number;
+        const elementBytes = col.view.BYTES_PER_ELEMENT;
         const rowByteOffset = col.view.byteOffset + row * arity * elementBytes;
         const rowBytes = new Uint8Array(col.view.buffer, rowByteOffset, arity * elementBytes);
         this.releaseSharedArrayElements(rowBytes, arity);
@@ -3114,18 +3135,11 @@ export class World {
     if (!col) return;
 
     const elementType = arrayMeta.elementType;
-    // Normalize parametrised element-type template literals to the family
-    // key for TYPE_METADATA lookup; the column stores plain u32 handles
-    // either way:
-    //   - `shared<X>` -> 'shared' (feat-20260614 M4 / D-3 -- element-level
-    //     retain/release semantics route via the dedicated `'shared'` arm
-    //     below)
-    const metaKey = elementType.startsWith('shared<') ? 'shared' : (elementType as string);
-    const meta = TYPE_METADATA[metaKey];
+    const metaKey = fieldTypeToMetaKey(elementType);
+    const meta = metaKey === null ? undefined : TYPE_METADATA[metaKey];
     /* istanbul ignore next -- arrayMeta.elementType is guaranteed in TYPE_METADATA */
     if (!meta) return;
-    // biome-ignore lint/style/noNonNullAssertion: every array element type has a byte size
-    const elementBytes = meta.byteSize!;
+    const elementBytes = meta.byteSize;
 
     const isVariable = arrayMeta.length === undefined;
     const fixedLength = arrayMeta.length ?? 0;
@@ -3136,7 +3150,6 @@ export class World {
     if (
       !isVariable &&
       metaKey !== 'shared' &&
-      meta.viewCtor !== undefined &&
       col.view instanceof meta.viewCtor &&
       (raw == null || Array.isArray(raw) || raw instanceof meta.viewCtor)
     ) {
@@ -3181,7 +3194,7 @@ export class World {
         // so a size-keyed setter would store an f32 `1.0` as the u32 bits
         // `0x00000001` (reads back ~1.4e-45). The TypedArray then exposes
         // its little-endian bytes for the shared copy path below.
-        if (payloadCount > 0 && meta.viewCtor !== undefined) {
+        if (payloadCount > 0) {
           const typed = new meta.viewCtor(payloadCount);
           for (let i = 0; i < payloadCount; i++) {
             const val = raw[i];
@@ -3248,7 +3261,7 @@ export class World {
       );
       col.view[row] = 0;
       if (isVariable) {
-        const countCol = fieldCols.get(arrayCountColumnName(fieldName));
+        const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
         if (countCol !== undefined) countCol.view[row] = 0;
       }
       return;
@@ -3260,7 +3273,7 @@ export class World {
     }
     col.view[row] = slot.id;
     if (isVariable) {
-      const countCol = fieldCols.get(arrayCountColumnName(fieldName));
+      const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
       /* istanbul ignore else -- count column allocated by createArchetype */
       if (countCol !== undefined) countCol.view[row] = effectiveCount;
     }
@@ -3348,6 +3361,34 @@ export class World {
   // Internal — archetype migration
   // ──────────────────────────────────────────────────────────────────────────
 
+  // Storage swaps report the moved row; World repairs the corresponding entity
+  // or archetype index for every migration, sparse-tag transition and despawn.
+  private removeArchetypeMembership(archetype: Archetype, row: number): void {
+    const srcTable = this.table(archetype);
+    const archetypeSwap = removeArchetypeRow(archetype, row);
+    if (archetypeSwap !== null) {
+      const movedEntity = (srcTable.storage.get(componentId(EntityComponent))?.fields.get('self')
+        ?.view[archetypeSwap.movedTableRow] ?? 0) as EntityHandle;
+      const movedRecord = this.records[entityIndex(movedEntity)];
+      if (movedRecord?.generation === entityGeneration(movedEntity)) {
+        movedRecord.archetypeRow = archetypeSwap.newRow;
+      }
+    }
+  }
+
+  private removeTableMembership(table: Table, row: number): void {
+    const tableSwap = removeTableRow(table, row, this.mutationEpoch + 1);
+    if (tableSwap !== null) {
+      const movedRecord = this.records[entityIndex(tableSwap.movedEntity)];
+      if (movedRecord?.generation === entityGeneration(tableSwap.movedEntity)) {
+        const movedArchetype = this.graph.archetypes[movedRecord.archetypeId];
+        if (movedArchetype !== undefined) {
+          movedArchetype.rows[movedRecord.archetypeRow] = tableSwap.newRow;
+        }
+      }
+    }
+  }
+
   /**
    * Copy surviving component columns into the target row, then swap-remove
    * the source row. Managed handles and variable-array sidecars are copied
@@ -3398,25 +3439,8 @@ export class World {
       }
     }
 
-    const archetypeSwap = removeArchetypeRow(srcArch, oldArchetypeRow);
-    if (archetypeSwap !== null) {
-      const movedEntity = (srcTable.storage.get(componentId(EntityComponent))?.fields.get('self')
-        ?.view[archetypeSwap.movedTableRow] ?? 0) as EntityHandle;
-      const movedRecord = this.records[entityIndex(movedEntity)];
-      if (movedRecord?.generation === entityGeneration(movedEntity)) {
-        movedRecord.archetypeRow = archetypeSwap.newRow;
-      }
-    }
-    const tableSwap = removeTableRow(srcTable, oldTableRow, this.mutationEpoch + 1);
-    if (tableSwap !== null) {
-      const movedRecord = this.records[entityIndex(tableSwap.movedEntity)];
-      if (movedRecord?.generation === entityGeneration(tableSwap.movedEntity)) {
-        const movedArchetype = this.graph.archetypes[movedRecord.archetypeId];
-        if (movedArchetype !== undefined) {
-          movedArchetype.rows[movedRecord.archetypeRow] = tableSwap.newRow;
-        }
-      }
-    }
+    this.removeArchetypeMembership(srcArch, oldArchetypeRow);
+    this.removeTableMembership(srcTable, oldTableRow);
 
     record.archetypeId = targetArch.id;
     record.archetypeRow = newArchetypeRow;
@@ -3433,15 +3457,7 @@ export class World {
     }
     const oldArchetypeRow = record.archetypeRow;
     const tableRow = srcArch.rows[oldArchetypeRow] ?? 0;
-    const archetypeSwap = removeArchetypeRow(srcArch, oldArchetypeRow);
-    if (archetypeSwap !== null) {
-      const movedEntity = (table.storage.get(componentId(EntityComponent))?.fields.get('self')
-        ?.view[archetypeSwap.movedTableRow] ?? 0) as EntityHandle;
-      const movedRecord = this.records[entityIndex(movedEntity)];
-      if (movedRecord?.generation === entityGeneration(movedEntity)) {
-        movedRecord.archetypeRow = archetypeSwap.newRow;
-      }
-    }
+    this.removeArchetypeMembership(srcArch, oldArchetypeRow);
     record.archetypeId = targetArch.id;
     record.archetypeRow = appendArchetypeRow(targetArch, tableRow);
     markTableMembership(table, tableRow, this.mutationEpoch + 1);
@@ -3490,25 +3506,8 @@ export class World {
           const sparse = this.graph.sparseTags.get(componentId(component));
           if (sparse !== undefined) removeSparseTag(sparse, entity);
         }
-        const archetypeSwap = removeArchetypeRow(archetype, archetypeRow);
-        if (archetypeSwap !== null) {
-          const movedEntity = (table.storage.get(componentId(EntityComponent))?.fields.get('self')
-            ?.view[archetypeSwap.movedTableRow] ?? 0) as EntityHandle;
-          const movedRecord = this.records[entityIndex(movedEntity)];
-          if (movedRecord?.generation === entityGeneration(movedEntity)) {
-            movedRecord.archetypeRow = archetypeSwap.newRow;
-          }
-        }
-        const tableSwap = removeTableRow(table, tableRow, this.mutationEpoch + 1);
-        if (tableSwap !== null) {
-          const movedRecord = this.records[entityIndex(tableSwap.movedEntity)];
-          if (movedRecord?.generation === entityGeneration(tableSwap.movedEntity)) {
-            const movedArchetype = this.graph.archetypes[movedRecord.archetypeId];
-            if (movedArchetype !== undefined) {
-              movedArchetype.rows[movedRecord.archetypeRow] = tableSwap.newRow;
-            }
-          }
-        }
+        this.removeArchetypeMembership(archetype, archetypeRow);
+        this.removeTableMembership(table, tableRow);
       }
       record.archetypeId = -1;
       record.archetypeRow = -1;

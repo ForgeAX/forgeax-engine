@@ -7,6 +7,7 @@ import type {
   PackV2,
   PluginBuildTarget,
 } from '@forgeax/engine-types';
+import { createAssetPublication, encodeBase64 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { PackBlob } from './blob.js';
@@ -120,13 +121,7 @@ export function bindRuntimePackScope(value: unknown, scopeId: string, generation
 }
 
 function stable(value: unknown): string {
-  if (value instanceof Uint8Array) {
-    let binary = '';
-    for (let offset = 0; offset < value.length; offset += 8192) {
-      binary += String.fromCharCode(...value.subarray(offset, offset + 8192));
-    }
-    return `bytes:${btoa(binary)}`;
-  }
+  if (value instanceof Uint8Array) return `bytes:${encodeBase64(value)}`;
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
@@ -179,30 +174,6 @@ function outputFor(asset: RuntimePackAsset, sourceKey?: string): AssetPublicatio
   };
 }
 
-function outputSetDigest(outputs: readonly AssetPublicationOutput[]): string {
-  return digest(
-    outputs.map((output) => ({
-      guid: output.guid.toLowerCase(),
-      sourceKey: output.sourceKey,
-      kind: output.kind,
-      digest: output.digest,
-      refs: [...output.refs].map((guid) => guid.toLowerCase()),
-    })),
-  );
-}
-
-function publicationGeneration(
-  sourceRevision: string,
-  valueDigest: string,
-  outputs: string,
-): number {
-  const value = bytesToHex(
-    sha256(new TextEncoder().encode(`${sourceRevision}\n${valueDigest}\n${outputs}`)),
-  );
-  const generation = Number.parseInt(value.slice(0, 8), 16);
-  return generation > 0 ? generation : 1;
-}
-
 export function createRuntimePackPublication(
   input: RuntimePackPublicationInput,
 ): RuntimePackPublication {
@@ -218,44 +189,23 @@ export function createRuntimePackPublication(
   const outputs =
     input.outputs ??
     assets.map((asset) => outputFor(asset, input.sourceKeys?.get(asset.guid.toLowerCase())));
-  const outputDigest = outputSetDigest(outputs);
-  const generation =
-    input.generation ?? publicationGeneration(input.sourceRevision, valueDigest, outputDigest);
-  const externalEvidence = input.externalEvidence ?? [];
-  const inputFingerprint = input.inputFingerprint ?? input.sourceRevision;
-  const publication: AssetPublicationEnvelope = {
-    schemaVersion: 'asset-publication/1',
+  const publication = createAssetPublication({
     sourcePath: input.sourcePath,
     sourceRevision: input.sourceRevision,
-    generation,
+    ...(input.generation === undefined ? {} : { generation: input.generation }),
     digest: valueDigest,
-    outputSetDigest: outputDigest,
+    packageUrl: input.packageUrl,
+    inputFingerprint: input.inputFingerprint ?? input.sourceRevision,
     outputs,
-    receipt: {
-      schemaVersion: 'asset-publication-receipt/1',
-      sourcePath: input.sourcePath,
-      sourceRevision: input.sourceRevision,
-      inputFingerprint,
-      outputDigest: valueDigest,
-      outputSetDigest: outputDigest,
-      externalEvidence,
-    },
-    externalEvidence,
-    current: {
-      generation,
-      digest: valueDigest,
-      outputSetDigest: outputDigest,
-      packageUrl: input.packageUrl,
-      receiptKey: inputFingerprint,
-    },
-  };
+    externalEvidence: input.externalEvidence ?? [],
+  });
   return {
     pack: {
       ...semantic,
       scopeId: input.scopeId,
-      generation,
+      generation: publication.generation,
       digest: valueDigest,
-      outputSetDigest: outputDigest,
+      outputSetDigest: publication.outputSetDigest,
     },
     publication,
   };

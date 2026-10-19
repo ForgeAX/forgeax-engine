@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // RectAreaLight sourceTexture Dawn witness. One renderer and one World cycle
 // through four phases: uniform -> textured -> mirrored -> uniform. Each phase
@@ -26,7 +27,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { createGalleryTextures } from '../src/images.ts';
 import {
@@ -308,7 +309,7 @@ async function renderPhase(index, source, frames) {
   );
   if (ARTIFACT_DIR !== undefined) {
     mkdirSync(ARTIFACT_DIR, { recursive: true });
-    writeFileSync(resolve(ARTIFACT_DIR, `phase-${index}-${source}.png`), writeReferencePng(pixels, WIDTH, HEIGHT));
+    writeFileSync(resolve(ARTIFACT_DIR, `phase-${index}-${source}.png`), encodePng(WIDTH, HEIGHT, pixels));
   }
   return { index, source, msPerFrame, firstFrameMs, dispatches, pixels, left, right, lighting };
 }

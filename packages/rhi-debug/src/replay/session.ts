@@ -1,5 +1,6 @@
 import type { MappedBuffer, RhiDevice } from '@forgeax/engine-rhi';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result, textureCompressionFeature } from '@forgeax/engine-types';
+import { RECORDED_CAPABILITY_KEYS } from '../capabilities';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 import { buildFrameModel, type WorkBinding, type WorkPipeline } from '../frame-model';
 import { buildTapeIndex } from '../protocol/tape-index';
@@ -7,14 +8,18 @@ import type { BootstrapResource, RhiCallEvent, Tape } from '../protocol/types';
 import type { CreateShaderModuleFn } from '../recorder';
 import { computeTextureLayout, projectTextureExtent } from '../texel-layout';
 import { type BatchReadRequest, type BatchReadResults, readAtWorks } from './batch';
-import { requiredReplayDescriptorFeatures, usesAccelerationStructures } from './device-request';
+import {
+  RECORDED_CAPABILITY_FEATURES,
+  requiredReplayDescriptorFeatures,
+  usesAccelerationStructures,
+} from './device-request';
 import {
   encodeAccelerationStructureBuild,
   eventFailure,
   executeEvent,
   type ReplayExecutionContext,
 } from './execute';
-import { tapeBlob } from './execute-support';
+import { bootstrapBlob } from './execute-support';
 import { type WorkOutput, workOutputs } from './outputs';
 import { replayThroughWork } from './prefix';
 import {
@@ -344,7 +349,7 @@ function checkCapabilities(tape: Tape, device: RhiDevice): RhiDebugError | undef
     // only needs to require a capability when the captured workload can use
     // it. Otherwise a device-wide optional feature (for example ASTC support)
     // makes an unrelated RGBA tape non-portable.
-    if (value !== true || (!required.has(key) && isKnownReplayCapability(key))) return false;
+    if (value !== true || (!required.has(key) && RECORDED_CAPABILITY_KEYS.has(key))) return false;
     const target = device.caps[key as keyof typeof device.caps];
     return target !== true;
   });
@@ -353,52 +358,6 @@ function checkCapabilities(tape: Tape, device: RhiDevice): RhiDebugError | undef
     stage: 'replay',
     cause: `missing capabilities: ${missing.map(([key]) => key).join(', ')}`,
   });
-}
-
-const BC_TEXTURE_FORMATS = new Set([
-  'bc1-rgba-unorm',
-  'bc1-rgba-unorm-srgb',
-  'bc2-rgba-unorm',
-  'bc2-rgba-unorm-srgb',
-  'bc3-rgba-unorm',
-  'bc3-rgba-unorm-srgb',
-  'bc4-r-unorm',
-  'bc4-r-snorm',
-  'bc5-rg-unorm',
-  'bc5-rg-snorm',
-  'bc6h-rgb-ufloat',
-  'bc6h-rgb-sfloat',
-  'bc7-rgba-unorm',
-  'bc7-rgba-unorm-srgb',
-]);
-
-const ETC2_TEXTURE_FORMATS = new Set([
-  'etc2-rgb8unorm',
-  'etc2-rgb8unorm-srgb',
-  'etc2-rgb8a1unorm',
-  'etc2-rgb8a1unorm-srgb',
-  'etc2-rgba8unorm',
-  'etc2-rgba8unorm-srgb',
-  'eac-r11unorm',
-  'eac-r11snorm',
-  'eac-rg11unorm',
-  'eac-rg11snorm',
-]);
-
-const KNOWN_REPLAY_CAPABILITIES = new Set([
-  'rgba16floatRenderable',
-  'rg11b10ufloatRenderable',
-  'float32Filterable',
-  'firstInstanceIndirect',
-  'textureCompressionBc',
-  'textureCompressionEtc2',
-  'textureCompressionAstc',
-  'storageBuffer',
-  'timestampQuery',
-]);
-
-function isKnownReplayCapability(key: string): boolean {
-  return KNOWN_REPLAY_CAPABILITIES.has(key);
 }
 
 function requiredReplayCapabilities(tape: Tape): ReadonlySet<string> {
@@ -412,9 +371,11 @@ function requiredReplayCapabilities(tape: Tape): ReadonlySet<string> {
       case 'createTexture': {
         const formats = [event.desc.format, ...(event.desc.viewFormats ?? [])];
         for (const format of formats) {
-          if (BC_TEXTURE_FORMATS.has(format)) required.add('textureCompressionBc');
-          if (ETC2_TEXTURE_FORMATS.has(format)) required.add('textureCompressionEtc2');
-          if (format.startsWith('astc-')) required.add('textureCompressionAstc');
+          const compression = textureCompressionFeature(format);
+          const capability = RECORDED_CAPABILITY_FEATURES.find(
+            ([, feature]) => feature === compression,
+          )?.[0];
+          if (capability !== undefined) required.add(capability);
           if (format === 'rgba16float') required.add('rgba16floatRenderable');
           if (format === 'rg11b10ufloat' && (event.desc.usage & 0x10) !== 0) {
             required.add('rg11b10ufloatRenderable');
@@ -524,23 +485,12 @@ async function seedBootstrapResource(
     if (!range.ok) return eventFailure(-bootstrapIndex - 1, event, 'write', range.error);
     const target = new Uint8Array(range.value);
     for (const slice of resource.initialData) {
-      const blob = tapeBlob(context.tape, slice.hash);
-      if (blob === undefined) {
-        return eventFailure(-bootstrapIndex - 1, event, 'lookup', `blob ${slice.hash} is missing`);
-      }
-      const end = slice.byteOffset + slice.byteLength;
-      if (slice.byteOffset < 0 || slice.byteLength < 0 || end > blob.bytes.byteLength) {
-        return eventFailure(
-          -bootstrapIndex - 1,
-          event,
-          'lookup',
-          `blob ${slice.hash} does not contain initialData slice [${slice.byteOffset}, ${end})`,
-        );
-      }
+      const bytes = bootstrapBlob(context.tape, slice, event, -bootstrapIndex - 1);
+      if (!bytes.ok) return bytes;
       if (slice.byteLength > target.byteLength) {
         return eventFailure(-bootstrapIndex - 1, event, 'write', 'initialData exceeds buffer size');
       }
-      target.set(blob.bytes.subarray(slice.byteOffset, end));
+      target.set(bytes.value);
     }
   } finally {
     mapped.unmap();
@@ -593,6 +543,13 @@ async function seedTextureInitialData(
   bootstrapIndex: number,
 ): Promise<Result<void, RhiDebugError>> {
   const extent = projectTextureExtent(event.desc.size);
+  if (extent === undefined)
+    return eventFailure(
+      -bootstrapIndex - 1,
+      event,
+      'lookup',
+      'the texture descriptor has invalid dimensions',
+    );
   const layout = computeTextureLayout(
     event.desc.format,
     extent.width,
@@ -609,20 +566,9 @@ async function seedTextureInitialData(
     );
   }
   for (const slice of resource.initialData) {
-    const blob = tapeBlob(context.tape, slice.hash);
-    if (blob === undefined) {
-      return eventFailure(-bootstrapIndex - 1, event, 'lookup', `blob ${slice.hash} is missing`);
-    }
-    const end = slice.byteOffset + slice.byteLength;
-    if (slice.byteOffset < 0 || slice.byteLength < 0 || end > blob.bytes.byteLength) {
-      return eventFailure(
-        -bootstrapIndex - 1,
-        event,
-        'lookup',
-        `blob ${slice.hash} does not contain initialData slice [${slice.byteOffset}, ${end})`,
-      );
-    }
-    const bytes = blob.bytes.subarray(slice.byteOffset, end);
+    const initial = bootstrapBlob(context.tape, slice, event, -bootstrapIndex - 1);
+    if (!initial.ok) return initial;
+    const bytes = initial.value;
     if (bytes.byteLength !== layout.totalBytes) {
       return eventFailure(
         -bootstrapIndex - 1,

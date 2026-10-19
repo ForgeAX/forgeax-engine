@@ -97,11 +97,7 @@ world
 world
   .spawn({
     component: DirectionalLight,
-    data: {
-      direction: [-0.4, -0.7, -0.6],
-      color: [1, 1, 1],
-      intensity: 1.1,
-    },
+    data: { castShadow: true, direction: [-0.4, -0.7, -0.6], color: [1, 1, 1], intensity: 1.1 },
   })
   .unwrap();
 

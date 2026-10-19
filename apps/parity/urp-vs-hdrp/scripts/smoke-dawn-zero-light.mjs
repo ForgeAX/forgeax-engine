@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // parity-standard-lanes 0-punctual-light dawn-node smoke.
 //
 // Renders the SAME no-punctual-light scene twice through dawn-node (Standard direct +
@@ -15,7 +16,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = 60;
 const SMOKE_PIXEL_EPSILON = 0.001;
@@ -193,7 +194,7 @@ function populateScene(world) {
   // lit while the clustered loop naturally executes 0 punctual iterations.
   world.spawn({
     component: DirectionalLight,
-    data: { direction: [-0.4, -1, -0.2], color: [1, 1, 1], intensity: 1 },
+    data: { castShadow: true, direction: [-0.4, -1, -0.2], color: [1, 1, 1], intensity: 1 },
   }).unwrap();
   world.spawn({
     component: Skylight,

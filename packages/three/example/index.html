@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three.js → Forgeax</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #11161e; color: #e4eaf2; }
+  body { margin: 0; max-width: 1180px; padding: 44px 24px; margin-inline: auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; }
+  h1 { font-size: clamp(26px, 4vw, 42px); margin: 0 0 12px; letter-spacing: -.03em; }
+  p { color: #9aaabd; line-height: 1.7; }
+  .tag { color: #86dec2; border: 1px solid #365951; border-radius: 24px; padding: 6px 12px; white-space: nowrap; font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 20px; margin-top: 24px; }
+  .viewport { height: 440px; background: #19232f; border: 1px solid #324152; border-radius: 14px; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  aside { padding: 22px; background: #1a222e; border: 1px solid #324152; border-radius: 14px; }
+  h2 { font-size: 16px; margin: 0 0 14px; }
+  pre { font-size: 12px; white-space: pre-wrap; line-height: 1.7; color: #b6dccc; }
+  button, a.download { display: inline-block; background: #27384a; border: 1px solid #466177; border-radius: 7px; padding: 10px 14px; color: #e4eaf2; cursor: pointer; font: inherit; font-size: 13px; text-decoration: none; }
+  button:hover, a.download:hover { background: #355169; }
+  button:disabled { opacity: .45; cursor: wait; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+  #status, #capture-status { font-size: 13px; min-height: 2em; overflow-wrap: anywhere; }
+  #error { color: #ff9e8a; white-space: pre-wrap; }
+  #downloads { display: flex; gap: 8px; flex-wrap: wrap; }
+  footer { margin-top: 20px; font-size: 13px; color: #9aaabd; }
+  @media (max-width: 740px) { main { grid-template-columns: 1fr; } header { display: block; } .viewport { height: 330px; } }
+</style>
+<header><div><h1>Three.js objects. Forgeax rendering.</h1><p>Drag to orbit and scroll to zoom. Author the scene with familiar Three.js objects.</p></div><span class="tag">r184 · Compatibility prototype</span></header>
+<main>
+  <section class="viewport"><canvas id="scene"></canvas></section>
+  <aside>
+    <h2>Migration entry</h2>
+    <pre>import * as THREE from
+  '@forgeax/engine/three';
+
+const renderer = new THREE.WebGLRenderer({ canvas });
+await renderer.init();
+renderer.setAnimationLoop(() =&gt; {
+  renderer.render(scene, camera);
+});</pre>
+    <div class="actions"><button id="pause">Pause rotation</button><button id="affine">Apply matrix shear</button><button id="lens">Offset camera lens</button><button id="material">Use normal material</button><button id="exposure">Exposure: 1×</button><button id="color">Change shared material</button><button id="clearcoat">Disable clearcoat</button><button id="light">Use spot light</button><button id="remove">Remove sphere</button></div>
+    <p id="status">Initializing Forgeax…</p>
+    <h2>RHI Debug</h2>
+    <p>Capture this scene’s submitted GPU work. Download a standard .rhitape and its source object mapping.</p>
+    <button id="capture" disabled>Capture frame</button>
+    <p id="capture-status"></p><div id="downloads"></div>
+    <p id="error" role="alert"></p>
+  </aside>
+</main>
+<footer>Matrix shear uses Three.js manual matrices; camera offset uses setViewOffset. These share Forgeax's native affine transforms and camera lens inputs. Normal shows surface directions as color; Physical responds to lights and clearcoat. Full public API compatibility is still in progress, including synchronous renderer calls, physical texture combinations, shadows, render targets and post-processing. Only custom shaders and native WebGL calls may require migration.</footer>
+<script type="module" src="./main.ts"></script>
+</html>

@@ -1,3 +1,5 @@
+import { stripWgslComments } from './wgsl-comments.js';
+import { WGSL_NUMERIC_LAYOUT } from './wgsl-numeric-layout.js';
 // derive(schema) — paramSchema -> one DerivedMaterialInterface.
 // feat-20260613-material-paramschema-driven-binding M1 / w3
 //
@@ -19,6 +21,8 @@
 //   - vec4 / color (rgba) size 16  align 16
 //   - struct round-up: totalBytes is rounded up to 16-byte alignment.
 
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type {
   BindGroupLayoutEntry,
   MaterialParamType,
@@ -29,92 +33,99 @@ import type {
 
 const FRAGMENT = 0x2 as GPUShaderStageFlags;
 
-const NUMERIC_TYPES: ReadonlySet<MaterialParamType> = new Set<MaterialParamType>([
-  'f32',
-  'i32',
-  'u32',
-  'vec2',
-  'vec3',
-  'vec4',
-  'color',
-]);
+/** Numeric material ABI shared by layout derivation, WGSL emission and reflection. */
+export const MATERIAL_NUMERIC_LAYOUT = {
+  f32: { ...WGSL_NUMERIC_LAYOUT.f32, wgslType: 'f32' },
+  i32: { ...WGSL_NUMERIC_LAYOUT.i32, wgslType: 'i32' },
+  u32: { ...WGSL_NUMERIC_LAYOUT.u32, wgslType: 'u32' },
+  vec2: { ...WGSL_NUMERIC_LAYOUT['vec2<f32>'], wgslType: 'vec2<f32>' },
+  vec3: { ...WGSL_NUMERIC_LAYOUT['vec3<f32>'], wgslType: 'vec3<f32>' },
+  vec4: { ...WGSL_NUMERIC_LAYOUT['vec4<f32>'], wgslType: 'vec4<f32>' },
+  color: { ...WGSL_NUMERIC_LAYOUT['vec4<f32>'], wgslType: 'vec4<f32>' },
+} as const satisfies Record<
+  NumericParamType,
+  { size: number; alignment: number; wgslType: string }
+>;
 
-const TEXTURE_VIEW_TYPES: ReadonlySet<MaterialParamType> = new Set<MaterialParamType>([
-  'texture2d',
-  'texture2d_array',
-  'texture3d',
-  'texture_cube',
-  'texture_depth_2d',
-  'texture_cube_array',
-  'texture_external',
-]);
+const NUMERIC_TYPES = new Set<string>(Object.keys(MATERIAL_NUMERIC_LAYOUT));
+
+type TextureViewParamType = Exclude<TextureBindingParamType, 'sampler' | 'sampler_comparison'>;
+
+/** Sampled texture ABI; sampler declarations are a separate parameter family. */
+export const MATERIAL_TEXTURE_LAYOUT = {
+  texture2d: {
+    sampleType: 'float',
+    viewDimension: '2d',
+    external: false,
+    wgslType: 'texture_2d<f32>',
+  },
+  texture2d_array: {
+    sampleType: 'float',
+    viewDimension: '2d-array',
+    external: false,
+    wgslType: 'texture_2d_array<f32>',
+  },
+  texture3d: {
+    sampleType: 'float',
+    viewDimension: '3d',
+    external: false,
+    wgslType: 'texture_3d<f32>',
+  },
+  texture_cube: {
+    sampleType: 'float',
+    viewDimension: 'cube',
+    external: false,
+    wgslType: 'texture_cube<f32>',
+  },
+  texture_depth_2d: {
+    sampleType: 'depth',
+    viewDimension: '2d',
+    external: false,
+    wgslType: 'texture_depth_2d',
+  },
+  texture_cube_array: {
+    sampleType: 'float',
+    viewDimension: 'cube-array',
+    external: false,
+    wgslType: 'texture_cube_array<f32>',
+  },
+  texture_external: {
+    sampleType: 'float',
+    viewDimension: '2d',
+    external: true,
+    wgslType: 'texture_external',
+  },
+} as const satisfies Record<
+  TextureViewParamType,
+  {
+    sampleType: GPUTextureSampleType;
+    viewDimension: GPUTextureViewDimension;
+    external: boolean;
+    wgslType: string;
+  }
+>;
+
+for (const layout of Object.values(MATERIAL_NUMERIC_LAYOUT)) Object.freeze(layout);
+for (const layout of Object.values(MATERIAL_TEXTURE_LAYOUT)) Object.freeze(layout);
+Object.freeze(MATERIAL_NUMERIC_LAYOUT);
+Object.freeze(MATERIAL_TEXTURE_LAYOUT);
+
+const TEXTURE_VIEW_TYPES = new Set<string>(Object.keys(MATERIAL_TEXTURE_LAYOUT));
 
 const SAMPLER_TYPES: ReadonlySet<MaterialParamType> = new Set<MaterialParamType>([
   'sampler',
   'sampler_comparison',
 ]);
 
-const ALL_TYPES: ReadonlySet<MaterialParamType> = new Set<MaterialParamType>([
+const ALL_TYPES: ReadonlySet<string> = new Set<string>([
   ...NUMERIC_TYPES,
   ...TEXTURE_VIEW_TYPES,
   ...SAMPLER_TYPES,
   'storage_buffer',
 ]);
 
-interface NumericFootprint {
-  readonly size: number;
-  readonly align: number;
-}
-
-function numericFootprint(t: NumericParamType): NumericFootprint {
-  switch (t) {
-    case 'f32':
-    case 'i32':
-    case 'u32':
-      return { size: 4, align: 4 };
-    case 'vec2':
-      return { size: 8, align: 8 };
-    case 'vec3':
-      return { size: 12, align: 16 };
-    case 'vec4':
-    case 'color':
-      return { size: 16, align: 16 };
-  }
-}
-
 function alignUp(value: number, alignment: number): number {
   return (value + alignment - 1) & ~(alignment - 1);
-}
-
-interface TextureBglDescriptor {
-  readonly sampleType: GPUTextureSampleType;
-  readonly viewDimension: GPUTextureViewDimension;
-  readonly external: boolean;
-}
-
-function textureBglDescriptor(t: TextureBindingParamType): TextureBglDescriptor {
-  switch (t) {
-    case 'texture2d':
-      return { sampleType: 'float', viewDimension: '2d', external: false };
-    case 'texture2d_array':
-      return { sampleType: 'float', viewDimension: '2d-array', external: false };
-    case 'texture3d':
-      return { sampleType: 'float', viewDimension: '3d', external: false };
-    case 'texture_cube':
-      return { sampleType: 'float', viewDimension: 'cube', external: false };
-    case 'texture_depth_2d':
-      return { sampleType: 'depth', viewDimension: '2d', external: false };
-    case 'texture_cube_array':
-      return { sampleType: 'float', viewDimension: 'cube-array', external: false };
-    case 'texture_external':
-      return { sampleType: 'float', viewDimension: '2d', external: true };
-    case 'sampler':
-    case 'sampler_comparison':
-      // Not a texture view — caller must dispatch separately. Falling through
-      // here is a defensive guard; numericFootprint / sampler handler covers
-      // these branches before this function is reached.
-      throw new Error(`derive: textureBglDescriptor called on sampler-family type '${t}'`);
-  }
 }
 
 function samplerBindingType(t: 'sampler' | 'sampler_comparison'): GPUSamplerBindingType {
@@ -176,7 +187,7 @@ export interface MaterialParameterResourceProjection {
 export interface MaterialParameterTextureProjection {
   readonly kind: 'texture';
   readonly name: string;
-  readonly type: TextureBindingParamType;
+  readonly type: TextureViewParamType;
   readonly coordinates: MaterialCoordinateRecordLayout;
   readonly resource: {
     readonly parameter: string;
@@ -601,17 +612,17 @@ function derivePure(
 
     if (NUMERIC_TYPES.has(type)) {
       const numericType = type as NumericParamType;
-      const { size, align } = numericFootprint(numericType);
+      const { size, alignment } = MATERIAL_NUMERIC_LAYOUT[numericType];
       ensureUboBinding();
-      const offset = alignUp(uboCursor, align);
+      const offset = alignUp(uboCursor, alignment);
       uboFields.push({ name, offset, size, type: numericType });
-      numericMembers.push({ name, offset, size, alignment: align, type: numericType });
+      numericMembers.push({ name, offset, size, alignment, type: numericType });
       uboCursor = offset + size;
       continue;
     }
 
     if (TEXTURE_VIEW_TYPES.has(type)) {
-      const texType = type as TextureBindingParamType;
+      const texType = type as TextureViewParamType;
       ensureUboBinding();
       const coordinateOffset = alignUp(uboCursor, 16);
       const coordinates: MaterialCoordinateRecordLayout = {
@@ -625,7 +636,7 @@ function derivePure(
       };
       coordinateRecords.push(coordinates);
       uboCursor = coordinateOffset + coordinates.size;
-      const textureDescriptor = textureBglDescriptor(texType);
+      const textureDescriptor = MATERIAL_TEXTURE_LAYOUT[texType];
       const sampleType = shape.sampleTypes[index] ?? textureDescriptor.sampleType;
       if (
         (sampleType !== textureDescriptor.sampleType &&
@@ -764,27 +775,18 @@ function derivePure(
 function freezeParamSchema(schema: readonly ParamSchemaEntry[]): readonly ParamSchemaEntry[] {
   return Object.freeze(
     schema.map((entry) => {
-      const defaultValue = cloneAndFreezeSchemaValue(entry.default);
+      if ('default' in entry && !NUMERIC_TYPES.has(entry.type))
+        throw new TypeError(
+          `ParamSchemaProjectionOwner: ${entry.name} (${entry.type}) cannot declare a default`,
+        );
+      if (!('default' in entry) || entry.default === undefined) return Object.freeze({ ...entry });
+      const value = entry.default;
       return Object.freeze({
         ...entry,
-        ...(entry.default === undefined ? {} : { default: defaultValue }),
-      }) as ParamSchemaEntry;
+        default: typeof value === 'number' ? value : Object.freeze([...value]),
+      });
     }),
   );
-}
-
-function cloneAndFreezeSchemaValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((item) => cloneAndFreezeSchemaValue(item)));
-  }
-  if (typeof value === 'object' && value !== null) {
-    return Object.freeze(
-      Object.fromEntries(
-        Object.entries(value).map(([key, item]) => [key, cloneAndFreezeSchemaValue(item)]),
-      ),
-    );
-  }
-  return value;
 }
 
 function freezeDerivedMaterialInterface(
@@ -917,81 +919,7 @@ function sha256LayoutIdentity(value: {
     bindingSpans: value.bindingSpans,
     userRegion: value.userRegion,
   });
-  return `sha256-${sha256(canonical)}`;
-}
-
-const SHA256_K = [
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-] as const;
-
-function sha256(input: string): string {
-  const bytes = new TextEncoder().encode(input);
-  const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
-  const padded = new Uint8Array(paddedLength);
-  padded.set(bytes);
-  padded[bytes.length] = 0x80;
-  const view = new DataView(padded.buffer);
-  view.setUint32(paddedLength - 4, bytes.length * 8, false);
-  let hash = new Uint32Array([
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-  ]);
-  for (let block = 0; block < padded.length; block += 64) {
-    const words = new Uint32Array(64);
-    for (let index = 0; index < 16; index += 1)
-      words[index] = view.getUint32(block + index * 4, false);
-    for (let index = 16; index < 64; index += 1) {
-      const a = words[index - 15] ?? 0;
-      const b = words[index - 2] ?? 0;
-      words[index] =
-        (smallSigma1(b) + (words[index - 7] ?? 0) + smallSigma0(a) + (words[index - 16] ?? 0)) >>>
-        0;
-    }
-    let a = hash[0] ?? 0;
-    let b = hash[1] ?? 0;
-    let c = hash[2] ?? 0;
-    let d = hash[3] ?? 0;
-    let e = hash[4] ?? 0;
-    let f = hash[5] ?? 0;
-    let g = hash[6] ?? 0;
-    let h = hash[7] ?? 0;
-    for (let index = 0; index < 64; index += 1) {
-      const choose = (e & f) ^ (~e & g);
-      const majority = (a & b) ^ (a & c) ^ (b & c);
-      const t1 = (h + bigSigma1(e) + choose + (SHA256_K[index] ?? 0) + (words[index] ?? 0)) >>> 0;
-      const t2 = (bigSigma0(a) + majority) >>> 0;
-      [h, g, f, e, d, c, b, a] = [g, f, e, (d + t1) >>> 0, c, b, a, (t1 + t2) >>> 0];
-    }
-    const state = [a, b, c, d, e, f, g, h];
-    hash = new Uint32Array(hash.map((value, index) => ((value + (state[index] ?? 0)) >>> 0) >>> 0));
-  }
-  return Array.from(hash, (word) => word.toString(16).padStart(8, '0')).join('');
-}
-
-function rotateRight(value: number, shift: number): number {
-  return (value >>> shift) | (value << (32 - shift));
-}
-
-function bigSigma0(value: number): number {
-  return rotateRight(value, 2) ^ rotateRight(value, 13) ^ rotateRight(value, 22);
-}
-
-function bigSigma1(value: number): number {
-  return rotateRight(value, 6) ^ rotateRight(value, 11) ^ rotateRight(value, 25);
-}
-
-function smallSigma0(value: number): number {
-  return rotateRight(value, 7) ^ rotateRight(value, 18) ^ (value >>> 3);
-}
-
-function smallSigma1(value: number): number {
-  return rotateRight(value, 17) ^ rotateRight(value, 19) ^ (value >>> 10);
+  return `sha256-${bytesToHex(sha256(new TextEncoder().encode(canonical)))}`;
 }
 
 /**
@@ -1009,11 +937,6 @@ const USER_REGION_TEXTURE_FIELDS: readonly string[] = [
   'metallicRoughnessTexture',
   'normalTexture',
 ];
-
-/** Strip `//` line comments and block comments before scanning WGSL source. */
-function stripWgslComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
 
 /**
  * Detect user-region material textures a shader actually `textureSample`s but

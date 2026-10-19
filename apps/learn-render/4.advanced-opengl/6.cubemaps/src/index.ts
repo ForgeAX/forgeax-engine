@@ -156,7 +156,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // DirectionalLight for PBR shading on cubes.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.4, -0.6, -0.7],
       color: [1, 1, 1],
       intensity: 1.5,

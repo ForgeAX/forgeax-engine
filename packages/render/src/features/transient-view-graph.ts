@@ -111,7 +111,7 @@ export function transientViewExecutionEligible(execution: RenderFeaturePlanExecu
   });
 }
 
-export interface TransientViewSelection {
+interface TransientViewSelection {
   readonly identities: ReadonlySet<string>;
   readonly topologySignature: string | undefined;
   readonly ownsPhysicalChanges: boolean;

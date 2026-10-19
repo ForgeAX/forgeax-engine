@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
@@ -22,6 +23,42 @@ const coordinate = (name: string) => ({
 });
 
 describe('derived material interface contract matrix', () => {
+  it('matches native SHA-256 across UTF-8 names and multiple layout blocks', () => {
+    for (const count of [0, 1, 2, 7, 16, 63, 64, 65, 129]) {
+      const schema: ParamSchemaEntry[] = Array.from({ length: count }, (_, index) => ({
+        name: `field_${index}_${'x'.repeat(index % 65)}_\u03bb`,
+        type: index % 3 === 0 ? 'texture2d' : index % 3 === 1 ? 'vec3' : 'f32',
+      }));
+      const output = derive(schema);
+      const canonical = JSON.stringify({
+        version: 2,
+        bglEntries: output.bglEntries,
+        numericMembers: output.numericMembers,
+        coordinateRecords: output.coordinateRecords,
+        resourceBindings: output.resourceBindings,
+        totalBytes: output.totalBytes,
+        bindingSpans: output.bindingSpans,
+        userRegion: output.userRegion,
+      });
+      expect(output.layoutIdentity).toBe(
+        `sha256-${createHash('sha256').update(canonical).digest('hex')}`,
+      );
+    }
+  });
+
+  it.each([
+    { type: 'sampler', default: null },
+    { type: 'storage_buffer', default: {} },
+    { type: 'texture2d', default: [] },
+  ])('rejects resource defaults consistently before publication: $type', (entry) => {
+    const owner = new ParamSchemaProjectionOwner();
+    const schema = [{ name: 'resource', ...entry }] as unknown as ParamSchemaEntry[];
+    expect(() => owner.admit({ ownerId: 'invalid-resource', revision: 1, schema })).toThrow(
+      `ParamSchemaProjectionOwner: resource (${entry.type}) cannot declare a default`,
+    );
+    expect(owner.get('invalid-resource', 1)).toBeUndefined();
+  });
+
   it('derives a self-contained empty interface', () => {
     const output = derive([]);
 
@@ -257,6 +294,14 @@ describe('derived material interface contract matrix', () => {
     ];
 
     const first = owner.admit({ ownerId: 'test::material', revision: 1, schema: authored });
+    const originalDefault = authored[0]?.default;
+    if (originalDefault === undefined) throw new Error('missing fixture default');
+    originalDefault[0] = 7;
+    expect(first.schema[0]).toMatchObject({ default: [1, 1, 1, 1] });
+    const numeric = first.schema[0];
+    if (numeric === undefined || !('default' in numeric)) throw new Error('missing numeric entry');
+    expect(Object.isFrozen(numeric.default)).toBe(true);
+    expect(first.schema[1]).not.toHaveProperty('default');
     authored[0] = { name: 'mutated', type: 'color', default: [0, 0, 0, 0] };
     const repeated = owner.admit({
       ownerId: 'test::material',

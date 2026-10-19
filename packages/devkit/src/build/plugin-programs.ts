@@ -20,7 +20,12 @@ import type { PluginPack } from '@forgeax/engine-vite-plugin-pack';
 import MagicString from 'magic-string';
 import ts from 'typescript';
 import type { Plugin, ResolvedConfig } from 'vite';
-import { filesystemPathKey, isFilesystemPathWithin } from '../filesystem-path.js';
+import {
+  filesystemPathKey,
+  filesystemPathRelative,
+  filesystemPathSegments,
+  isFilesystemPathWithin,
+} from '../filesystem-path.js';
 import { discoverProjectTools, type ProjectToolBinding } from '../tools/project-tools.js';
 import { markDevProgramResources } from './dev-program-resources.js';
 import {
@@ -353,10 +358,10 @@ export function pluginRuntimeProjection(
     transform(code, id) {
       if (!canonicalProjectRoot || !isAbsolute(id)) return null;
       const sourcePath = id.split('?')[0] ?? id;
-      const path = relative(canonicalProjectRoot, canonicalPath(sourcePath)).replaceAll('\\', '/');
+      const path = filesystemPathRelative(canonicalProjectRoot, canonicalPath(sourcePath));
       if (
-        path.startsWith('../') ||
-        path.split('/').some((part) => part === '.forgeax' || part === 'node_modules')
+        path === undefined ||
+        filesystemPathSegments(path).some((part) => part === '.forgeax' || part === 'node_modules')
       )
         return null;
       if (/\.[cm]?[jt]sx?(?:\?|$)/.test(id)) {
@@ -691,12 +696,12 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
         )
           return resolved;
         const filename = resolved.id.split('?')[0] ?? resolved.id;
-        const path = relative(options.projectRoot, filename).replaceAll('\\', '/');
+        const path = filesystemPathRelative(options.projectRoot, filename);
         const projectModule =
           isAbsolute(filename) &&
           /\.[cm]?[jt]sx?$/.test(filename) &&
-          !path.startsWith('../') &&
-          !path.split('/').includes('node_modules');
+          path !== undefined &&
+          !filesystemPathSegments(path).includes('node_modules');
         const facade =
           resolved.id.startsWith(`\0${exportPrefix}`) ||
           resolved.id.startsWith(`\0${modulePrefix}`);

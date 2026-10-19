@@ -378,15 +378,15 @@ export interface PerPassResources {
   readonly skyboxBindGroupLayout: BindGroupLayout | null;
   readonly skyboxSampler: Sampler | null;
   readonly skyboxRotationBuffer: Buffer | null;
-  bloomDownsamplePipeline: RhiRenderPipeline | null;
-  bloomUpsamplePipeline: RhiRenderPipeline | null;
+  bloomHorizontalPipeline: RhiRenderPipeline | null;
+  bloomVerticalPipeline: RhiRenderPipeline | null;
   bloomCompositePipeline: RhiRenderPipeline | null;
-  bloomDownsampleBindGroupLayout: BindGroupLayout | null;
-  bloomUpsampleBindGroupLayout: BindGroupLayout | null;
+  bloomHorizontalBindGroupLayout: BindGroupLayout | null;
+  bloomVerticalBindGroupLayout: BindGroupLayout | null;
   bloomCompositeBindGroupLayout: BindGroupLayout | null;
   bloomSampler: Sampler | null;
-  bloomDownsampleParamsBuffer: Buffer | null;
-  bloomUpsampleParamsBuffer: Buffer | null;
+  bloomHorizontalParamsBuffer: Buffer | null;
+  bloomVerticalParamsBuffer: Buffer | null;
   bloomCompositeParamsBuffer: Buffer | null;
   ensureBloomResources?: () => void;
   getBloomResources?: () => BloomPersistentBundle | null;
@@ -419,15 +419,15 @@ export interface PerPassResources {
 export interface BloomPersistentBundle {
   readonly scope: DeviceScope;
   readonly generation: number;
-  readonly bloomDownsamplePipeline: RhiRenderPipeline | null;
-  readonly bloomUpsamplePipeline: RhiRenderPipeline | null;
+  readonly bloomHorizontalPipeline: RhiRenderPipeline | null;
+  readonly bloomVerticalPipeline: RhiRenderPipeline | null;
   readonly bloomCompositePipeline: RhiRenderPipeline | null;
-  readonly bloomDownsampleBindGroupLayout: BindGroupLayout | null;
-  readonly bloomUpsampleBindGroupLayout: BindGroupLayout | null;
+  readonly bloomHorizontalBindGroupLayout: BindGroupLayout | null;
+  readonly bloomVerticalBindGroupLayout: BindGroupLayout | null;
   readonly bloomCompositeBindGroupLayout: BindGroupLayout | null;
   readonly bloomSampler: Sampler | null;
-  readonly bloomDownsampleParamsBuffer: Buffer | null;
-  readonly bloomUpsampleParamsBuffer: Buffer | null;
+  readonly bloomHorizontalParamsBuffer: Buffer | null;
+  readonly bloomVerticalParamsBuffer: Buffer | null;
   readonly bloomCompositeParamsBuffer: Buffer | null;
 }
 

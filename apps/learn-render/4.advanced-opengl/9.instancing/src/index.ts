@@ -271,7 +271,7 @@ const appRes = await createApp(
   // DirectionalLight — sun lighting the belt.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.5, -0.7, -0.4],
       color: [1, 0.97, 0.92],
       intensity: 2.0,

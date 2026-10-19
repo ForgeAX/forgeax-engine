@@ -37,10 +37,14 @@ import {
 import type { ManifestEntry } from '@forgeax/engine-types';
 import { handleSlot } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
-import { prewarmAtmosphereShaders } from './atmosphere-shader-prewarm';
 import type { RhiBackendPack } from './backend-contract';
 import { selectCloudShadowCompatibleEntry } from './cloud-shadow-entry';
-import { prewarmSsrWithDepthPyramid } from './utility-shader-prewarm';
+import {
+  ATMOSPHERE_SHADER_STAGES,
+  prewarmSsrWithDepthPyramid,
+  prewarmUtilityShaders,
+  VOLUMETRIC_FOG_SHADER_STAGES,
+} from './utility-shader-prewarm';
 
 export type { MaterialShaderManifestEntry } from '@forgeax/engine-shader';
 
@@ -127,8 +131,8 @@ import { createTemporalShaderPrewarmer } from './temporal-post-process-prewarm';
 import { buildGpuDrivenPbrReadyLayouts, buildGpuDrivenPbrReadyModules } from './webgpu-pbr-ready';
 import {
   BLOOM_COMPOSITE_PARAMS_BYTES,
-  BLOOM_DOWNSAMPLE_PARAMS_BYTES,
-  BLOOM_UPSAMPLE_PARAMS_BYTES,
+  BLOOM_HORIZONTAL_PARAMS_BYTES,
+  BLOOM_VERTICAL_PARAMS_BYTES,
   HDR_COLOR_ATTACHMENT_FORMAT,
   VIEW_UBO_BYTES,
 } from './webgpu-ready-contract';
@@ -138,6 +142,7 @@ import { createReadyPerPassResources } from './webgpu-ready-per-pass';
 export async function prepareDevicePipelineLibrary(
   device: RhiDevice,
   manifest: PipelineLibraryManifest,
+  shader: Pick<ShaderCatalog, 'materialProgram'>,
 ): Promise<void> {
   if (device.pipelineLibrary === undefined)
     throw new RhiError({
@@ -147,6 +152,16 @@ export async function prepareDevicePipelineLibrary(
     });
   const prepared = await device.pipelineLibrary.prepare(manifest);
   if (!prepared.ok) throw prepared.error;
+  // Native compilation and CPU source analysis share the captured graphics
+  // roster. Keep first-use analysis out of draw even when the PSO is already
+  // warm; the registry owns reuse across passes and device generations.
+  const modules = new Set<number>();
+  for (const pipeline of manifest.renderPipelines) {
+    modules.add(pipeline.vertex.module);
+    if (pipeline.fragment !== undefined) modules.add(pipeline.fragment.module);
+  }
+  for (const module of modules)
+    shader.materialProgram((manifest.shaders[module] as GPUShaderModuleDescriptor).code);
 }
 
 /**
@@ -369,8 +384,8 @@ export async function buildReadyWebGPU(
   let spriteLitModule: ShaderModule | null = null;
   let fxaaModule: ShaderModule | null = null;
   let skyboxModule: ShaderModule | null = null;
-  let bloomDownsampleModule: ShaderModule | null = null;
-  let bloomUpsampleModule: ShaderModule | null = null;
+  let bloomHorizontalModule: ShaderModule | null = null;
+  let bloomVerticalModule: ShaderModule | null = null;
   let bloomCompositeModule: ShaderModule | null = null;
   let ssaoModule: ShaderModule | null = null;
   const findEngineManifestEntry = (identifier: string): ManifestEntry | undefined => {
@@ -434,8 +449,8 @@ export async function buildReadyWebGPU(
     let probeBackgroundEntry: ManifestEntry | undefined;
     let fxaaEntry: ManifestEntry | undefined;
     let skyboxEntry: ManifestEntry | undefined;
-    let bloomDownsampleEntry: ManifestEntry | undefined;
-    let bloomUpsampleEntry: ManifestEntry | undefined;
+    let bloomHorizontalEntry: ManifestEntry | undefined;
+    let bloomVerticalEntry: ManifestEntry | undefined;
     let bloomCompositeEntry: ManifestEntry | undefined;
     let ssaoEntry: ManifestEntry | undefined;
     // feat-20260609 R3-fixup: shadow_caster module pre-bake. T-009 deleted
@@ -515,12 +530,12 @@ export async function buildReadyWebGPU(
       // uniform-struct names through naga_oil, so shader ownership is resolved
       // from the cooked manifest rather than from a runtime compiler or a
       // second heuristic path.
-      if (entry.wgsl.includes('BloomDownsampleParams')) {
-        bloomDownsampleEntry ??= entry;
+      if (entry.wgsl.includes('BloomHorizontalParams')) {
+        bloomHorizontalEntry ??= entry;
         continue;
       }
-      if (entry.wgsl.includes('BloomUpsampleParams')) {
-        bloomUpsampleEntry ??= entry;
+      if (entry.wgsl.includes('BloomVerticalParams')) {
+        bloomVerticalEntry ??= entry;
         continue;
       }
       if (entry.wgsl.includes('BloomCompositeParams')) {
@@ -793,55 +808,16 @@ export async function buildReadyWebGPU(
       return result.value;
     };
     if (rhiDevice.caps.compute && rhiDevice.caps.storageTexture) {
-      const volumeSources = [
-        ['inject', 'volume_inject', (source: string) => source.includes('fn volume_inject(')],
-        ['temporal', 'volume_temporal', (source: string) => source.includes('fn volume_temporal(')],
-        [
-          'integrate',
-          'volume_integrate',
-          (source: string) => source.includes('fn volume_integrate('),
-        ],
-        ['composite', 'volume_composite', (source: string) => source.includes('fn volume_fs(')],
-      ] as const;
-      const resolved = volumeSources.map(([stage, label, matches]) => ({
-        stage,
-        label,
-        entry: manifestEntries.find((candidate) => matches(candidate.wgsl)),
-      }));
-      const present = resolved.filter(({ entry }) => entry !== undefined).length;
-      if (present > 0) {
-        const missing = resolved.find(({ entry }) => entry === undefined);
-        if (missing !== undefined) {
-          throw new RhiError({
-            code: 'shader-compile-failed',
-            expected: 'shader manifest contains all four volumetric fog utility entries',
-            hint: `add the package-owned WGSL entry for '${missing.label}' to the engine shader manifest`,
-          });
-        }
-        const compiled: Array<{
-          readonly stage: (typeof volumeSources)[number][0];
-          readonly label: string;
-          readonly source: string;
-          readonly module: ShaderModule;
-        }> = [];
-        for (const { stage, label, entry } of resolved) {
-          if (entry === undefined) throw new Error(`missing volumetric shader ${label}`);
-          compiled.push({
-            stage,
-            label,
-            source: entry.wgsl,
-            module: await compileUtilityShader(label, entry.wgsl, 'volumetric fog'),
-          });
-        }
-        for (const { label, module } of compiled) seedShaderModule(label, module);
-        await setVolumetricFogShaderSources({
-          inject: compiled.find(({ stage }) => stage === 'inject')?.source as string,
-          temporal: compiled.find(({ stage }) => stage === 'temporal')?.source as string,
-          integrate: compiled.find(({ stage }) => stage === 'integrate')?.source as string,
-          composite: compiled.find(({ stage }) => stage === 'composite')?.source as string,
-        });
-      }
+      const sources = await prewarmUtilityShaders(
+        'volumetric fog',
+        VOLUMETRIC_FOG_SHADER_STAGES,
+        manifestEntries,
+        (label, source) => compileUtilityShader(label, source, 'volumetric fog'),
+        seedShaderModule,
+      );
+      if (sources !== undefined) await setVolumetricFogShaderSources(sources);
     }
+
     if (rhiDevice.caps.compute && rhiDevice.caps.storageTexture) {
       const sources = await prewarmSsrWithDepthPyramid(
         manifestEntries,
@@ -912,7 +888,9 @@ export async function buildReadyWebGPU(
         });
       }
     }
-    const atmosphereSources = await prewarmAtmosphereShaders(
+    const atmosphereSources = await prewarmUtilityShaders(
+      'analytic-atmosphere',
+      ATMOSPHERE_SHADER_STAGES,
       manifestEntries,
       (label, source) => compileUtilityShader(label, source, 'Atmosphere'),
       seedShaderModule,
@@ -1434,43 +1412,43 @@ export async function buildReadyWebGPU(
     // Their construction is still part of renderer readiness because the
     // backend may expose only an asynchronous module factory; the expensive
     // pipeline, binding, and parameter resources stay deferred until admission.
-    if (bloomDownsampleEntry !== undefined) {
+    if (bloomHorizontalEntry !== undefined) {
       const result = await runShimStep(
         () =>
           asyncCreateShaderModule
             ? asyncCreateShaderModule(rhiDevice, {
-                code: bloomDownsampleEntry.wgsl,
-                label: 'bloom-downsample',
+                code: bloomHorizontalEntry.wgsl,
+                label: 'bloom-horizontal',
               })
             : invokeDeviceCreateShaderModule(rhiDevice, {
-                code: bloomDownsampleEntry.wgsl,
-                label: 'bloom-downsample',
+                code: bloomHorizontalEntry.wgsl,
+                label: 'bloom-horizontal',
               }),
         'shader-compile-failed',
-        'bloom-downsample shader module compiled',
-        'inspect manifest bloom-downsample entry composed wgsl; check device.features',
+        'bloom-horizontal shader module compiled',
+        'inspect manifest bloom-horizontal entry composed wgsl; check device.features',
       );
       if (!result.ok) throw result.error;
-      bloomDownsampleModule = result.value;
+      bloomHorizontalModule = result.value;
     }
-    if (bloomUpsampleEntry !== undefined) {
+    if (bloomVerticalEntry !== undefined) {
       const result = await runShimStep(
         () =>
           asyncCreateShaderModule
             ? asyncCreateShaderModule(rhiDevice, {
-                code: bloomUpsampleEntry.wgsl,
-                label: 'bloom-upsample',
+                code: bloomVerticalEntry.wgsl,
+                label: 'bloom-vertical',
               })
             : invokeDeviceCreateShaderModule(rhiDevice, {
-                code: bloomUpsampleEntry.wgsl,
-                label: 'bloom-upsample',
+                code: bloomVerticalEntry.wgsl,
+                label: 'bloom-vertical',
               }),
         'shader-compile-failed',
-        'bloom-upsample shader module compiled',
-        'inspect manifest bloom-upsample entry composed wgsl; check device.features',
+        'bloom-vertical shader module compiled',
+        'inspect manifest bloom-vertical entry composed wgsl; check device.features',
       );
       if (!result.ok) throw result.error;
-      bloomUpsampleModule = result.value;
+      bloomVerticalModule = result.value;
     }
     if (bloomCompositeEntry !== undefined) {
       const result = await runShimStep(
@@ -2519,10 +2497,10 @@ export async function buildReadyWebGPU(
         } else if (fragModule === skyboxModule) {
           const msaa = d.multisample as Record<string, unknown> | undefined;
           label = msaa !== undefined ? 'skybox-pipeline-msaa' : 'skybox-pipeline';
-        } else if (fragModule === bloomDownsampleModule) {
-          label = 'bloom-downsample-pipeline';
-        } else if (fragModule === bloomUpsampleModule) {
-          label = 'bloom-upsample-pipeline';
+        } else if (fragModule === bloomHorizontalModule) {
+          label = 'bloom-horizontal-pipeline';
+        } else if (fragModule === bloomVerticalModule) {
+          label = 'bloom-vertical-pipeline';
         } else if (fragModule === bloomCompositeModule) {
           label = 'bloom-composite-pipeline';
         } else if (fragModule === ssaoModule) {
@@ -2728,18 +2706,18 @@ export async function buildReadyWebGPU(
   let skyboxSamplerHandle: Sampler | null = null;
   let skyboxRotationBufferHandle: Buffer | null = null;
   let skyboxPipelineMsaaHandle: RenderPipeline | null = null;
-  // Multiscale Bloom pipeline handles. One level-parameterized downsample
-  // pipeline and one tent upsample pipeline serve the whole five-level graph;
+  // Multiscale Bloom pipeline handles. One level-parameterized horizontal
+  // pipeline and one vertical Gaussian pipeline serve the whole five-level graph;
   // the composite is the only other Bloom pipeline. All use rgba16float.
-  let bloomDownsamplePipelineHandle: RenderPipeline | null = null;
-  let bloomUpsamplePipelineHandle: RenderPipeline | null = null;
+  let bloomHorizontalPipelineHandle: RenderPipeline | null = null;
+  let bloomVerticalPipelineHandle: RenderPipeline | null = null;
   let bloomCompositePipelineHandle: RenderPipeline | null = null;
-  let bloomDownsampleBglHandle: BindGroupLayout | null = null;
-  let bloomUpsampleBglHandle: BindGroupLayout | null = null;
+  let bloomHorizontalBglHandle: BindGroupLayout | null = null;
+  let bloomVerticalBglHandle: BindGroupLayout | null = null;
   let bloomCompositeBglHandle: BindGroupLayout | null = null;
   let bloomSamplerHandle: Sampler | null = null;
-  let bloomDownsampleParamsBufferHandle: Buffer | null = null;
-  let bloomUpsampleParamsBufferHandle: Buffer | null = null;
+  let bloomHorizontalParamsBufferHandle: Buffer | null = null;
+  let bloomVerticalParamsBufferHandle: Buffer | null = null;
   let bloomCompositeParamsBufferHandle: Buffer | null = null;
   let bloomResourcesReady = false;
   let ensureBloomResources: (() => void) | undefined;
@@ -3072,8 +3050,8 @@ export async function buildReadyWebGPU(
     }
 
     // Multiscale Bloom pipeline assembly. The runtime owns exactly one
-    // parameterized downsample PSO, one tent upsample PSO, and one composite
-    // PSO. The graph owns the five downsample and up to four upsample target
+    // parameterized horizontal PSO, one vertical Gaussian PSO, and one composite
+    // PSO. The graph owns the five horizontal and five vertical target
     // instances; no axis/radius compatibility route is retained.
 
     ensureBloomResources = (): void => {
@@ -3091,8 +3069,8 @@ export async function buildReadyWebGPU(
         // Shared Bloom sampler: linear filter + clamp-to-edge (all passes
         // sample from textures using fullscreen triangle UVs).
         if (
-          bloomDownsampleModule !== null ||
-          bloomUpsampleModule !== null ||
+          bloomHorizontalModule !== null ||
+          bloomVerticalModule !== null ||
           bloomCompositeModule !== null
         ) {
           const bloomSamplerResult = runShimSyncStep(
@@ -3113,12 +3091,12 @@ export async function buildReadyWebGPU(
           bloomSamplerHandle = adopt('binding', bloomSamplerResult.value, () => undefined);
         }
 
-        // Bloom downsample: source texture + sampler + one level slice.
-        if (bloomDownsampleModule !== null && bloomSamplerHandle !== null) {
-          const downsampleBglResult = runShimSyncStep(
+        // Bloom horizontal: source texture + sampler + one level slice.
+        if (bloomHorizontalModule !== null && bloomSamplerHandle !== null) {
+          const horizontalBglResult = runShimSyncStep(
             () =>
               rhiDevice.createBindGroupLayout({
-                label: 'bloom-downsample-bgl',
+                label: 'bloom-horizontal-bgl',
                 entries: [
                   {
                     binding: 0,
@@ -3138,30 +3116,30 @@ export async function buildReadyWebGPU(
                 ],
               }),
             'webgpu-runtime-error',
-            'createBindGroupLayout(bloom-downsample) succeeded',
+            'createBindGroupLayout(bloom-horizontal) succeeded',
             'check device.limits.maxBindGroupsPerPipelineLayout',
           );
-          if (!downsampleBglResult.ok) throw downsampleBglResult.error;
-          bloomDownsampleBglHandle = adopt('binding', downsampleBglResult.value, () => undefined);
+          if (!horizontalBglResult.ok) throw horizontalBglResult.error;
+          bloomHorizontalBglHandle = adopt('binding', horizontalBglResult.value, () => undefined);
 
-          const downsamplePlResult = runShimSyncStep(
+          const horizontalPlResult = runShimSyncStep(
             () =>
               rhiDevice.createPipelineLayout({
-                label: 'bloom-downsample-pl',
-                bindGroupLayouts: [downsampleBglResult.value],
+                label: 'bloom-horizontal-pl',
+                bindGroupLayouts: [horizontalBglResult.value],
               }),
             'webgpu-runtime-error',
-            'createPipelineLayout(bloom-downsample) succeeded',
-            'verify bloom-downsample BindGroupLayout matches shader @group(0) bindings',
+            'createPipelineLayout(bloom-horizontal) succeeded',
+            'verify bloom-horizontal BindGroupLayout matches shader @group(0) bindings',
           );
-          if (!downsamplePlResult.ok) throw downsamplePlResult.error;
-          adopt('binding', downsamplePlResult.value, () => undefined);
+          if (!horizontalPlResult.ok) throw horizontalPlResult.error;
+          adopt('binding', horizontalPlResult.value, () => undefined);
 
-          // One pipeline serves D0 extraction and D1..D4 fixed reduction.
+          // One pipeline serves first-level extraction and each horizontal Gaussian blur.
           {
-            const downsampleSpec: PipelineSpec = {
+            const horizontalSpec: PipelineSpec = {
               shader: {
-                id: 'forgeax::post::bloom-downsample',
+                id: 'forgeax::post::bloom-horizontal',
                 passKind: 'post-process',
                 variantSet: undefined,
               },
@@ -3178,21 +3156,21 @@ export async function buildReadyWebGPU(
               renderState: { cullMode: 'none' },
             };
             const modules = {
-              vertex: bloomDownsampleModule,
-              fragment: bloomDownsampleModule,
-              layout: downsamplePlResult.value,
-              label: 'bloom-downsample-pipeline',
+              vertex: bloomHorizontalModule,
+              fragment: bloomHorizontalModule,
+              layout: horizontalPlResult.value,
+              label: 'bloom-horizontal-pipeline',
             };
             try {
-              bloomDownsamplePipelineHandle = getOrBuildPipeline(
-                downsampleSpec,
+              bloomHorizontalPipelineHandle = getOrBuildPipeline(
+                horizontalSpec,
                 pipelineDeviceProvider,
                 pipelineCache,
                 modules,
               ) as RenderPipeline;
-              bloomDownsamplePipelineHandle = adopt(
+              bloomHorizontalPipelineHandle = adopt(
                 'pipeline',
-                bloomDownsamplePipelineHandle,
+                bloomHorizontalPipelineHandle,
                 () => undefined,
               );
             } catch (err) {
@@ -3200,41 +3178,41 @@ export async function buildReadyWebGPU(
               throw new PipelineSpecError({
                 code: 'pipeline-build-failed',
                 detail: { cause: err },
-                hint: 'createRenderPipeline (bloom-downsample fullscreen) failed; inspect gpuMessage',
+                hint: 'createRenderPipeline (bloom-horizontal fullscreen) failed; inspect gpuMessage',
               });
             }
           }
 
-          // Five 32-byte std140 slices: threshold, knee, destination extent,
+          // Five 32-byte std140 slices: threshold, smooth width, destination extent,
           // level and padding. The level is selected by the graph pass.
-          const downsampleParamsResult = runShimSyncStep(
+          const horizontalParamsResult = runShimSyncStep(
             () =>
               rhiDevice.createBuffer({
-                label: 'bloom-downsample-params-ubo',
-                size: BLOOM_DOWNSAMPLE_PARAMS_BYTES,
+                label: 'bloom-horizontal-params-ubo',
+                size: BLOOM_HORIZONTAL_PARAMS_BYTES,
                 usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
                 mappedAtCreation: false,
               }),
             'webgpu-runtime-error',
-            'createBuffer (bloom-downsample params UBO) succeeded',
+            'createBuffer (bloom-horizontal params UBO) succeeded',
             'check device.limits.maxUniformBufferBindingSize',
           );
-          if (!downsampleParamsResult.ok) throw downsampleParamsResult.error;
-          bloomDownsampleParamsBufferHandle = adopt(
+          if (!horizontalParamsResult.ok) throw horizontalParamsResult.error;
+          bloomHorizontalParamsBufferHandle = adopt(
             'buffer',
-            downsampleParamsResult.value,
+            horizontalParamsResult.value,
             (value) => {
               rhiDevice.destroyBuffer(value);
             },
           );
         }
 
-        // Bloom upsample: current/coarse textures + sampler + scatter slice.
-        if (bloomUpsampleModule !== null && bloomSamplerHandle !== null) {
-          const upsampleBglResult = runShimSyncStep(
+        // Bloom vertical: horizontal texture + sampler + level slice.
+        if (bloomVerticalModule !== null && bloomSamplerHandle !== null) {
+          const verticalBglResult = runShimSyncStep(
             () =>
               rhiDevice.createBindGroupLayout({
-                label: 'bloom-upsample-bgl',
+                label: 'bloom-vertical-bgl',
                 entries: [
                   {
                     binding: 0,
@@ -3244,45 +3222,40 @@ export async function buildReadyWebGPU(
                   {
                     binding: 1,
                     visibility: GPU_SHADER_STAGE_FRAGMENT,
-                    texture: { sampleType: 'float', viewDimension: '2d' },
-                  },
-                  {
-                    binding: 2,
-                    visibility: GPU_SHADER_STAGE_FRAGMENT,
                     sampler: { type: 'filtering' },
                   },
                   {
-                    binding: 3,
+                    binding: 2,
                     visibility: GPU_SHADER_STAGE_FRAGMENT,
                     buffer: { type: 'uniform' },
                   },
                 ],
               }),
             'webgpu-runtime-error',
-            'createBindGroupLayout(bloom-upsample) succeeded',
+            'createBindGroupLayout(bloom-vertical) succeeded',
             'check device.limits.maxBindGroupsPerPipelineLayout',
           );
-          if (!upsampleBglResult.ok) throw upsampleBglResult.error;
-          bloomUpsampleBglHandle = adopt('binding', upsampleBglResult.value, () => undefined);
+          if (!verticalBglResult.ok) throw verticalBglResult.error;
+          bloomVerticalBglHandle = adopt('binding', verticalBglResult.value, () => undefined);
 
-          const upsamplePlResult = runShimSyncStep(
+          const verticalPlResult = runShimSyncStep(
             () =>
               rhiDevice.createPipelineLayout({
-                label: 'bloom-upsample-pl',
-                bindGroupLayouts: [upsampleBglResult.value],
+                label: 'bloom-vertical-pl',
+                bindGroupLayouts: [verticalBglResult.value],
               }),
             'webgpu-runtime-error',
-            'createPipelineLayout(bloom-upsample) succeeded',
-            'verify bloom-upsample BindGroupLayout matches shader @group(0) bindings',
+            'createPipelineLayout(bloom-vertical) succeeded',
+            'verify bloom-vertical BindGroupLayout matches shader @group(0) bindings',
           );
-          if (!upsamplePlResult.ok) throw upsamplePlResult.error;
-          adopt('binding', upsamplePlResult.value, () => undefined);
+          if (!verticalPlResult.ok) throw verticalPlResult.error;
+          adopt('binding', verticalPlResult.value, () => undefined);
 
-          // One pipeline serves every coarse-to-fine edge.
+          // One pipeline serves every vertical Gaussian blur.
           {
-            const upsampleSpec: PipelineSpec = {
+            const verticalSpec: PipelineSpec = {
               shader: {
-                id: 'forgeax::post::bloom-upsample',
+                id: 'forgeax::post::bloom-vertical',
                 passKind: 'post-process',
                 variantSet: undefined,
               },
@@ -3299,21 +3272,21 @@ export async function buildReadyWebGPU(
               renderState: { cullMode: 'none' },
             };
             const modules = {
-              vertex: bloomUpsampleModule,
-              fragment: bloomUpsampleModule,
-              layout: upsamplePlResult.value,
-              label: 'bloom-upsample-pipeline',
+              vertex: bloomVerticalModule,
+              fragment: bloomVerticalModule,
+              layout: verticalPlResult.value,
+              label: 'bloom-vertical-pipeline',
             };
             try {
-              bloomUpsamplePipelineHandle = getOrBuildPipeline(
-                upsampleSpec,
+              bloomVerticalPipelineHandle = getOrBuildPipeline(
+                verticalSpec,
                 pipelineDeviceProvider,
                 pipelineCache,
                 modules,
               ) as RenderPipeline;
-              bloomUpsamplePipelineHandle = adopt(
+              bloomVerticalPipelineHandle = adopt(
                 'pipeline',
-                bloomUpsamplePipelineHandle,
+                bloomVerticalPipelineHandle,
                 () => undefined,
               );
             } catch (err) {
@@ -3321,54 +3294,49 @@ export async function buildReadyWebGPU(
               throw new PipelineSpecError({
                 code: 'pipeline-build-failed',
                 detail: { cause: err },
-                hint: 'createRenderPipeline (bloom-upsample fullscreen) failed; inspect gpuMessage',
+                hint: 'createRenderPipeline (bloom-vertical fullscreen) failed; inspect gpuMessage',
               });
             }
           }
 
-          // Four 16-byte std140 slices carry scatter for U0..U3.
-          const upsampleParamsResult = runShimSyncStep(
+          // Five 16-byte slices carry the vertical kernel radius for each level.
+          const verticalParamsResult = runShimSyncStep(
             () =>
               rhiDevice.createBuffer({
-                label: 'bloom-upsample-params-ubo',
-                size: BLOOM_UPSAMPLE_PARAMS_BYTES,
+                label: 'bloom-vertical-params-ubo',
+                size: BLOOM_VERTICAL_PARAMS_BYTES,
                 usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
                 mappedAtCreation: false,
               }),
             'webgpu-runtime-error',
-            'createBuffer (bloom-upsample params UBO) succeeded',
+            'createBuffer (bloom-vertical params UBO) succeeded',
             'check device.limits.maxUniformBufferBindingSize',
           );
-          if (!upsampleParamsResult.ok) throw upsampleParamsResult.error;
-          bloomUpsampleParamsBufferHandle = adopt('buffer', upsampleParamsResult.value, (value) => {
+          if (!verticalParamsResult.ok) throw verticalParamsResult.error;
+          bloomVerticalParamsBufferHandle = adopt('buffer', verticalParamsResult.value, (value) => {
             rhiDevice.destroyBuffer(value);
           });
         }
 
-        // Bloom composite: 2-tex + sampler + UBO@3 BGL (D-4, D-5).
+        // Bloom composite: scene plus five levels, sampler and intensity/radius uniform.
         if (bloomCompositeModule !== null && bloomSamplerHandle !== null) {
           const compositeBglResult = runShimSyncStep(
             () =>
               rhiDevice.createBindGroupLayout({
                 label: 'bloom-composite-bgl',
                 entries: [
-                  {
-                    binding: 0,
+                  ...Array.from({ length: 6 }, (_, binding) => ({
+                    binding,
                     visibility: GPU_SHADER_STAGE_FRAGMENT,
-                    texture: { sampleType: 'float', viewDimension: '2d' },
-                  },
+                    texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+                  })),
                   {
-                    binding: 1,
-                    visibility: GPU_SHADER_STAGE_FRAGMENT,
-                    texture: { sampleType: 'float', viewDimension: '2d' },
-                  },
-                  {
-                    binding: 2,
+                    binding: 6,
                     visibility: GPU_SHADER_STAGE_FRAGMENT,
                     sampler: { type: 'filtering' },
                   },
                   {
-                    binding: 3,
+                    binding: 7,
                     visibility: GPU_SHADER_STAGE_FRAGMENT,
                     buffer: { type: 'uniform' },
                   },
@@ -3467,15 +3435,15 @@ export async function buildReadyWebGPU(
         bloomCandidateBundle = {
           scope: candidateScope,
           generation: bloomGeneration + 1,
-          bloomDownsamplePipeline: bloomDownsamplePipelineHandle,
-          bloomUpsamplePipeline: bloomUpsamplePipelineHandle,
+          bloomHorizontalPipeline: bloomHorizontalPipelineHandle,
+          bloomVerticalPipeline: bloomVerticalPipelineHandle,
           bloomCompositePipeline: bloomCompositePipelineHandle,
-          bloomDownsampleBindGroupLayout: bloomDownsampleBglHandle,
-          bloomUpsampleBindGroupLayout: bloomUpsampleBglHandle,
+          bloomHorizontalBindGroupLayout: bloomHorizontalBglHandle,
+          bloomVerticalBindGroupLayout: bloomVerticalBglHandle,
           bloomCompositeBindGroupLayout: bloomCompositeBglHandle,
           bloomSampler: bloomSamplerHandle,
-          bloomDownsampleParamsBuffer: bloomDownsampleParamsBufferHandle,
-          bloomUpsampleParamsBuffer: bloomUpsampleParamsBufferHandle,
+          bloomHorizontalParamsBuffer: bloomHorizontalParamsBufferHandle,
+          bloomVerticalParamsBuffer: bloomVerticalParamsBufferHandle,
           bloomCompositeParamsBuffer: bloomCompositeParamsBufferHandle,
         };
         inspectBloomResources = (graph): BloomInspection => {
@@ -3491,8 +3459,8 @@ export async function buildReadyWebGPU(
               enabled: false,
               levelCount: 0,
               levelDimensions: [],
-              downsamplePassCount: 0,
-              upsamplePassCount: 0,
+              horizontalPassCount: 0,
+              verticalPassCount: 0,
               targetCount: 0,
               targetBytes: 0,
               resourceCount: 0,
@@ -3518,8 +3486,8 @@ export async function buildReadyWebGPU(
             enabled: active !== undefined,
             levelCount: active === undefined ? 0 : graphInspection.levelCount,
             levelDimensions: active === undefined ? [] : graphInspection.levelDimensions,
-            downsamplePassCount: active === undefined ? 0 : graphInspection.downsamplePassCount,
-            upsamplePassCount: active === undefined ? 0 : graphInspection.upsamplePassCount,
+            horizontalPassCount: active === undefined ? 0 : graphInspection.horizontalPassCount,
+            verticalPassCount: active === undefined ? 0 : graphInspection.verticalPassCount,
             targetCount: active === undefined ? 0 : graphInspection.targetCount,
             targetBytes: active === undefined ? 0 : graphInspection.targetBytes,
             resourceCount: ownedBundles.reduce(
@@ -3614,15 +3582,15 @@ export async function buildReadyWebGPU(
         commitBloomResources = undefined;
         discardBloomResources = undefined;
         drainBloomResources = undefined;
-        bloomDownsamplePipelineHandle = null;
-        bloomUpsamplePipelineHandle = null;
+        bloomHorizontalPipelineHandle = null;
+        bloomVerticalPipelineHandle = null;
         bloomCompositePipelineHandle = null;
-        bloomDownsampleBglHandle = null;
-        bloomUpsampleBglHandle = null;
+        bloomHorizontalBglHandle = null;
+        bloomVerticalBglHandle = null;
         bloomCompositeBglHandle = null;
         bloomSamplerHandle = null;
-        bloomDownsampleParamsBufferHandle = null;
-        bloomUpsampleParamsBufferHandle = null;
+        bloomHorizontalParamsBufferHandle = null;
+        bloomVerticalParamsBufferHandle = null;
         bloomCompositeParamsBufferHandle = null;
         throw cause;
       }
@@ -3961,15 +3929,15 @@ export async function buildReadyWebGPU(
       shadowCsmSelection: null,
       // Multiscale Bloom pipeline handles are generation-owned by the ready
       // builder; graph targets are frame-owned and are not stored here.
-      bloomDownsamplePipeline: null,
-      bloomUpsamplePipeline: null,
+      bloomHorizontalPipeline: null,
+      bloomVerticalPipeline: null,
       bloomCompositePipeline: null,
-      bloomDownsampleBindGroupLayout: null,
-      bloomUpsampleBindGroupLayout: null,
+      bloomHorizontalBindGroupLayout: null,
+      bloomVerticalBindGroupLayout: null,
       bloomCompositeBindGroupLayout: null,
       bloomSampler: null,
-      bloomDownsampleParamsBuffer: null,
-      bloomUpsampleParamsBuffer: null,
+      bloomHorizontalParamsBuffer: null,
+      bloomVerticalParamsBuffer: null,
       bloomCompositeParamsBuffer: null,
       ensureBloomResources: ensureBloomResourcesStable,
       getBloomResources: getBloomResourcesStable,

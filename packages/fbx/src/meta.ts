@@ -1,4 +1,6 @@
-import { AssetGuid, isValidAssetGuidString } from '@forgeax/engine-pack/guid';
+import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { ImportSubAsset } from '@forgeax/engine-types';
+import { isValidAssetGuidString } from '@forgeax/engine-types';
 import { sourceKeyForFbxOutput } from './fbx-importer.js';
 import type { FbxRawAnimDoc } from './parse-animation-clip.js';
 import type { FbxRawMaterial } from './parse-material.js';
@@ -8,33 +10,24 @@ import type { FbxRawSkeletonDoc } from './parse-skeleton.js';
 import type { FbxRawSkinDoc } from './parse-skin.js';
 import type { FbxRawTexture } from './parse-texture.js';
 
-/** The source topology consumed by the FBX importer and persisted in Meta. */
-export interface FbxMetaSubAsset {
-  readonly guid: string;
-  readonly sourceIndex: number;
-  readonly kind: string;
-  readonly sourceKey?: string;
-  readonly name?: string;
-}
-
-export interface FbxMetaDocument {
+interface FbxMetaDocument {
   readonly schemaVersion: 1;
   readonly kind: 'external-asset-package';
   readonly importer: 'fbx';
   readonly source: string;
   readonly importSettings: Readonly<Record<string, unknown>>;
-  readonly subAssets: readonly FbxMetaSubAsset[];
+  readonly subAssets: readonly ImportSubAsset[];
   readonly sourceOverrides?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly sourceOverrideDescriptors?: readonly Readonly<Record<string, unknown>>[];
 }
 
-export interface FbxMetaSourceItem {
+interface FbxMetaSourceItem {
   readonly kind: string;
   readonly sourceIndex: number;
   readonly name?: string;
 }
 
-export interface FbxMetaError {
+interface FbxMetaError {
   readonly code: 'fbx-meta-source-key-conflict';
   readonly expected: string;
   readonly hint: string;
@@ -67,7 +60,7 @@ function displayName(value: unknown): string | undefined {
  * runner is invoked; it does not infer a scene from node names or source
  * paths.
  */
-export function fbxMetaSourceItems(doc: FbxMetaSourceDocument): readonly FbxMetaSourceItem[] {
+function fbxMetaSourceItems(doc: FbxMetaSourceDocument): readonly FbxMetaSourceItem[] {
   const items: FbxMetaSourceItem[] = [];
 
   for (const [sourceIndex, mesh] of (doc.meshes ?? []).entries()) {
@@ -167,7 +160,7 @@ function sourceKeys(
 
 export interface FbxMetaPreviousDocument {
   readonly importer: 'fbx';
-  readonly subAssets: readonly FbxMetaSubAsset[];
+  readonly subAssets: readonly ImportSubAsset[];
   readonly importSettings: Readonly<Record<string, unknown>>;
   readonly sourceOverrides?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly sourceOverrideDescriptors?: readonly Readonly<Record<string, unknown>>[];
@@ -186,7 +179,7 @@ function existingEntry(value: unknown): value is FbxMetaPreviousDocument {
   );
 }
 
-function isFbxMetaSubAsset(value: unknown): value is FbxMetaSubAsset {
+function isFbxMetaSubAsset(value: unknown): value is ImportSubAsset {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   return (
@@ -219,8 +212,8 @@ export function createFbxMeta(
   const keys = sourceKeys(items);
   if (!keys.ok) return keys;
 
-  const byKey = new Map<string, FbxMetaSubAsset>();
-  const byLocator = new Map<string, FbxMetaSubAsset>();
+  const byKey = new Map<string, ImportSubAsset>();
+  const byLocator = new Map<string, ImportSubAsset>();
   for (const entry of previous?.subAssets ?? []) {
     if (!isValidAssetGuidString(entry.guid)) continue;
     if (typeof entry.sourceKey === 'string') byKey.set(entry.sourceKey, entry);
@@ -237,7 +230,7 @@ export function createFbxMeta(
       kind: item.kind,
       sourceKey,
       ...(item.name === undefined ? {} : { name: item.name }),
-    } satisfies FbxMetaSubAsset;
+    } satisfies ImportSubAsset;
   });
 
   const importSettings = previous?.importSettings ?? {};

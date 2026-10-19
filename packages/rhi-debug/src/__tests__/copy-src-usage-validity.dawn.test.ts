@@ -36,7 +36,7 @@ async function loadDawnRhi(): Promise<DawnPack | undefined> {
 const SKIP_DAWN = process.env.FORGEAX_SKIP_DAWN === '1';
 
 async function acquireDevice(pack: DawnPack): Promise<RhiDevice> {
-  const debugInst = wrap(pack.rhi);
+  const debugInst = wrap(pack.rhi, pack.createShaderModule);
   const adapterRes = await debugInst.requestAdapter();
   if (!adapterRes.ok) throw new Error('adapter');
   const devRes = await adapterRes.value.requestDevice();
@@ -97,7 +97,7 @@ describe.skipIf(SKIP_DAWN)('COPY_SRC usage-validity (w17, dawn)', () => {
   it('the recorder proxy promotes COPY_SRC even when the caller omits it', async () => {
     const pack = await loadDawnRhi();
     if (!pack) return;
-    const debugInst = wrap(pack.rhi);
+    const debugInst = wrap(pack.rhi, pack.createShaderModule);
     const adapterRes = await debugInst.requestAdapter();
     if (!adapterRes.ok) throw new Error('adapter');
     const devRes = await adapterRes.value.requestDevice();

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 import UPNG from 'upng-js';
 
 const [directory] = process.argv.slice(2);
@@ -20,9 +21,7 @@ for (let i = 0; i < 4096; i++) {
     const raw = view.getFloat32(i * 80 + c * 4, true);
     if (!Number.isFinite(raw) || raw < 0) throw new Error(`invalid HDR pixel ${i}`);
     const ldr = raw / (1 + raw);
-    rgba[i * 4 + c] = Math.round(
-      255 * (ldr <= 0.0031308 ? 12.92 * ldr : 1.055 * ldr ** (1 / 2.4) - 0.055),
-    );
+    rgba[i * 4 + c] = Math.round(255 * linearChannelToSrgb(ldr));
     albedo[i * 4 + c] = Math.round(
       255 * Math.max(0, Math.min(1, view.getFloat32(i * 80 + 32 + c * 4, true))),
     );

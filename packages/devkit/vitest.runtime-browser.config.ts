@@ -9,6 +9,7 @@ export default defineConfig({
       '__tests__/runtime-pack-worker.test.ts',
       '__tests__/game-3d-runtime-vase.test.ts',
       '__tests__/host-runtime-fault.test.ts',
+      '__tests__/workspace-thumbnails.test.ts',
     ],
     fileParallelism: false,
     testTimeout: 240000,

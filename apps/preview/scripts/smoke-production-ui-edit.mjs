@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 // game-default production UI edit smoke: authored pack -> build cache -> Pack v2 -> DOM.
 
@@ -24,10 +25,7 @@ mkdirSync(ARTIFACT_DIR, { recursive: true });
 
 async function availablePort() {
   const probe = createNetServer();
-  await new Promise((resolvePromise, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolvePromise);
-  });
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
   const address = probe.address();
   if (address === null || typeof address === 'string') throw new Error('could not allocate a TCP port');
   const port = address.port;

@@ -8,6 +8,7 @@ import {
   type GeometrySourceIdentity,
   unavailableGeometry,
 } from '../geometry-observation';
+import { transformRenderState } from '../material-render-state';
 import {
   type GpuDrivenResidencyValidationInput,
   ResidencyValidationOwner,
@@ -3266,8 +3267,7 @@ export class GpuDrivenProduction {
                 }),
               );
             }
-            // The claim owns its consumed entry/state values. A new ownership
-            // publication changes membership, not every physical draw binding.
+            // Claim values stay authoritative across ownership publications.
             const shadowEntry =
               firstCandidate === undefined
                 ? undefined
@@ -3298,15 +3298,17 @@ export class GpuDrivenProduction {
                 }),
               );
             }
-            // Stable command addresses need not follow source order after a
-            // split/rejoin. Keep unchanged ordinals allocation-free; only a
-            // reordered batch needs a transient linear-time lookup.
+            // Batch reorder alone needs an ID lookup; unchanged ordinals allocate nothing.
             let previousBatch = previousBatches?.[batchIndex];
             batchIndex++;
             if (previousBatches !== undefined && previousBatch?.batchId !== batch.batchId) {
               previousById ??= new Map(previousBatches.map((entry) => [entry.batchId, entry]));
               previousBatch = previousById.get(batch.batchId);
             }
+            const shadowRenderState = transformRenderState(
+              shadowEntry?.renderState,
+              firstSlot.snapshot.transform.world,
+            );
             const previousProjection = previousProjections?.get(batch.batchId);
             const previousFirst = previousBatch?.candidates[0];
             if (
@@ -3328,9 +3330,9 @@ export class GpuDrivenProduction {
                 worldEntityKey(firstSlot.snapshot.worldId, firstSlot.snapshot.entityKey) &&
               previousProjection.shadowVertexEntry === shadowEntry?.vertexEntry &&
               previousProjection.shadowFragmentEntry === shadowEntry?.fragmentEntry &&
-              (previousProjection.shadowRenderState === shadowEntry?.renderState ||
+              (previousProjection.shadowRenderState === shadowRenderState ||
                 JSON.stringify(previousProjection.shadowRenderState) ===
-                  JSON.stringify(shadowEntry?.renderState)) &&
+                  JSON.stringify(shadowRenderState)) &&
               sameMaterialArtifact(previousProjection.shadowArtifact, shadowArtifact) &&
               (artifactKey === undefined ||
                 previousSource?.artifacts.get(artifactKey) === artifacts.get(artifactKey))
@@ -3357,9 +3359,7 @@ export class GpuDrivenProduction {
               visibleBindGroups,
               deformation,
               shadowArtifact,
-              ...(shadowEntry?.renderState === undefined
-                ? {}
-                : { shadowRenderState: shadowEntry.renderState }),
+              ...(shadowRenderState === undefined ? {} : { shadowRenderState }),
               ...(shadowEntry?.vertexEntry === undefined
                 ? {}
                 : { shadowVertexEntry: shadowEntry.vertexEntry }),

@@ -1,5 +1,6 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
+import { numMipLevels } from '@forgeax/engine-types';
 import {
   drainFramePreparation,
   type FramePreparation,
@@ -34,7 +35,11 @@ import { captureSubmittedTerrain, type SubmittedTerrainSection } from './terrain
 // .invert` (charter proposition 5: no math reinvention; render-system.test.ts
 // asserts `/@forgeax\/engine-math/` shows up in render-system.ts source).
 
-import { numMipLevels, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+// @forgeax/engine-math is referenced through render-system-record.ts which builds
+// view/proj matrices and worldFromLocal via `mat4.compose / .multiply /
+// .invert` (charter proposition 5: no math reinvention; render-system.test.ts
+// asserts `/@forgeax\/engine-math/` shows up in render-system.ts source).
+import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { RecorderSession } from '@forgeax/engine-profiler';
@@ -131,11 +136,8 @@ import {
 } from './pipeline/standard-output/resources';
 import type { PointsLinesRetainedSnapshot } from './points-lines/snapshot';
 import { StandardPointsLinesOwner } from './points-lines/standard-owner';
-import { createRenderSystemRecovery } from './recovery/render-system-candidate';
-
-export { materialTextureHandlesForResidency } from './recovery/render-system-candidate';
-
 import { createDynamicGeometryFrameBindings } from './record/dynamic-geometry-consumption';
+import { createRenderSystemRecovery } from './recovery/render-system-candidate';
 import type {
   RecoveryGraphCandidate,
   RecoveryGraphCandidatePreparation,
@@ -2251,6 +2253,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                 near: camera.near,
                 far: camera.far,
                 projection: camera.projection,
+                ...(camera.projectionOffset === undefined
+                  ? {}
+                  : { projectionOffset: camera.projectionOffset }),
                 orthoLeft: camera.orthoLeft,
                 orthoRight: camera.orthoRight,
                 orthoBottom: camera.orthoBottom,
@@ -2262,8 +2267,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
                 bloom: 'off' as const,
                 bloomThreshold: 1,
                 bloomIntensity: 0,
-                bloomSoftKnee: 0,
-                bloomScatter: 0,
+                bloomSmoothWidth: 0,
+                bloomRadius: 0,
                 clearColor: camera.clearColor,
                 ...(camera.entityKey === undefined ? {} : { entityKey: camera.entityKey }),
                 ...(camera.worldId === undefined ? {} : { worldId: camera.worldId }),
@@ -2381,6 +2386,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
             : '',
           frame.skybox,
           environment as import('./environment/frame').SelectedEnvironmentFrame | undefined,
+          resourceWorld,
         );
         latestCamera = cameras[0];
         frameState.ssrRequested = latestCamera?.screenSpaceReflection !== undefined;
@@ -2711,8 +2717,15 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         preparedFeatureSkylightResources =
           preparedPipelineState === null
             ? undefined
-            : resolveMaterialSkylight(internals, preparedPipelineState, skylight, skylightCount)
-                .skylightResources;
+            : resolveMaterialSkylight(
+                internals,
+                preparedPipelineState,
+                skylight,
+                skylightCount,
+                skylight === undefined
+                  ? undefined
+                  : internals.gpuStore.getCubemapIbl(skylight.equirectHandle, resourceWorld),
+              ).skylightResources;
         let featureGraphCandidate: RenderFeatureGraphCandidate | undefined;
         let featureGraphAccepted = false;
         const selectedCamera = cameras[0];
@@ -3171,10 +3184,14 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
               (handle) =>
                 handle !== undefined &&
                 handle !== 0 &&
-                (internals.gpuStore.getCubemapStatus(toShared<'EquirectAsset'>(handle)) !==
-                  'ready' ||
-                  internals.gpuStore.getCubemapGpuView(toShared<'EquirectAsset'>(handle)) ===
-                    undefined),
+                (internals.gpuStore.getCubemapStatus(
+                  toShared<'EquirectAsset'>(handle),
+                  resourceWorld,
+                ) !== 'ready' ||
+                  internals.gpuStore.getCubemapGpuView(
+                    toShared<'EquirectAsset'>(handle),
+                    resourceWorld,
+                  ) === undefined),
             )
           ) {
             framePresentation = 'pending';

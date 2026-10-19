@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import {
   type AtlasTile,
   type BatchReadRequest,
@@ -10,7 +11,6 @@ import {
   decodeBufferRecords,
   decodeTape,
   depthImage,
-  encodePng,
   extractTile,
   type FrameSummary,
   type FrameTiming,

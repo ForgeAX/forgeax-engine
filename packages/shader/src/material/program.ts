@@ -1,12 +1,24 @@
+import {
+  findUndeclaredSampledTextures,
+  fnv1aUtf16,
+  type ParamSchemaEntry,
+  stripWgslComments,
+} from '@forgeax/engine-types';
+
+const NO_TEXTURE_DECLARATIONS: readonly ParamSchemaEntry[] = Object.freeze([]);
+
 export type PipelineGroup2Contract = 'mesh' | 'skin' | 'cluster' | 'skin-cluster';
 
 /** Immutable facts about one composed source, shared across material passes and GPU devices. */
 export interface MaterialShaderProgram {
   readonly source: string;
+  /** User-region texture names sampled by this exact source, before schema validation. */
+  readonly sampledUserTextureFields: readonly string[];
   readonly identity: string;
   readonly group2: PipelineGroup2Contract;
   /** Undefined is an admitted absence, not a request to scan the source again. */
   readonly uvSetCount: number | undefined;
+  readonly vertexInputRequired: boolean;
   readonly probeBlendRecordRequired: boolean;
   /** False only when the material uniform has no references beyond its declaration. */
   readonly materialUniformRequired: boolean;
@@ -14,48 +26,25 @@ export interface MaterialShaderProgram {
   readonly materialBindings: readonly number[] | undefined;
 }
 
-/** WGSL permits nested block comments; preserve token separation when removing them. */
-function withoutComments(source: string): string {
-  const parts: string[] = [];
-  const comments = /\/\/|\/\*/gu;
-  const blocks = /\/\*|\*\//gu;
-  let start = 0;
-  for (let comment = comments.exec(source); comment !== null; comment = comments.exec(source)) {
-    parts.push(source.slice(start, comment.index), ' ');
-    if (comment[0] === '//') {
-      const end = source.indexOf('\n', comments.lastIndex);
-      start = end < 0 ? source.length : end;
-    } else {
-      let depth = 1;
-      blocks.lastIndex = comments.lastIndex;
-      for (let block = blocks.exec(source); block !== null; block = blocks.exec(source)) {
-        depth += block[0] === '/*' ? 1 : -1;
-        if (depth === 0) break;
-      }
-      start = depth === 0 ? blocks.lastIndex : source.length;
-    }
-    comments.lastIndex = start;
-  }
-  return parts.length === 0 ? source : parts.join('') + source.slice(start);
-}
-
 export function materialShaderUvSetCount(source: string): number | undefined {
-  return vertexUvSetCount(withoutComments(source));
+  return vertexInputs(stripWgslComments(source)).uvSetCount;
 }
 
-function vertexUvSetCount(code: string): number | undefined {
-  const inputStructs = [...code.matchAll(/struct\s+([A-Za-z_]\w*)\s*\{([^}]*)\}/gu)].filter(
-    (match) => /@location\s*\(/u.test(match[2] ?? ''),
-  );
-  for (const inputStruct of inputStructs) {
-    const name = inputStruct[1];
-    const body = inputStruct[2];
-    if (name === undefined || body === undefined) continue;
-    const firstParameter = new RegExp(
-      `@vertex\\s*fn\\s+\\w+\\s*\\(\\s*\\w+\\s*:\\s*${name}\\b`,
-      'u',
-    );
-    if (!firstParameter.test(code)) continue;
+export function materialShaderVertexInputRequired(source: string): boolean {
+  return vertexInputs(stripWgslComments(source)).vertexInputRequired;
+}
+
+function vertexInputs(code: string): {
+  uvSetCount: number | undefined;
+  vertexInputRequired: boolean;
+} {
+  const inputTypes = new Set<string>();
+  for (const input of code.matchAll(/@vertex\s*fn\s+\w+\s*\(\s*\w+\s*:\s*([A-Za-z_]\w*)\b/gu))
+    if (input[1] !== undefined) inputTypes.add(input[1]);
+  for (const inputStruct of code.matchAll(/struct\s+([A-Za-z_]\w*)\s*\{([^}]*)\}/gu)) {
+    const name = inputStruct[1],
+      body = inputStruct[2];
+    if (name === undefined || body === undefined || !inputTypes.has(name)) continue;
     let uvSetCount = 0;
     for (const location of body.matchAll(/@location\s*\(\s*(\d+)\s*\)\s+([A-Za-z_]\w*)/gu)) {
       const field = location[2];
@@ -66,9 +55,13 @@ function vertexUvSetCount(code: string): number | undefined {
       const uvIndex = field?.match(/^uv(\d+)_?$/u)?.[1];
       if (uvIndex !== undefined) uvSetCount = Math.max(uvSetCount, Number(uvIndex) + 1);
     }
-    return uvSetCount > 0 ? uvSetCount : undefined;
+    if (/@location\s*\(/u.test(body))
+      return { uvSetCount: uvSetCount > 0 ? uvSetCount : undefined, vertexInputRequired: true };
   }
-  return undefined;
+  return {
+    uvSetCount: undefined,
+    vertexInputRequired: /@vertex\s*fn[^{]*\([^)]*@location\s*\(/u.test(code),
+  };
 }
 
 function materialUniformRequired(source: string): boolean {
@@ -117,26 +110,25 @@ function materialBindings(source: string): readonly number[] | undefined {
 }
 
 export function createMaterialShaderProgram(source: string): MaterialShaderProgram {
-  const code = withoutComments(source);
+  const code = stripWgslComments(source);
   const bindings = [...code.matchAll(/@group\s*\(\s*2\s*\)\s*@binding\s*\(\s*(\d+)\s*\)/gu)].map(
     (match) => Number(match[1]),
   );
   const skin = bindings.includes(1) || bindings.includes(2);
   const cluster = bindings.some((binding) => binding >= 3);
-  let hash = 2166136261;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
+  const hash = fnv1aUtf16(source);
   return Object.freeze({
     source,
+    sampledUserTextureFields: Object.freeze(
+      findUndeclaredSampledTextures(source, NO_TEXTURE_DECLARATIONS),
+    ),
     identity: `${source.length}:${hash >>> 0}`,
     group2: skin ? (cluster ? 'skin-cluster' : 'skin') : cluster ? 'cluster' : 'mesh',
     probeBlendRecordRequired:
       /@group\s*\(\s*3\s*\)\s*@binding\s*\(\s*1\s*\)\s*var\s*<\s*storage\s*(?:,\s*read\s*)?>\s*\w+\s*:\s*array\s*<\s*vec4\s*<\s*f32\s*>\s*>/u.test(
         code,
       ),
-    uvSetCount: vertexUvSetCount(code),
+    ...vertexInputs(code),
     materialUniformRequired: materialUniformRequired(code),
     materialBindings: materialBindings(code),
   });

@@ -302,3 +302,22 @@ describe('derived material reflection equality', () => {
     }
   });
 });
+
+it('compiles an explicitly declared comparison sampler against its depth texture', async () => {
+  const schema = [
+    { name: 'depthMap', type: 'texture_depth_2d' },
+    { name: 'depthCompare', type: 'sampler_comparison' },
+  ] as const;
+  const source = `${generateParameterModule(schema)}
+@fragment fn fs_main() -> @location(0) vec4<f32> {
+  return vec4<f32>(textureSampleCompare(depthMap, depthCompare, vec2<f32>(0.5), 0.5));
+}`;
+  const compiled = await compileShader(source);
+  expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+  if (!compiled.ok) return;
+  expect(compareDerivedMaterialInterface(derive(schema), compiled.value.reflection).ok).toBe(true);
+  const sampler = compiled.value.bindings
+    .flatMap((binding) => binding.entries)
+    .find((entry) => entry.binding === 3);
+  expect(sampler?.sampler?.type).toBe('comparison');
+});

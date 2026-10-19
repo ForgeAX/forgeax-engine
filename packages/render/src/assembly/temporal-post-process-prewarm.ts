@@ -4,7 +4,7 @@ import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import { invokeDeviceCreateShaderModule } from './material-shader-policy';
 import { runShimStep } from './renderer-helpers';
 
-export type AsyncShaderModuleFactory =
+type AsyncShaderModuleFactory =
   | ((
       device: RhiDevice,
       desc: { readonly code: string; readonly label?: string },

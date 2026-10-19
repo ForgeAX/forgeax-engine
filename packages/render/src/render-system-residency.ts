@@ -1,5 +1,6 @@
 import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import {
+  type Handle,
   type MaterialAsset,
   type SamplerAsset,
   type TextureAsset,
@@ -13,10 +14,103 @@ import {
 } from './mesh-material-bindings';
 import type { RenderResourceScope } from './publication/resource-scope';
 import type { RenderSystemInternals } from './record/render-context';
-import { materialSamplerHandles, materialTextureHandles } from './recovery/render-system-candidate';
 import type { MaterialSnapshot } from './render-system-extract';
 
+/**
+ * Keep the missing-texture sentinel out of residency preparation. A zero
+ * handle is the same absent-reference value used by materialHandle; resolving
+ * it as a real TextureAsset would otherwise pass an undefined pod to the GPU
+ * store and fail before the renderer can produce a structured readiness
+ * result.
+ */
+export function materialTextureHandlesForResidency(
+  candidates: Iterable<Handle<'TextureAsset', 'shared'> | undefined>,
+): readonly Handle<'TextureAsset', 'shared'>[] {
+  let occupied = false;
+  let firstKey = 0;
+  let firstValue = 0 as Handle<'TextureAsset', 'shared'>;
+  let overflow: Map<number, Handle<'TextureAsset', 'shared'>> | undefined;
+  for (const handle of candidates) {
+    if (handle === undefined || Number(handle) === 0) continue;
+    const key = Number(handle);
+    if (overflow !== undefined) overflow.set(key, handle);
+    else if (!occupied) {
+      occupied = true;
+      firstKey = key;
+      firstValue = handle;
+    } else if (key === firstKey || Object.is(key, firstKey)) firstValue = handle;
+    else {
+      overflow = new Map();
+      overflow.set(firstKey, firstValue);
+      overflow.set(key, handle);
+    }
+  }
+  return overflow === undefined ? (occupied ? [firstValue] : []) : [...overflow.values()];
+}
+
+const EMPTY_TEXTURE_HANDLES: readonly Handle<'TextureAsset', 'shared'>[] = Object.freeze([]);
+const EMPTY_SAMPLER_HANDLES: readonly Handle<'SamplerAsset', 'shared'>[] = Object.freeze([]);
+
+export function materialTextureHandles(
+  material: MaterialSnapshot,
+): readonly Handle<'TextureAsset', 'shared'>[] {
+  const textureHandles = material.textureHandles;
+  if (textureHandles === undefined || textureHandles.size === 0) {
+    const baseColor = material.baseColorTexture;
+    const metallicRoughness = material.metallicRoughnessTexture;
+    const normal = material.normalTexture;
+    const emissive = material.emissiveTexture;
+    const occlusion = material.occlusionTexture;
+    if (
+      (baseColor === undefined || baseColor === 0) &&
+      (metallicRoughness === undefined || metallicRoughness === 0) &&
+      (normal === undefined || normal === 0) &&
+      (emissive === undefined || emissive === 0) &&
+      (occlusion === undefined || occlusion === 0)
+    )
+      return EMPTY_TEXTURE_HANDLES;
+    return materialTextureHandlesForResidency([
+      baseColor,
+      metallicRoughness,
+      normal,
+      emissive,
+      occlusion,
+    ]);
+  }
+  return materialTextureHandlesForResidency([
+    ...textureHandles.values(),
+    material.baseColorTexture,
+    material.metallicRoughnessTexture,
+    material.normalTexture,
+    material.emissiveTexture,
+    material.occlusionTexture,
+  ]);
+}
+
+export function materialSamplerHandles(
+  material: MaterialSnapshot,
+): readonly Handle<'SamplerAsset', 'shared'>[] {
+  const candidates = material.samplerHandles;
+  if (candidates === undefined || candidates.size === 0) return EMPTY_SAMPLER_HANDLES;
+  if (candidates.size === 1) return [...candidates.values()];
+  const handles = new Map<number, Handle<'SamplerAsset', 'shared'>>();
+  for (const handle of candidates.values()) {
+    handles.set(Number(handle), handle);
+  }
+  return [...handles.values()];
+}
+
 const EMPTY_RESIDENCY_DETAILS = Object.freeze([]);
+const READY_RESIDENCY = publishMeshMaterialBindingResidency({
+  readiness: 'ready',
+  samplers: EMPTY_RESIDENCY_DETAILS,
+  textures: EMPTY_RESIDENCY_DETAILS,
+});
+const PENDING_RESIDENCY = publishMeshMaterialBindingResidency({
+  readiness: 'pending',
+  samplers: EMPTY_RESIDENCY_DETAILS,
+  textures: EMPTY_RESIDENCY_DETAILS,
+});
 
 function preparationFailureFrom(error: unknown): MeshMaterialBindingPreparationFailure | undefined {
   if (typeof error !== 'object' || error === null) return undefined;
@@ -174,6 +268,10 @@ export function observeMaterialResidency(
     }
   }
 
+  // The observation still ran in full. These two detached results contain
+  // no resource or failure data, so their immutable publication is reusable.
+  if (failure === undefined && textures === undefined && samplers === undefined)
+    return pending ? PENDING_RESIDENCY : READY_RESIDENCY;
   const readiness =
     failure === undefined
       ? pending

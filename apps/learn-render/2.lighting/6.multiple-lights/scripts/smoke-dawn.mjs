@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/2.lighting/6.multiple-lights/scripts/smoke-dawn.mjs
 //
 // LearnOpenGL section 2.6 multiple-lights dawn-node smoke
@@ -295,7 +296,7 @@ for (let i = 0; i < CUBE_POSITIONS.length; i++) {
 
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.2, -1, -0.3],
     color: [1, 1, 1],
     intensity: 0.5,
@@ -344,7 +345,7 @@ world.spawn(
   },
   {
     component: SpotLight,
-    data: {
+    data: { castShadow: true,
       direction: [0, 0, -1],
       color: [1, 1, 1],
       intensity: 4,
@@ -360,20 +361,12 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (!r.ok) {
-    if (i === 0) {
-      console.error('[smoke] first draw error:', r.error);
-    }
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
-  }
+  framesObserved++;
 }
 const device = sharedDevice;
 if (!device) {

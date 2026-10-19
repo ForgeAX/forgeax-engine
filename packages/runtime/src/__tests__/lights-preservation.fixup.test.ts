@@ -61,7 +61,13 @@ describe('Point/Spot and shared-light regression guard', () => {
       { component: Transform, data: { pos: [4, 5, 6] } },
       {
         component: SpotLight,
-        data: { direction: [0, -1, 0], range: 4, innerConeDeg: 15, outerConeDeg: 30 },
+        data: {
+          castShadow: true,
+          direction: [0, -1, 0],
+          range: 4,
+          innerConeDeg: 15,
+          outerConeDeg: 30,
+        },
       },
     );
     world.spawn(
@@ -129,8 +135,12 @@ describe('Point/Spot and shared-light regression guard', () => {
       validatePointLightShadowData({ mapSize: 512, nearPlane: 0.1, farPlane: 20, pcfKernelSize: 5 })
         .ok,
     ).toBe(true);
-    expect(validateSpotLightData({ direction: [0, -1, 0], pcfKernelSize: 3 }).ok).toBe(true);
+    expect(
+      validateSpotLightData({ castShadow: true, direction: [0, -1, 0], pcfKernelSize: 3 }).ok,
+    ).toBe(true);
     expect(validatePointLightShadowData({ pcfKernelSize: 2 }).ok).toBe(false);
-    expect(validateSpotLightData({ direction: [0, -1, 0], pcfKernelSize: 2 }).ok).toBe(false);
+    expect(
+      validateSpotLightData({ castShadow: true, direction: [0, -1, 0], pcfKernelSize: 2 }).ok,
+    ).toBe(false);
   });
 });

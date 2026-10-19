@@ -14,7 +14,10 @@ function worldWithFog() {
     })
     .unwrap();
   world
-    .spawn({ component: DirectionalLight, data: { direction: [0, -1, 0], intensity: 1 } })
+    .spawn({
+      component: DirectionalLight,
+      data: { castShadow: true, direction: [0, -1, 0], intensity: 1 },
+    })
     .unwrap();
   const entity = world
     .spawn({

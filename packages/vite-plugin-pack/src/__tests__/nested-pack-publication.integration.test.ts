@@ -2,6 +2,7 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { createStandaloneRuntimeAssetBinding, type PackIndexEntry } from '@forgeax/engine-types';
 import { build, createServer } from 'vite';
@@ -56,7 +57,7 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
         generation: 1,
         authority: 'authoritative',
       });
-      rows = catalog.entries;
+      rows = decodeCatalogWire(catalog).unwrap();
     } else {
       server = await createServer({ ...config, server: { host: '127.0.0.1', port: 0 } });
       await plugin.ready();

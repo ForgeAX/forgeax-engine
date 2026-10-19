@@ -333,6 +333,10 @@ export function addVolumetricFogPasses(
   let temporal: ComputeState | undefined;
   let composite: RenderPipeline | undefined;
   let compositeLayout: BindGroupLayout | undefined;
+  let shadowSampler: Sampler | undefined;
+  let linearSampler: Sampler | undefined;
+  let densitySampler: Sampler | undefined;
+  let compositeSampler: Sampler | undefined;
   const injected = graph.addComputePass('volume-inject', {
     accesses: [
       { resource: inputs.params, usage: 'uniform-read' },
@@ -369,15 +373,14 @@ export function addVolumetricFogPasses(
       if (!lightData.ok) throw lightData.error;
       if (!clusterUniform.ok) throw clusterUniform.error;
       if (!froxel.ok) throw froxel.error;
-      const shadowSampler = frame.runtime.device.createSampler({ compare: 'greater' });
-      if (!shadowSampler.ok) throw shadowSampler.error;
+      shadowSampler ??= frame.runtime.device.createSampler({ compare: 'greater' }).unwrap();
       const bindings = volumeBindGroup(frame, inject.layout, [
         {
           binding: 0,
           resource: { kind: 'buffer', value: { buffer: view.value, size: VIEW_UNIFORM_BYTES } },
         },
         { binding: 3, resource: { kind: 'textureView', value: shadow.value as never } },
-        { binding: 4, resource: { kind: 'sampler', value: shadowSampler.value } },
+        { binding: 4, resource: { kind: 'sampler', value: shadowSampler } },
         { binding: 5, resource: { kind: 'buffer', value: { buffer: params.value } } },
         { binding: 6, resource: { kind: 'textureView', value: froxel.value as never } },
         { binding: 7, resource: { kind: 'buffer', value: { buffer: lightData.value } } },
@@ -448,19 +451,21 @@ export function addVolumetricFogPasses(
       if (!clusterUniform.ok) throw clusterUniform.error;
       if (projector !== undefined && !projector.ok) throw projector.error;
       if (cloudShadow !== undefined && !cloudShadow.ok) throw cloudShadow.error;
-      const sampler = frame.runtime.device.createSampler({
-        minFilter: 'linear',
-        magFilter: 'linear',
-      });
-      if (!sampler.ok) throw sampler.error;
-      const densitySampler = frame.runtime.device.createSampler({
-        minFilter: 'linear',
-        magFilter: 'linear',
-        addressModeU: 'repeat',
-        addressModeV: 'repeat',
-        addressModeW: 'repeat',
-      });
-      if (!densitySampler.ok) throw densitySampler.error;
+      linearSampler ??= frame.runtime.device
+        .createSampler({
+          minFilter: 'linear',
+          magFilter: 'linear',
+        })
+        .unwrap();
+      densitySampler ??= frame.runtime.device
+        .createSampler({
+          minFilter: 'linear',
+          magFilter: 'linear',
+          addressModeU: 'repeat',
+          addressModeV: 'repeat',
+          addressModeW: 'repeat',
+        })
+        .unwrap();
       const bindings = volumeBindGroup(frame, integrate.layout, [
         {
           binding: 25,
@@ -481,9 +486,9 @@ export function addVolumetricFogPasses(
           binding: 4,
           resource: { kind: 'buffer', value: { buffer: view.value, size: VIEW_UNIFORM_BYTES } },
         },
-        { binding: 5, resource: { kind: 'sampler', value: sampler.value } },
+        { binding: 5, resource: { kind: 'sampler', value: linearSampler } },
         { binding: 6, resource: { kind: 'textureView', value: density.value as never } },
-        { binding: 7, resource: { kind: 'sampler', value: densitySampler.value } },
+        { binding: 7, resource: { kind: 'sampler', value: densitySampler } },
         { binding: 8, resource: { kind: 'textureView', value: historySeed.value as never } },
         { binding: 9, resource: { kind: 'textureView', value: temporalSeed.value as never } },
         { binding: 10, resource: { kind: 'buffer', value: { buffer: lightData.value } } },
@@ -619,17 +624,18 @@ export function addVolumetricFogPasses(
       if (!resolved.ok) throw resolved.error;
       if (!depth.ok) throw depth.error;
       if (!view.ok) throw view.error;
-      const sampler = frame.runtime.device.createSampler({
-        label: 'volume_composite.sampler',
-        minFilter: 'linear',
-        magFilter: 'linear',
-      });
-      if (!sampler.ok) throw sampler.error;
+      compositeSampler ??= frame.runtime.device
+        .createSampler({
+          label: 'volume_composite.sampler',
+          minFilter: 'linear',
+          magFilter: 'linear',
+        })
+        .unwrap();
       const bindings = frame.runtime.device.createBindGroup({
         layout: compositeLayout as BindGroupLayout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: resolved.value as never } },
-          { binding: 1, resource: { kind: 'sampler', value: sampler.value } },
+          { binding: 1, resource: { kind: 'sampler', value: compositeSampler } },
           { binding: 2, resource: { kind: 'textureView', value: depth.value as never } },
           {
             binding: 3,

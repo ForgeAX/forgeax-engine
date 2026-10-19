@@ -5,7 +5,7 @@ import type { IrradianceFieldPlan } from './irradiance-field-plan';
 export type ProbeCell = readonly [number, number, number];
 
 /** Half-open cell box `[min, max)` of one level. */
-export interface ProbeBox {
+interface ProbeBox {
   readonly level: number;
   readonly min: ProbeCell;
   readonly max: ProbeCell;
@@ -38,7 +38,7 @@ const boxCount = (box: Pick<ProbeBox, 'min' | 'max'>) =>
 const mod = (value: number, n: number) => ((value % n) + n) % n;
 const cell3 = (f: (axis: 0 | 1 | 2) => number): ProbeCell => [f(0), f(1), f(2)];
 
-export const levelSpacing = (plan: Pick<ProbeClipmapPlan, 'spacing'>, level: number) =>
+const levelSpacing = (plan: Pick<ProbeClipmapPlan, 'spacing'>, level: number) =>
   plan.spacing * 2 ** level;
 
 /** Window min cell of `level` centred on `focus`, snapped to that level's spacing. */

@@ -17,13 +17,8 @@ export interface ToolPreviewRecipe {
   readonly frames: number;
 }
 
-export interface ToolPreviewRecipeOptions {
-  readonly backend?: 'webgpu' | 'rhi-null' | string;
-  readonly presentation?: ToolPreviewPresentation;
-  readonly viewport?: { readonly width: number; readonly height: number };
-  readonly actions?: readonly ToolPreviewAction[];
-  readonly deltaSeconds?: number;
-  readonly frames?: number;
+export interface ToolPreviewRecipeOptions extends Partial<Omit<ToolPreviewRecipe, 'backend'>> {
+  readonly backend?: string;
 }
 
 export type ToolPreviewTraceEvent =
@@ -36,7 +31,7 @@ export type ToolPreviewTraceEvent =
 
 export interface ToolPreviewTrace {
   readonly events: readonly ToolPreviewTraceEvent[];
-  readonly backend: 'webgpu' | string;
+  readonly backend: string;
   readonly adapter: string;
   readonly presentation: ToolPreviewPresentation;
 }

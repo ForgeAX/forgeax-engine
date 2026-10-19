@@ -1,24 +1,29 @@
+import type { ImportSubAsset } from '@forgeax/engine-types';
+import { COMPONENT_TYPE } from './accessor/layout.js';
 import {
   type DracoCompressionJson,
   type GltfDracoDecodeCapability,
   projectDracoPrimitives,
 } from './draco-decode.js';
 import { type GltfCameraIr, type GltfCameraJson, parseCamera } from './parse-camera';
+
 // parse-gltf.ts - JSON-side glTF importer entry.
 // The public parse, GLB, asset-pack, mesh, and scene helpers live here.
 
+import { reconcileMeshLodMeta } from '@forgeax/engine-import';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import {
+  createMeshMaterialSlotTable,
   IMPORT_ERROR_HINTS,
   ImportError,
   MESH_MATERIAL_SLOT_SOURCE_OVERRIDE_PAYLOAD_SCHEMA,
   type MeshMaterialSlotTopologyEntry,
   reconcileMeshMaterialSlotTopology,
+  type SkeletonPod,
 } from '@forgeax/engine-types';
 import {
   type AccessorJson,
   type BufferViewJson,
-  COMPONENT_TYPE,
   decodeAccessor,
 } from './accessor/decode-accessor.js';
 import { decodeColorAccessor } from './accessor/decode-color.js';
@@ -27,7 +32,6 @@ import { Base64DecodeError, dataUriBase64Payload, decodeBase64 } from './data-ur
 import { err, type GltfError, gltfErr, ok, type Result } from './errors.js';
 import { withFlatNormals } from './flat-normals.js';
 import { type GltfLodRelation, parseGltfLodExtension } from './lod/parse-lod.js';
-import { projectGltfLodMeta } from './lod/project-meta.js';
 import {
   type GltfImageIr,
   type GltfMaterialIr,
@@ -44,13 +48,8 @@ import {
 import { type GltfAnimationClipRecord, parseAnimation } from './parse-animation.js';
 import { parseGlbChunks } from './parse-glb-chunks.js';
 import { parseGltfHeader } from './parse-gltf-header.js';
-import { type GltfSkeletonRecord, parseSkin } from './parse-skin.js';
-import {
-  type GltfDocItem,
-  type GltfMetaJson,
-  type GltfSubAssetEntry,
-  reimportReuseMeta,
-} from './reimport-reuse-meta.js';
+import { parseSkin } from './parse-skin.js';
+import { type GltfDocItem, type GltfMetaJson, reimportReuseMeta } from './reimport-reuse-meta.js';
 import type { GltfSourceKeyError } from './source-key.js';
 import { type DecomposedTransform, decomposeNodeTransform } from './transform.js';
 
@@ -332,7 +331,7 @@ export interface GltfDoc {
   readonly textures: readonly GltfTextureIr[] | undefined;
   readonly images: readonly GltfImageIr[] | undefined;
   readonly samplers: readonly GltfSamplerIr[] | undefined;
-  readonly skeletons: readonly GltfSkeletonRecord[];
+  readonly skeletons: readonly SkeletonPod[];
   readonly animationClips: readonly GltfAnimationClipRecord[];
   readonly defaultSceneIndex: number;
   readonly diagnostics: GltfDiagnosticsIr;
@@ -478,7 +477,7 @@ interface ParseGltfInternalsContext {
   readonly draco?: GltfDracoDecodeCapability;
 }
 
-type GltfParseError = GltfError | ImportError;
+export type GltfParseError = GltfError | ImportError;
 
 function invalidBufferDataUriError(
   filePath: string,
@@ -1066,7 +1065,7 @@ async function parseGltfWithBin(
  * Pure function modulo `externalLoader` (caller-provided I/O is the
  * only side effect). No global state, no fs / network direct call.
  */
-export async function parseGltfForImporter(
+export async function parseGltf(
   json: unknown,
   externalLoader: ExternalLoader,
   filePath: string,
@@ -1088,34 +1087,12 @@ export async function parseGltfForImporter(
   });
 }
 
-function legacyParseResult(
-  result: Result<GltfDoc, GltfParseError>,
-  filePath: string,
-  byteOffset: number,
-): Result<GltfDoc, GltfError> {
-  if (result.ok) return ok(result.value);
-  if (result.error instanceof ImportError) {
-    return err(gltfErr('gltf-malformed-header', { filePath, byteOffset }));
-  }
-  return err(result.error);
-}
-
-export async function parseGltf(
-  json: unknown,
-  externalLoader: ExternalLoader,
-  filePath: string,
-  options: GltfParseOptions = {},
-): Promise<Result<GltfDoc, GltfError>> {
-  const result = await parseGltfForImporter(json, externalLoader, filePath, options);
-  return legacyParseResult(result, filePath, 0);
-}
-
 /**
  * Parse a GLB 2.0 binary container: split into JSON + BIN chunks via
  * `parseGlbChunks`, then run the JSON document through `parseGltf` with
  * the BIN chunk wired in as buffer-0 backing storage.
  */
-export async function parseGlbForImporter(
+export async function parseGlb(
   buffer: ArrayBuffer,
   filePath: string,
   options: GltfParseOptions = {},
@@ -1153,18 +1130,9 @@ export async function parseGlbForImporter(
   });
 }
 
-export async function parseGlb(
-  buffer: ArrayBuffer,
-  filePath: string,
-  options: GltfParseOptions = {},
-): Promise<Result<GltfDoc, GltfError>> {
-  const result = await parseGlbForImporter(buffer, filePath, options);
-  return legacyParseResult(result, filePath, 12);
-}
-
 export interface GltfAssetPack {
   readonly meta: GltfMetaJson;
-  readonly subAssets: readonly GltfSubAssetEntry[];
+  readonly subAssets: readonly ImportSubAsset[];
 }
 
 export type GltfAssetPackResult = Result<GltfAssetPack, GltfSourceKeyError | GltfError>;
@@ -1258,7 +1226,7 @@ export function toAssetPack(
     items.push({ kind: 'skeleton', sourceIndex: i });
   }
   // Skin bindings (feat-20260523-skin-skeleton-animation M0).
-  // Emit one skin sub-asset per GltfSkeletonRecord (1:1 mapping).
+  // Emit one skin sub-asset per SkeletonPod (1:1 mapping).
   for (let i = 0; i < doc.skeletons.length; i++) {
     items.push({ kind: 'skin', sourceIndex: i });
   }
@@ -1336,7 +1304,7 @@ export function toAssetPack(
             ? [
                 {
                   sourceKey: value.sourceKey,
-                  guid: value.meshGuid,
+                  meshGuid: value.meshGuid,
                   ...(typeof value.screenCoverage === 'number'
                     ? { screenCoverage: value.screenCoverage }
                     : {}),
@@ -1345,15 +1313,7 @@ export function toAssetPack(
             : [];
         });
       })();
-      const projected = projectGltfLodMeta({
-        rootSourceKey: rootOutput.sourceKey,
-        levels: levels.map((level) => ({
-          sourceKey: level.sourceKey,
-          guid: level.meshGuid,
-          ...(level.screenCoverage === undefined ? {} : { screenCoverage: level.screenCoverage }),
-        })),
-        ...(previousLodMeta === undefined ? {} : { previous: previousLodMeta }),
-      });
+      const projected = reconcileMeshLodMeta(previousLodMeta ?? [], levels);
       if (!projected.ok)
         return err(
           gltfErr('gltf-lod-invalid', {
@@ -1368,39 +1328,27 @@ export function toAssetPack(
       };
     }
   }
+  const materialOutputs = reuse.value.subAssets.filter((entry) => entry.kind === 'material');
+  const materialSources = {
+    nameByIndex: new Map(
+      doc.materials.flatMap((material, index) =>
+        material.name === undefined ? [] : [[index, material.name] as const],
+      ),
+    ),
+    guidByIndex: new Map(materialOutputs.map((entry) => [entry.sourceIndex, entry.guid])),
+    sourceKeyByIndex: new Map(
+      materialOutputs.flatMap((entry) =>
+        entry.sourceKey === undefined ? [] : [[entry.sourceIndex, entry.sourceKey] as const],
+      ),
+    ),
+  };
   for (const meshIndex of seenMeshIndices) {
     const meshOutput = subAssetByKindIndex.get(`mesh:${meshIndex}`);
     if (meshOutput?.sourceKey === undefined) continue;
-    const materialSlots: MeshMaterialSlotTopologyEntry[] = [];
-    const slotByMaterial = new Map<number | null, number>();
-    const usedNames = new Set<string>();
-    const uniqueName = (raw: string): string => {
-      const base = raw.trim() || 'Material';
-      let candidate = base;
-      let suffix = 2;
-      while (usedNames.has(candidate)) candidate = `${base}_${suffix++}`;
-      usedNames.add(candidate);
-      return candidate;
-    };
-    for (const primitive of doc.meshes.filter((mesh) => mesh.meshIndex === meshIndex)) {
-      const materialIndex = primitive.materialIndex;
-      if (slotByMaterial.has(materialIndex)) continue;
-      const materialOutput =
-        materialIndex === null ? undefined : subAssetByKindIndex.get(`material:${materialIndex}`);
-      slotByMaterial.set(materialIndex, materialSlots.length);
-      materialSlots.push({
-        slotName: uniqueName(
-          materialIndex === null
-            ? 'Default'
-            : (doc.materials[materialIndex]?.name ?? `Material_${materialIndex}`),
-        ),
-        sourceKey:
-          materialIndex === null
-            ? 'gltf:default'
-            : (materialOutput?.sourceKey ?? `gltf:material:${materialIndex}`),
-        ...(materialOutput === undefined ? {} : { defaultMaterialGuid: materialOutput.guid }),
-      });
-    }
+    const primitives = doc.meshes.filter((mesh) => mesh.meshIndex === meshIndex);
+    const materialTable = createMeshMaterialSlotTable('gltf', materialSources);
+    for (const primitive of primitives) materialTable.slotFor(primitive.materialIndex);
+    const materialSlots = materialTable.slots;
     const previousPayload = existingMeta?.sourceOverrides?.[meshOutput.sourceKey];
     const previousRaw = previousPayload?.materialSlots;
     const previous = Array.isArray(previousRaw)

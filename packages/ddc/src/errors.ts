@@ -42,18 +42,19 @@ export interface DdcStoreErrorInit {
   readonly hostPath?: string;
 }
 
-export interface DdcBrowserError {
-  readonly code: DdcErrorCode;
+export type BrowserDdcRecoveryAction = Omit<DdcRecoveryAction, 'exactTarget'>;
+
+export interface DdcBrowserError
+  extends Omit<DdcStoreErrorInit, 'detail' | 'hostPath' | 'hint' | 'expected' | 'recoveryActions'> {
   readonly hint: string;
   readonly expected: unknown;
-  readonly actual?: unknown;
-  readonly owner?: string;
-  readonly rootKind?: DdcErrorRootKind;
-  readonly scope?: string;
-  readonly generation?: number;
-  readonly lease?: string;
-  readonly revision?: number;
-  readonly recoveryActions: readonly Omit<DdcRecoveryAction, 'exactTarget'>[];
+  readonly recoveryActions: readonly BrowserDdcRecoveryAction[];
+}
+
+export function projectDdcRecoveryActionsForBrowser(
+  actions: readonly DdcRecoveryAction[],
+): readonly BrowserDdcRecoveryAction[] {
+  return actions.map(({ exactTarget: _exactTarget, ...action }) => action);
 }
 
 const defaultHints: Record<DdcErrorCode, string> = {
@@ -120,13 +121,7 @@ export class DdcStoreError extends Error {
   public readonly recoveryActions: readonly DdcRecoveryAction[];
   public readonly hostPath: string | undefined;
 
-  public constructor(code: DdcErrorCode, detail: string);
-  public constructor(input: DdcStoreErrorInit);
-  public constructor(inputOrCode: DdcStoreErrorInit | DdcErrorCode, legacyDetail?: string) {
-    const input: DdcStoreErrorInit =
-      typeof inputOrCode === 'string'
-        ? { code: inputOrCode, detail: legacyDetail ?? inputOrCode }
-        : inputOrCode;
+  public constructor(input: DdcStoreErrorInit) {
     super(input.detail);
     this.name = 'DdcStoreError';
     this.code = input.code;
@@ -156,9 +151,7 @@ export class DdcStoreError extends Error {
       ...(this.generation === undefined ? {} : { generation: this.generation }),
       ...(this.lease === undefined ? {} : { lease: this.lease }),
       ...(this.revision === undefined ? {} : { revision: this.revision }),
-      recoveryActions: this.recoveryActions.map(
-        ({ exactTarget: _exactTarget, ...action }) => action,
-      ),
+      recoveryActions: projectDdcRecoveryActionsForBrowser(this.recoveryActions),
     };
   }
 }

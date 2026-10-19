@@ -68,8 +68,6 @@ export interface StereoCameraSnapshot {
 /** Derived per-eye facts on an eye CameraSnapshot. */
 export interface StereoEyeSnapshot {
   readonly side: StereoEye;
-  /** Off-axis projection term written to projection element [8] (column 2, row 0). */
-  readonly frustumShift: number;
 }
 
 export function stereoLayoutFromU32(value: number): StereoLayout | undefined {
@@ -88,9 +86,7 @@ export function stereoLayoutFromU32(value: number): StereoLayout | undefined {
 /** Validate StereoCamera against its Camera. Throws the structured render error. */
 export function resolveStereoCamera(
   data: StereoCameraData,
-  camera: {
-    readonly projection: 'perspective' | 'orthographic';
-    readonly near: number;
+  camera: Pick<CameraSnapshot, 'projection' | 'near'> & {
     readonly target: boolean;
     readonly planarReflection: boolean;
   },
@@ -182,7 +178,12 @@ export function stereoEyeCamera(camera: CameraSnapshot, eye: StereoEye): CameraS
     ...camera,
     world,
     position: mat4.getTranslation(vec3.create(), world),
-    eye: { side: eye, frustumShift: stereoFrustumShift(stereo, eye, camera.fov, camera.aspect) },
+    eye: { side: eye },
+    projectionOffset: [
+      (camera.projectionOffset?.[0] ?? 0) -
+        stereoFrustumShift(stereo, eye, camera.fov, camera.aspect),
+      camera.projectionOffset?.[1] ?? 0,
+    ],
   };
 }
 

@@ -394,7 +394,7 @@ export function commitTemporalGpuSubmit(state: TemporalGpuState): boolean {
   return true;
 }
 
-export function abortTemporalGpuSubmit(state: TemporalGpuState): void {
+function abortTemporalGpuSubmit(state: TemporalGpuState): void {
   state.pendingIndex = undefined;
 }
 

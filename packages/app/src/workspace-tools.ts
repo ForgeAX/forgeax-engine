@@ -363,6 +363,31 @@ export function createEngineWorkspaceTools(
         return snapshotEngineWorkspace(runtime);
       },
     },
+    'preview.texture.get': {
+      summary: 'Read the bound texture dimensions, mip levels and display settings.',
+      run(args) {
+        const owner = preview(args);
+        if (!owner.texture)
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'A texture preview target',
+          );
+        return owner.texture.get();
+      },
+    },
+    'preview.texture.set': {
+      summary:
+        'Set texture channels, mip, slice, projection and display settings on the exact target.',
+      run(args) {
+        const owner = preview(args);
+        if (!owner.texture)
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'A texture preview target',
+          );
+        return owner.texture.set(args.options);
+      },
+    },
     'preview.resize': {
       summary: 'Resize the identified workspace output in pixels without replacing its World.',
       async run(args, context) {

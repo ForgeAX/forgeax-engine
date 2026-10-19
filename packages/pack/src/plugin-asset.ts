@@ -1,7 +1,6 @@
 import { isToolCommandContract, type ToolCommandContract } from '@forgeax/engine-tool-runtime';
 import type { PluginAsset, PluginConfigValue, Result } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
-import { isValidAssetGuidString } from './guid.js';
+import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 
 export interface PluginModuleReference {
   readonly specifier: string;

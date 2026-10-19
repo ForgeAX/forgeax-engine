@@ -2,15 +2,12 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import {
   CARD_LOOKUP_STRIDE,
   CARD_LOOKUP_WGSL,
 } from '../../../packages/render/src/raytracing/card-lookup.ts';
-import {
-  buildFrameModel,
-  decodeTape,
-  halfToFloat,
-} from '../../../packages/rhi-debug/dist/index.mjs';
+import { buildFrameModel, decodeTape } from '../../../packages/rhi-debug/dist/index.mjs';
 import { inspectCardSupport } from './card-support.mjs';
 
 assert.equal(process.argv.length, 3, 'usage: bun inspect-card-chain.mjs <check-cards-output>');
@@ -42,7 +39,7 @@ for (const [i, data] of planeBytes.entries()) {
   assert.equal(replay.checks[planeNames[i]].different, 0);
 }
 const half = (plane, pixel, channel) =>
-  halfToFloat(planes[plane].getUint16(pixel * 8 + channel * 2, true));
+  halfFloat.f16ToF32(planes[plane].getUint16(pixel * 8 + channel * 2, true));
 const rows = [],
   counts = { mapped: 0, unmapped: 0, stale: 0, notSurface: 0, supportTaps: [0, 0, 0, 0, 0] };
 let maximumMaterialError = 0,

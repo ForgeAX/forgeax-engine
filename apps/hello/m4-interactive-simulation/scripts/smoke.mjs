@@ -42,42 +42,48 @@ try {
   // through the root workspace config retains the first WASM lifecycle in
   // the runner and can exhaust the 2 GiB Node heap before the second file.
   const physics2dArgs = [
+    '--filter',
+    '@forgeax/engine-physics-rapier2d',
     'exec',
     'vitest',
     'run',
     '--config',
-    'packages/physics-rapier2d/vitest.config.ts',
+    'vitest.config.ts',
     '--testNamePattern',
     'AC-12|ECS bridge|despawn|collision|free-fall|kinematic|gravity|error',
     ...BOUNDED_VITEST_ARGS,
   ];
   run('2D physics ECS/KCC move-and-slide lifecycle', [
     ...physics2dArgs,
-    'packages/physics-rapier2d/__tests__/moveandslide-2d.test.ts',
+    '__tests__/moveandslide-2d.test.ts',
   ]);
   run('2D physics ECS/KCC free-fall lifecycle', [
     ...physics2dArgs,
-    'packages/physics-rapier2d/__tests__/free-fall-collision.test.ts',
+    '__tests__/free-fall-collision.test.ts',
   ]);
   console.log('[m4-interactive] 2D physics ECS/KCC lifecycle: PASS');
   run('physics lifecycle tests', [
+    '--filter',
+    '@forgeax/engine-physics-rapier3d',
     'exec',
     'vitest',
     'run',
     '--config',
-    'packages/physics-rapier3d/vitest.config.ts',
-    'packages/physics-rapier3d/src/__tests__/physics-rapier3d.unit.test.ts',
+    'vitest.config.ts',
+    'src/__tests__/physics-rapier3d.unit.test.ts',
     '--testNamePattern',
     'dynamic ball falls|moveAndSlide|CollidingEntities|childof-kinematic|despawn cleanup|hasBody readiness',
     ...BOUNDED_VITEST_ARGS,
   ]);
   run('audio lifecycle tests', [
+    '--filter',
+    '@forgeax/engine-audio-webaudio',
     'exec',
     'vitest',
     'run',
     '--config',
-    'packages/audio-webaudio/vitest.config.ts',
-    'packages/audio-webaudio/src/__tests__/audio-webaudio.unit.test.ts',
+    'vitest.config.ts',
+    'src/__tests__/audio-webaudio.unit.test.ts',
     '--testNamePattern',
     'bus|routing|declarative playback|Entity despawn cleanup|listener getter|audioListenerSyncSystem|spatialBlend|edge detection|destroy then new backend|concurrent backends|F24',
     ...BOUNDED_VITEST_ARGS,

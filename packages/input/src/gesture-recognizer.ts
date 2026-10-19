@@ -13,7 +13,7 @@
 //     queue) still advances long-press timing, so recognition is decoupled
 //     from event frequency (AC-16). The F-1 falsification test proves an
 //     event-frequency-coupled impl fails.
-//   D-4 dual channel -- returns continuous values (`gestureState`:
+//   D-4 dual channel -- returns continuous values (`newState.gesture`:
 //     pinchScale / rotationAngle) plus a one-frame lifecycle event list
 //     (`gestureEvents`). The backend forwards these as the optional
 //     `gestures?` / `gestureEvents?` sample fields (D-4 / F1 precedent).
@@ -156,6 +156,11 @@ export interface TapRecord {
   readonly y: number;
 }
 
+interface PointerGestureTracker {
+  readonly longPress: LongPressTracker;
+  readonly swipeHistory: readonly SwipeSample[];
+}
+
 /**
  * The single legal cross-frame gesture state (C-3). Immutable: each
  * `processGestureFrame` returns a fresh copy; the producer stores it for
@@ -166,15 +171,13 @@ export interface TapRecord {
 export interface RecognizerState {
   readonly pinch: PinchRotateTracker | null;
   readonly gesture: GestureState;
-  readonly longPresses: ReadonlyMap<number, LongPressTracker>;
+  readonly pointers: ReadonlyMap<number, PointerGestureTracker>;
   readonly lastTap: TapRecord | null;
-  readonly swipeHistory: ReadonlyMap<number, readonly SwipeSample[]>;
 }
 
 /** Result of processing one frame of phase events (D-4 dual channel). */
 export interface GestureFrameResult {
   readonly newState: RecognizerState;
-  readonly gestureState: GestureState;
   readonly gestureEvents: readonly GestureEvent[];
 }
 
@@ -186,9 +189,8 @@ export function createRecognizerState(): RecognizerState {
   return {
     pinch: null,
     gesture: IDENTITY_GESTURE,
-    longPresses: new Map(),
+    pointers: new Map(),
     lastTap: null,
-    swipeHistory: new Map(),
   };
 }
 
@@ -240,9 +242,8 @@ function narrowGesturePointerType(pt: PointerType): PointerType {
 interface WorkContext {
   pinch: PinchRotateTracker | null;
   gesture: { pinchScale: number; rotationAngle: number };
-  longPresses: Map<number, LongPressTracker>;
+  pointers: Map<number, { longPress: LongPressTracker; swipeHistory: SwipeSample[] }>;
   lastTap: TapRecord | null;
-  swipeHistory: Map<number, SwipeSample[]>;
   events: GestureEvent[];
 }
 
@@ -260,29 +261,30 @@ function emitPinchLifecycle(
 
 function handleDown(ctx: WorkContext, ev: PointerPhaseEvent, now: number): void {
   // Arm a long-press timer + start a swipe velocity window + tap start.
-  ctx.longPresses.set(ev.pointerId, {
-    downTime: now,
-    x: ev.x,
-    y: ev.y,
-    pointerType: ev.pointerType,
-    armed: true,
-    fired: false,
+  ctx.pointers.set(ev.pointerId, {
+    longPress: {
+      downTime: now,
+      x: ev.x,
+      y: ev.y,
+      pointerType: ev.pointerType,
+      armed: true,
+      fired: false,
+    },
+    swipeHistory: [{ t: now, x: ev.x, y: ev.y }],
   });
-  ctx.swipeHistory.set(ev.pointerId, [{ t: now, x: ev.x, y: ev.y }]);
 }
 
 function handleMove(ctx: WorkContext, ev: PointerPhaseEvent, now: number): void {
+  const tracker = ctx.pointers.get(ev.pointerId);
+  if (tracker === undefined) return;
   // Disarm the long-press if the finger strays beyond slop (D-10).
-  const lp = ctx.longPresses.get(ev.pointerId);
-  if (lp?.armed && distance(lp.x, lp.y, ev.x, ev.y) > LONG_PRESS_SLOP) {
-    ctx.longPresses.set(ev.pointerId, { ...lp, armed: false });
+  const lp = tracker.longPress;
+  if (lp.armed && distance(lp.x, lp.y, ev.x, ev.y) > LONG_PRESS_SLOP) {
+    tracker.longPress = { ...lp, armed: false };
   }
   // Append to the swipe velocity window, pruning samples outside it.
-  const hist = ctx.swipeHistory.get(ev.pointerId);
-  if (hist) {
-    hist.push({ t: now, x: ev.x, y: ev.y });
-    pruneSwipeWindow(hist, now);
-  }
+  tracker.swipeHistory.push({ t: now, x: ev.x, y: ev.y });
+  pruneSwipeWindow(tracker.swipeHistory, now);
 }
 
 function pruneSwipeWindow(hist: SwipeSample[], now: number): void {
@@ -294,7 +296,7 @@ function pruneSwipeWindow(hist: SwipeSample[], now: number): void {
 }
 
 function detectSwipe(ctx: WorkContext, ev: PointerPhaseEvent, now: number): void {
-  const hist = ctx.swipeHistory.get(ev.pointerId);
+  const hist = ctx.pointers.get(ev.pointerId)?.swipeHistory;
   if (!hist || hist.length === 0) return;
   const cutoff = now - SWIPE_WINDOW_MS;
   const oldest = hist.find((s) => s.t >= cutoff) ?? hist[0];
@@ -350,14 +352,12 @@ function endPinchIfMember(
 function handleUp(ctx: WorkContext, ev: PointerPhaseEvent, now: number): void {
   detectSwipe(ctx, ev, now);
   detectDoubleTap(ctx, ev, now);
-  ctx.longPresses.delete(ev.pointerId);
-  ctx.swipeHistory.delete(ev.pointerId);
+  ctx.pointers.delete(ev.pointerId);
   endPinchIfMember(ctx, ev.pointerId, 'end', now);
 }
 
 function handleCancel(ctx: WorkContext, ev: PointerPhaseEvent, now: number): void {
-  ctx.longPresses.delete(ev.pointerId);
-  ctx.swipeHistory.delete(ev.pointerId);
+  ctx.pointers.delete(ev.pointerId);
   endPinchIfMember(ctx, ev.pointerId, 'cancel', now);
 }
 
@@ -412,7 +412,8 @@ function fireLongPresses(
   now: number,
 ): void {
   const pinch = ctx.pinch;
-  for (const [id, lp] of ctx.longPresses) {
+  for (const [id, tracker] of ctx.pointers) {
+    const lp = tracker.longPress;
     if (!lp.armed || lp.fired) continue;
     if (now - lp.downTime < LONG_PRESS_DURATION_MS) continue;
     if (!pointerMap.has(id)) continue; // finger must still be down
@@ -427,7 +428,7 @@ function fireLongPresses(
       pointerType: narrowGesturePointerType(lp.pointerType),
       timestamp: now,
     });
-    ctx.longPresses.set(id, { ...lp, fired: true });
+    tracker.longPress = { ...lp, fired: true };
   }
 }
 
@@ -445,9 +446,8 @@ export function processGestureFrame(
   const ctx: WorkContext = {
     pinch: prevState.pinch,
     gesture: { ...prevState.gesture },
-    longPresses: new Map(prevState.longPresses),
+    pointers: clonePointerTrackers(prevState.pointers),
     lastTap: prevState.lastTap,
-    swipeHistory: cloneSwipeHistory(prevState.swipeHistory),
     events: [],
   };
 
@@ -479,17 +479,16 @@ export function processGestureFrame(
   const newState: RecognizerState = {
     pinch: ctx.pinch,
     gesture,
-    longPresses: ctx.longPresses,
+    pointers: ctx.pointers,
     lastTap: ctx.lastTap,
-    swipeHistory: ctx.swipeHistory,
   };
-  return { newState, gestureState: gesture, gestureEvents: ctx.events };
+  return { newState, gestureEvents: ctx.events };
 }
 
-function cloneSwipeHistory(
-  src: ReadonlyMap<number, readonly SwipeSample[]>,
-): Map<number, SwipeSample[]> {
-  const out = new Map<number, SwipeSample[]>();
-  for (const [id, samples] of src) out.set(id, [...samples]);
+function clonePointerTrackers(src: RecognizerState['pointers']): WorkContext['pointers'] {
+  const out: WorkContext['pointers'] = new Map();
+  for (const [id, tracker] of src) {
+    out.set(id, { longPress: tracker.longPress, swipeHistory: [...tracker.swipeHistory] });
+  }
   return out;
 }

@@ -3,7 +3,7 @@ import { wrap } from '../recorder';
 
 /** Isolate compressed array/mip readback from shaders, scenes and tape transport. */
 export async function verifyCompressedSnapshot() {
-  const recorder = wrap(webgpu.rhi);
+  const recorder = wrap(webgpu.rhi, webgpu.createShaderModule);
   const adapter = (await recorder.requestAdapter()).unwrap();
   if (!adapter.features.has('texture-compression-bc')) {
     return { status: 'unavailable' as const, reason: 'texture-compression-bc' };

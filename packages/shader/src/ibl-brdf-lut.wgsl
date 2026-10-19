@@ -17,7 +17,8 @@
 //
 // Entries: fullscreen_vs + brdfLutBake_fs.
 
-#import forgeax_pbr::ibl_shared::{hammersley, importanceSampleGGX, iblGeometrySmith}
+#import forgeax_pbr::ibl_shared::{hammersley, importanceSampleGGX}
+#import forgeax_pbr::brdf::{v_smith}
 
 struct VsOut {
   @builtin(position) clip: vec4<f32>,
@@ -52,7 +53,7 @@ fn brdfLutBake_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
   // Caller renders a fullscreen quad at BRDF_LUT_SIZE x BRDF_LUT_SIZE viewport
   // (256x256 per plan D-10 / AC-06). pos.x / pos.y are framebuffer pixel
   // coordinates in [0.5, BRDF_LUT_SIZE - 0.5].
-  let denom = f32(BRDF_LUT_SIZE - 1u);
+  let denom = f32(BRDF_LUT_SIZE);
   let NdotV = clamp(pos.x / denom, 0.0, 1.0);
   let roughness = clamp(pos.y / denom, 0.0, 1.0);
 
@@ -77,8 +78,10 @@ fn brdfLutBake_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
       let NdotH = max(H.z, 0.0);
       let VdotH = max(dot(V, H), 0.0);
 
-      let G = iblGeometrySmith(NdotV, NdotL, roughness);
-      let GVis = (G * VdotH) / max(NdotH * NdotV, 1e-5);
+      // Match Standard and Three.js: correlated Smith visibility V = G/(4 NoL NoV).
+      // Multiplying by the GGX sampling Jacobian cancels NoV analytically.
+      let visibility = v_smith(NdotV, NdotL, roughness * roughness);
+      let GVis = 4.0 * NdotL * visibility * VdotH / max(NdotH, 1e-5);
       let Fc = pow(max(1.0 - VdotH, 0.0), 5.0);
 
       A += (1.0 - Fc) * GVis;

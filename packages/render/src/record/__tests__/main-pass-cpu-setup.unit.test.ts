@@ -333,3 +333,31 @@ it.each([
     f.dispose();
   }
 });
+
+it('prepares mesh bindings only when a CPU submesh survives GPU ownership', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 1, claimed: [0, 1, 2] });
+  let pageReads = 0;
+  Object.defineProperty(f.c.pipelineState.meshStorageBuffer, 'pages', {
+    get: () => {
+      pageReads++;
+      return undefined;
+    },
+  });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    f.record(pass);
+    expect(f.receipts).toEqual([]);
+    expect(pageReads).toBe(0);
+    f.claims.clear();
+    f.record(pass);
+    expect(f.receipts).toEqual([0, 1, 2].map((submesh) => ({ entity: 1, submesh })));
+    expect(pageReads).toBeGreaterThan(0);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});

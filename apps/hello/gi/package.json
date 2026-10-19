@@ -40,6 +40,7 @@
     }
   },
   "dependencies": {
+    "@forgeax/engine": "workspace:*",
     "@forgeax/apps-shared": "workspace:*",
     "@forgeax/engine-app": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",

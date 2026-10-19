@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 
 // Real browser recovery evidence for the Bloom carrier. Browser.crashGpuProcess
 // is the driver action; surface release/restore is intentionally covered by
@@ -63,21 +64,14 @@ let serverOutput = '';
 let latestInspection;
 
 async function reservePort() {
-  return await new Promise((resolvePort, reject) => {
-    const probe = createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      const port = typeof address === 'object' && address !== null ? address.port : 0;
-      probe.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolvePort(port);
-      });
-    });
+  const probe = createServer();
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
+  const address = probe.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise((resolveClose, reject) => {
+    probe.close((error) => error ? reject(error) : resolveClose());
   });
+  return port;
 }
 
 async function waitForServer() {
@@ -248,7 +242,7 @@ try {
   if ((after.frame.deviceGeneration ?? 0) <= (before.frame.deviceGeneration ?? 0)) {
     throw new Error(`device generation did not advance: ${JSON.stringify({ before: before.frame, after: after.frame })}`);
   }
-  if (after.bloom.graphStatus !== 'valid' || after.bloom.passCount !== 10 || after.bloom.enabled !== true) {
+  if (after.bloom.graphStatus !== 'valid' || after.bloom.passCount !== 11 || after.bloom.enabled !== true) {
     throw new Error(`Bloom was not rebuilt after device loss: ${JSON.stringify(after.bloom)}`);
   }
   if (

@@ -56,36 +56,52 @@ fn sampleIblDiffuse(
   return irradianceEOverPi;
 }
 
-// Directional albedo of the GGX specular lobe including multiple scattering
-// (Fdez-Aguera 2019, "A Multiple-Scattering Microfacet Model for Real-Time
-// Image Based Lighting", JCGT 8(1):3; Three r184 computeMultiscattering).
-// Single scattering loses 1 - Ess of the energy to inter-microfacet bounces,
-// which darkens rough metals. The bounce series is closed-form in the
-// split-sum pair already fetched for single scattering, so compensation needs
-// no second table, binding, or sample. The multi-scatter energy rides the same
-// lobe as single scattering (UE ShadingEnergyConservation style) instead of
-// the paper's irradiance term, so Skylight, ReflectionProbe, SSR response and
-// clearcoat stay on one source-independent weight.
+// Three r184 / Fdez-Aguera split-sum energy: the LUT already integrates Fresnel.
+// Single scattering follows reflected radiance; inter-microfacet bounces follow
+// cosine-weighted irradiance. Keep the two lobes separate so SSR only replaces
+// the directional reflection, never the broad multiple-scattering contribution.
+struct EnvironmentScattering {
+  single : vec3<f32>,
+  multi : vec3<f32>,
+  missingEnergy : f32,
+};
+
+fn environmentMultiScattering(single: vec3<f32>, missingEnergy: f32, F0: vec3<f32>) -> vec3<f32> {
+  let favg = F0 + (vec3<f32>(1.0) - F0) * (1.0 / 21.0);
+  return single * favg * missingEnergy / max(vec3<f32>(1.0) - missingEnergy * favg, vec3<f32>(1e-6));
+}
+
+fn environmentScattering(
+  NdotV: f32, roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+) -> EnvironmentScattering {
+  let ab = textureSampleLevel(brdfLut, brdfLutSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
+  let single = F0 * ab.r + ab.g * specularF90(F0);
+  let ems = clamp(1.0 - ab.r - ab.g, 0.0, 1.0);
+  let multi = environmentMultiScattering(single, ems, F0);
+  return EnvironmentScattering(single, multi, ems);
+}
+
 fn specularEnvironmentAlbedo(
   NdotV: f32, roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
 ) -> vec3<f32> {
-  // The preintegrated LUT has one level; explicit LOD remains valid when the
-  // Standard evaluator is selected by a non-uniform particle control path.
-  let envBRDF = textureSampleLevel(brdfLut, brdfLutSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
-  let fssEss = fresnelSchlickRoughness(NdotV, F0, roughness) * envBRDF.r + envBRDF.g * specularF90(F0);
-  let ems = clamp(1.0 - envBRDF.r - envBRDF.g, 0.0, 1.0);
-  let favg = F0 + (vec3<f32>(specularF90(F0)) - F0) * (1.0 / 21.0);
-  let fms = fssEss * favg / (vec3<f32>(1.0) - ems * favg);
-  return fssEss + fms * ems;
+  let scattering = environmentScattering(NdotV, roughness, F0, brdfLut, brdfLutSampler);
+  return scattering.single + scattering.multi;
 }
 
-// Split-sum specular IBL: prefiltered env * multi-scatter directional albedo.
+// Directional single-scattering response, shared by environment, probe, SSR and clearcoat.
 fn projectSpecularRadiance(
   radiance: vec3<f32>, normal: vec3<f32>, view: vec3<f32>,
   roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
 ) -> vec3<f32> {
   let NdotV = max(dot(normal, view), 0.001);
-  return radiance * specularEnvironmentAlbedo(NdotV, roughness, F0, brdfLut, brdfLutSampler);
+  return radiance * environmentScattering(NdotV, roughness, F0, brdfLut, brdfLutSampler).single;
+}
+
+// Three r184 EnvironmentNode: rough surfaces approach the normal instead of
+// collecting radiance from behind their tangent plane at grazing view angles.
+fn environmentReflectionDirection(normal: vec3<f32>, view: vec3<f32>, roughness: f32) -> vec3<f32> {
+  let r2 = roughness * roughness;
+  return normalize(mix(reflect(-view, normal), normal, r2 * r2));
 }
 
 fn sampleIblSpecular(
@@ -100,7 +116,7 @@ fn sampleIblSpecular(
   brdfLutSampler: sampler,
 ) -> vec3<f32> {
   let NdotV = max(dot(normal, view), 0.001);
-  let R = reflect(-view, normal);
+  let R = environmentReflectionDirection(normal, view, roughness);
   let rotated = inverseRotateEnvironment(R, rotation);
   let Rflip = vec3<f32>(rotated.x, -rotated.y, rotated.z);
   let mip = roughness * 4.0;
@@ -166,7 +182,7 @@ fn sampleReflectionProbeSpecular(
   }
   if (weight <= 0.0) { return sky; }
   let NdotV = max(dot(normal, view), 0.001);
-  let reflection = reflect(-view, normal);
+  let reflection = environmentReflectionDirection(normal, view, roughness);
   var projected = reflection;
   if (boxProjection) { projected = box_project(worldPosition, reflection, boxCenter, boxExtents); }
   let rotated = inverseRotateEnvironment(projected, rotation);

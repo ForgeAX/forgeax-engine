@@ -41,12 +41,12 @@ export type AsyncCreateShaderModule = (
   desc: { code: string; label?: string | undefined },
 ) => Promise<Result<ShaderModule, RhiError>>;
 
-export interface GpuDrivenPbrReadyModules {
+interface GpuDrivenPbrReadyModules {
   readonly pbrSkinModule: ShaderModule | null;
   readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
 }
 
-export interface GpuDrivenPbrReadyLayouts {
+interface GpuDrivenPbrReadyLayouts {
   readonly hdrpSkinPipelineLayout: PipelineLayout | null;
   readonly hdrpSkinProbePipelineLayout: PipelineLayout | null;
   readonly hdrpSkinMeshBindGroupLayout: BindGroupLayout | null;

@@ -55,6 +55,7 @@ it('renders overlapping local fog, independently removes owners, and retires the
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [0, -1, -1],

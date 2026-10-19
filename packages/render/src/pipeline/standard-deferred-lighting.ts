@@ -195,7 +195,7 @@ export function addStandardDeferredLighting(
           resources.buffer(params.value).unwrap(),
           0,
           new Float32Array([
-            input.ssao === undefined ? 0 : (settings?.intensity ?? 1),
+            input.ssao === undefined ? 0 : 1,
             noiseFrame,
             // Lane z gates the capsule evaluation; lane w is the light cone half-angle.
             capsuleFrame?.submission.capsuleCount ?? 0,
@@ -350,7 +350,7 @@ export function addStandardDeferredLighting(
                     viewDimension: binding === 10 ? ('2d' as const) : ('cube' as const),
                   },
                 })),
-                { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 64 } },
+                { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 80 } },
                 { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
                 { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
                 {

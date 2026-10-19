@@ -26,8 +26,8 @@ export const LINEAR_HDR_DOMAIN: ColorValueDomain = 'linear-hdr';
 export const LINEAR_LDR_DOMAIN: ColorValueDomain = 'linear-ldr';
 export const DISPLAY_ENCODED_DOMAIN: ColorValueDomain = 'display-encoded';
 
-export type StandardRgb = readonly [number, number, number];
-export type StandardRgba = readonly [number, number, number, number];
+type StandardRgb = readonly [number, number, number];
+type StandardRgba = readonly [number, number, number, number];
 
 /** Apply the camera's Bradford white-balance adaptation in linear HDR. */
 export function applyStandardWhiteBalance(
@@ -42,7 +42,7 @@ export function applyStandardWhiteBalance(
   return [adapted[0] * magentaScale, adapted[1] * greenScale, adapted[2] * magentaScale];
 }
 
-export interface StandardColorLutData {
+interface StandardColorLutData {
   readonly size: number;
   /** RGBA half-float texels in z-major, y-major, x-major order. */
   readonly data: ArrayLike<number>;
@@ -128,7 +128,7 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) uv: v
 `;
 
 /** Stage-owned GPU inputs, bound at `@group(1)` beside the shared group-0 source. */
-export interface StandardColorStageResources {
+interface StandardColorStageResources {
   readonly accesses: readonly GraphAccess[];
   bind(
     device: RhiDevice,

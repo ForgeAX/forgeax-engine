@@ -107,7 +107,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   world.spawn(
     { component: Transform, data: { pos: [1.5, 2.5, 2.5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: DirectionalLight, data: { direction: [-0.4, -1, -0.3], intensity: 3 } },
+    { component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -1, -0.3], intensity: 3 } },
   );
   const started = app.start();
   if (!started.ok) {

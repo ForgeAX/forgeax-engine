@@ -42,24 +42,21 @@ export default defineFeature({
       checks.near('Lambert roughness default', matte?.roughness ?? -1, 0.5, 1e-4);
     }
 
-    const glossy = parseMaterial({ kind: 'phong', diffuse: [1, 1, 1], shininess: 100 }, 0);
+    const glossy = parseMaterial({ kind: 'phong', diffuse: [1, 1, 1], shininess: 100 });
     checks.near('shininess 100 -> roughness 0', glossy.roughnessFactor ?? -1, 0, 1e-6);
-    const over = parseMaterial({ kind: 'phong', diffuse: [1, 1, 1], shininess: 400 }, 0);
+    const over = parseMaterial({ kind: 'phong', diffuse: [1, 1, 1], shininess: 400 });
     checks.near('roughness clamps at 0', over.roughnessFactor ?? -1, 0, 1e-6);
-    const stingray = parseMaterial(
-      {
-        kind: 'stingray-pbs',
-        name: 'Metal',
-        stingrayProps: { baseColor: [0.2, 0.3, 0.4], metallic: 1, roughness: 0.25 },
-      },
-      0,
-    );
+    const stingray = parseMaterial({
+      kind: 'stingray-pbs',
+      name: 'Metal',
+      stingrayProps: { baseColor: [0.2, 0.3, 0.4], metallic: 1, roughness: 0.25 },
+    });
     checks.equal(
       'StingrayPBS channels pass through',
       [stingray.baseColorFactor, stingray.metallicFactor, stingray.roughnessFactor],
       [[0.2, 0.3, 0.4, 1], 1, 0.25],
     );
-    const fallback = parseMaterial({ kind: 'fallback', name: 'Mystery' }, 0);
+    const fallback = parseMaterial({ kind: 'fallback', name: 'Mystery' });
     checks.equal(
       'fallback grey PBR',
       [fallback.baseColorFactor, fallback.metallicFactor, fallback.roughnessFactor],

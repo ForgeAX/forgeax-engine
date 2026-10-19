@@ -1,6 +1,7 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
+import { transformRenderState } from '../material-render-state';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import {
@@ -103,10 +104,12 @@ export function prepareHiddenGpuDrivenPipelines(input: {
           (draw.key.topology === 'triangle-strip' || draw.key.topology === 'line-strip')
             ? entry.mesh.indexFormat
             : undefined,
-        renderState:
+        renderState: transformRenderState(
           fragment === 'fs_temporal'
             ? geometryRenderStateForPass(material.renderState, 'temporal', input.coverageOnly)
             : material.renderState,
+          entry.source.transform.world,
+        ),
         additionalColorFormats: input.formats.slice(1),
         standardTextureMask: material.standardTextureMask,
         forwardColorPass: fragment === undefined || fragment === STANDARD_OPAQUE_FRAGMENT_ENTRY,

@@ -72,7 +72,7 @@ export function buildTextureWorld(world: World, texId: number): void {
 
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: DirectionalLight, data: { color: [1, 1, 1], intensity: 1 } },
+    { component: DirectionalLight, data: { castShadow: true, color: [1, 1, 1], intensity: 1 } },
   );
 
   world.spawn(

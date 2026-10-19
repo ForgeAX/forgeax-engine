@@ -1,12 +1,10 @@
 import {
   createPlatformClock,
+  createPlatformLifecycle,
   type DisplayFacts,
   type Platform,
   type PlatformError,
-  type PlatformEvent,
-  type PlatformRelease,
   platformError,
-  releasePlatformResources,
 } from '@forgeax/engine-platform';
 import { ok, type Result } from '@forgeax/engine-types';
 
@@ -35,13 +33,11 @@ export function createBrowserPlatform(
   const clock = createPlatformClock(() => view.performance.now(), 'milliseconds');
   const initialClock = clock.now();
   if (!initialClock.ok) return initialClock;
-  const releases = new Set<PlatformRelease>();
-  let disposed = false;
+  const lifetime = createPlatformLifecycle();
   let pageVisible = true;
-  const listeners = new Set<(event: PlatformEvent) => void>();
 
   function display(): Result<DisplayFacts, PlatformError> {
-    if (disposed) return platformError('platform-disposed', { operation: 'display' });
+    if (lifetime.disposed) return platformError('platform-disposed', { operation: 'display' });
     if (!canvas.isConnected) {
       return platformError('platform-unavailable', { operation: 'connected canvas display' });
     }
@@ -108,19 +104,7 @@ export function createBrowserPlatform(
   const initialDisplay = display();
   if (!initialDisplay.ok) return initialDisplay;
 
-  function emit(event: PlatformEvent): void {
-    if (disposed) return;
-    const failures: unknown[] = [];
-    for (const listener of [...listeners]) {
-      if (disposed || !listeners.has(listener)) continue;
-      try {
-        listener(event);
-      } catch (cause) {
-        failures.push(cause);
-      }
-    }
-    if (failures.length > 0) throw new AggregateError(failures, 'Platform event listener failed');
-  }
+  const { emit } = lifetime;
   const visibility = () =>
     emit({ kind: 'visibility', visible: pageVisible && document.visibilityState !== 'hidden' });
   const resize = () => {
@@ -136,8 +120,7 @@ export function createBrowserPlatform(
     pageVisible = true;
     visibility();
   };
-  const nativeReleases: PlatformRelease[] = [];
-  try {
+  const subscribed = lifetime.bind((nativeReleases) => {
     nativeReleases.push(() => document.removeEventListener('visibilitychange', visibility));
     document.addEventListener('visibilitychange', visibility);
     nativeReleases.push(() => view.removeEventListener('resize', resize));
@@ -153,63 +136,23 @@ export function createBrowserPlatform(
       nativeReleases.push(() => observer.disconnect());
       observer.observe(canvas);
     }
-  } catch (cause) {
-    disposed = true;
-    let cleanupCause: unknown;
-    try {
-      releasePlatformResources(nativeReleases.reverse());
-    } catch (failure) {
-      cleanupCause = failure;
-    }
-    return platformError('platform-operation-failed', {
-      operation: 'subscribe',
-      cause,
-      ...(cleanupCause === undefined ? {} : { cleanupCause }),
-    });
-  }
+  });
+  if (!subscribed.ok) return subscribed;
 
   return ok({
     canvas,
     now: () =>
-      disposed ? platformError('platform-disposed', { operation: 'clock.now' }) : clock.now(),
+      lifetime.disposed
+        ? platformError('platform-disposed', { operation: 'clock.now' })
+        : clock.now(),
     display,
-    visible: () => !disposed && pageVisible && document.visibilityState !== 'hidden',
-    requestFrame(callback) {
-      if (disposed) return platformError('platform-disposed', { operation: 'requestFrame' });
-      let live = true;
-      let id: number;
-      const release = () => {
-        if (!live) return;
-        live = false;
-        releases.delete(release);
-        releasePlatformResources([() => view.cancelAnimationFrame(id)]);
-      };
-      try {
-        id = view.requestAnimationFrame(() => {
-          if (!live || disposed) return;
-          live = false;
-          releases.delete(release);
-          callback();
-        });
-      } catch (cause) {
-        return platformError('platform-operation-failed', { operation: 'requestFrame', cause });
-      }
-      releases.add(release);
-      return ok(release);
-    },
-    subscribe(listener) {
-      if (disposed) return platformError('platform-disposed', { operation: 'subscribe' });
-      const subscription = (event: PlatformEvent) => listener(event);
-      listeners.add(subscription);
-      return ok(() => {
-        listeners.delete(subscription);
-      });
-    },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      listeners.clear();
-      releasePlatformResources([...releases, ...nativeReleases.reverse()]);
-    },
+    visible: () => !lifetime.disposed && pageVisible && document.visibilityState !== 'hidden',
+    requestFrame: (callback) =>
+      lifetime.requestFrame((frame) => {
+        const id = view.requestAnimationFrame(frame);
+        return () => view.cancelAnimationFrame(id);
+      }, callback),
+    subscribe: lifetime.subscribe,
+    dispose: lifetime.dispose,
   });
 }

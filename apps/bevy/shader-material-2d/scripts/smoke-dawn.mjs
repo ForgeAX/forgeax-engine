@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
@@ -6,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const FRAMES = Math.max(Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10), 60);
 const WIDTH = testQuality.viewport.width;
@@ -113,7 +114,7 @@ for (let i = 0; i < framePixels.length; i += 4) {
 }
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(root, 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'shader-material-2d.png'), writeReferencePng(framePixels, WIDTH, HEIGHT));
+writeFileSync(resolve(outDir, 'shader-material-2d.png'), encodePng(WIDTH, HEIGHT, framePixels));
 console.log(`[smoke] frames=${FRAMES} visiblePixels=${visiblePixels} backgroundPixels=${backgroundPixels} colorBins=${colors.size} errors=${errors.length}`);
 const failures = [];
 if (rendererBackend(renderer) !== 'webgpu') failures.push(`backend=${rendererBackend(renderer)}`);

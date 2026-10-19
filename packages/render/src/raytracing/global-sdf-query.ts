@@ -7,6 +7,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
 import type { GlobalSdfComposition } from './global-sdf';
 import {
   packReferenceRays,
@@ -375,26 +376,9 @@ export function createGlobalSdfQueryRecorder(device: RhiDevice, module: ShaderMo
         const range = input[name],
           offset = range.offset ?? 0;
         const uniform = name === 'grid' || name === 'settings';
-        if (
-          !Number.isSafeInteger(offset) ||
-          offset < 0 ||
-          offset %
-            (uniform
-              ? device.limits.minUniformBufferOffsetAlignment
-              : device.limits.minStorageBufferOffsetAlignment) !==
-            0
-        )
+        if (!isBufferOffsetAligned(device.limits, offset, uniform))
           return failure(`device-aligned nonnegative ${name} offset`);
-        if (
-          !Number.isSafeInteger(offset + range.size) ||
-          !(offset + range.size <= device.limits.maxBufferSize) ||
-          !(
-            range.size <=
-            (uniform
-              ? device.limits.maxUniformBufferBindingSize
-              : device.limits.maxStorageBufferBindingSize)
-          )
-        )
+        if (!isBufferRangeWithinLimits(device.limits, range, uniform))
           return failure(`${name} range within device buffer limits`, 'limit-exceeded');
       }
       if (

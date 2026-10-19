@@ -54,7 +54,7 @@ async function makeRecording(pack: DawnPack): Promise<{
   readonly device: RhiDevice;
   readonly texture: import('@forgeax/engine-rhi').Texture;
 }> {
-  const recorder = wrap(pack.rhi);
+  const recorder = wrap(pack.rhi, pack.createShaderModule);
   const createShaderModule = wrapCreateShaderModule(pack.createShaderModule, recorder);
   const adapter = await recorder.requestAdapter();
   expect(adapter.ok).toBe(true);
@@ -185,7 +185,7 @@ describe.skipIf(SKIP_DAWN)('RHI debug v7 fresh-device evidence', () => {
 
   it('captures and replays an occlusion QuerySet with an eight-byte readback', async () => {
     const pack = await loadDawn();
-    const recorder = wrap(pack.rhi);
+    const recorder = wrap(pack.rhi, pack.createShaderModule);
     const recordingShaderModule = wrapCreateShaderModule(pack.createShaderModule, recorder);
     const adapter = await recorder.requestAdapter();
     expect(adapter.ok).toBe(true);

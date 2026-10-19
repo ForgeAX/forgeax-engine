@@ -966,7 +966,7 @@ describe('TAA neighborhood equivalence on Dawn', () => {
   );
 
   it.skipIf(!dawnReady)(
-    'matches pinned pre-optimization bounds with identical current reconstruction on all three MRT attachments',
+    'matches pinned pre-optimization bounds with identical reconstruction and blend policy on all three MRT attachments',
     async () => {
       const productionSource = readFileSync(
         resolve(import.meta.dirname, '../../../shader/src/taa-resolve.wgsl'),
@@ -977,14 +977,31 @@ describe('TAA neighborhood equivalence on Dawn', () => {
         'utf8',
       );
       const baselineBody = baselineSource.split('\n').slice(4).join('\n');
-      // The native reconstruction intentionally changes. Isolate the bounds
-      // optimization with the same current sample on both sides, while still
-      // verifying the immutable pre-optimization source hash below.
-      const pairedBaseline = replaceRequired(
+      // Isolate neighborhood optimization from intentional reconstruction and
+      // Three r184 blend-policy changes. The dedicated behavior GPU test owns
+      // the motion equation; both sides here use it while the pinned bounds and
+      // their falsifiers stay immutable.
+      let pairedBaseline = replaceRequired(
         baselineSource,
         'let current = textureSampleLevel(currentColor, currentSampler, currentUv, 0.0);',
         'let sourcePixel = clamp(vec2<i32>(currentUv * vec2<f32>(dimensions)), vec2<i32>(0), dimensions - vec2<i32>(1));\n  let current = textureLoad(currentColor, sourcePixel, 0);',
         'shared point reconstruction',
+      );
+
+      const motionHelper = productionSource.match(/fn taaMotionCurrentWeight\([\s\S]*?\n}/)?.[0];
+      if (motionHelper === undefined) throw new Error('Missing production motion policy');
+      pairedBaseline += `\n${motionHelper}\n`;
+      pairedBaseline = replaceRequired(
+        pairedBaseline,
+        'let velocityFactor = 1.0 - clamp(length(temporal.xy) * 64.0, 0.0, 1.0);',
+        'let velocityFactor = select(1.0, 1.0 - taaMotionCurrentWeight(temporal.xy, vec2<f32>(dimensions), false), length(temporal.xy) > 1e-7);',
+        'shared native motion policy',
+      );
+      pairedBaseline = replaceRequired(
+        pairedBaseline,
+        'let historyWeight = progressiveWeight * reactiveFactor * velocityFactor;',
+        'let historyWeight = min(progressiveWeight, velocityFactor) * reactiveFactor;',
+        'shared motion-history composition',
       );
 
       expect(createHash('sha256').update(baselineBody).digest('hex')).toBe(PINNED_BASELINE_SHA256);

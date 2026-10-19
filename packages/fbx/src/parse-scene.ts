@@ -1,6 +1,7 @@
 // parse-scene.ts — FBX JSON POD to ScenePod bridge (t29).
 
 import type { SceneEntityPod, ScenePod } from '@forgeax/engine-types';
+import type { FbxLodGroupInput } from './lod/parse-lod-group.js';
 
 export interface FbxRawNode {
   readonly name: string;
@@ -15,19 +16,7 @@ export interface FbxRawNode {
 
 export interface FbxRawNodes {
   readonly nodes?: readonly FbxRawNode[];
-  readonly lodGroups?: readonly FbxRawLodGroup[];
-}
-
-export interface FbxRawLodGroup {
-  readonly children?: readonly {
-    readonly meshIndex?: unknown;
-    readonly distance?: unknown;
-    readonly display?: unknown;
-  }[];
-  readonly threshold?: unknown;
-  readonly mode?: unknown;
-  readonly relative?: unknown;
-  readonly displayMode?: unknown;
+  readonly lodGroups?: readonly FbxLodGroupInput[];
 }
 
 export type FbxNodePathResult =

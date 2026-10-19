@@ -593,7 +593,9 @@ export async function prepareSurfaceCapture(
     for (const section of source.sections) {
       const { material } = section;
       const values = {
-        ...Object.fromEntries(material.program.paramSchema.map((p) => [p.name, p.default])),
+        ...Object.fromEntries(
+          material.program.paramSchema.map((p) => [p.name, 'default' in p ? p.default : undefined]),
+        ),
         ...material.snapshot.paramSnapshot,
       };
       const admittedValues = admitRayMaterialValues(values, String(material.id), source.captureKey);

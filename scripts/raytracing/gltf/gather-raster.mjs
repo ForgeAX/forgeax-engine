@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import { create, globals } from '@forgeax/engine-dawn-node';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+import { encodePng } from '@forgeax/engine-image/png';
+
 import { createRayDisplay } from '../../../packages/render/dist/internal.mjs';
 import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   readbackTexturePixels,
   tapeDigest,
@@ -53,7 +54,8 @@ for (let y = 0; y < resolution; y++)
   for (let x = 0; x < resolution; x++) {
     const p = (y * step + Math.floor(step / 2)) * source.width + x * step + Math.floor(step / 2);
     coverage.set(depth[p] > 0 ? [190, 30, 140, 255] : [0, 0, 0, 255], (y * resolution + x) * 4);
-    for (let c = 0; c < 3; c++) direct[(y * resolution + x) * 4 + c] = halfToFloat(hdr[p * 4 + c]);
+    for (let c = 0; c < 3; c++)
+      direct[(y * resolution + x) * 4 + c] = halfFloat.f16ToF32(hdr[p * 4 + c]);
   }
 for (const [sampleIndex, sample] of source.samples.entries()) {
   const i = Math.floor(sample.y / step) * resolution + Math.floor(sample.x / step);
@@ -64,7 +66,7 @@ for (const [sampleIndex, sample] of source.samples.entries()) {
   coverage.set([40, 190, 100, 255], i * 4);
   receiver.set([sample.first, sample.count, packed[sample.y * source.width + sample.x], 1], i * 4);
 }
-await writeFile(resolve(out, 'coverage.png'), writeReferencePng(coverage, resolution, resolution));
+await writeFile(resolve(out, 'coverage.png'), encodePng(resolution, resolution, coverage));
 const input = await bytes(hitDir, 'baseline-accumulation.bin');
 const darkInput = await bytes(hitDir, 'light-off-accumulation.bin');
 const kernel = `
@@ -205,7 +207,7 @@ try {
       images.push(image);
       await writeFile(
         resolve(out, `${name}-${mode}.png`),
-        writeReferencePng(image, resolution, resolution),
+        encodePng(resolution, resolution, image),
       );
     }
     const values = new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4),

@@ -511,13 +511,29 @@ export function normalizeConvexCompoundShapeInput(
       return invalid(value);
   if (input.isSensor !== undefined && typeof input.isSensor !== 'boolean')
     return invalid(input.isSensor);
-  for (const piece of input.pieces)
+  const pieces: Float32Array[] = [];
+  let pointCount = 0;
+  for (const piece of input.pieces) {
     if (piece.length < 12 || piece.length % 3 !== 0 || !finiteVolume(piece))
       return invalid(piece.length);
+    pieces.push(piece);
+    pointCount += piece.length;
+  }
+  // A logical shape owns and retires all pieces together. Copy its validated
+  // roster into disjoint views without retaining one backing store per hull.
+  const pointStorage = new ArrayBuffer(pointCount * Float32Array.BYTES_PER_ELEMENT);
+  let pointOffset = 0;
+  for (let index = 0; index < pieces.length; index++) {
+    const source = pieces[index] as Float32Array;
+    const copy = new Float32Array(pointStorage, pointOffset, source.length);
+    copy.set(source);
+    pieces[index] = copy;
+    pointOffset += copy.byteLength;
+  }
   return ok(
     Object.freeze({
       ...input,
-      pieces: Object.freeze(input.pieces.map((piece) => new Float32Array(piece))),
+      pieces: Object.freeze(pieces),
       origin: Object.freeze([...origin]) as PhysicsVector,
       rotation: Object.freeze(rotation),
     }),

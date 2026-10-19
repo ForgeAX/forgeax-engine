@@ -35,7 +35,7 @@ describe('CameraExposure contract', () => {
     expect(Camera.fields.temperature.default).toBe(6504);
     expect(Camera.fields.tint.default).toBe(0);
     expect(Camera.fields.colorLut.type).toBe('shared<TextureAsset>');
-    expect(Camera.fields.colorLutStrength.default).toBe(0);
+    expect(Camera.fields.colorLutStrength.default).toBe(1);
   });
 
   it('projects the same public output through both camera factories', () => {
@@ -147,7 +147,7 @@ describe('CameraExposure contract', () => {
     expect(snapshot?.output?.exposure).toEqual({ kind: 'manual', multiplier: 2 });
     expect(snapshot?.output?.temperature).toBe(6504);
     expect(snapshot?.output?.tint).toBe(0);
-    expect(snapshot?.output?.colorLutStrength).toBe(0);
+    expect(snapshot?.output?.colorLutStrength).toBe(1);
     expect(snapshot?.projection).toBe('perspective');
   });
 });

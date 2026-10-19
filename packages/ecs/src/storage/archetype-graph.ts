@@ -61,10 +61,7 @@ export function getTable(graph: ArchetypeGraph, id: TableId): Table {
   return table;
 }
 
-export function getOrCreateTable(
-  graph: ArchetypeGraph,
-  components: ReadonlyArray<Component>,
-): Table {
+function getOrCreateTable(graph: ArchetypeGraph, components: ReadonlyArray<Component>): Table {
   const tableComponents = canonicalComponents(
     components.filter((component) => component.storage === 'table'),
   );

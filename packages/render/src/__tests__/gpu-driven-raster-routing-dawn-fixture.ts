@@ -108,9 +108,9 @@ export async function verifyRetainedRasterRouting(input: {
             ],
             encode: ({ encoder, resources }) =>
               encoder.copyTextureToBuffer(
-                { texture: resources.texture(color).unwrap() as unknown as GPUTexture },
+                { texture: resources.texture(color).unwrap() },
                 {
-                  buffer: resources.buffer(destination).unwrap() as unknown as GPUBuffer,
+                  buffer: resources.buffer(destination).unwrap(),
                   offset: index * 256,
                   bytesPerRow: 256,
                   rowsPerImage: 1,

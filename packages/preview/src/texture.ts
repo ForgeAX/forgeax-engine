@@ -14,8 +14,10 @@ import {
   type PreviewDomainResult,
   type PreviewDomainRunner,
   previewRuntimeUnavailable,
+  REQUIRED_PREVIEW_EVIDENCE,
   validateDomainValue,
 } from './host.js';
+import { isNonemptyString, isSafeInteger, parsePreviewRequest } from './request-schema.js';
 
 export type TextureColorSpace = 'linear' | 'srgb' | 'hdr';
 
@@ -53,30 +55,23 @@ export interface TexturePreviewReport {
 
 const texturePreviewArgsSchema: ToolSchema<TexturePreviewRequest> = {
   parse(value) {
-    if (value === null || typeof value !== 'object')
-      return { ok: false, error: 'expected a texture preview request object' };
-    const request = value as Partial<TexturePreviewRequest>;
+    const envelope = parsePreviewRequest(value, 'TextureAsset');
+    if (!envelope.ok) return envelope;
+    const request = envelope.value;
     const binding = request.binding;
-    if (request.subject?.kind !== 'TextureAsset' || typeof request.subject.guid !== 'string')
-      return { ok: false, error: 'expected a TextureAsset subject' };
     if (
-      request.snapshot === undefined ||
-      !Number.isSafeInteger(request.snapshot.revision) ||
-      typeof request.snapshot.digest !== 'string'
-    )
-      return { ok: false, error: 'expected a revisioned snapshot' };
-    if (
-      binding === undefined ||
-      binding.guid !== request.subject.guid ||
-      !Number.isSafeInteger(binding.width) ||
+      !isSafeInteger(binding.width) ||
       binding.width < 1 ||
-      !Number.isSafeInteger(binding.height) ||
+      !isSafeInteger(binding.height) ||
       binding.height < 1 ||
-      binding.format.length === 0 ||
-      !['linear', 'srgb', 'hdr'].includes(binding.colorSpace) ||
-      !Number.isSafeInteger(binding.mipLevels) ||
+      !isNonemptyString(binding.format) ||
+      (binding.colorSpace !== 'linear' &&
+        binding.colorSpace !== 'srgb' &&
+        binding.colorSpace !== 'hdr') ||
+      typeof binding.alpha !== 'boolean' ||
+      !isSafeInteger(binding.mipLevels) ||
       binding.mipLevels < 1 ||
-      !Number.isSafeInteger(binding.channels) ||
+      !isSafeInteger(binding.channels) ||
       binding.channels < 1 ||
       binding.channels > 4
     )
@@ -84,7 +79,22 @@ const texturePreviewArgsSchema: ToolSchema<TexturePreviewRequest> = {
         ok: false,
         error: 'expected complete texture dimensions, format, and color-space facts',
       };
-    return { ok: true, value: request as TexturePreviewRequest };
+    return {
+      ok: true,
+      value: {
+        ...request,
+        binding: {
+          guid: request.subject.guid,
+          width: binding.width,
+          height: binding.height,
+          format: binding.format,
+          colorSpace: binding.colorSpace,
+          alpha: binding.alpha,
+          mipLevels: binding.mipLevels,
+          channels: binding.channels,
+        },
+      },
+    };
   },
   describe:
     '{"type":"object","required":["subject","snapshot","binding"],"properties":{"subject":{"type":"object","required":["kind","guid"],"properties":{"kind":{"const":"TextureAsset"},"guid":{"type":"string"}}},"snapshot":{"type":"object","required":["revision","digest"]},"binding":{"type":"object","required":["guid","width","height","format","colorSpace","alpha","mipLevels","channels"]}}}',
@@ -102,12 +112,12 @@ export const texturePreviewDescriptor = {
   realm: 'engine' as const,
   argsSchema: texturePreviewArgsSchema,
   resultSchema: texturePreviewResultSchema,
-  evidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+  evidence: REQUIRED_PREVIEW_EVIDENCE,
   preview: {
     realm: 'engine' as const,
     subject: { kind: 'TextureAsset', guid: '<request>' },
     snapshot: { revision: 0, digest: '<request>' },
-    requiredEvidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+    requiredEvidence: REQUIRED_PREVIEW_EVIDENCE,
   } satisfies ToolPreviewContract,
 };
 

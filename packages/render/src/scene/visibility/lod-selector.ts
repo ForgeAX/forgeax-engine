@@ -1,9 +1,9 @@
 import type { MeshLodLevel } from '@forgeax/engine-types';
+import type { CameraSnapshot } from '../../render-contract';
 
-export interface ProjectedHeightInput {
+interface ProjectedHeightInput extends Pick<CameraSnapshot, 'projection'> {
   readonly radius: number;
   readonly depth: number;
-  readonly projection: 'perspective' | 'orthographic';
   readonly fov?: number;
   readonly orthoHeight?: number;
 }

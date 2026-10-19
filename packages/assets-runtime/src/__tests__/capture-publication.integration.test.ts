@@ -3,12 +3,17 @@ import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import {
   createRuntimePackPublication,
   decodePackBlob,
-  encodePackBlob,
   preparePackProgram,
   validateFixedPackPublication,
 } from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { type CatalogEntry, type MaterialPass, type MeshAsset, ok } from '@forgeax/engine-types';
+import {
+  type CatalogEntry,
+  encodeBase64,
+  type MaterialPass,
+  type MeshAsset,
+  ok,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { normaliseForPack } from '../../../import/src/import-runner.js';
 import {
@@ -531,7 +536,7 @@ it.each([
       blobs: Object.fromEntries(
         Object.entries(captured.blobs).map(([path, bytes]) => [
           path,
-          encodePackBlob(decodePackBlob(bytes)),
+          encodeBase64(decodePackBlob(bytes)),
         ]),
       ),
     }),

@@ -11,7 +11,8 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
+import { filesystemPathRelative } from './filesystem-path.js';
 import { readProjectFacts } from './project.js';
 import type { CommandError, CommandResult, ProjectCommandOptions } from './types.js';
 
@@ -224,14 +225,8 @@ function isRuntimeFile(path: string): boolean {
 
 function packageRelativePath(packageRoot: string, target: string): string | null {
   const absolute = resolve(packageRoot, target);
-  const candidate = relative(packageRoot, absolute);
-  if (
-    candidate.length === 0 ||
-    isAbsolute(candidate) ||
-    candidate === '..' ||
-    candidate.startsWith(`..${sep}`)
-  )
-    return null;
+  const candidate = filesystemPathRelative(packageRoot, absolute, false);
+  if (candidate === undefined) return null;
   return candidate.split(sep).join('/');
 }
 

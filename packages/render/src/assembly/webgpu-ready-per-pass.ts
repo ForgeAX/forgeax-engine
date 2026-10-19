@@ -1,6 +1,6 @@
 import type { PerPassResources } from '../record/render-context';
 
-export interface ReadyPerPassResourceInputs {
+interface ReadyPerPassResourceInputs {
   readonly fxaaPipeline: PerPassResources['fxaaPipeline'];
   readonly fxaaBindGroupLayout: PerPassResources['fxaaBindGroupLayout'];
   readonly fxaaSampler: PerPassResources['fxaaSampler'];
@@ -13,15 +13,15 @@ export interface ReadyPerPassResourceInputs {
   readonly shadowLightSpaceMatrix: PerPassResources['shadowLightSpaceMatrix'];
   readonly shadowCsmLightViewProj: PerPassResources['shadowCsmLightViewProj'];
   readonly shadowCsmSelection: PerPassResources['shadowCsmSelection'];
-  readonly bloomDownsamplePipeline: PerPassResources['bloomDownsamplePipeline'];
-  readonly bloomUpsamplePipeline: PerPassResources['bloomUpsamplePipeline'];
+  readonly bloomHorizontalPipeline: PerPassResources['bloomHorizontalPipeline'];
+  readonly bloomVerticalPipeline: PerPassResources['bloomVerticalPipeline'];
   readonly bloomCompositePipeline: PerPassResources['bloomCompositePipeline'];
-  readonly bloomDownsampleBindGroupLayout: PerPassResources['bloomDownsampleBindGroupLayout'];
-  readonly bloomUpsampleBindGroupLayout: PerPassResources['bloomUpsampleBindGroupLayout'];
+  readonly bloomHorizontalBindGroupLayout: PerPassResources['bloomHorizontalBindGroupLayout'];
+  readonly bloomVerticalBindGroupLayout: PerPassResources['bloomVerticalBindGroupLayout'];
   readonly bloomCompositeBindGroupLayout: PerPassResources['bloomCompositeBindGroupLayout'];
   readonly bloomSampler: PerPassResources['bloomSampler'];
-  readonly bloomDownsampleParamsBuffer: PerPassResources['bloomDownsampleParamsBuffer'];
-  readonly bloomUpsampleParamsBuffer: PerPassResources['bloomUpsampleParamsBuffer'];
+  readonly bloomHorizontalParamsBuffer: PerPassResources['bloomHorizontalParamsBuffer'];
+  readonly bloomVerticalParamsBuffer: PerPassResources['bloomVerticalParamsBuffer'];
   readonly bloomCompositeParamsBuffer: PerPassResources['bloomCompositeParamsBuffer'];
   readonly ensureBloomResources: NonNullable<PerPassResources['ensureBloomResources']>;
   readonly getBloomResources: NonNullable<PerPassResources['getBloomResources']>;
@@ -76,15 +76,15 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     shadowLightSpaceMatrix: input.shadowLightSpaceMatrix,
     shadowCsmLightViewProj: input.shadowCsmLightViewProj,
     shadowCsmSelection: input.shadowCsmSelection,
-    bloomDownsamplePipeline: input.bloomDownsamplePipeline,
-    bloomUpsamplePipeline: input.bloomUpsamplePipeline,
+    bloomHorizontalPipeline: input.bloomHorizontalPipeline,
+    bloomVerticalPipeline: input.bloomVerticalPipeline,
     bloomCompositePipeline: input.bloomCompositePipeline,
-    bloomDownsampleBindGroupLayout: input.bloomDownsampleBindGroupLayout,
-    bloomUpsampleBindGroupLayout: input.bloomUpsampleBindGroupLayout,
+    bloomHorizontalBindGroupLayout: input.bloomHorizontalBindGroupLayout,
+    bloomVerticalBindGroupLayout: input.bloomVerticalBindGroupLayout,
     bloomCompositeBindGroupLayout: input.bloomCompositeBindGroupLayout,
     bloomSampler: input.bloomSampler,
-    bloomDownsampleParamsBuffer: input.bloomDownsampleParamsBuffer,
-    bloomUpsampleParamsBuffer: input.bloomUpsampleParamsBuffer,
+    bloomHorizontalParamsBuffer: input.bloomHorizontalParamsBuffer,
+    bloomVerticalParamsBuffer: input.bloomVerticalParamsBuffer,
     bloomCompositeParamsBuffer: input.bloomCompositeParamsBuffer,
     ensureBloomResources: input.ensureBloomResources,
     getBloomResources: input.getBloomResources,

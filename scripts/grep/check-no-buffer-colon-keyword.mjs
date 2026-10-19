@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import process from 'node:process';
 // AC-10 / w25 (feat-20260515-buffer-array-vocab-collapse M5): assert that
 // the legacy schema-vocab keyword `'buffer:<N>'` (colon-form) cannot
 // re-appear as a string literal in the live source tree. The closed
@@ -23,9 +24,7 @@
 //     `'buffer:8'` to lock the closed-union narrowing)
 //
 // Pattern + zero-dep stdio mirrors scripts/grep/check-no-entity-array-literal.mjs.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import process from 'node:process';
+import { grepSourceFiles } from './source-files.mjs';
 
 const ROOTS = ['packages', 'apps', 'templates'];
 
@@ -34,59 +33,17 @@ const SELF_EXEMPT = new Set([
   'packages/ecs/src/__tests__/buffer-array-vocab.test-d.ts',
 ]);
 
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.cache', 'test-output']);
-
-const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
-
 const RE_LITERAL = /(['"`])buffer:[0-9]+\1/g;
-
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
-}
 
 const hits = [];
 
-function walk(dir) {
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
+for (const { path: p, code: stripped } of grepSourceFiles(ROOTS, { exempt: SELF_EXEMPT })) {
+  RE_LITERAL.lastIndex = 0;
+  let m = RE_LITERAL.exec(stripped);
+  while (m !== null) {
+    hits.push({ path: p, literal: m[0] });
+    m = RE_LITERAL.exec(stripped);
   }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    let st;
-    try {
-      st = statSync(p);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) {
-      walk(p);
-      continue;
-    }
-    const ext = p.slice(p.lastIndexOf('.'));
-    if (!CODE_EXTS.has(ext)) continue;
-    if (SELF_EXEMPT.has(p)) continue;
-    let text;
-    try {
-      text = readFileSync(p, 'utf8');
-    } catch {
-      continue;
-    }
-    const stripped = stripComments(text);
-    RE_LITERAL.lastIndex = 0;
-    let m = RE_LITERAL.exec(stripped);
-    while (m !== null) {
-      hits.push({ path: p, literal: m[0] });
-      m = RE_LITERAL.exec(stripped);
-    }
-  }
-}
-
-for (const root of ROOTS) {
-  walk(root);
 }
 
 if (hits.length > 0) {

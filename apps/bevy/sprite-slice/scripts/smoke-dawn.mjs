@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
 const height = 180;
@@ -63,7 +64,7 @@ let coloredPixels = 0;
 for (let i = 0; i < tight.length; i += 4) if (Math.max(tight[i], tight[i + 1], tight[i + 2]) - Math.min(tight[i], tight[i + 1], tight[i + 2]) > 35 && Math.max(tight[i], tight[i + 1], tight[i + 2]) > 40) coloredPixels += 1;
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'sprite-slice.png'), writeReferencePng(tight, width, height));
+writeFileSync(resolve(outDir, 'sprite-slice.png'), encodePng(width, height, tight));
 console.log(`[smoke] frames=${frames} coloredPixels=${coloredPixels} errors=${errors.length}`);
 if (rendererBackend(renderer) !== 'webgpu' || frames < 60 || coloredPixels < 1000 || errors.length > 0) { console.error('[smoke] FAIL - visible 9-slice panels and zero RHI errors required'); process.exit(1); }
 console.log('[smoke] PASS - backend=webgpu, visible stretch/tile 9-slice panels, errors=0');

@@ -8,20 +8,9 @@
 
 import type { RecoveryGuidance, RecoveryPhase } from '../assembly/renderer-lifecycle';
 import type { DeviceResourceKind, DeviceScopeReceipt } from '../device/resource-types';
-import type { ReflectionFallbackRecoveryAction } from '../inspection-types';
 
 export type { RecoveryGuidance, RecoveryPhase } from '../assembly/renderer-lifecycle';
 export { RECOVERY_PHASES } from '../assembly/renderer-lifecycle';
-export type { ReflectionFallbackRecoveryAction } from '../inspection-types';
-
-export function reflectionFallbackRecoveryAction(
-  source: 'probe' | 'skylight' | 'neutral',
-  hasLastKnownGood: boolean,
-): ReflectionFallbackRecoveryAction {
-  if (source === 'probe' && hasLastKnownGood) return 'use-LKG';
-  if (source === 'skylight') return 'use-Skylight';
-  return 'use-neutral';
-}
 
 /** Closed outcome vocabulary shared by recovery inspection and errors. */
 export type RecoveryOutcome = 'none' | 'succeeded' | 'failed' | 'disposed';
@@ -217,28 +206,3 @@ export class RenderRecoveryError extends Error {
 }
 
 export type RecoverFailure = RecoverError | RenderRecoveryError | RecoveryFailedError;
-
-export type IblCapabilityLossCode = 'ibl-hdr-capability-loss';
-
-export interface IblCapabilityLossDetail {
-  readonly fallbackArtifact: 'white-cube';
-  readonly rgba16floatRenderable: false;
-  readonly lastKnownGood: string;
-}
-
-export class IblCapabilityLossError extends Error {
-  readonly code: IblCapabilityLossCode = 'ibl-hdr-capability-loss';
-  readonly expected = 'rgba16float renderability is required for the IBL HDR producer';
-  readonly hint = 'enable rgba16floatRenderable or inspect the last-known-good IBL capture';
-  readonly detail: IblCapabilityLossDetail;
-
-  constructor(lastKnownGood: string) {
-    super('ibl-hdr-capability-loss: IBL HDR producer is unavailable');
-    this.name = 'IblCapabilityLossError';
-    this.detail = {
-      fallbackArtifact: 'white-cube',
-      rgba16floatRenderable: false,
-      lastKnownGood,
-    };
-  }
-}

@@ -1,3 +1,4 @@
+import { mipDimension, numMipLevels } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import {
   RenderTargetCapabilityMissingError,
@@ -166,24 +167,41 @@ const FORMAT_BYTES: Readonly<Record<RenderTargetFormat, number>> = {
   'rgba8unorm-srgb': 4,
 };
 
-function mipFactor(mipLevels: RenderTargetMipLevels): number {
-  return mipLevels === 'full' ? 4 / 3 : 1;
+/** Shared writer depth/stencil storage, including targets with no authored depth input. */
+export const RENDER_TARGET_DEPTH_ATTACHMENT = {
+  format: 'depth32float-stencil8',
+  bytesPerPixel: 8,
+} as const;
+
+export function renderTargetMipCount(descriptor: RenderTargetDescriptor): number {
+  return descriptor.mipLevels === 1 ? 1 : numMipLevels(descriptor);
+}
+
+export function resolveRenderTargetMipExtent(
+  descriptor: RenderTargetDescriptor,
+  mipLevel: number,
+): { readonly width: number; readonly height: number } {
+  const level = Math.max(0, Math.min(mipLevel, renderTargetMipCount(descriptor) - 1));
+  return {
+    width: mipDimension(descriptor.width, level),
+    height: mipDimension(descriptor.height, level),
+  };
 }
 
 function estimatedBytes(descriptor: RenderTargetDescriptor): number {
   const layers = renderTargetLayerCount(descriptor);
-  const samples = descriptor.sampleCount;
-  const depthBytes =
-    descriptor.depth === undefined ? 0 : descriptor.depth === 'depth32float-stencil8' ? 8 : 4;
-  return Math.ceil(
-    descriptor.width *
-      descriptor.height *
-      FORMAT_BYTES[descriptor.format] *
-      layers *
-      samples *
-      mipFactor(descriptor.mipLevels) +
-      // One single-layer depth attachment is shared by every layer write.
-      descriptor.width * descriptor.height * depthBytes * samples,
+  const basePixels = descriptor.width * descriptor.height;
+  let colorPixels = 0;
+  for (let level = 0; level < renderTargetMipCount(descriptor); level++) {
+    const extent = resolveRenderTargetMipExtent(descriptor, level);
+    colorPixels += extent.width * extent.height;
+  }
+  // The resolved color chain is always single-sample. MSAA adds one
+  // separate base-level color attachment per layer, plus shared depth.
+  if (descriptor.sampleCount > 1) colorPixels += basePixels * descriptor.sampleCount;
+  return (
+    colorPixels * layers * FORMAT_BYTES[descriptor.format] +
+    basePixels * RENDER_TARGET_DEPTH_ATTACHMENT.bytesPerPixel * descriptor.sampleCount
   );
 }
 

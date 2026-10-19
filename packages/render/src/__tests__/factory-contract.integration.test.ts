@@ -42,6 +42,7 @@ import {
   BLOOM_ENABLED,
   Camera as LocalCamera,
   TONEMAP_ACES_FILMIC,
+  TONEMAP_NONE,
 } from '../components/camera';
 import { TemporalFrameSubmitError } from '../errors/render';
 import type { RenderFeaturePlanContext, RenderFeatureWork } from '../features/plan';
@@ -67,7 +68,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function createBloomScenario() {
+async function createBloomScenario(
+  tonemap: typeof TONEMAP_NONE | typeof TONEMAP_ACES_FILMIC = TONEMAP_ACES_FILMIC,
+) {
   const canvas = { width: 64, height: 64, getContext: () => null };
   const renderer = await constructRenderer(
     canvas,
@@ -90,12 +93,12 @@ async function createBloomScenario() {
           near: 0.1,
           far: 100,
           antialias: ANTIALIAS_NONE,
-          tonemap: TONEMAP_ACES_FILMIC,
+          tonemap,
           bloom: BLOOM_ENABLED,
           bloomThreshold: 1,
           bloomIntensity: 1,
-          bloomSoftKnee: 0.5,
-          bloomScatter: 0.7,
+          bloomSmoothWidth: 0.01,
+          bloomRadius: 0,
         },
       },
     )
@@ -110,7 +113,7 @@ async function createBloomScenario() {
     world
       .set(camera, LocalCamera, {
         bloom: bloom === 'on' ? BLOOM_ENABLED : BLOOM_DISABLED,
-        tonemap: TONEMAP_ACES_FILMIC,
+        tonemap,
       })
       .unwrap();
     const updated = world.update();
@@ -1067,6 +1070,7 @@ describe('factory contract', () => {
     world.spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         direction: [0, -1, 0],
         color: [1, 1, 1],
         intensity: 1,
@@ -1108,7 +1112,7 @@ describe('factory contract', () => {
       { component: Transform, data: { pos: [1, 0, 1] } },
       {
         component: SpotLight,
-        data: { direction: [0, -1, 0], intensity: 8, range: 10 },
+        data: { castShadow: true, direction: [0, -1, 0], intensity: 8, range: 10 },
       },
     );
     expect(spotLight.ok).toBe(true);
@@ -1963,12 +1967,12 @@ describe('factory contract', () => {
     const onInspection = renderer.inspect().bloom;
     expect(onInspection.state).toBe('active');
     expect(onInspection.graphStatus).toBe('valid');
-    expect(onInspection.targetCount).toBe(10);
-    expect(onInspection.targetBytes).toBe(54_560);
-    expect(onInspection.passCount).toBe(10);
-    expect(onInspection.uploadCount).toBe(10);
-    expect(onInspection.bindGroupCount).toBe(10);
-    expect(onInspection.encodeCount).toBe(10);
+    expect(onInspection.targetCount).toBe(11);
+    expect(onInspection.targetBytes).toBe(54_592);
+    expect(onInspection.passCount).toBe(11);
+    expect(onInspection.uploadCount).toBe(11);
+    expect(onInspection.bindGroupCount).toBe(11);
+    expect(onInspection.encodeCount).toBe(11);
     expect(JSON.parse(JSON.stringify(onInspection))).toEqual(onInspection);
     const firstGeneration = onInspection.generation;
     expect(firstGeneration).toBeGreaterThan(0);
@@ -1999,10 +2003,10 @@ describe('factory contract', () => {
     const recoveredInspection = renderer.inspect().bloom;
     expect(recoveredInspection.state).toBe('active');
     expect(recoveredInspection.resourceCount).toBeGreaterThan(0);
-    expect(recoveredInspection.passCount).toBe(10);
-    expect(recoveredInspection.uploadCount).toBe(10);
-    expect(recoveredInspection.bindGroupCount).toBe(10);
-    expect(recoveredInspection.encodeCount).toBe(10);
+    expect(recoveredInspection.passCount).toBe(11);
+    expect(recoveredInspection.uploadCount).toBe(11);
+    expect(recoveredInspection.bindGroupCount).toBe(11);
+    expect(recoveredInspection.encodeCount).toBe(11);
     expect(recoveredInspection.generation).toBeGreaterThan(firstGeneration);
     await Promise.resolve();
     await Promise.resolve();
@@ -2012,8 +2016,11 @@ describe('factory contract', () => {
     expect((await renderer.dispose()).ok).toBe(true);
   });
 
-  it('publishes Bloom record receipts only after a successful submit', async () => {
-    const scenario = await createBloomScenario();
+  it.each([
+    TONEMAP_NONE,
+    TONEMAP_ACES_FILMIC,
+  ] as const)('publishes Bloom receipts only after submit with tonemap %s', async (tonemap) => {
+    const scenario = await createBloomScenario(tonemap);
     const submit = vi.spyOn(RhiNullQueue.prototype, 'submit');
     const failure = new RhiError({
       code: 'webgpu-runtime-error',
@@ -2023,25 +2030,25 @@ describe('factory contract', () => {
     try {
       expect(scenario.draw().ok).toBe(true);
       expect(scenario.renderer.inspect().bloom).toMatchObject({
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
 
       submit.mockReturnValueOnce(err(failure));
       expect(scenario.draw().ok).toBe(false);
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
 
       expect(scenario.draw().ok).toBe(true);
       expect(scenario.renderer.inspect().bloom).toMatchObject({
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
     } finally {
       submit.mockRestore();
@@ -2062,8 +2069,8 @@ describe('factory contract', () => {
       expect(updated.resourceCount).toBe(first.resourceCount);
       expect(updated.targetCount).toBe(first.targetCount);
       expect(updated.targetBytes).toBe(first.targetBytes);
-      expect(updated.uploadCount).toBe(10);
-      expect(updated.passCount).toBe(10);
+      expect(updated.uploadCount).toBe(11);
+      expect(updated.passCount).toBe(11);
     } finally {
       await scenario.dispose();
     }
@@ -2086,7 +2093,7 @@ describe('factory contract', () => {
       expect(scenario.draw().ok).toBe(true);
       const downsampleParams = createBuffer.mock.calls.reduce<object | undefined>(
         (found, args, index) => {
-          if (found !== undefined || args[0].label !== 'bloom-downsample-params-ubo') return found;
+          if (found !== undefined || args[0].label !== 'bloom-horizontal-params-ubo') return found;
           const result = createBuffer.mock.results[index];
           if (result?.type !== 'return' || !result.value.ok) return undefined;
           return result.value.value as object;
@@ -2095,7 +2102,7 @@ describe('factory contract', () => {
       );
       expect(downsampleParams).toBeDefined();
       const lkg = scenario.renderer.inspect().bloom;
-      expect(lkg).toMatchObject({ uploadCount: 10, bindGroupCount: 10, encodeCount: 10 });
+      expect(lkg).toMatchObject({ uploadCount: 11, bindGroupCount: 11, encodeCount: 11 });
       const submitCount = submit.mock.calls.length;
 
       let injected = false;
@@ -2112,23 +2119,23 @@ describe('factory contract', () => {
       expect(errors).toHaveLength(1);
       expect(errors[0]).toMatchObject({
         code: 'pass-encode-failed',
-        detail: { passName: 'bloom-downsample-0', cause: failure },
+        detail: { passName: 'bloom-horizontal-0', cause: failure },
       });
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
         generation: lkg.generation,
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
 
       writeBuffer.mockRestore();
       expect(scenario.draw().ok).toBe(true);
       expect(submit).toHaveBeenCalledTimes(submitCount + 1);
       expect(scenario.renderer.inspect().bloom).toMatchObject({
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
     } finally {
       writeBuffer.mockRestore();
@@ -2141,17 +2148,17 @@ describe('factory contract', () => {
 
   const bloomConstructionFailures = [
     ['createSampler', 'bloom-sampler'],
-    ['createBindGroupLayout', 'bloom-downsample-bgl'],
-    ['createBindGroupLayout', 'bloom-upsample-bgl'],
+    ['createBindGroupLayout', 'bloom-horizontal-bgl'],
+    ['createBindGroupLayout', 'bloom-vertical-bgl'],
     ['createBindGroupLayout', 'bloom-composite-bgl'],
-    ['createPipelineLayout', 'bloom-downsample-pl'],
-    ['createPipelineLayout', 'bloom-upsample-pl'],
+    ['createPipelineLayout', 'bloom-horizontal-pl'],
+    ['createPipelineLayout', 'bloom-vertical-pl'],
     ['createPipelineLayout', 'bloom-composite-pl'],
-    ['createRenderPipeline', 'bloom-downsample-pipeline'],
-    ['createRenderPipeline', 'bloom-upsample-pipeline'],
+    ['createRenderPipeline', 'bloom-horizontal-pipeline'],
+    ['createRenderPipeline', 'bloom-vertical-pipeline'],
     ['createRenderPipeline', 'bloom-composite-pipeline'],
-    ['createBuffer', 'bloom-downsample-params-ubo'],
-    ['createBuffer', 'bloom-upsample-params-ubo'],
+    ['createBuffer', 'bloom-horizontal-params-ubo'],
+    ['createBuffer', 'bloom-vertical-params-ubo'],
     ['createBuffer', 'bloom-composite-params-ubo'],
   ] as const;
 
@@ -2216,11 +2223,11 @@ describe('factory contract', () => {
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
         graphStatus: 'valid',
-        targetCount: 10,
-        passCount: 10,
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        targetCount: 11,
+        passCount: 11,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
     } finally {
       operation.mockRestore();
@@ -2248,7 +2255,7 @@ describe('factory contract', () => {
       scenario.canvas.width = 96;
       scenario.canvas.height = 64;
       createBindGroup.mockImplementation(function (this: RhiNullDevice, descriptor) {
-        if (!injected && descriptor.label === 'bloom-upsample-3-bg') {
+        if (!injected && descriptor.label === 'bloom-vertical-3-bg') {
           injected = true;
           return err(failure);
         }
@@ -2260,9 +2267,9 @@ describe('factory contract', () => {
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
         generation: lkg.generation,
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
 
       createBindGroup.mockRestore();
@@ -2270,9 +2277,9 @@ describe('factory contract', () => {
       expect(submit).toHaveBeenCalledTimes(submitCount + 1);
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
-        uploadCount: 10,
-        bindGroupCount: 10,
-        encodeCount: 10,
+        uploadCount: 11,
+        bindGroupCount: 11,
+        encodeCount: 11,
       });
     } finally {
       createBindGroup.mockRestore();
@@ -2309,10 +2316,10 @@ describe('factory contract', () => {
       expect(overlap.state).toBe('active');
       expect(overlap.graphStatus).toBe('valid');
       expect(overlap.enabled).toBe(true);
-      expect(overlap.passCount).toBe(10);
-      expect(overlap.uploadCount).toBe(10);
-      expect(overlap.bindGroupCount).toBe(10);
-      expect(overlap.encodeCount).toBe(10);
+      expect(overlap.passCount).toBe(11);
+      expect(overlap.uploadCount).toBe(11);
+      expect(overlap.bindGroupCount).toBe(11);
+      expect(overlap.encodeCount).toBe(11);
       expect(overlap.resourceCount).toBeGreaterThan(retiring.resourceCount);
 
       fence.resolve(undefined);
@@ -2321,9 +2328,9 @@ describe('factory contract', () => {
       const settled = scenario.renderer.inspect().bloom;
       expect(settled.state).toBe('active');
       expect(settled.graphStatus).toBe('valid');
-      expect(settled.passCount).toBe(10);
-      expect(settled.targetCount).toBe(10);
-      expect(settled.targetBytes).toBe(54_560);
+      expect(settled.passCount).toBe(11);
+      expect(settled.targetCount).toBe(11);
+      expect(settled.targetBytes).toBe(54_592);
       expect(settled.resourceCount).toBeLessThan(overlap.resourceCount);
     } finally {
       onSubmittedWorkDone.mockRestore();
@@ -2589,7 +2596,7 @@ describe('factory contract', () => {
       const lkg = scenario.renderer.inspect().bloom;
       scenario.setBloom('on');
       createBuffer.mockImplementation(function (this: RhiNullDevice, descriptor) {
-        if (descriptor.label === 'bloom-upsample-params-ubo') {
+        if (descriptor.label === 'bloom-vertical-params-ubo') {
           return err(failure);
         }
         const result = originalCreateBuffer.call(this, descriptor);
@@ -2614,12 +2621,12 @@ describe('factory contract', () => {
       expect(scenario.renderer.inspect().bloom.resourceCount).toBe(lkg.resourceCount);
       expect(scenario.renderer.inspect().bloom.passCount).toBe(0);
       const adoptedBeforeFailure = [...created.entries()].filter(
-        ([, label]) => label === 'bloom-downsample-params-ubo',
+        ([, label]) => label === 'bloom-horizontal-params-ubo',
       );
       expect(adoptedBeforeFailure).toHaveLength(1);
       expect(adoptedBeforeFailure.every(([handle]) => destroyCounts.get(handle) === 1)).toBe(true);
       expect(
-        [...created.values()].filter((label) => label === 'bloom-upsample-params-ubo'),
+        [...created.values()].filter((label) => label === 'bloom-vertical-params-ubo'),
       ).toHaveLength(0);
       createBuffer.mockRestore();
       destroyBuffer.mockRestore();

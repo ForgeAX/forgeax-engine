@@ -1,127 +1,44 @@
-// @forgeax/engine-assets-runtime - mipmap-generator.ts (T-M3-04).
-//
-// Independent-file home of the runtime mipmap auto-generation utility
-// (plan-strategy section 2.6 D Open Q-5 selection (a)). Purposefully lives
-// outside `asset-registry.ts` so the asset-registry stays single-purpose
-// (charter proposition 5 producer / consumer split; architecture-principles
-// pipeline isolation).
-//
-// Shader-module DI boundary (bug-20260518 D-1): the per-device pipeline
-// cache builds its single ShaderModule via an injected
-// `MipmapShaderModuleFactory`, NOT via `device.createShaderModule` -- the
-// post-fix-f3 `RhiDevice` surface has no synchronous `createShaderModule`
-// member, and the runtime mipmap utility must NOT reverse-import the
-// rhi-webgpu shim package (charter F1 layering). The factory is wired
-// once at `createRenderer.ts` from `pack.createShaderModule` and threaded
-// through `AssetRegistry.configureGpuDevice` -> `generateMipmaps` ->
-// `getOrCreateMipmapPipeline` -> `ensureDeviceCache`.
-//
-// SSOT three-source convergence (research F-1 + F-2):
-//   - webgpufundamentals importing-textures-mipmaps  (formula + main loop)
-//   - toji web-texture-tool webgpu-mipmap-generator  (oversized triangle WGSL)
-//   - greggman webgpu-utils generate-mipmap          (WeakMap<GPUDevice> cache)
-//
-// Public surface (charter F2 minimal):
-//   - numMipLevels({ width, height })                    -> number      (formula SSOT)
-//   - getOrCreateMipmapPipeline(device, format)          -> Result      (cache lookup; per-format)
-//   - mipmapCacheSize(device)                            -> number      (introspection)
-//   - generateMipmaps(device, texture, descriptor)       -> Result<void>(per-mip render-pass blit-loop)
-//
-// Per-device cache structure (greggman SSOT):
-//   WeakMap<MipmapDevice, MipmapPipelineCache>
-//     where MipmapPipelineCache = {
-//       sampler:  Sampler,                    // shared linear / linear / linear sampler (F-5)
-//       module:   ShaderModule,               // shared oversized-triangle vertex + sampling fragment WGSL
-//       layout:   BindGroupLayout,            // shared sampler @binding(0) + texture_2d<f32> @binding(1)
-//       pipelines: Map<GPUTextureFormat, RenderPipeline>  // per-format pipeline (F-2 cache key)
-//     }
-// Per-device isolation prevents pipeline leak across `createRenderer` calls
-// (charter P5 consistent abstraction; greggman 36-44 anchor).
-//
-// Why this layout (not closure / not class):
-//   - `getOrCreateMipmapPipeline` is module-level for test surface (T-M3-01
-//     directly imports it; cache reference equality assertions need stable
-//     identity across calls).
-//   - `numMipLevels` is pure (no device argument); the WeakMap lookup only
-//     happens at pipeline-create time.
+// Per-device, per-format mip pipelines. Shader compilation is injected from the
+// selected backend; recording and submission use the shared RHI contract.
 
 import {
+  type BindGroupLayout,
   type CommandBuffer,
   err,
   ok,
+  type RenderPipeline,
   type Result,
   type RhiCommandEncoder,
+  type RhiDevice,
   RhiError,
   type RhiRenderPassEncoder,
+  type Sampler,
+  type ShaderModule,
+  type Texture,
+  type TextureView,
 } from '@forgeax/engine-rhi';
+import { mipDimension, numMipLevels } from '@forgeax/engine-types';
 
-/**
- * Subset of `RhiDevice` consumed by the mipmap utility (charter F2: only
- * the methods the algorithm actually invokes; the dawn integration tests
- * pass a real `RhiDevice` and the unit cache tests pass a hand-rolled stub).
- *
- * Four entry-points (all synchronous Result):
- *   - createSampler       (default linear / linear / linear)
- *   - createBindGroupLayout
- *   - createPipelineLayout
- *   - createRenderPipeline (per-format pipeline cache miss)
- *
- * Shader module is NOT an entry-point here; it is supplied by an injected
- * `MipmapShaderModuleFactory` (bug-20260518 D-1) so the utility does not
- * reach into the rhi-webgpu shim package from the runtime layer.
- *
- * Plus `createCommandEncoder` + `queue.submit` are added once the upload
- * call-site (T-M3-05) wires generateMipmaps in; the cache-only public hooks
- * exercised by T-M3-01 do not need them, so they live behind an extended
- * MipmapDeviceForBlit alias.
- */
-export type MipmapDevice = {
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createSampler(desc?: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createBindGroupLayout(desc: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createPipelineLayout(desc: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createRenderPipeline(desc: any): Result<any, any>;
-};
-
-/**
- * Async shader-module factory injected through the call-chain
- * `createRenderer.ts` -> `AssetRegistry.configureGpuDevice` ->
- * `generateMipmaps` -> `getOrCreateMipmapPipeline` -> `ensureDeviceCache`
- * (bug-20260518 D-1 / D-4).
- *
- * Signature mirrors the top-level async `createShaderModule(device, desc)`
- * exposed by the rhi-webgpu shim (and the rhi-wgpu shim) so the
- * call-site in createRenderer can pass `pack.createShaderModule` directly
- * without a structural cast. The opaque module value is typed `unknown`
- * here -- callers do not introspect it; they hand the value back to
- * `createRenderPipeline` descriptors via the cached `MipmapPipelineCache`.
- */
+/** Inject the backend's async shader compiler without importing its implementation. */
 export type MipmapShaderModuleFactory = (
-  device: MipmapDevice,
+  device: RhiDevice,
   desc: { code: string; label?: string },
-) => Promise<Result<unknown, RhiError>>;
+) => Promise<Result<ShaderModule, RhiError>>;
 
 /**
  * Per-device pipeline cache structure (research F-2 SSOT).
- * Held under a module-private `WeakMap<MipmapDevice, MipmapPipelineCache>`.
+ * Held under a module-private `WeakMap<RhiDevice, MipmapPipelineCache>`.
  */
 interface MipmapPipelineCache {
-  // biome-ignore lint/suspicious/noExplicitAny: cached opaque GPU sampler
-  readonly sampler: any;
-  // biome-ignore lint/suspicious/noExplicitAny: cached opaque GPU shader module
-  readonly module: any;
-  // biome-ignore lint/suspicious/noExplicitAny: cached opaque GPU bind-group layout
-  readonly layout: any;
-  // biome-ignore lint/suspicious/noExplicitAny: per-format render pipeline cache
-  readonly pipelines: Map<GPUTextureFormat, any>;
+  readonly sampler: Sampler;
+  readonly module: ShaderModule;
+  readonly layout: BindGroupLayout;
+  readonly pipelines: Map<GPUTextureFormat, RenderPipeline>;
 }
 
 // Module-private cache (greggman 36-44 SSOT). WeakMap so that destroying a
 // device naturally clears its cache (no manual cleanup hook needed).
-const deviceCache: WeakMap<MipmapDevice, MipmapPipelineCache> = new WeakMap();
+const deviceCache: WeakMap<RhiDevice, MipmapPipelineCache> = new WeakMap();
 
 /**
  * Oversized-triangle WGSL (toji + greggman convergent template).
@@ -167,30 +84,12 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
 `;
 
 /**
- * Compute mip-level count for a 2D texture (research F-1 SSOT formula).
- *
- * Spec-anchor: WebGPU §3.6 texture-creation says `mipLevelCount` defaults
- * to 1; the runtime utility opts AI users into a full chain via
- * `floor(log2(max(width, height))) + 1` -- the same formula greggman /
- * toji / webgpufundamentals all converge on.
- *
- * @example
- *   numMipLevels({ width: 256, height: 256 }) // 9
- *   numMipLevels({ width: 1, height: 1 })     // 1
- */
-export function numMipLevels(size: { width: number; height: number }): number {
-  const max = Math.max(size.width, size.height);
-  if (max <= 1) return 1;
-  return Math.floor(Math.log2(max)) + 1;
-}
-
-/**
  * Number of cached pipelines for the device (introspection hook used by
  * T-M3-01 (c) cache-hit / (d) per-device-isolation tests; charter P3
  * explicit failure: a cache size of 0 on a fresh device is a witnessed
  * pre-condition rather than a swept-under hint).
  */
-export function mipmapCacheSize(device: MipmapDevice): number {
+export function mipmapCacheSize(device: RhiDevice): number {
   const cache = deviceCache.get(device);
   return cache?.pipelines.size ?? 0;
 }
@@ -204,11 +103,10 @@ export function mipmapCacheSize(device: MipmapDevice): number {
  * given device and reused across all formats on that device.
  */
 export async function getOrCreateMipmapPipeline(
-  device: MipmapDevice,
+  device: RhiDevice,
   format: GPUTextureFormat,
   asyncCreateShaderModule: MipmapShaderModuleFactory,
-  // biome-ignore lint/suspicious/noExplicitAny: returns opaque GPU pipeline
-): Promise<Result<any, unknown>> {
+): Promise<Result<RenderPipeline, RhiError>> {
   const cache = await ensureDeviceCache(device, asyncCreateShaderModule);
   if (!cache.ok) return cache;
   const existing = cache.value.pipelines.get(format);
@@ -223,7 +121,7 @@ export async function getOrCreateMipmapPipeline(
   const pipelineRes = device.createRenderPipeline({
     label: `mipmap-pipeline-${format}`,
     layout: layoutRes.value,
-    vertex: { module: cache.value.module, entryPoint: 'vs_main' },
+    vertex: { module: cache.value.module, entryPoint: 'vs_main', buffers: [] },
     fragment: {
       module: cache.value.module,
       entryPoint: 'fs_main',
@@ -237,7 +135,7 @@ export async function getOrCreateMipmapPipeline(
 }
 
 async function ensureDeviceCache(
-  device: MipmapDevice,
+  device: RhiDevice,
   asyncCreateShaderModule: MipmapShaderModuleFactory,
 ): Promise<Result<MipmapPipelineCache, RhiError>> {
   const existing = deviceCache.get(device);
@@ -282,29 +180,6 @@ async function ensureDeviceCache(
   return ok(cache);
 }
 
-/**
- * Extended device shape used by `generateMipmaps` (call-site T-M3-05).
- * Adds command-encoder + bind-group + texture-view + queue surfaces beyond
- * the cache-only `MipmapDevice` so the pipeline-cache unit tests still
- * compile against the smaller surface.
- */
-export type MipmapBlitDevice = MipmapDevice & {
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createTexture(desc: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createBindGroup(desc: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createTextureView(texture: any, desc: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-  createCommandEncoder(desc?: any): Result<any, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU texture handle
-  destroyTexture(texture: any): Result<void, any>;
-  readonly queue: {
-    // biome-ignore lint/suspicious/noExplicitAny: shim accepts any descriptor
-    submit(buffers: ReadonlyArray<any>): Result<void, any>;
-  };
-};
-
 // COPY_SRC | RENDER_ATTACHMENT.
 const MIPMAP_SCRATCH_USAGE = 0x01 | 0x10;
 
@@ -322,17 +197,14 @@ interface MipmapTextureDescriptor {
 // some WebGL2 implementations reject even disjoint mips as a feedback loop.
 // One scratch chain serves every layer and retains the target's sRGB format.
 function encodeMipmapBlit(
-  device: MipmapBlitDevice,
+  device: RhiDevice,
   encoder: RhiCommandEncoder,
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU texture handle
-  texture: any,
+  texture: Texture,
   descriptor: MipmapTextureDescriptor,
   levels: number,
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU pipeline handle
-  pipeline: any,
+  pipeline: RenderPipeline,
   cache: MipmapPipelineCache,
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU texture handle
-): Result<any, RhiError> {
+): Result<Texture, RhiError> {
   const arrayLayerCount = descriptor.arrayLayerCount ?? 1;
   if (!Number.isSafeInteger(arrayLayerCount) || arrayLayerCount < 1)
     return err(
@@ -344,16 +216,16 @@ function encodeMipmapBlit(
     );
   const scratchRes = device.createTexture({
     label: 'mipmap-scratch',
-    size: [Math.max(1, descriptor.width >> 1), Math.max(1, descriptor.height >> 1)],
+    size: [mipDimension(descriptor.width, 1), mipDimension(descriptor.height, 1)],
     mipLevelCount: levels - 1,
     format: descriptor.format,
     usage: MIPMAP_SCRATCH_USAGE,
   });
-  if (!scratchRes.ok) return scratchRes as Result<never, RhiError>;
+  if (!scratchRes.ok) return scratchRes;
   const scratch = scratchRes.value;
-  const fail = (failure: Result<unknown, unknown>): Result<never, RhiError> => {
+  const fail = (error: RhiError): Result<never, RhiError> => {
     device.destroyTexture(scratch);
-    return failure as Result<never, RhiError>;
+    return err(error);
   };
   for (let layer = 0; layer < arrayLayerCount; layer++) {
     for (let i = 1; i < levels; i++) {
@@ -364,14 +236,14 @@ function encodeMipmapBlit(
         arrayLayerCount: 1,
         dimension: '2d',
       });
-      if (!srcViewRes.ok) return fail(srcViewRes);
+      if (!srcViewRes.ok) return fail(srcViewRes.error);
 
       const dstViewRes = device.createTextureView(scratch, {
         baseMipLevel: i - 1,
         mipLevelCount: 1,
         dimension: '2d',
       });
-      if (!dstViewRes.ok) return fail(dstViewRes);
+      if (!dstViewRes.ok) return fail(dstViewRes.error);
 
       const bindGroupRes = device.createBindGroup({
         label: `mipmap-bg-${i}`,
@@ -381,7 +253,7 @@ function encodeMipmapBlit(
           { binding: 1, resource: { kind: 'textureView', value: srcViewRes.value } },
         ],
       });
-      if (!bindGroupRes.ok) return fail(bindGroupRes);
+      if (!bindGroupRes.ok) return fail(bindGroupRes.error);
 
       const pass = encoder.beginRenderPass({
         label: `mipmap-pass-${i}`,
@@ -401,7 +273,7 @@ function encodeMipmapBlit(
       encoder.copyTextureToTexture(
         { texture: scratch, mipLevel: i - 1 },
         { texture, mipLevel: i, origin: { x: 0, y: 0, z: layer } },
-        [Math.max(1, descriptor.width >> i), Math.max(1, descriptor.height >> i), 1],
+        [mipDimension(descriptor.width, i), mipDimension(descriptor.height, i), 1],
       );
     }
   }
@@ -424,18 +296,18 @@ export interface MipmapEncoderWork {
 }
 
 /**
- * Prepare a prewarmed mip chain without creating a hidden submission.
- * `finish()` is the explicit transaction boundary and is intentionally
- * separate from `queue.submit()` so recovery can guard candidate ownership.
+ * Encode a prewarmed mip chain into the caller's frame transaction. The returned
+ * cleanup releases scratch after submission or abort; it never submits work.
+ * @internal
  */
-export function prepareMipmaps(
-  device: MipmapBlitDevice,
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU texture handle
-  texture: any,
+export function encodeMipmaps(
+  device: RhiDevice,
+  encoder: RhiCommandEncoder,
+  texture: Texture,
   descriptor: MipmapTextureDescriptor,
-): Result<MipmapEncoderWork, RhiError> {
+): Result<() => void, RhiError> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
-  if (levels <= 1) return ok({ finish: () => ok(undefined), discard: () => undefined });
+  if (levels <= 1) return ok(() => undefined);
 
   const cache = deviceCache.get(device);
   if (cache === undefined) {
@@ -457,17 +329,28 @@ export function prepareMipmaps(
       }),
     );
   }
+  const encoded = encodeMipmapBlit(device, encoder, texture, descriptor, levels, pipeline, cache);
+  if (!encoded.ok) return encoded;
+  return ok(() => {
+    device.destroyTexture(encoded.value);
+  });
+}
+
+/**
+ * Prepare a prewarmed mip chain without creating a hidden submission.
+ * `finish()` is the explicit transaction boundary and is intentionally
+ * separate from `queue.submit()` so recovery can guard candidate ownership.
+ */
+export function prepareMipmaps(
+  device: RhiDevice,
+  texture: Texture,
+  descriptor: MipmapTextureDescriptor,
+): Result<MipmapEncoderWork, RhiError> {
+  const levels = descriptor.levels ?? numMipLevels(descriptor);
+  if (levels <= 1) return ok({ finish: () => ok(undefined), discard: () => undefined });
   const encoderRes = device.createCommandEncoder({ label: 'mipmap-recovery-setup-encoder' });
-  if (!encoderRes.ok) return encoderRes as Result<MipmapEncoderWork, RhiError>;
-  const encoded = encodeMipmapBlit(
-    device,
-    encoderRes.value,
-    texture,
-    descriptor,
-    levels,
-    pipeline,
-    cache,
-  );
+  if (!encoderRes.ok) return encoderRes;
+  const encoded = encodeMipmaps(device, encoderRes.value, texture, descriptor);
   if (!encoded.ok) {
     try {
       encoderRes.value.finish();
@@ -506,7 +389,7 @@ export function prepareMipmaps(
         }
       }
       // Destruction after submission is deferred until the queued copies finish.
-      device.destroyTexture(encoded.value);
+      encoded.value();
     },
   });
 }
@@ -528,12 +411,11 @@ export function prepareMipmaps(
  * same value here.
  */
 export async function generateMipmaps(
-  device: MipmapBlitDevice,
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU texture handle
-  texture: any,
+  device: RhiDevice,
+  texture: Texture,
   descriptor: MipmapTextureDescriptor,
   asyncCreateShaderModule: MipmapShaderModuleFactory,
-): Promise<Result<void, unknown>> {
+): Promise<Result<void, RhiError>> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
   if (levels <= 1) return ok(undefined);
 
@@ -543,13 +425,7 @@ export async function generateMipmaps(
     asyncCreateShaderModule,
   );
   if (!pipelineRes.ok) return pipelineRes;
-  const prepared = prepareMipmaps(device, texture, descriptor);
-  if (!prepared.ok) return prepared;
-  const finished = prepared.value.finish();
-  const submitted =
-    !finished.ok || finished.value === undefined ? finished : device.queue.submit([finished.value]);
-  prepared.value.discard();
-  return submitted.ok ? ok(undefined) : submitted;
+  return blitMipmapsSync(device, texture, descriptor);
 }
 
 /**
@@ -565,9 +441,8 @@ export async function generateMipmaps(
  * pre-extraction async `generateMipmaps` byte-for-byte (D-9 sub-contract 5).
  */
 export function blitMipmapsSync(
-  device: MipmapBlitDevice,
-  // biome-ignore lint/suspicious/noExplicitAny: opaque GPU texture handle
-  texture: any,
+  device: RhiDevice,
+  texture: Texture,
   descriptor: MipmapTextureDescriptor,
 ): Result<void, RhiError> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
@@ -584,9 +459,9 @@ export function blitMipmapsSync(
 
 /** Encode one prewarmed mip level into a caller-owned graph render pass. */
 export function encodeMipmapLevel(
-  device: MipmapBlitDevice,
+  device: RhiDevice,
   pass: RhiRenderPassEncoder,
-  sourceView: unknown,
+  sourceView: TextureView,
   format: GPUTextureFormat,
 ): Result<void, RhiError> {
   const cache = deviceCache.get(device);

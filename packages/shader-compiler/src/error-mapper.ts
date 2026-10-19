@@ -26,7 +26,7 @@
 // (err.detail.importPath / fromModuleId / err.hint actionable).
 
 import { ShaderError } from '@forgeax/engine-naga';
-import type { ShaderErrorCode, ShaderImportNotFoundDetail } from '@forgeax/engine-types';
+import type { ShaderImportNotFoundDetail } from '@forgeax/engine-types';
 
 const IMPORT_NOT_FOUND_PREFIX = 'shader-import-not-found:';
 const COMPILE_FAILED_PREFIX = 'shader-compile-failed:';
@@ -44,7 +44,7 @@ const COMPILE_FAILED_PREFIX = 'shader-compile-failed:';
  */
 const QUOTED_IMPORT_RE = /'([^']+)'/;
 
-export interface MapWasmErrorContext {
+interface MapWasmErrorContext {
   /**
    * The entry id (options.id) the caller passed into compileShader. When
    * omitted at the compileShader layer, the caller substitutes the
@@ -81,7 +81,7 @@ export function mapWasmError(e: unknown, ctx: MapWasmErrorContext): ShaderError 
       fromModuleId: ctx.fromModuleId,
       ...(typeof ctx.offset === 'number' ? { offset: ctx.offset } : {}),
     };
-    return makeShaderError({
+    return new ShaderError({
       code: 'shader-import-not-found',
       message: `#import '${importPath}' not found from module '${ctx.fromModuleId}'`,
       expected: `options.imports contains a module that declares #define_import_path ${importPath.split('::')[0] ?? importPath}`,
@@ -92,7 +92,7 @@ export function mapWasmError(e: unknown, ctx: MapWasmErrorContext): ShaderError 
 
   if (msg.startsWith(COMPILE_FAILED_PREFIX)) {
     const rest = msg.slice(COMPILE_FAILED_PREFIX.length).trim();
-    return makeShaderError({
+    return new ShaderError({
       code: 'shader-compile-failed',
       message: rest,
       expected: 'WGSL source parses + validates against naga IR after naga_oil composition',
@@ -101,38 +101,10 @@ export function mapWasmError(e: unknown, ctx: MapWasmErrorContext): ShaderError 
   }
 
   // No prefix: treat as compile failure with verbatim message (fallback).
-  return makeShaderError({
+  return new ShaderError({
     code: 'shader-compile-failed',
     message: msg,
     expected: 'naga_oil composition returns a composed WGSL string',
     hint: 'ensure bash packages/wgpu-wasm/build.sh produced a fresh .wasm; rerun compileShader',
-  });
-}
-
-// ----- local helpers -----
-
-interface MakeShaderErrorInit {
-  readonly code: ShaderErrorCode;
-  readonly message: string;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail?: ShaderImportNotFoundDetail | undefined;
-}
-
-/**
- * Construct a ShaderError from the naga package's class with the typed
- * ShaderErrorDetail payload attached through the constructor directly
- * (feat-small-20260513-dx-docs-types-cleanup M1-T3: the naga ShaderError
- * class's `detail` field now points at the 6-variant typed union in
- * @forgeax/engine-types, so the previous structural-cast workaround on the
- * `.detail` slot is no longer needed).
- */
-function makeShaderError(init: MakeShaderErrorInit): ShaderError {
-  return new ShaderError({
-    code: init.code,
-    message: init.message,
-    expected: init.expected,
-    hint: init.hint,
-    ...(init.detail !== undefined ? { detail: init.detail } : {}),
   });
 }

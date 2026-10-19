@@ -104,7 +104,6 @@ import {
   type ClusterBinError,
   calculateSphereClusterBounds,
   clusterSpaceObjectAabb,
-  deriveCullingRadius,
   ndcPositionToCluster,
   viewZToZSlice,
 } from '../../../render/src/cluster-binner';
@@ -257,7 +256,6 @@ void [
   createSphereGeometry,
   createTorusGeometry,
   defineComponent,
-  deriveCullingRadius,
   deriveRenderDataCubemap,
   deriveRenderDataMesh,
   deriveRenderDataTexture,
@@ -647,30 +645,32 @@ type __MergedKeep =
     });
   });
 
-  // ── (f) +Infinity range -> deriveCullingRadius ──────────────────────────────
-
-  describe('deriveCullingRadius', () => {
-    it('returns finite number for +Infinity range light', () => {
-      const radius = deriveCullingRadius(Infinity, 10, 1);
-      expect(Number.isFinite(radius)).toBe(true);
-      expect(radius).toBeGreaterThan(0);
-    });
-
-    it('returns the range itself when range is finite', () => {
-      expect(deriveCullingRadius(5, 10, 1)).toBe(5);
-      expect(deriveCullingRadius(0.1, 100, 1)).toBe(0.1);
-    });
-
-    it('scales with intensity for +Infinity range', () => {
-      const r1 = deriveCullingRadius(Infinity, 1, 1);
-      const r2 = deriveCullingRadius(Infinity, 100, 1);
-      // Higher intensity => larger visible radius
-      expect(r2).toBeGreaterThan(r1);
-    });
-
-    it('never returns +Infinity', () => {
-      const radius = deriveCullingRadius(Infinity, 1e6, 1);
-      expect(Number.isFinite(radius)).toBe(true);
+  describe('unlimited range', () => {
+    it.each([
+      [Number.POSITIVE_INFINITY, true],
+      [1, false],
+    ])('keeps full visible coverage for a distant range %s light: %s', (range, unlimited) => {
+      const grid = { x: 2, y: 2, z: 3 };
+      const clusterCount = grid.x * grid.y * grid.z;
+      const clusterGrid = new Uint32Array(clusterCount * 2);
+      const indices = new Uint32Array(clusterCount);
+      const result = bin(
+        [{ position: vec3.create(10000, 0, -5), range }],
+        makeIdentityMat4(),
+        makePerspectiveProj(0.1, 100),
+        grid,
+        0.1,
+        100,
+        clusterGrid,
+        indices,
+        indices.length,
+      );
+      expect(result.ok).toBe(true);
+      const counts = Array.from(
+        { length: clusterCount },
+        (_, cluster) => clusterGrid[cluster * 2 + 1],
+      );
+      expect(counts.every((count) => count === 1)).toBe(unlimited);
     });
   });
 

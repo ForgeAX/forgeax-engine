@@ -22,8 +22,7 @@
 // verified at M2 by running the gate locally.
 import { decodeImageInBrowser } from '@forgeax/engine-image';
 import type { ImageError, Result, TextureAsset } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
-import { makeImageError } from './image-error';
+import { err, imageError, ok } from '@forgeax/engine-types';
 
 /** v1 mime whitelist -- PNG / JPEG only (charter P1 progressive disclosure). */
 const SUPPORTED_MIMES = ['image/png', 'image/jpeg'] as const;
@@ -91,10 +90,13 @@ export async function decodeImageBytes(
 ): Promise<Result<TextureAsset, ImageError>> {
   if (!isSupportedMime(mime)) {
     return err(
-      makeImageError({
-        code: 'image-format-unsupported',
-        actualMime: mime,
-      }),
+      imageError(
+        {
+          code: 'image-format-unsupported',
+          actualMime: mime,
+        },
+        "mime is one of ['image/png', 'image/jpeg', 'image/x-tga']; texture format <-> colorSpace family agrees",
+      ),
     );
   }
 

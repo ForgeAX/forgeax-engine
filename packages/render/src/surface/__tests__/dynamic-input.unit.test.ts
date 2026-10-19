@@ -372,3 +372,41 @@ describe('Render read-only dynamic input page', () => {
     });
   });
 });
+
+it('writes all scalar/vector lanes from the admitted layout and keeps failed writes atomic', () => {
+  const page = ReadonlyDynamicInputPage.create({
+    sourceId: 'all-types',
+    pageId: 0,
+    schema: {
+      ...schema,
+      maxRecords: 2,
+      fields: [
+        { name: 'scalar', type: 'f32' },
+        { name: 'id', type: 'u32' },
+        { name: 'pair', type: 'vec2<f32>' },
+        { name: 'triple', type: 'vec3<f32>' },
+        { name: 'tail', type: 'f32' },
+        { name: 'quad', type: 'vec4<f32>' },
+      ],
+    },
+  }).unwrap();
+  const values = {
+    scalar: -1,
+    id: 0xffffffff,
+    pair: [2, 3],
+    triple: [4, 5, 6],
+    tail: 7,
+    quad: [8, 9, 10, 11],
+  };
+  page.writeRecord(1, values).unwrap();
+  const view = new DataView(page.bytes.buffer, page.bytes.byteOffset + 48, 48);
+  expect(view.getUint32(4, true)).toBe(0xffffffff);
+  expect(
+    [0, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44].map((offset) => view.getFloat32(offset, true)),
+  ).toEqual([-1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  const before = page.bytes.slice(),
+    revision = page.contentRevision;
+  expect(page.writeRecord(1, { ...values, quad: [1, 2, 3] }).ok).toBe(false);
+  expect(page.bytes).toEqual(before);
+  expect(page.contentRevision).toBe(revision);
+});

@@ -1,11 +1,6 @@
 import type { Asset, AssetGuid, Result } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
-import {
-  AssetGuid as AssetGuidCodec,
-  isValidAssetGuidString,
-  isValidPackSourceKey,
-  PackageId,
-} from './guid.js';
+import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
+import { AssetGuid as AssetGuidCodec, isValidPackSourceKey, PackageId } from './guid.js';
 import {
   lowerPluginConfig,
   type PluginAssetSource,

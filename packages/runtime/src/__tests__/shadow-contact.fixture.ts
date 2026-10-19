@@ -78,15 +78,19 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           direction: small ? [0.7, -0.65, 0.3] : [0.18, -0.18, 1],
           intensity: 4,
           shadowFilter: DirectionalShadowFilterValue[filter],
           mapSize,
+          // Keep the receiver/filter oracle's established world-texel footprint;
+          // default cascade distribution is covered by the component contract.
+          cascadeCount: small ? 2 : 4,
+          splitLambda: 0.75,
           ...(small
             ? {
                 normalBias: 0.01,
                 depthBias: 0.00001,
-                cascadeCount: 2,
                 shadowDistance: 35,
               }
             : {}),

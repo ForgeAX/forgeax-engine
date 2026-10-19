@@ -22,10 +22,7 @@ import type { EquirectAsset, TextureFormat } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { DeviceScope } from '../../../../render/src/device/device-scope';
 import { GpuResidencyCache } from '../../../../render/src/device/gpu-residency';
-import {
-  getOrCreateIblCache,
-  setIblComposedShaders,
-} from '../../../../render/src/ibl/IblPipelineCache';
+import { setIblComposedShaders } from '../../../../render/src/ibl/IblPipelineCache';
 
 const mockCaps = {
   backendKind: 'webgpu' as const,
@@ -53,7 +50,7 @@ const mockCaps = {
 
 // feat-20260601-device/gpu-residency-extraction M1 (D-3 falsifiable anchor): a
 // single store._uploadCubemapFromEquirect(world, srcHandle, srcPod) returns the
-// cube handle, and store.getCubemapGpuTexture(cubeHandle) reads it back -- the
+// cube handle, and store.getCubemapGpuTexture(cubeHandle, world) reads it back -- the
 // single-call contract is preserved. The cube POD register-relay is injected
 // at configureGpuDevice and mints via world.allocSharedRef (the store holds no
 // registry reference, D-3).
@@ -329,7 +326,7 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
       if (!result.ok) return;
 
       const cubeHandle = result.value;
-      const cubeTexture = store.getCubemapGpuTexture(cubeHandle);
+      const cubeTexture = store.getCubemapGpuTexture(cubeHandle, world);
       expect(cubeTexture).toBeDefined();
       if (cubeTexture === undefined) return;
 
@@ -357,7 +354,8 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
       // (b) irradiance, (c) prefilter, (d) brdfLut: the textures live on
       // IblPipelineCache after t52/t53. Read opaque cache slots through the
       // test-only raw texture boundary.
-      const cache = getOrCreateIblCache(scope);
+      const cache = store.getCubemapIbl(Number(cubeHandle), world);
+      if (cache === undefined) throw new Error('missing source IBL output');
       const {
         irradianceTexture: irrTex,
         prefilterTexture: prefTex,

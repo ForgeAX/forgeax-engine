@@ -113,11 +113,12 @@ picking, so cast interaction rays from the mono Camera. Contract:
 
 ## Directional shadow entry
 
-DirectionalLight.shadowFilter is the public directional-shadow authoring entry.
+Enable `DirectionalLight.castShadow: true` before choosing a shadow filter;
+bare lights default off. DirectionalLight.shadowFilter selects the receiver.
 It is an ECS enum; assign
-DirectionalShadowFilterValue.pcf1, .pcf3, .pcf5, .pcssMedium, or
+DirectionalShadowFilterValue.pcfVogel, .pcf1, .pcf3, .pcf5, .pcssMedium, or
 .pcssHigh numeric constants, not string labels. Valid labels are
-pcf1, pcf3, pcf5, pcssMedium, pcssHigh; default is pcf3. Do not create
+pcfVogel, pcf1, pcf3, pcf5, pcssMedium, pcssHigh; default is pcfVogel. Do not create
 numeric or compatibility aliases. PCSS
 shadowAngularRadius is in radians, defaults to 0.00465, and accepts
 [0.0001, 0.05]. maxPenumbraTexels is in texels, defaults to 32, and must be
@@ -244,8 +245,8 @@ world.spawn(
       bloom: BLOOM_ENABLED,
       bloomThreshold: 1,
       bloomIntensity: 0.35,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
     },
   },
 );
@@ -740,3 +741,34 @@ Shadow casting stays with `ShadowParticipation.cast`; unmatched receivers may
 still cast. GI, IBL, baked light and volumetric scattering keep their existing
 policies. Use linear HDR and a light-off independent oracle, then RHI Debug to
 check actual light/receiver carriers and matching shader work.
+
+## Three r184 defaults
+
+`AmbientOcclusion {}` and `StandardProfile.ssao: true` both select GTAO. Its
+radius is 0.25, thickness 1, distanceExponent 1, distanceFallOff 1 and
+resolutionScale 1. High quality searches 36 depth candidates. Use
+`resolutionScale: 0.5` for less pixel work; select `algorithm: 'ssao'` explicitly
+for hemisphere sampling. Raw intensity is applied before the existing bilateral
+filter. See the [AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
+for retained mathematical differences and direct-light composition.
+
+Binding `Camera.colorLut` applies it with default strength 1; explicit strength 0
+disables it. No LUT creates no LUT work. FXAA follows Three GPU r184's six-step
+search, relative threshold 0.063 and subpixel blend 1. The public
+[comparison page](../../apps/parity/color-lighting/render-defaults.html) and its
+verification script use production shaders and the pinned Three dependency.
+
+Bloom is opt-in and independent of tone mapping. Defaults follow WebGPU
+BloomNode: intensity 1, threshold 0, smooth width 0.01, radius 0. Use
+`bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
+The five Gaussian levels and their weighted composite share one Renderer graph.
+SSR is opt-in, full internal resolution, maxDistance 1, thickness 0.1 and
+maxRoughness 1; 1080p temporal admission needs about 111 MiB. TAA motion uses
+input pixels / 128, with default current weights 0.05 (TAA) and 0.025 (TAAU).
+Point/Spot shadow near/far defaults are 0.5/500; a positive finite light range
+replaces far. RectAreaLight defaults to 10x10 with unlimited range.
+Directional/Spot shadow maps default off; set `castShadow: true` explicitly, as
+the game template does. Mesh participation stays on unless ShadowParticipation
+opts out; Point lights require PointLightShadow. No renderer-wide gate is needed.
+The game-3d template inherits projection/CSM defaults while retaining its
+explicit artistic ACES/FXAA, light color and intensity choices.

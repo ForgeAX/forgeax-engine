@@ -1,4 +1,5 @@
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
+import { mipDimension, textureFormatBlock } from '@forgeax/engine-types';
 import type { DepthOfFieldInspection } from '../../inspection-types';
 import { depthOfFieldPassNames, depthOfFieldTopology } from './depth-of-field-feature';
 import {
@@ -7,22 +8,17 @@ import {
   type DepthOfFieldRequestFailure,
 } from './depth-of-field-params';
 
-const DOF_FORMAT_BYTES: Readonly<Record<string, number>> = Object.freeze({
-  rgba16float: 8,
-  rgba8unorm: 4,
-});
-
 function resourceBytes(resource: CompiledRenderGraphInfo['resources'][number]): number {
   if (resource.byteSize !== undefined) return resource.byteSize;
   const descriptor = resource.descriptor;
   if (descriptor.kind !== 'texture') return 0;
-  const texelBytes = DOF_FORMAT_BYTES[descriptor.format] ?? 0;
-  if (texelBytes === 0) return 0;
+  if (descriptor.format !== 'rgba16float' && descriptor.format !== 'rgba8unorm') return 0;
+  const texelBytes = textureFormatBlock(descriptor.format).bytesPerBlock;
   let bytes = 0;
   for (let level = 0; level < descriptor.mipLevelCount; level += 1) {
     bytes +=
-      Math.max(1, descriptor.width >> level) *
-      Math.max(1, descriptor.height >> level) *
+      mipDimension(descriptor.width, level) *
+      mipDimension(descriptor.height, level) *
       descriptor.depthOrArrayLayers *
       texelBytes;
   }
@@ -40,7 +36,7 @@ function textureExtent(
   return { width: resource.descriptor.width, height: resource.descriptor.height };
 }
 
-export interface DepthOfFieldGraphInspection {
+interface DepthOfFieldGraphInspection {
   readonly status: 'empty' | 'active' | 'invalid';
   readonly outputExtent: { readonly width: number; readonly height: number };
   readonly workExtent: { readonly width: number; readonly height: number };
@@ -49,7 +45,7 @@ export interface DepthOfFieldGraphInspection {
   readonly graphGeneration: number;
 }
 
-export interface DepthOfFieldAcceptedState {
+interface DepthOfFieldAcceptedState {
   readonly params: DepthOfFieldParams;
   readonly graph: CompiledRenderGraphInfo;
   readonly deviceGeneration: number;

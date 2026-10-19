@@ -35,7 +35,7 @@ export function isTextureViewDimensionCompatible(
  * carries the format/size/sample/usage fields (w5); when via
  * addResource it is undefined.
  */
-export type ColorTargetResourceMeta = Pick<
+type ColorTargetResourceMeta = Pick<
   ColorTargetDescriptor,
   'format' | 'size' | 'domain' | 'viewFormats'
 > & {

@@ -374,6 +374,33 @@ describe('material parameter selection complexity', () => {
     expect(() => buildMaterialBg(deps, snapshot(), 4)).toThrow('duplicate');
   });
 
+  it('observes a default sampler replaced by the current texture resolver', () => {
+    const deps = customDependencies([{ name: 'external', type: 'texture2d' }]);
+    const replacement = {} as typeof deps.pipelineState.defaultSampler;
+    const view = {} as TextureView;
+    deps.runtime.externalTextures = {
+      resolve: () => {
+        deps.pipelineState.defaultSampler = replacement;
+        return { kind: 'textureView', value: view };
+      },
+      importVideoFrame: () => undefined,
+    };
+    buildMaterialBg(
+      deps,
+      {
+        ...snapshot(),
+        textureSources: new Map([['external', { externalTextureId: 1 }]]),
+      } as MaterialSnapshot,
+      1,
+    );
+    expect(deps.bindGroupEntries[0]?.[1]?.resource).toEqual({
+      kind: 'sampler',
+      value: replacement,
+    });
+    expect(deps.bindGroupEntries[0]?.[1]?.resource.value).toBe(replacement);
+    expect(textureValues(deps, 1)).toEqual([view]);
+  });
+
   it('retains per-view target receipt fallback and external-slot admission', () => {
     const schema: ParamSchemaEntry[] = [
       { name: 'target', type: 'texture_cube' },

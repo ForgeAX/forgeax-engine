@@ -133,6 +133,8 @@ export interface RenderFeatureExtractContext {
   readonly frameNumber: number;
   readonly views: readonly RenderFeatureExtractView[];
   readonly caps?: Readonly<RhiCaps>;
+  /** Exact receiving renderer domain, when extraction runs after device admission. */
+  readonly materialContext?: RenderFeaturePlanContext['materialContext'];
   readonly visibilitySnapshots?: readonly RenderFeatureWorldVisibilitySnapshot[];
   readonly reportHiddenEntity?: (report: RenderFeatureHiddenEntityReport) => void;
   /**

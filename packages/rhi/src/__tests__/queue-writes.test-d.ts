@@ -36,9 +36,9 @@ import type {
   Result,
   RhiError,
   RhiQueue,
+  TexelCopyTextureInfo,
   Texture,
   TextureView,
-  TextureWriteDestination,
 } from '../index';
 
 /** Strict structural equality helper. */
@@ -53,7 +53,7 @@ describe('AC-08 — RhiQueue.writeTexture Pick<spec> narrow', () => {
 
   it('writeTexture destination keeps the opaque Texture resource boundary', () => {
     type DestParam = Parameters<RhiQueue['writeTexture']>[0];
-    type ExpectedShape = TextureWriteDestination;
+    type ExpectedShape = TexelCopyTextureInfo;
     // Strict equality — the descriptor has exactly the four spec fields, but
     // its resource is the RHI-opaque Texture rather than GPUTexture.
     type IsExact = Equals<DestParam, ExpectedShape>;

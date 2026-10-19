@@ -20,7 +20,7 @@ export interface StandardClusteredTopologyInput {
  * projection of one prepared frame, not a second light/config/capability
  * input. Both Forward and Deferred keep the same object identity for a frame.
  */
-export type StandardTopologyInput = StandardNoLocalTopologyInput | StandardClusteredTopologyInput;
+type StandardTopologyInput = StandardNoLocalTopologyInput | StandardClusteredTopologyInput;
 
 export type StandardTopologyInputValue = StandardTopologyInput;
 
@@ -49,7 +49,7 @@ export function standardLightingTopologySignature(
   });
 }
 
-export interface StandardTopologyInputError {
+interface StandardTopologyInputError {
   readonly code: 'topology-input-invalid';
   readonly expected: 'prepared Standard lighting topology input';
   readonly hint: 'derive topology from prepared Standard lighting';

@@ -42,6 +42,7 @@ import type {
   ReflectionProbeInspection,
   ReflectionProbeSelectionInspection,
 } from '../inspection-types';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { ReflectionProbeRecordState, RenderSystemInternals } from '../record/render-context';
 import type { ReflectionProbeGraphWork } from '../record/typed-frame-graph';
 import { REFLECTION_PROBE_VIEW_SLOT_BASE, VIEW_UNIFORM_SLOT_STRIDE } from '../record/view-ubo';
@@ -396,6 +397,7 @@ export class ReflectionProbeRecordOwner {
     sceneRevision = '',
     skybox?: SkyboxSnapshot,
     environment?: SelectedEnvironmentFrame,
+    resourceWorld: RenderResourceScope | number = 0,
   ): ReflectionProbeRecordState {
     this.currentFrame = frameId;
     this.refreshFallbackCapabilities(frameId);
@@ -440,6 +442,7 @@ export class ReflectionProbeRecordOwner {
         sceneRevision,
         skylight,
         environment,
+        resourceWorld,
       );
       if (resource === undefined) continue;
       acceptedCount += 1;
@@ -483,7 +486,10 @@ export class ReflectionProbeRecordOwner {
       (handle) =>
         handle === undefined ||
         handle === 0 ||
-        this.internals.gpuStore.getCubemapGpuView(toShared<'EquirectAsset'>(handle)) !== undefined,
+        this.internals.gpuStore.getCubemapGpuView(
+          toShared<'EquirectAsset'>(handle),
+          resourceWorld,
+        ) !== undefined,
     );
     const candidates = [...accepted.values()];
     const captureTickets: Array<{
@@ -708,7 +714,7 @@ export class ReflectionProbeRecordOwner {
     const skylightSignature =
       skylight === undefined
         ? ''
-        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation])}`;
+        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0])])}`;
     for (const [renderableKey, selection] of stagedSelections) {
       const probeKey =
         selection.kind === 'probe' ? `${selection.worldId}:${selection.entityKey}` : undefined;
@@ -1182,10 +1188,11 @@ export class ReflectionProbeRecordOwner {
     sceneRevision = '',
     skylight?: SkylightSnapshot,
     environment?: SelectedEnvironmentFrame,
+    resourceWorld: RenderResourceScope | number = 0,
   ): ProbeGpuResource | undefined {
     const cache =
       skylight !== undefined && skylight.equirectHandle !== 0
-        ? getOrCreateIblCache(this.internals.deviceScope)
+        ? this.internals.gpuStore.getCubemapIbl(skylight.equirectHandle, resourceWorld)
         : undefined;
     const diffuseAvailable =
       skylight !== undefined &&
@@ -1195,13 +1202,15 @@ export class ReflectionProbeRecordOwner {
           cache.brdfLutView !== undefined));
     const diffuse =
       skylight === undefined
-        ? [0, 0, 0, index + 1, 0, 0, 0, 1]
+        ? [0, 0, 0, index + 1, 0, 0, 0, 1, 0, 0, 0, 0]
         : [
             ...(diffuseAvailable
               ? skylight.color.map((value) => value * skylight.intensity)
               : [0, 0, 0]),
             index + 1,
             ...skylight.rotation,
+            ...(skylight.ambientIrradiance ?? [0, 0, 0]),
+            0,
           ];
     let existing = this.resources.get(key);
     if (
@@ -1279,7 +1288,7 @@ export class ReflectionProbeRecordOwner {
     }
     const uniformBuffer = this.internals.device.createBuffer({
       label: `reflection-probe-${index}-uniforms`,
-      size: 64,
+      size: 80,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
       mappedAtCreation: false,
     });

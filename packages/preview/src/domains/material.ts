@@ -1,13 +1,15 @@
 import { evaluateMaterialOracle, type MaterialOracleInput } from '../evidence/oracle.js';
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
+import { isRecord } from '../request-schema.js';
 import {
   loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
+  type ResourceSubject,
   subjectFailure,
 } from './subject.js';
 
-export interface MaterialSubjectInspection {
+interface MaterialSubjectInspection {
   readonly subjectDigest: string;
   readonly program: string;
   readonly pass: string;
@@ -16,7 +18,7 @@ export interface MaterialSubjectInspection {
 }
 
 /** Portable sampled-texture budget the material owner reported for the Standard program. */
-export interface MaterialSampledTextureBudgetFacts {
+interface MaterialSampledTextureBudgetFacts {
   readonly limit: number;
   readonly required: number;
   readonly transmission: 'none' | 'dedicated' | 'shared' | 'exceeded';
@@ -52,20 +54,11 @@ type InspectionResult =
   | { readonly ok: true; readonly value: MaterialSubjectInspection }
   | ReturnType<typeof subjectFailure>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
 function digest(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-export function inspectMaterialSubject(input: {
-  readonly guid: string;
-  readonly asset: unknown;
-  readonly digest?: string;
-  readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
-}): InspectionResult {
+function inspectMaterialSubject(input: ResourceSubject): InspectionResult {
   if (!isRecord(input.asset) || input.asset.kind !== 'material') {
     return subjectFailure('resource-preview-kind-mismatch', 'a MaterialAsset with kind material', {
       phase: 'subject',

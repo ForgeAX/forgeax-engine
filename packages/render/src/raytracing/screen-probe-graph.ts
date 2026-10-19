@@ -307,6 +307,8 @@ function addProbePasses(
     const added = step();
     if (!added.ok) return added;
   }
+  const reflectionResponse =
+    prepared.profile.reflections === undefined ? undefined : target.reflection?.response.view;
   const composited = graph.addRasterPass('screen-probe.composite', {
     accesses: [
       { resource: target.scene.view, usage: 'color-attachment' },
@@ -316,6 +318,9 @@ function addProbePasses(
       { resource: target.albedo.view, usage: 'sampled-read' },
       { resource: target.f0.view, usage: 'sampled-read' },
       { resource: view, usage: 'uniform-read' },
+      ...(reflectionResponse === undefined
+        ? []
+        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
     ],
     colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
     encode: ({ pass, resources }) =>
@@ -324,6 +329,9 @@ function addProbePasses(
           pass,
           {
             irradiance: resources.buffer(historyOut).unwrap(),
+            ...(reflectionResponse === undefined
+              ? {}
+              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
             albedoMetallic: resources.textureView(target.albedo.view).unwrap(),

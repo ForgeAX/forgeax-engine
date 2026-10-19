@@ -5,6 +5,7 @@
 
 import { countResolveTargets } from '../../shared/scripts/rhi-debug-topology.mjs';
 import { chromium } from 'playwright';
+import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -352,7 +353,7 @@ async function captureRhiOnce(page, label) {
     const response = await fetch(`${location.origin}/__forgeax-debug/tape?runId=${runId}`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-forgeax-rhitape' },
-      body: result.value.bytes,
+      body: new Blob([result.value.bytes], { type: 'application/x-forgeax-rhitape' }),
     });
     const artifact = await response.json();
     if (!response.ok) throw new Error(`raw tape upload failed: ${JSON.stringify(artifact)}`);
@@ -393,27 +394,32 @@ async function captureRhiOnce(page, label) {
     bindingCount: parsedTape.events.filter((event) => event.kind === 'setBindGroup').length,
   };
   writeFileSync(resolve(rhiDir, `${label}.summary.json`), `${JSON.stringify(summary, null, 2)}\n`);
-  const { freshDevice, rhiWebgpu } = await bootstrapDawn(label, parsedTape);
-  const replayResult = await openReplay(parsedTape, {
-    device: freshDevice,
-    createShaderModule: rhiWebgpu.createShaderModule,
-  });
-  if (!replayResult.ok) {
-    freshDevice.destroy?.();
-    throw new Error(`openReplay failed: ${replayResult.error.code}`);
-  }
-  const replay = replayResult.value;
-  const inspectionResult = await replay.inspectWork(inspectedWork, ['bindings', 'pixels']);
-  if (!inspectionResult.ok) {
-    await replay.dispose();
-    freshDevice.destroy?.();
-    throw new Error(`inspectWork(${inspectedWork}) failed: ${inspectionResult.error.code}`);
-  }
-  const inspection = inspectionResult.value;
-  if (inspection.attachment === undefined) {
-    await replay.dispose();
-    freshDevice.destroy?.();
-    throw new Error(`inspectWork(${inspectedWork}) returned no color attachment`);
+  const { freshDevice, rhiWebgpu, dispose } = await bootstrapDawn(label, parsedTape);
+  let inspection;
+  let replay;
+  try {
+    const replayResult = await openReplay(parsedTape, {
+      device: freshDevice,
+      createShaderModule: rhiWebgpu.createShaderModule,
+    });
+    if (!replayResult.ok) {
+      throw new Error(`openReplay failed: ${replayResult.error.code}`);
+    }
+    replay = replayResult.value;
+    const inspectionResult = await replay.inspectWork(inspectedWork, ['bindings', 'pixels']);
+    if (!inspectionResult.ok) {
+      throw new Error(`inspectWork(${inspectedWork}) failed: ${inspectionResult.error.code}`);
+    }
+    inspection = inspectionResult.value;
+    if (inspection.attachment === undefined) {
+      throw new Error(`inspectWork(${inspectedWork}) returned no color attachment`);
+    }
+  } finally {
+    try {
+      if (replay !== undefined) (await replay.dispose()).unwrap();
+    } finally {
+      await dispose();
+    }
   }
   const pixels = inspection.attachment.bytes;
   let nonBlackPixelCount = 0;
@@ -436,8 +442,6 @@ async function captureRhiOnce(page, label) {
   };
   writeFileSync(resolve(rhiDir, `${label}.dawn-readback.rgba`), pixels);
   writeFileSync(resolve(rhiDir, `${label}.dawn-readback.json`), `${JSON.stringify(dawnReadback, null, 2)}\n`);
-  await replay.dispose();
-  freshDevice.destroy?.();
   const inspect = {
     workIndex: inspection.workIndex,
     eventIndex: inspection.eventIndex,
@@ -1049,13 +1053,9 @@ try {
   const baseUrl = await waitForVite(viteProc);
   const chromeExecutable = resolveChromeExecutable();
   browserServer = await chromium.launchServer({
-    headless: true,
+    ...browserLaunch,
     ...(chromeExecutable ? { executablePath: chromeExecutable } : {}),
-    args: [
-      '--enable-unsafe-webgpu',
-      '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-      '--ignore-gpu-blocklist',
-    ],
+    headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
     chromiumSandbox: true,
   });
   browser = await chromium.connect(browserServer.wsEndpoint());

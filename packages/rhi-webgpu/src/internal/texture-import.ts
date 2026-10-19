@@ -27,7 +27,7 @@ function invalid(expected: string, hint: string): Result<never, RhiError> {
   return err(new RhiErrorClass({ code: 'rhi-descriptor-invalid', expected, hint }));
 }
 
-export interface ImportedTextureMeta {
+interface ImportedTextureMeta {
   readonly format: GPUTextureFormat;
   readonly usage: GPUTextureUsageFlags;
 }

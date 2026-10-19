@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // hello-sprite headless smoke (feat-20260520-2d-sprite-layer-mvp / M-4 /
 // w30; AC-13).
 //
@@ -40,7 +41,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { writeReferencePng, readReferencePng } from '../../../shared/png-codec.mjs';
+import { readReferencePng } from '../../../shared/png-codec.mjs';
 import { rasterizeSpriteReference } from './reference-raster.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -521,7 +522,7 @@ for (const matrixCase of MATRIX) {
     const outputDir = resolve(process.env.SMOKE_OUTPUT_DIR);
     mkdirSync(outputDir, { recursive: true });
     writeFileSync(resolve(outputDir, `actual-${scene}-${tonemap}.png`),
-      writeReferencePng(tightRgba, WIDTH, HEIGHT));
+      encodePng(WIDTH, HEIGHT, tightRgba));
   }
 
   // Reference PNG compare or first-run write. Baseline path resolves
@@ -548,7 +549,7 @@ for (const matrixCase of MATRIX) {
       continue;
     }
     mkdirSync(BASELINE_DIR, { recursive: true });
-    const png = writeReferencePng(tightRgba, WIDTH, HEIGHT);
+    const png = encodePng(WIDTH, HEIGHT, tightRgba);
     writeFileSync(refPath, png);
     console.error(
       `[smoke] case ${scene}/${tonemap}: AC-13 reference PNG WRITTEN to ${refPath} (no prior baseline). ` +

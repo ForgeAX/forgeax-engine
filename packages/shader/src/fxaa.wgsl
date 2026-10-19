@@ -1,23 +1,9 @@
 #define_import_path forgeax_view::fxaa
 
-// @forgeax/engine-shader - fxaa.wgsl
-// (feat-20260528-fxaa-post-processing / w4; algorithm rewritten
-//  feat-20260531-fxaa-shader-correctness-fix).
-//
-// FXAA 3.11 fragment shader -- faithful port of the canonical Simon
-// Rodriguez reference (same lineage as Bevy's WGSL port), adapted to
-// forgeax naga_oil conventions. Hardcoded "High" quality preset: 12-step
-// edge search with compile-time step multipliers (the only UBO field is the
-// final-output dither switch; there are no quality #ifdef branches).
-//
-// Vertex stage: imports the SSOT fullscreen_triangle() from
-// forgeax_view::common (single large triangle, research Finding 1).
-//
-// Fragment stage: computes perceptual luma via rgb2luma (sqrt of Rec.601
-// weighted sum -- matches the canonical reference), performs a directional
-// edge search, then blends along the edge with a sub-pixel aliasing term.
-// Texture dimensions are obtained via textureDimensions() for resize-agnostic
-// behavior (AC-08).
+// FXAA follows Three.js r184 examples/jsm/tsl/display/FXAANode.js:
+// six search steps, linear RGB luma, relative threshold 0.063 and subpixel 1.
+// This pass consumes its graph-defined color domain and never applies an OETF.
+// Reference: mrdoob/three.js@d3b629c0c2097cec664ad16369bb6eae3b10e335 (MIT).
 //
 // Sampling and edge distances stay in texel space. Integer center/neighbour
 // reads preserve the source grid; fractional luma-search samples use explicit
@@ -40,9 +26,10 @@
 #import forgeax_view::common::fullscreen_triangle
 
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;
-const EDGE_THRESHOLD_MAX: f32 = 0.125;
-const SUBPIXEL_QUALITY: f32 = 0.75;
-const ITERATIONS: i32 = 12;
+const EDGE_THRESHOLD_MAX: f32 = 0.063;
+const SUBPIXEL_QUALITY: f32 = 1.0;
+const ITERATIONS: i32 = 6;
+const EDGE_GUESS: f32 = 8.0;
 
 @group(0) @binding(0) var screenTexture: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -62,7 +49,7 @@ struct FxaaParams {
 @group(0) @binding(2) var<uniform> params: FxaaParams;
 
 fn rgb2luma(rgb: vec3<f32>) -> f32 {
-  return sqrt(dot(rgb, vec3<f32>(0.299, 0.587, 0.114)));
+  return dot(rgb, vec3<f32>(0.3, 0.59, 0.11));
 }
 
 fn loadColor(pixel: vec2<i32>) -> vec4<f32> {
@@ -92,22 +79,11 @@ fn sampleLuma(position: vec2<f32>) -> f32 {
   return rgb2luma(sampleColor(position).rgb);
 }
 
-// High-preset edge-search step multipliers (canonical FXAA 3.11 QUALITY
-// table for the 12-tap variant): steps 0..4 = 1.0, then ramps to 8.0.
+// Three r184 FXAANode search distances. Keep integer center reads and
+// explicit bilinear search sampling for deterministic cross-backend ties.
 fn qualityStep(i: i32) -> f32 {
-  if i < 5 {
-    return 1.0;
-  }
-  if i == 5 {
-    return 1.5;
-  }
-  if i < 10 {
-    return 2.0;
-  }
-  if i == 10 {
-    return 4.0;
-  }
-  return 8.0;
+  let steps = array<f32, 6>(1.0, 1.5, 2.0, 2.0, 2.0, 4.0);
+  return steps[i];
 }
 
 @vertex
@@ -175,8 +151,11 @@ fn fs_main(in: FullscreenOutput) -> @location(0) vec4<f32> {
   let gradient1 = luma1 - lumaCenter;
   let gradient2 = luma2 - lumaCenter;
 
-  let is1Steepest = abs(gradient1) >= abs(gradient2);
-  let gradientScaled = 0.25 * max(abs(gradient1), abs(gradient2));
+  let is1Steepest = abs(gradient1) > abs(gradient2);
+  // A mathematically equal endpoint must terminate on both backends. The
+  // dot/interpolation/subtraction chain may differ by a few f32 rounding units.
+  let lumaRoundoff = 4.0 * 1.1920929e-7 * max(abs(lumaMin), abs(lumaMax));
+  let gradientScaled = max(0.0, 0.25 * max(abs(gradient1), abs(gradient2)) - lumaRoundoff);
 
   // One-texel step perpendicular to the edge, in texel space.
   var stepLength = 1.0;
@@ -213,40 +192,22 @@ fn fs_main(in: FullscreenOutput) -> @location(0) vec4<f32> {
 
   var reached1 = abs(lumaEnd1) >= gradientScaled;
   var reached2 = abs(lumaEnd2) >= gradientScaled;
-  var reachedBoth = reached1 && reached2;
-
-  if !reached1 {
-    position1 -= edgeStep;
-  }
-  if !reached2 {
-    position2 += edgeStep;
-  }
-
-  if !reachedBoth {
-    var i = 1;
-    loop {
-      if i >= ITERATIONS || reachedBoth {
-        break;
-      }
-      let q = qualityStep(i);
-      if !reached1 {
-        lumaEnd1 = sampleLuma(position1) - lumaLocalAverage;
-        reached1 = abs(lumaEnd1) >= gradientScaled;
-      }
-      if !reached2 {
-        lumaEnd2 = sampleLuma(position2) - lumaLocalAverage;
-        reached2 = abs(lumaEnd2) >= gradientScaled;
-      }
-      reachedBoth = reached1 && reached2;
-      if !reached1 {
-        position1 -= edgeStep * q;
-      }
-      if !reached2 {
-        position2 += edgeStep * q;
-      }
-      i += 1;
+  for (var i = 1; i < ITERATIONS; i++) {
+    if reached1 && reached2 { break; }
+    let q = qualityStep(i);
+    if !reached1 {
+      position1 -= edgeStep * q;
+      lumaEnd1 = sampleLuma(position1) - lumaLocalAverage;
+      reached1 = abs(lumaEnd1) >= gradientScaled;
+    }
+    if !reached2 {
+      position2 += edgeStep * q;
+      lumaEnd2 = sampleLuma(position2) - lumaLocalAverage;
+      reached2 = abs(lumaEnd2) >= gradientScaled;
     }
   }
+  if !reached1 { position1 -= edgeStep * EDGE_GUESS; }
+  if !reached2 { position2 += edgeStep * EDGE_GUESS; }
 
   // Distances to each end of the edge, along the edge axis.
   let distance1 = select(position.y - position1.y, position.x - position1.x, isHorizontal);

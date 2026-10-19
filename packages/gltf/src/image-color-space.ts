@@ -26,12 +26,12 @@
 // matter (images count, textures, materials); output = a Map keyed by
 // the image array index.
 
-export type ImageColorSpaceSrgbOrLinear = 'srgb' | 'linear';
+type ImageColorSpaceSrgbOrLinear = 'srgb' | 'linear';
 
 type TextureBinding = number | { readonly texture: number };
 
 /** Slim view of a parsed material the classifier reads (subset of MaterialIr). */
-export interface MaterialColorSpaceInput {
+interface MaterialColorSpaceInput {
   readonly baseColorTexture?: TextureBinding;
   readonly metallicRoughnessTexture?: TextureBinding;
   readonly normalTexture?: TextureBinding;
@@ -54,7 +54,7 @@ export interface MaterialColorSpaceInput {
 }
 
 /** Slim view of a parsed `textures[]` row. */
-export interface TextureColorSpaceInput {
+interface TextureColorSpaceInput {
   readonly source: number;
 }
 
@@ -63,7 +63,7 @@ export interface TextureColorSpaceInput {
  * doc that the classifier reads. Decoupled from `GltfDoc` so the helper is
  * trivially testable without building a full doc.
  */
-export interface DeriveTextureColorSpaceInput {
+interface DeriveTextureColorSpaceInput {
   readonly imageCount: number;
   readonly textures: readonly TextureColorSpaceInput[] | undefined;
   readonly materials: readonly MaterialColorSpaceInput[];

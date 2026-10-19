@@ -19,12 +19,12 @@ export function cameraLensProjection(
     | 'orthoRight'
     | 'orthoTop'
     | 'orthoBottom'
-    | 'eye'
+    | 'projectionOffset'
   >,
   out: Mat4 = mat4.create(),
 ): Mat4 {
   if (camera.projection === 'orthographic') {
-    return mat4.orthographicReverseZ(
+    mat4.orthographicReverseZ(
       out,
       camera.orthoLeft,
       camera.orthoRight,
@@ -33,8 +33,31 @@ export function cameraLensProjection(
       camera.near,
       camera.far,
     );
+  } else {
+    mat4.perspectiveReverseZ(out, camera.fov, camera.aspect, camera.near, camera.far);
   }
-  mat4.perspectiveReverseZ(out, camera.fov, camera.aspect, camera.near, camera.far);
-  if (camera.eye !== undefined) out[8] = camera.eye.frustumShift;
+  const [x, y] = camera.projectionOffset ?? [0, 0];
+  // Clip translation preserves depth and works for both lens families.
+  for (let column = 0; column < 16; column += 4) {
+    const w = out[column + 3] ?? 0;
+    out[column] = (out[column] ?? 0) + x * w;
+    out[column + 1] = (out[column + 1] ?? 0) + y * w;
+  }
   return out;
+}
+
+/** Apply a screen-UV sample offset in clip space; the input may alias out. */
+export function jitterCameraProjection(
+  out: Mat4,
+  projection: Mat4,
+  jitterUv: readonly [number, number] | undefined,
+): Mat4 {
+  if (jitterUv === undefined) {
+    out.set(projection);
+    return out;
+  }
+  const shift = mat4.identity(mat4.create());
+  shift[12] = jitterUv[0] * 2;
+  shift[13] = jitterUv[1] * -2;
+  return mat4.multiply(out, shift, projection);
 }

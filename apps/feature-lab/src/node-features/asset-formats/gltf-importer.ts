@@ -2,6 +2,7 @@ import { gltfImporter, sourceKeyForGltfOutput } from '@forgeax/engine/gltf';
 import { imageImporter } from '@forgeax/engine/image/image-importer';
 import { ImporterRegistry, type ImportRunnerFs, runImport } from '@forgeax/engine/import';
 import type { ImportContext } from '@forgeax/engine/types';
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { cubeGltf } from '../../features/asset-formats/fixtures/gltf-source';
 import { errorCode, guid } from '../../features/asset-formats/fixtures/memory-pack';
 import { defineFeature } from '../../lab/feature';
@@ -37,12 +38,7 @@ export function gltfFs(bytes: Uint8Array): ImportRunnerFs {
 
 export async function importGltf(
   json: Record<string, unknown>,
-  subAssets: readonly {
-    readonly guid: string;
-    readonly sourceIndex: number;
-    readonly kind: string;
-    readonly sourceKey?: string;
-  }[],
+  subAssets: readonly ImportSubAsset[],
 ): Promise<
   | { readonly ok: true; readonly assets: readonly ImportedPackAsset[] }
   | { readonly ok: false; readonly code: string }

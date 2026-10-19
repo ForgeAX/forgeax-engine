@@ -40,9 +40,7 @@ function phongRoughness(shininess: number, maxGloss = 100): number {
  * The caller (fbx-importer.ts) iterates the top-level `materials` array
  * from the C++ binding JSON output.
  */
-export function parseMaterial(raw: FbxRawMaterial, sourceIndex: number): MaterialPod {
-  void sourceIndex; // reserved for future cross-referencing
-
+export function parseMaterial(raw: FbxRawMaterial): MaterialPod {
   switch (raw.kind) {
     case 'stingray-pbs': {
       const sp = raw.stingrayProps ?? {};

@@ -671,16 +671,20 @@ if (selected('project')) {
 
   // Resolve the public import from the installed candidate project, rather than
   // the verifier checkout (the package has an ESM-only public entry).
-  const catalogRead = await execFileAsync(
-    process.execPath,
-    [
-      '--input-type=module',
-      '--eval',
-      "import { readFile } from 'node:fs/promises'; import { decodeCatalogWire } from '@forgeax/engine/pack'; console.log(JSON.stringify(decodeCatalogWire(JSON.parse(await readFile('dist/pack-index.json', 'utf8'))).unwrap()));",
-    ],
-    { cwd: project },
-  );
-  const builtCatalog = JSON.parse(catalogRead.stdout);
+  async function readProjectCatalog(path) {
+    const catalogRead = await execFileAsync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        "import { readFile } from 'node:fs/promises'; import { decodeCatalogWire } from '@forgeax/engine/pack'; console.log(JSON.stringify(decodeCatalogWire(JSON.parse(await readFile(process.argv[1], 'utf8'))).unwrap()));",
+        path,
+      ],
+      { cwd: project },
+    );
+    return JSON.parse(catalogRead.stdout);
+  }
+  const builtCatalog = await readProjectCatalog(resolve(project, 'dist/pack-index.json'));
   const defaultSceneEntry = Array.isArray(builtCatalog)
     ? builtCatalog.find((entry) => entry.guid === defaultSceneGuid)
     : undefined;
@@ -816,11 +820,13 @@ if (selected('project')) {
         } catch {}
         await new Promise((accept) => setTimeout(accept, 100));
       }
-      if (
-        snapshot === undefined ||
-        !Array.isArray(snapshot.entries) ||
-        !snapshot.entries.some((entry) => entry.guid === defaultSceneGuid && entry.kind === 'scene')
-      ) {
+      if (snapshot === undefined) {
+        throw new Error(`sdk-scriptable-pack-dev-catalog: ${catalogUrl}`);
+      }
+      const snapshotPath = resolve(unpackRoot, 'dev-catalog.json');
+      await writeFile(snapshotPath, JSON.stringify(snapshot));
+      const entries = await readProjectCatalog(snapshotPath);
+      if (!entries.some((entry) => entry.guid === defaultSceneGuid && entry.kind === 'scene')) {
         throw new Error(`sdk-scriptable-pack-dev-catalog: ${catalogUrl}`);
       }
       return { url, catalogUrl, defaultSceneGuid };

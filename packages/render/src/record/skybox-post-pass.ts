@@ -85,6 +85,7 @@ export function recordSkyboxPass(
   // cubemap isn't ready, skyboxActive is already false (see w18).
   const cubemapView = store.getCubemapGpuView(
     toShared<'EquirectAsset'>(skyboxSnapshot.equirectHandle),
+    c.world,
   );
   if (cubemapView === undefined) return;
 
@@ -164,7 +165,7 @@ export function encodeSkyboxPass(
   recordSkyboxPass(c, pass);
 }
 
-// Bloom records its admitted downsample/upsample passes on the shared encoder.
+// Bloom records its admitted horizontal/vertical passes on the shared encoder.
 // Disabled Bloom or zero intensity performs no uploads, bindings or encoding.
 
 const EMPTY_BLOOM_RECEIPTS: BloomFrameReceipts = {
@@ -208,7 +209,7 @@ function bloomRecordActive(c: _InternalRenderPipelineContext): boolean {
   return standardBloomAdmitted(c.camera) && c.tonemapActive;
 }
 
-export function recordBloomDownsamplePass(
+export function recordBloomHorizontalPass(
   _c: _InternalRenderPipelineContext,
   resolve?: ResolveContext,
   graphPass?: RhiRenderPassEncoder,
@@ -221,23 +222,23 @@ export function recordBloomDownsamplePass(
   if (
     pp === undefined ||
     pp === null ||
-    pp.bloomDownsamplePipeline === null ||
-    pp.bloomDownsampleBindGroupLayout === null ||
+    pp.bloomHorizontalPipeline === null ||
+    pp.bloomHorizontalBindGroupLayout === null ||
     pp.bloomSampler === null ||
-    pp.bloomDownsampleParamsBuffer === null
+    pp.bloomHorizontalParamsBuffer === null
   ) {
-    throwBloomRecordFailure('Bloom downsample resources are ready before encoding');
+    throwBloomRecordFailure('Bloom horizontal resources are ready before encoding');
   }
-  const downsamplePipeline = pp.bloomDownsamplePipeline;
-  const downsampleLayout = pp.bloomDownsampleBindGroupLayout;
+  const horizontalPipeline = pp.bloomHorizontalPipeline;
+  const horizontalLayout = pp.bloomHorizontalBindGroupLayout;
   const bloomSampler = pp.bloomSampler;
-  const downsampleParamsBuffer = pp.bloomDownsampleParamsBuffer;
-  const sourceName = level === 0 ? 'hdrColor' : `bloomDownsample${level - 1}`;
-  const targetName = `bloomDownsample${level}`;
+  const horizontalParamsBuffer = pp.bloomHorizontalParamsBuffer;
+  const sourceName = level === 0 ? 'hdrColor' : `bloomVertical${level - 1}`;
+  const targetName = `bloomHorizontal${level}`;
   const sourceView = resolve?.resolve(sourceName) as TextureView | undefined;
   const targetView = resolve?.resolve(targetName) as TextureView | undefined;
   if (sourceView === undefined || targetView === undefined) {
-    throwBloomRecordFailure(`Bloom downsample level ${level} resolves source and target views`);
+    throwBloomRecordFailure(`Bloom horizontal level ${level} resolves source and target views`);
   }
   const size = destinationSize ?? {
     width: Math.max(1, Math.ceil(_c.targetW / 2)),
@@ -245,7 +246,7 @@ export function recordBloomDownsamplePass(
   };
   const params = new Float32Array([
     camera.bloomThreshold,
-    camera.bloomSoftKnee,
+    camera.bloomSmoothWidth,
     size.width,
     size.height,
     level,
@@ -254,17 +255,17 @@ export function recordBloomDownsamplePass(
     0,
   ]);
   const offset = level * BLOOM_UNIFORM_PARAMS_STRIDE_BYTES;
-  const upload = runtime.device.queue.writeBuffer(pp.bloomDownsampleParamsBuffer, offset, params);
+  const upload = runtime.device.queue.writeBuffer(pp.bloomHorizontalParamsBuffer, offset, params);
   if (!upload.ok) throw upload.error;
   stageBloomUpload(_c);
   const bindGroup = getOrCreateFromChain(
     frameState.postProcessBgCache,
-    [sourceView, downsampleParamsBuffer],
-    `bloom-downsample-${level}`,
+    [sourceView, horizontalParamsBuffer],
+    `bloom-horizontal-${level}`,
     () => {
       const created = runtime.device.createBindGroup({
-        label: `bloom-downsample-${level}-bg`,
-        layout: downsampleLayout,
+        label: `bloom-horizontal-${level}-bg`,
+        layout: horizontalLayout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: sourceView } },
           { binding: 1, resource: { kind: 'sampler', value: bloomSampler } },
@@ -272,7 +273,7 @@ export function recordBloomDownsamplePass(
             binding: 2,
             resource: {
               kind: 'buffer',
-              value: { buffer: downsampleParamsBuffer, offset, size: 32 },
+              value: { buffer: horizontalParamsBuffer, offset, size: 32 },
             },
           },
         ],
@@ -288,10 +289,10 @@ export function recordBloomDownsamplePass(
       buildBeginRenderPassDescriptor(
         { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
         { colorViews: [targetView] },
-        'bloom-downsample',
+        'bloom-horizontal',
       ) as never,
     );
-  pass.setPipeline(downsamplePipeline);
+  pass.setPipeline(horizontalPipeline);
   pass.setBindGroup(0, bindGroup);
   stageBloomBindGroup(_c);
   pass.draw(3, 1, 0, 0);
@@ -299,7 +300,7 @@ export function recordBloomDownsamplePass(
   if (graphPass === undefined) pass.end();
 }
 
-export function recordBloomUpsamplePass(
+export function recordBloomVerticalPass(
   _c: _InternalRenderPipelineContext,
   resolve?: ResolveContext,
   graphPass?: RhiRenderPassEncoder,
@@ -311,50 +312,41 @@ export function recordBloomUpsamplePass(
   if (
     pp === undefined ||
     pp === null ||
-    pp.bloomUpsamplePipeline === null ||
-    pp.bloomUpsampleBindGroupLayout === null ||
+    pp.bloomVerticalPipeline === null ||
+    pp.bloomVerticalBindGroupLayout === null ||
     pp.bloomSampler === null ||
-    pp.bloomUpsampleParamsBuffer === null
+    pp.bloomVerticalParamsBuffer === null
   ) {
-    throwBloomRecordFailure('Bloom upsample resources are ready before encoding');
+    throwBloomRecordFailure('Bloom vertical resources are ready before encoding');
   }
-  const upsamplePipeline = pp.bloomUpsamplePipeline;
-  const upsampleLayout = pp.bloomUpsampleBindGroupLayout;
+  const verticalPipeline = pp.bloomVerticalPipeline;
+  const verticalLayout = pp.bloomVerticalBindGroupLayout;
   const bloomSampler = pp.bloomSampler;
-  const upsampleParamsBuffer = pp.bloomUpsampleParamsBuffer;
-  const currentView = resolve?.resolve(`bloomDownsample${level}`) as TextureView | undefined;
-  // The top upsample edge reconstructs from the next downsample level. Every
-  // finer edge then consumes the already reconstructed coarser upsample. A
-  // resolver miss is the single source of truth for the one-level pyramid
-  // boundary; no alternate level-count or legacy H/V path is needed.
-  const nextUpsampleView = resolve?.resolve(`bloomUpsample${level + 1}`) as TextureView | undefined;
-  const coarseView =
-    nextUpsampleView ??
-    (resolve?.resolve(`bloomDownsample${level + 1}`) as TextureView | undefined);
-  const targetView = resolve?.resolve(`bloomUpsample${level}`) as TextureView | undefined;
-  if (currentView === undefined || coarseView === undefined || targetView === undefined) {
-    throwBloomRecordFailure(`Bloom upsample level ${level} resolves adjacent pyramid views`);
+  const verticalParamsBuffer = pp.bloomVerticalParamsBuffer;
+  const currentView = resolve?.resolve(`bloomHorizontal${level}`) as TextureView | undefined;
+  const targetView = resolve?.resolve(`bloomVertical${level}`) as TextureView | undefined;
+  if (currentView === undefined || targetView === undefined) {
+    throwBloomRecordFailure(`Bloom vertical level ${level} resolves horizontal source and target`);
   }
-  const params = new Float32Array([_c.camera.bloomScatter, 0, 0, 0]);
+  const params = new Float32Array([level, 0, 0, 0]);
   const offset = level * BLOOM_UNIFORM_PARAMS_STRIDE_BYTES;
-  const upload = runtime.device.queue.writeBuffer(pp.bloomUpsampleParamsBuffer, offset, params);
+  const upload = runtime.device.queue.writeBuffer(pp.bloomVerticalParamsBuffer, offset, params);
   if (!upload.ok) throw upload.error;
   stageBloomUpload(_c);
   const bindGroup = getOrCreateFromChain(
     frameState.postProcessBgCache,
-    [currentView, coarseView, upsampleParamsBuffer],
-    `bloom-upsample-${level}`,
+    [currentView, verticalParamsBuffer],
+    `bloom-vertical-${level}`,
     () => {
       const created = runtime.device.createBindGroup({
-        label: `bloom-upsample-${level}-bg`,
-        layout: upsampleLayout,
+        label: `bloom-vertical-${level}-bg`,
+        layout: verticalLayout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: currentView } },
-          { binding: 1, resource: { kind: 'textureView', value: coarseView } },
-          { binding: 2, resource: { kind: 'sampler', value: bloomSampler } },
+          { binding: 1, resource: { kind: 'sampler', value: bloomSampler } },
           {
-            binding: 3,
-            resource: { kind: 'buffer', value: { buffer: upsampleParamsBuffer, offset, size: 16 } },
+            binding: 2,
+            resource: { kind: 'buffer', value: { buffer: verticalParamsBuffer, offset, size: 16 } },
           },
         ],
       });
@@ -369,10 +361,10 @@ export function recordBloomUpsamplePass(
       buildBeginRenderPassDescriptor(
         { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
         { colorViews: [targetView] },
-        'bloom-upsample',
+        'bloom-vertical',
       ) as never,
     );
-  pass.setPipeline(upsamplePipeline);
+  pass.setPipeline(verticalPipeline);
   pass.setBindGroup(0, bindGroup);
   stageBloomBindGroup(_c);
   pass.draw(3, 1, 0, 0);
@@ -407,12 +399,13 @@ export function recordBloomCompositePass(
   // bug-20260625: composite READS hdrColor (scene, binding 0) and WRITES the
   // separate hdrComposited target -- never the same texture in one pass.
   const hdrColorView = resolve?.resolve('hdrColor') as TextureView | undefined;
-  const bloomView = resolve?.resolve('bloomUpsample0') as TextureView | undefined;
-  const finestBloomView =
-    bloomView ?? (resolve?.resolve('bloomDownsample0') as TextureView | undefined);
+  const bloomViews = Array.from(
+    { length: 5 },
+    (_, level) => resolve?.resolve(`bloomVertical${level}`) as TextureView | undefined,
+  );
   const hdrCompositedView = resolve?.resolve('hdrComposited') as TextureView | undefined;
-  if (!hdrColorView || !finestBloomView || !hdrCompositedView) {
-    throwBloomRecordFailure('Bloom composite pass resolves scene, finest Bloom, and target views');
+  if (!hdrColorView || bloomViews.some((view) => view === undefined) || !hdrCompositedView) {
+    throwBloomRecordFailure('Bloom composite resolves the scene and all five Gaussian levels');
   }
   const bglComposite = pp.bloomCompositeBindGroupLayout;
   const bloomSampler = pp.bloomSampler;
@@ -421,7 +414,7 @@ export function recordBloomCompositePass(
   // 1. Write composite params UBO (16 B std140: intensity + 12 B pad).
   const compositeParams = new Float32Array(4);
   compositeParams[0] = camera.bloomIntensity;
-  compositeParams[1] = 0;
+  compositeParams[1] = camera.bloomRadius;
   compositeParams[2] = 0;
   compositeParams[3] = 0;
   const paramsWrite = runtime.device.queue.writeBuffer(paramsBuffer, 0, compositeParams);
@@ -433,7 +426,7 @@ export function recordBloomCompositePass(
   // finest Bloom view, so a two-node chain rebuilds when either identity changes.
   const bindGroup = getOrCreateFromChain(
     frameState.postProcessBgCache,
-    [hdrColorView, finestBloomView],
+    [hdrColorView, ...(bloomViews as TextureView[]), paramsBuffer],
     'bloom-composite',
     () => {
       const bgRes = runtime.device.createBindGroup({
@@ -441,10 +434,13 @@ export function recordBloomCompositePass(
         layout: bglComposite,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: hdrColorView } },
-          { binding: 1, resource: { kind: 'textureView', value: finestBloomView } },
-          { binding: 2, resource: { kind: 'sampler', value: bloomSampler } },
+          ...(bloomViews as TextureView[]).map((value, level) => ({
+            binding: level + 1,
+            resource: { kind: 'textureView' as const, value },
+          })),
+          { binding: 6, resource: { kind: 'sampler', value: bloomSampler } },
           {
-            binding: 3,
+            binding: 7,
             resource: { kind: 'buffer', value: { buffer: paramsBuffer } },
           },
         ],

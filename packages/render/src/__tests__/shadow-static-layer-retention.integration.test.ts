@@ -1,8 +1,8 @@
 import { frustum, mat4 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { RhiDevice } from '@forgeax/engine-rhi';
+import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { ok } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
@@ -418,6 +418,57 @@ describe('static shadow layer retention', () => {
     (await second.retire()).unwrap();
     pool.dispose();
     available.scene.dispose();
+  });
+
+  it('reuses imported views across frames, abort and graph retirement', async () => {
+    const device = await nullDevice();
+    const createView = vi.spyOn(device, 'createTextureView');
+    const layers = new StaticShadowLayers(device);
+    const first = compile(device, layers);
+    frame(device, first, layers);
+    const calls = createView.mock.calls.length;
+    frame(device, first, layers, 'abort');
+    frame(device, first, layers);
+    expect(createView).toHaveBeenCalledTimes(calls);
+    const layer = layers.view('spot-shadow-static', 0);
+    (await first.retire()).unwrap();
+    const second = compile(device, layers);
+    frame(device, second, layers);
+    expect(layers.view('spot-shadow-static', 0)).toBe(layer);
+    (await second.retire()).unwrap();
+    layers.dispose();
+  });
+
+  it('retries failed views and preserves old allocation on replacement failure', async () => {
+    const device = await nullDevice();
+    const layers = new StaticShadowLayers(device);
+    const old = layers.texture('static', 32, 3);
+    const whole = layers.view('static');
+    const layer = layers.view('static', 1);
+    const failure = new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'allocation',
+      hint: 'test',
+    });
+    vi.spyOn(device, 'createTexture').mockReturnValueOnce(err(failure));
+    expect(() => layers.texture('static', 64, 3)).toThrow(failure);
+    expect(layers.texture('static', 32, 3)).toBe(old);
+    expect(layers.view('static', 1)).toBe(layer);
+    const destroy = vi.spyOn(device, 'destroyTexture');
+    layers.texture('static', 64, 4);
+    const createView = vi.spyOn(device, 'createTextureView').mockReturnValueOnce(err(failure));
+    expect(() => layers.view('static')).toThrow(failure);
+    expect(layers.view('static')).not.toBe(whole);
+    expect(createView).toHaveBeenCalledTimes(2);
+    expect(layers.view('static', 1)).not.toBe(layer);
+    layers._abort();
+    expect(destroy).not.toHaveBeenCalled();
+    layers._commit();
+    expect(destroy).toHaveBeenCalledWith(old);
+    layers.dispose();
+    expect(destroy).toHaveBeenCalledTimes(2);
+    layers.dispose();
+    expect(destroy).toHaveBeenCalledTimes(2);
   });
 
   it('re-rasters a graph-owned static layer on every recompile', async () => {

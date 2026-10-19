@@ -1,3 +1,4 @@
+import type { CameraSnapshot } from '../render-contract';
 /**
  * Consumer-only SSR M0 admission.
  *
@@ -474,12 +475,10 @@ export interface SsrSpatialEnvironment {
 }
 
 /** The only camera fields used by the spatial admission owner. */
-export interface SsrSpatialCamera {
-  readonly projection: 'perspective' | 'orthographic';
-  readonly near: number;
-  readonly far: number;
-  readonly screenSpaceReflection?: ScreenSpaceReflectionData;
-}
+export type SsrSpatialCamera = Pick<
+  CameraSnapshot,
+  'projection' | 'near' | 'far' | 'screenSpaceReflection'
+>;
 
 export type SsrSpatialStatus =
   | 'not-requested'

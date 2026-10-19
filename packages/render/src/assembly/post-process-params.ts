@@ -12,7 +12,7 @@ import type { RenderSystemInternals } from '../record/render-context';
 import type { RecoveryPostProcessResources } from '../recovery/types';
 
 interface PostProcessParamsCandidate {
-  readonly buffers: ReadonlyMap<string, Buffer>;
+  readonly buffers: Map<string, Buffer>;
   readonly created: Buffer[];
 }
 
@@ -181,16 +181,22 @@ export function createPostProcessParamsOwner(
     }
   };
   const acceptPostProcessParamsCandidate = (candidate: PostProcessParamsCandidate): void => {
-    const previous = [...postProcessParamsBuffers.values()];
-    const next = new Set(candidate.buffers.values());
-    postProcessParamsBuffers.clear();
-    for (const [id, buffer] of candidate.buffers) {
-      postProcessParamsBuffers.set(id, buffer);
-    }
+    if (candidate.buffers === postProcessParamsBuffers) return;
+    let retired: Buffer[] | undefined;
+    let retained: Set<Buffer> | undefined;
+    postProcessParamsBuffers.forEach((buffer, id) => {
+      if (candidate.buffers.get(id) === buffer) return;
+      retained ??= new Set(candidate.buffers.values());
+      if (!retained.has(buffer)) {
+        retired ??= [];
+        retired.push(buffer);
+      }
+    });
+    postProcessParamsBuffers = candidate.buffers;
     // Admission transfers disposal ownership to the active map. A later
     // frame abort cannot destroy an admitted or already retired allocation.
     candidate.created.length = 0;
-    retirePostProcessParams(previous.filter((buffer) => !next.has(buffer)));
+    if (retired !== undefined) retirePostProcessParams(retired);
   };
   return {
     get builtinEntries(): ReadonlyMap<string, PostProcessShaderEntry> {
@@ -251,7 +257,8 @@ export function createPostProcessParamsOwner(
           });
         }
         builtinPostProcessEntries.set(id, entry);
-        if (paramsBuffer !== undefined) postProcessParamsBuffers.set(id, paramsBuffer);
+        if (paramsBuffer !== undefined)
+          postProcessParamsBuffers = new Map(postProcessParamsBuffers).set(id, paramsBuffer);
         const moduleLabel = postProcessShaderModuleLabel(entry.source);
         return () => {
           if (builtinPostProcessEntries.get(id) === entry) {
@@ -260,6 +267,7 @@ export function createPostProcessParamsOwner(
           const current = postProcessParamsBuffers.get(id);
           if (current !== undefined) {
             internals.device.destroyBuffer(current);
+            postProcessParamsBuffers = new Map(postProcessParamsBuffers);
             postProcessParamsBuffers.delete(id);
           }
           invalidate(id, moduleLabel);

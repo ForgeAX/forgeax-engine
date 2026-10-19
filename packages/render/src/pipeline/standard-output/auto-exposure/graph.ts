@@ -18,17 +18,17 @@ export const AUTO_EXPOSURE_FUSED_GRAPH_PASS = 'auto-exposure-meter' as const;
  * workgroups of 256 invocations; the dispatch is intentionally independent of
  * output resolution.
  */
-export const AUTO_EXPOSURE_HISTOGRAM_WORKGROUP_SIZE = 256 as const;
+const AUTO_EXPOSURE_HISTOGRAM_WORKGROUP_SIZE = 256 as const;
 export const AUTO_EXPOSURE_HISTOGRAM_WORKGROUP_COUNT = 32 as const;
 export const AUTO_EXPOSURE_HISTOGRAM_DISPATCH = Object.freeze({
   x: 4,
   y: 8,
   z: 1,
 } as const);
-export const AUTO_EXPOSURE_ADAPT_WORKGROUP_SIZE = 64 as const;
-export const AUTO_EXPOSURE_CLEAR_WORKGROUP_SIZE = 256 as const;
+const AUTO_EXPOSURE_ADAPT_WORKGROUP_SIZE = 64 as const;
+const AUTO_EXPOSURE_CLEAR_WORKGROUP_SIZE = 256 as const;
 
-export type AutoExposureGraphPassName = (typeof AUTO_EXPOSURE_GRAPH_PASSES)[number];
+type AutoExposureGraphPassName = (typeof AUTO_EXPOSURE_GRAPH_PASSES)[number];
 
 /**
  * Built-in auto-exposure work is recorded synchronously during graph
@@ -45,13 +45,13 @@ export function resolveAutoExposureShaderModuleFactory(
   return runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
 }
 
-export interface AutoExposureGraphPass {
+interface AutoExposureGraphPass {
   readonly name: AutoExposureGraphPassName;
   readonly kind: 'compute';
   readonly workgroupSize: readonly [number, number, number];
 }
 
-export interface AutoExposureGraphPlan {
+interface AutoExposureGraphPlan {
   readonly resolution: Readonly<{ width: number; height: number }>;
   readonly sampleBounds: Readonly<{ x: 4; y: 4 }>;
   readonly sampleCount: number;
@@ -67,7 +67,7 @@ export interface AutoExposureGraphPlan {
   readonly candidateAvailableSameFrame: true;
 }
 
-export class AutoExposureGraphError extends Error {
+class AutoExposureGraphError extends Error {
   readonly code = 'auto-exposure-graph-invalid' as const;
   readonly expected: string;
   readonly hint: string;

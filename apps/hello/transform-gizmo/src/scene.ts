@@ -30,7 +30,7 @@ export function createGizmoScene(world: World, width: number, height: number) {
   world
     .spawn({
       component: DirectionalLight,
-      data: { direction: [-0.4, -1, -0.5], color: [1, 0.95, 0.85], intensity: 3 },
+      data: { castShadow: true, direction: [-0.4, -1, -0.5], color: [1, 0.95, 0.85], intensity: 3 },
     })
     .unwrap();
   world

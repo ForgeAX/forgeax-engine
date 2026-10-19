@@ -122,9 +122,8 @@ describe('GBuffer batch order diagnostic', () => {
         'rigid',
       ),
     ).toBe(false);
-    expect(
-      gbufferOrderInterfaceEligible({ ...artifact, receipt: undefined }, undefined, 'rigid'),
-    ).toBe(false);
+    const { receipt: _receipt, ...withoutReceipt } = artifact;
+    expect(gbufferOrderInterfaceEligible(withoutReceipt, undefined, 'rigid')).toBe(false);
   });
   it('reports all simultaneous interface failures and copies their actual inputs', () => {
     const state = {

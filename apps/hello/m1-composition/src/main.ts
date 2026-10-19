@@ -96,7 +96,7 @@ world.addChild(root, child, ChildOf, { parent: root }).unwrap();
 world.insertResource('m1LiveRoot', root);
 
 world.spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: { fov: 60, aspect: 16 / 9 } }).unwrap();
-world.spawn({ component: DirectionalLight, data: { direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.2 } }).unwrap();
+world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.2 } }).unwrap();
 
 addOnEnter(Mode, 'play', (target) => {
   const entity = target.spawn({ component: Marker, data: { value: 1 } }).unwrap();

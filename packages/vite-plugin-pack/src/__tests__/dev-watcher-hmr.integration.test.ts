@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type DevWatchListener, watchDevRoots } from '../dev/watcher.js';
+import { createRevisionObserver, type DevWatchListener } from '../dev/revision-observer.js';
 
 describe('dev watcher and HMR intake', () => {
   const roots: string[] = [];
@@ -16,7 +16,7 @@ describe('dev watcher and HMR intake', () => {
     const root = join(await mkdtemp(join(tmpdir(), 'forgeax-watcher-missing-parent-')), 'missing');
     roots.push(root.slice(0, root.lastIndexOf('/')));
     const errors: Array<{ phase: string; root?: string; revision?: number }> = [];
-    const stop = watchDevRoots({
+    const stop = createRevisionObserver({
       roots: [root],
       onBatch: async () => {},
       onError: (_error, context) => {
@@ -46,7 +46,7 @@ describe('dev watcher and HMR intake', () => {
     const fakeWatcher = {} as FSWatcher;
     process.on('unhandledRejection', onUnhandled);
     vi.useFakeTimers();
-    const stop = watchDevRoots({
+    const stop = createRevisionObserver({
       roots: [root],
       debounceMs: 10,
       onBatch: async () => {

@@ -8,7 +8,7 @@ import type { World } from '@forgeax/engine-ecs';
 
 const ECS_MODULE_SPECIFIER = '@forgeax/engine-ecs';
 
-export const ECS_PUBLIC_SYMBOLS = Object.freeze([
+const ECS_PUBLIC_SYMBOLS = Object.freeze([
   'World',
   'Entity',
   'Update',
@@ -17,8 +17,8 @@ export const ECS_PUBLIC_SYMBOLS = Object.freeze([
   'FixedTime',
 ] as const);
 
-export type EcsPublicSymbol = (typeof ECS_PUBLIC_SYMBOLS)[number];
-export type EcsPublicModule = Readonly<Partial<Record<EcsPublicSymbol, unknown>>>;
+type EcsPublicSymbol = (typeof ECS_PUBLIC_SYMBOLS)[number];
+type EcsPublicModule = Readonly<Partial<Record<EcsPublicSymbol, unknown>>>;
 
 type ComponentLike = { readonly name: string };
 
@@ -50,7 +50,7 @@ export function createEcsImportModule(
  * component identity is process-local, so the World catalog remains the
  * authority for values crossing the eval boundary.
  */
-export function canonicalRuntimeModule(moduleValue: unknown, world: World): unknown {
+function canonicalRuntimeModule(moduleValue: unknown, world: World): unknown {
   if (moduleValue === null || typeof moduleValue !== 'object') return moduleValue;
   const componentsByName = new Map<string, ComponentLike>();
   for (const [name, component] of world.components.entries()) {

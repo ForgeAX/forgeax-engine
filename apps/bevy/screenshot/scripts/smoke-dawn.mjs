@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-screenshot headless dawn smoke — proves Bevy window/screenshot
 // behavior: plane + cube rendered, Space triggers screenshot capture.
@@ -8,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
@@ -217,7 +218,7 @@ if (errors.length === 0) {
 // --- write reference PNG ---
 const outputDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'smoke');
 mkdirSync(outputDir, { recursive: true });
-writeFileSync(resolve(outputDir, 'screenshot-scene.png'), writeReferencePng(initialPixels, WIDTH, HEIGHT));
+writeFileSync(resolve(outputDir, 'screenshot-scene.png'), encodePng(WIDTH, HEIGHT, initialPixels));
 
 console.log(`[smoke] RESULT: ${passes}/${passes + fails} pass`);
 if (fails === 0) console.log('[smoke] PASS');

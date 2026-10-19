@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite_animation`: Time.delta advances atlas regions.
@@ -6,7 +7,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = testQuality.viewport.width;
@@ -94,7 +95,7 @@ for (let i = 0; i < earlyFrame.length; i++) motionDelta += Math.abs((earlyFrame[
 motionDelta /= earlyFrame.length * 255;
 const pngPath = resolve(here, '..', 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngPath), { recursive: true });
-writeFileSync(pngPath, writeReferencePng(lateFrame, WIDTH, HEIGHT));
+writeFileSync(pngPath, encodePng(WIDTH, HEIGHT, lateFrame));
 const visible = lateFrame.some((value, index) => index % 4 === 3 && value > 0) || earlyFrame.some((value, index) => index % 4 === 3 && value > 0);
 console.log(`[smoke] frames=${FRAMES} frameSets=${seen.map((set) => set.size).join(',')} changes=${changes} motionMeanDelta=${motionDelta.toFixed(5)} errors=${errors.length} png=${pngPath}`);
 if (rendererBackend(renderer) !== 'webgpu' || FRAMES < 60 || seen.some((set) => set.size < 3) || changes < 10 || motionDelta <= 0.0005 || !visible || errors.length > 0) {

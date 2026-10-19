@@ -96,10 +96,14 @@ export function textureFormatBlock(format: GPUTextureFormat): TextureFormatBlock
     case 'r16uint':
     case 'r16sint':
     case 'r16float':
+    case 'r16unorm':
+    case 'r16snorm':
       return block(1, 1, 2);
     case 'rgba16uint':
     case 'rgba16sint':
     case 'rgba16float':
+    case 'rgba16unorm':
+    case 'rgba16snorm':
     case 'rg32uint':
     case 'rg32sint':
     case 'rg32float':
@@ -111,4 +115,14 @@ export function textureFormatBlock(format: GPUTextureFormat): TextureFormatBlock
     default:
       return block(1, 1, 4);
   }
+}
+
+/** Optional device feature required by a supported block-compressed format. */
+export function textureCompressionFeature(
+  format: GPUTextureFormat,
+): 'texture-compression-bc' | 'texture-compression-etc2' | 'texture-compression-astc' | undefined {
+  if (!isCompressedFormat(format)) return undefined;
+  if (format.startsWith('bc')) return 'texture-compression-bc';
+  if (format.startsWith('astc-')) return 'texture-compression-astc';
+  return 'texture-compression-etc2';
 }

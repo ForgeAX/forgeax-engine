@@ -14,6 +14,7 @@
     "smoke:m10:browser": "node scripts/smoke-m10-browser.mjs"
   },
   "devDependencies": {
+    "@forgeax/engine-shader": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "playwright": "1.56.1",

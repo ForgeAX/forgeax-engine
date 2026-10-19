@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 // Build this source diagnostic with tsup so Renderer and ShadowViewStatePool
 // share one implementation. The control explicitly invalidates the existing
 // owner before update; it adds no player option or alternate shadow writer.
@@ -12,7 +13,7 @@ import { Mobility, MobilityKindValue, propagateTransforms, Transform } from '@fo
 import { create, globals } from '@forgeax/engine-dawn-node';
 import { constructRendererHost } from '../src/construct-renderer.ts';
 import { ShadowViewStatePool } from '../src/gpu-driven/shadow-views.ts';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+
 import { makeCanvas, rgba, spawnScene, timingFacts, trackDiagnosticErrors, value } from './scene-material-scaling.mjs';
 
 const root=resolve(process.cwd());
@@ -50,7 +51,7 @@ for(const dirtyRatio of [0,.01,1]) {
   const waitStart=performance.now();value(await receipt.completed);const completionWaitMs=performance.now()-waitStart;
   const observed=value(await renderer.observe(receipt,{include:picture?['timings','final-display']:['timings']}));
   const inspected=renderer.inspect();if(errors.length)throw new Error(JSON.stringify(errors));
-  if(picture){images[mode]=rgba(observed.observations.find(o=>o.domain==='final-display'));await writeFile(resolve(output,`${id}-${mode}.png`),writeReferencePng(images[mode],512,512));}
+  if(picture){images[mode]=rgba(observed.observations.find(o=>o.domain==='final-display'));await writeFile(resolve(output,`${id}-${mode}.png`),encodePng(512, 512, images[mode]));}
   return {cpuWorldMs,cpuDrawMs,cpuTotalMs:cpuWorldMs+cpuDrawMs,completionWaitMs,...timingFacts(observed),shadowRaster:inspected.shadowRaster,gpuDriven:inspected.renderScene.gpuDriven,resources:{graph:inspected.renderGraphResourceAllocation,generations:inspected.renderGraphGenerationAllocation,gpuLane:inspected.renderScene.gpuDriven.resourceAllocation}};
  };
  try {

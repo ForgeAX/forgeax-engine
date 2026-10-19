@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { solidTexture } from './texture-fixture.mjs';
+import { readShaderManifestPublication } from '@forgeax/engine-shader';
 // smoke-falsify.mjs -- feat-20260629-multi-uv-set-support m5-w4
 //
 // Visual falsification variant for AC-10. Constructs the same 2-UV-set
@@ -235,7 +236,7 @@ world.spawn(
 );
 world.spawn({
   component: DirectionalLight,
-  data: { direction: [-0.3, -0.8, -1], color: [1, 1, 1], intensity: 1 },
+  data: { castShadow: true, direction: [-0.3, -0.8, -1], color: [1, 1, 1], intensity: 1 },
 });
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -245,9 +246,9 @@ let manifestParsed;
 try {
   const manifestRaw = readFileSync(MANIFEST_PATH, 'utf8');
   MANIFEST_URL = `data:application/json,${encodeURIComponent(manifestRaw)}`;
-  manifestParsed = JSON.parse(manifestRaw);
+  manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
 } catch {
-  console.error('[falsify-smoke] FAIL - manifest.json not found. Run: pnpm --filter @forgeax/hello-multi-uv build first');
+  console.error('[falsify-smoke] FAIL - manifest.json missing or invalid. Run: pnpm --filter @forgeax/hello-multi-uv build first');
   process.exit(1);
 }
 
@@ -287,9 +288,12 @@ if (!demoShaderEntry) {
   console.error(`[falsify-smoke] FAIL - manifest missing ${DEMO_MATERIAL_SHADER_PATH}`);
   process.exit(1);
 }
-const demoComposedWgsl = demoShaderEntry.composedWgsl.includes('\n')
-  ? demoShaderEntry.composedWgsl
-  : readFileSync(resolve(here, '..', 'dist', 'shaders', demoShaderEntry.composedWgsl.replace(/^\.\//, '')), 'utf8');
+const canonicalVariant = (demoShaderEntry.variants ?? []).find((variant) => variant?.definesKey === '');
+if (typeof canonicalVariant?.composedWgsl !== 'string') {
+  console.error('[falsify-smoke] FAIL - multi-UV shader has no canonical variant composedWgsl');
+  process.exit(1);
+}
+const demoComposedWgsl = canonicalVariant.composedWgsl;
 const manifestParamSchema =
   typeof demoShaderEntry.paramSchema === 'string'
     ? JSON.parse(demoShaderEntry.paramSchema)

@@ -17,13 +17,13 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 //     retires the disabled roster before re-admitting it.
 //   - DOM HUD overlay (charter F2 text over image): #bloom-hud span
 //     updates textContent to "Bloom: ON" / "Bloom: OFF" on every toggle.
-//   - Tonemap: TONEMAP_REINHARD_EXTENDED -- HDR target must be active
-//     for Bloom to operate (the gate requires tonemapActive=true).
+//   - Tonemap: this scene explicitly selects TONEMAP_REINHARD_EXTENDED.
+//     Bloom also admits linear HDR work when tone mapping is disabled.
 //
 // Scene: emissive sphere + cube under a slant directional light. The
 // sphere has emissiveIntensity=2.0 to produce pixels >1.0 in HDR that
 // Bloom extracts it. The cube has emissiveIntensity=0.5
-// to stay below the default 1.0 threshold.
+// to stay below this scene's explicit 1.0 threshold.
 //
 // Recipe (charter P1 progressive disclosure):
 //   (1) createApp(canvas, {}, { shaderManifestUrl }) + spawn Camera with clear* fields
@@ -160,7 +160,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Step 6: spawn directional light with slant direction.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.4, -0.6, -0.7],
       color: [1, 1, 1],
       intensity: 1.5,
@@ -182,8 +182,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         bloom: BLOOM_DISABLED,
         bloomThreshold: 1.0,
         bloomIntensity: 1.0,
-        bloomSoftKnee: 0.5,
-        bloomScatter: 0.7,
+        bloomSmoothWidth: 0.01,
+        bloomRadius: 0,
       },
     },
   ).unwrap();
@@ -248,7 +248,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       setStage: (stage: string) => void;
       setBloom: (enabled: boolean) => boolean;
       setBloomIntensity: (intensity: number) => boolean;
-      setBloomScatter: (scatter: number) => boolean;
+      setBloomRadius: (radius: number) => boolean;
       resize: (width: number, height: number) => void;
       reconfigureSurface: () => { release: unknown; restore: unknown };
       recoverDeviceLoss: () => Promise<unknown>;
@@ -272,10 +272,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       updateBloomHud();
       return true;
     },
-    setBloomScatter: (scatter) => {
-      const result = world.set(camEntity, Camera, { bloomScatter: scatter });
+    setBloomRadius: (radius) => {
+      const result = world.set(camEntity, Camera, { bloomRadius: radius });
       if (!result.ok) {
-        console.error('[bloom] bloom scatter update failed:', result.error.code);
+        console.error('[bloom] bloom radius update failed:', result.error.code);
         return false;
       }
       return true;

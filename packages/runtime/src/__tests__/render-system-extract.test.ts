@@ -456,7 +456,7 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
           { component: ChildOf, data: { parent: spotRig } },
           {
             component: SpotLight,
-            data: { direction: [0, -1, 0], intensity: 1 },
+            data: { castShadow: true, direction: [0, -1, 0], intensity: 1 },
           },
         )
         .unwrap();
@@ -477,11 +477,7 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
       world
         .spawn({
           component: DirectionalLight,
-          data: {
-            direction: [0, -1, 0],
-            color: [1, 1, 1],
-            intensity: 1,
-          },
+          data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
         })
         .unwrap();
       expect(propagateTransforms(world).ok).toBe(true);
@@ -583,6 +579,9 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
       expect(frame.dispatch.map((entry) => entry.tags.LightMode)).toEqual(['ShadowCaster']);
       expect(frame.dispatch.every((entry) => entry.renderableIndex === 0)).toBe(true);
       world.set(light, PointLightShadow, { farPlane: 1 }).unwrap();
+      // Finite light range is the shadow extent; farPlane only controls unlimited lights.
+      expect(extractFrame(world, prepareExtractContext(world)).renderables).toHaveLength(1);
+      world.set(light, PointLight, { range: 1 }).unwrap();
       expect(extractFrame(world, prepareExtractContext(world)).renderables).toHaveLength(0);
       world.despawn(light).unwrap();
       expect(extractFrame(world, prepareExtractContext(world)).renderables).toHaveLength(0);

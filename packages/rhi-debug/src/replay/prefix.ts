@@ -1,8 +1,4 @@
-import type {
-  RhiCommandEncoder,
-  RhiComputePassEncoder,
-  RhiRenderPassEncoder,
-} from '@forgeax/engine-rhi';
+import type { RhiCommandEncoder, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { RhiDebugError } from '../errors';
 import type { TapeIndex, TapeWorkEntry } from '../protocol/tape-index';
@@ -44,7 +40,7 @@ export function isRetainedCreate(
   );
 }
 
-export async function finalizeWorkPass(
+async function finalizeWorkPass(
   context: ReplayExecutionContext,
   index: TapeIndex,
   work: TapeWorkEntry,
@@ -54,10 +50,7 @@ export async function finalizeWorkPass(
   const begin = context.tape.events[pass.beginEventIndex];
   if (begin?.kind !== 'beginRenderPass' && begin?.kind !== 'beginComputePass') return ok(undefined);
   const entry = context.table.get(begin.passHandleId);
-  if (
-    entry?.resource.kind !== 'encoder' ||
-    (entry.resource.role !== 'render-pass' && entry.resource.role !== 'compute-pass')
-  ) {
+  if (entry?.resource.kind !== 'render-pass' && entry?.resource.kind !== 'compute-pass') {
     return eventFailure(
       pass.beginEventIndex,
       begin,
@@ -74,7 +67,7 @@ export async function finalizeWorkPass(
     begin.cmdHandleId,
   );
   const encoder = context.table.get(begin.cmdHandleId);
-  if (encoder?.resource.kind !== 'encoder' || encoder.resource.role !== 'command') {
+  if (encoder?.resource.kind !== 'command') {
     return eventFailure(
       finishEventIndex ?? work.eventIndex,
       begin,
@@ -93,16 +86,15 @@ export async function finalizeWorkPass(
     context,
     begin.cmdHandleId,
     work.eventIndex,
-    encoder.resource.value as RhiCommandEncoder,
+    encoder.resource.value,
   );
   if (!groupsClosed.ok) return groupsClosed;
-  const finished = (encoder.resource.value as RhiCommandEncoder).finish();
+  const finished = encoder.resource.value.finish();
   const finishEvent = context.tape.events[finishEventIndex ?? work.eventIndex] ?? begin;
   if (!finished.ok)
     return eventFailure(finishEventIndex ?? work.eventIndex, finishEvent, 'finish', finished.error);
   context.table.set(begin.cmdHandleId, {
-    kind: 'encoder',
-    role: 'command-buffer',
+    kind: 'command-buffer',
     value: finished.value,
   });
   const submitEventIndex = findNextEvent(
@@ -147,6 +139,8 @@ export function closeReplayPass(
   pass: TapeIndex['passes'][number],
   selectedEventIndex: number,
 ): Result<void, RhiDebugError> {
+  if (entry.resource.kind !== 'render-pass' && entry.resource.kind !== 'compute-pass')
+    return eventFailure(selectedEventIndex, begin, 'lookup', 'resource is not an open pass');
   const activeQuery = activeOcclusionQuery(
     context.tape.events,
     begin.kind === 'beginRenderPass' ? begin.passHandleId : undefined,
@@ -156,7 +150,7 @@ export function closeReplayPass(
   if (!activeQuery.ok) return activeQuery;
   try {
     if (activeQuery.value !== undefined) {
-      if (entry.resource.role !== 'render-pass') {
+      if (entry.resource.kind !== 'render-pass') {
         return eventFailure(
           activeQuery.value.eventIndex,
           activeQuery.value.event,
@@ -164,7 +158,7 @@ export function closeReplayPass(
           'an active occlusion query belongs to a non-render pass',
         );
       }
-      const endedQuery = (entry.resource.value as RhiRenderPassEncoder).endOcclusionQuery();
+      const endedQuery = entry.resource.value.endOcclusionQuery();
       if (!endedQuery.ok) {
         return eventFailure(
           activeQuery.value.eventIndex,
@@ -174,16 +168,16 @@ export function closeReplayPass(
         );
       }
     }
-    if (entry.resource.role === 'render-pass') {
+    if (entry.resource.kind === 'render-pass') {
       const groupsClosed = closeReplayDebugGroups(
         context,
         begin.passHandleId,
         selectedEventIndex,
-        entry.resource.value as RhiRenderPassEncoder,
+        entry.resource.value,
       );
       if (!groupsClosed.ok) return groupsClosed;
     }
-    (entry.resource.value as RhiRenderPassEncoder | RhiComputePassEncoder).end();
+    entry.resource.value.end();
   } catch (cause) {
     return eventFailure(pass.endEventIndex ?? selectedEventIndex, begin, 'encode', cause);
   }
@@ -212,7 +206,7 @@ export function closeReplayDebugGroups(
   return ok(undefined);
 }
 
-export interface OpenDebugGroup {
+interface OpenDebugGroup {
   readonly event: Extract<RhiCallEvent, { kind: 'pushDebugGroup' | 'passPushDebugGroup' }>;
   readonly eventIndex: number;
 }
@@ -242,7 +236,7 @@ export function openDebugGroups(
   return open;
 }
 
-export async function replayCommandClosure(
+async function replayCommandClosure(
   context: ReplayExecutionContext,
   cmdHandleId: string,
   start: number,

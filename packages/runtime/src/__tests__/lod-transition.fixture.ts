@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createMeshBuilder, createPlaneGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -11,7 +12,6 @@ import {
   buildFrameModel,
   decodeTape,
   type EncodedTape,
-  halfToFloat,
   type RecorderAttachment,
 } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -156,8 +156,8 @@ export async function verifyLodTransition(
     for (let y = 54; y < 74; y++)
       for (let x = 54; x < 74; x++) {
         const at = y * observation.metadata.bytesPerRow + x * 8;
-        const red = halfToFloat(data.getUint16(at, true));
-        const g = halfToFloat(data.getUint16(at + 2, true));
+        const red = halfFloat.f16ToF32(data.getUint16(at, true));
+        const g = halfFloat.f16ToF32(data.getUint16(at + 2, true));
         if (covered) expect(red + g, `coverage hole at ${name}:${x},${y}`).toBeGreaterThan(0.05);
         else expect(red + g, `alpha mask at ${name}:${x},${y}`).toBeLessThan(0.001);
         expect(Math.min(red, g), 'opaque complementary coverage never blends levels').toBeLessThan(

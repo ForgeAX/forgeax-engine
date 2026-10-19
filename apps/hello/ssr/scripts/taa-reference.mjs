@@ -1,7 +1,8 @@
+import { halfFloat } from '@forgeax/engine/math';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { halfToFloat } from '@forgeax/engine-rhi-debug';
+
 import { sampleLinearColor } from './audit-tile-reflection.mjs';
 
 export function readCapturedTaaPose(prefix, phase) {
@@ -87,7 +88,7 @@ export function readCapturedTaaReference(prefix) {
     const { width, height } = manifest.color;
     assert.equal(inputs.color.byteLength, width * height * 8);
     frames.push({ image: { width, height, values: Float32Array.from({ length: width * height * 4 },
-      (_, i) => halfToFloat(inputs.color.readUInt16LE(i * 2))) },
+      (_, i) => halfFloat.f16ToF32(inputs.color.readUInt16LE(i * 2))) },
     jitterPixels: [inputs.params.readFloatLE(0) * width, inputs.params.readFloatLE(4) * height] });
   }
   assert.equal(phases.size, 8, 'Reference must cover one complete jitter cycle');

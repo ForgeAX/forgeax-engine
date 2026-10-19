@@ -82,6 +82,7 @@ function buildScene(world: World) {
     .spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         direction: [-0.8, -1, 0],
         intensity: 3,
         cascadeCount: 1,

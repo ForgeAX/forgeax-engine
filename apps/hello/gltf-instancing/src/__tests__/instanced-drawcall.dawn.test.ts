@@ -26,6 +26,7 @@
 // queue.submit + drawIndexed cycles (charter F1: minimum signal for a
 // stable real-GPU loop, not the 60-frame smoke gate).
 
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,20 +85,14 @@ const ENGINE_MANIFEST_URL = URL.createObjectURL(
 );
 afterAll(() => URL.revokeObjectURL(ENGINE_MANIFEST_URL));
 
-interface SubAssetEntry {
-  readonly guid: string;
-  readonly kind: string;
-  readonly sourceIndex: number;
-}
-
-function loadMeta(): readonly SubAssetEntry[] {
+function loadMeta(): readonly ImportSubAsset[] {
   const json = JSON.parse(readFileSync(INSTANCED_META_PATH, 'utf8')) as {
-    readonly subAssets: readonly SubAssetEntry[];
+    readonly subAssets: readonly ImportSubAsset[];
   };
   return json.subAssets;
 }
 
-function findGuid(entries: readonly SubAssetEntry[], kind: string): AssetGuid {
+function findGuid(entries: readonly ImportSubAsset[], kind: string): AssetGuid {
   const e = entries.find((s) => s.kind === kind);
   if (e === undefined) throw new Error(`box.gltf.meta.json missing subAsset kind=${kind}`);
   const r = AssetGuid.parse(e.guid);

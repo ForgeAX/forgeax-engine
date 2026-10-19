@@ -36,14 +36,18 @@ dev server never reload a feature mid-run.
 
 ## Authoring a feature
 
-The following Host rows use existing owner browser gates because their fixtures
-need a real Worker/native actuator boundary or producer-served HTTP Range data.
+The following rows use existing owner browser gates because their fixtures
+need native device/PCM lifetime, a Worker boundary, or a producer-backed project.
 They remain part of the complete `pnpm test:browser` roster.
 
 | Catalog row | Owning gate | Evidence boundary |
 |:--|:--|:--|
 | Gamepad feedback | `packages/input/src/__tests__/gamepad-feedback.browser.test.ts` | Actual DOM ownership and Worker POD transport; actuator double, physical compatibility unverified. |
 | Long audio windows | `packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts` | Native Web Audio output and real HTTP Range windows; original PCM, clock, cleanup and budget assertions. |
+| Acoustic regions | `packages/audio-webaudio/src/__tests__/acoustic-regions.browser.test.ts` | Real OfflineAudioContext PCM, bus/send ramps and accepted regional routing. |
+| Quantized layered music | `packages/audio-webaudio/src/__tests__/music-transport.browser.test.ts` | Native sample alignment, cancellation, late boundaries and Context lifetime. |
+| Managed scene SDF collision | `packages/render/src/__tests__/scene-sdf.browser.test.ts`, `scene-sdf.dawn.test.ts` | Fresh-device field sharing, swept collision work bounds and captured-contact replay. |
+| Cached asset thumbnails | `packages/devkit/__tests__/workspace-thumbnails.test.ts` | Ordinary Preview leases, real PNG alpha/color, progressive queue and persistent DDC reuse without a browser. |
 
 - Area directories are fixed in `src/lab/areas.ts` and mirror catalog subsections. The
   file name is the slug; the registry discovers files through `import.meta.glob`, so

@@ -45,6 +45,7 @@
     "@noble/hashes": "^2.2.0"
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",

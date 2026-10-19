@@ -13,7 +13,8 @@ import {
   TONEMAP_LINEAR,
   perspective,
 } from '@forgeax/engine-render';
-import type { RhiDevice } from '@forgeax/engine-rhi';
+import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
+import { acquireCanvasContext } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { err, ok, type MeshAsset, type VertexAttributeMap } from '@forgeax/engine-types';
 import {
@@ -373,7 +374,7 @@ function decodeHalfPixels(bytes: Uint8Array): number[] {
 
 async function copyTextureBytes(
   device: RhiDevice,
-  texture: unknown,
+  texture: Texture,
   width: number,
   height: number,
   bytesPerPixel: number,
@@ -385,8 +386,8 @@ async function copyTextureBytes(
   const encoder = device.createCommandEncoder({});
   if (!encoder.ok) throw new Error(encoder.error.code);
   encoder.value.copyTextureToBuffer(
-    { texture } as never,
-    { buffer: buffer.value, offset: 0, bytesPerRow: alignedRowBytes, rowsPerImage: height } as never,
+    { texture },
+    { buffer: buffer.value, offset: 0, bytesPerRow: alignedRowBytes, rowsPerImage: height },
     { width, height, depthOrArrayLayers: 1 },
   );
   const finished = encoder.value.finish();
@@ -430,9 +431,11 @@ async function copyForgeaxObservation(
 }
 
 async function copyForgeaxSurface(device: RhiDevice, canvas: HTMLCanvasElement): Promise<Uint8Array> {
-  const context = canvas.getContext('webgpu') as unknown as { getCurrentTexture(): unknown } | null;
-  if (context === null) throw new Error('ForgeaX display surface context is unavailable');
-  return copyTextureBytes(device, context.getCurrentTexture(), WIDTH, HEIGHT, 4);
+  const context = acquireCanvasContext(canvas);
+  if (!context.ok) throw new Error('ForgeaX display surface context is unavailable');
+  const texture = context.value.getCurrentTexture();
+  if (!texture.ok) throw texture.error;
+  return copyTextureBytes(device, texture.value, WIDTH, HEIGHT, 4);
 }
 
 function setupWorld(fixture: VertexColorSemanticFixture, forceWhite = false): World {

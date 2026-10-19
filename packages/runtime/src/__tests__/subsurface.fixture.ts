@@ -4,6 +4,7 @@ import {
   createSphereGeometry,
   packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -15,7 +16,7 @@ import {
   ReflectionProbe,
   type Renderer,
 } from '@forgeax/engine-render';
-import { halfToFloat } from '@forgeax/engine-rhi-debug';
+
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
@@ -115,6 +116,9 @@ export async function verifySubsurface(
       specular: specularOnly ? 1 : 0,
       roughness: specularOnly ? 0.15 : 1,
       emissive: specularOnly ? [0, 0, 0] : [0.125, 0.125, 0.125],
+      // The cooked foliage alias owns a separate authored schema. Keep the
+      // emission signal identical when comparing it with the Standard surface.
+      emissiveIntensity: 1,
       subsurfaceRadius: [radius, radius, radius],
       subsurfaceWeight: weight,
       ...(transmissionOnly
@@ -255,7 +259,7 @@ export async function verifySubsurface(
             )
           : Array.from(
               new Uint16Array(hdr.bytes.buffer, hdr.bytes.byteOffset, hdr.bytes.length / 2),
-              halfToFloat,
+              halfFloat.f16ToF32,
             ),
       passes,
     };
@@ -283,6 +287,10 @@ export async function verifySubsurface(
       );
     }
     expect(emissionError, 'every emission channel remains unchanged').toBeLessThanOrEqual(0.002);
+    expect(
+      Math.max(...baseline.pixels.filter((_value, index) => index % 4 === 2)),
+      'the emission-preservation control must carry a nonzero signal',
+    ).toBeCloseTo(0.125, 3);
     expect(
       spread,
       'ordinary material must diffuse the step, not merely add transmission',

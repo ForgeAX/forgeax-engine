@@ -2,6 +2,7 @@ import { err, ok, type Result } from '../result.js';
 import type { TextureMipPolicy, TextureShape } from './asset.js';
 import { textureFormatBlock } from './block.js';
 import { type TextureError, textureError, validateTextureShape } from './errors.js';
+import { mipDimension, numMipLevels } from './mips.js';
 
 export interface TextureLayoutInput {
   readonly shape: TextureShape;
@@ -35,21 +36,13 @@ export interface TextureLayout {
 function mipLevelCount(shape: TextureShape, mips: TextureMipPolicy): number {
   if (mips.kind === 'none') return 1;
   if (mips.kind === 'packed') return mips.levelCount;
-  const { width, height } = shape.extent;
-  let levels = 1;
-  let largest = Math.max(width, height);
-  if (shape.viewDimension === '3d') largest = Math.max(largest, shape.extent.depth);
-  while (largest > 1) {
-    largest = Math.max(1, largest >> 1);
-    levels += 1;
-  }
-  return levels;
+  return numMipLevels(shape.extent, shape.viewDimension === '3d' ? shape.extent.depth : 1);
 }
 
 function imagesPerMip(shape: TextureShape, level: number): number {
   if (shape.viewDimension === '2d') return 1;
   if (shape.viewDimension === '2d-array') return shape.extent.layers;
-  return Math.max(1, shape.extent.depth >> level);
+  return mipDimension(shape.extent.depth, level);
 }
 
 /** Derive the canonical mip-major, image-major, row-major texture layout. */
@@ -93,8 +86,8 @@ function projectTextureLayout(
   let baseLevelBytes = 0;
   const count = mipLevelCount(input.shape, input.mips);
   for (let level = 0; level < count; level++) {
-    const width = Math.max(1, input.shape.extent.width >> level);
-    const height = Math.max(1, input.shape.extent.height >> level);
+    const width = mipDimension(input.shape.extent.width, level);
+    const height = mipDimension(input.shape.extent.height, level);
     const blockColumns = Math.ceil(width / params.blockWidth);
     const rowsPerImage = Math.ceil(height / params.blockHeight);
     const bytesPerRow = blockColumns * params.bytesPerBlock;

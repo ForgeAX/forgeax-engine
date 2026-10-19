@@ -217,7 +217,7 @@ async function bootstrap(
   // Directional light (no Transform -- direction is a field on the component).
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.1, -0.6, -1.0],
       color: [1, 1, 1],
       intensity: 3,
@@ -433,7 +433,7 @@ function spawnRuntimeRecoveryScene(
   if (!meshEntity.ok) throw new Error(`[m27] recovery mesh spawn failed: ${meshEntity.error.code}`);
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.1, -0.6, -1.0],
       color: [1, 1, 1],
       intensity: 3,

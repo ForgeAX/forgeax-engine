@@ -7,7 +7,7 @@ import { DEFERRED_COLOR_FORMATS } from '../pipeline-spec';
 import type { PostProcessError } from '../post-process-errors';
 import type { StandardProfile } from './standard-profile';
 
-export interface CameraStandardDemand {
+interface CameraStandardDemand {
   readonly ambientOcclusion?: AmbientOcclusionData | undefined;
   readonly screenSpaceReflection?: object | undefined;
 }

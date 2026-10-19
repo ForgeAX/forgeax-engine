@@ -2,13 +2,11 @@ import type { EndpointError, NetEndpoint, NetEndpointConnector } from '@forgeax/
 import type { Result } from '@forgeax/engine-types';
 import type { WebSocketConstructor } from './websocket-client-core';
 import {
+  type ConnectWebSocketClientEndpointOptions,
   createWebSocketConnectorAdapter,
-  type WebSocketConnectorOptions,
 } from './websocket-connector';
 
-export interface ConnectWebSocketClientEndpointOptions {
-  readonly maxQueuedEvents?: number | undefined;
-}
+export type { ConnectWebSocketClientEndpointOptions } from './websocket-connector';
 
 /**
  * Creates the browser WebSocket adapter for the public NetEndpointConnector.
@@ -18,7 +16,7 @@ export interface ConnectWebSocketClientEndpointOptions {
  */
 export function createWebSocketConnector(
   url: string,
-  options: WebSocketConnectorOptions = {},
+  options: ConnectWebSocketClientEndpointOptions = {},
 ): NetEndpointConnector {
   return createWebSocketConnectorAdapter(
     { WebSocket: WebSocket as unknown as WebSocketConstructor, toBytes },

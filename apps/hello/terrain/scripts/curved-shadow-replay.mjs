@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { createRequire } from 'node:module';
 import { basename, resolve } from 'node:path';
 import { buildFrameModel, decodeTape, openReplay, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
 import * as backend from '@forgeax/engine-rhi-webgpu';
-import { readReferencePng, writeReferencePng } from '../../../shared/png-codec.mjs';
+import { readReferencePng } from '../../../shared/png-codec.mjs';
 
 const input = resolve(process.argv[2]);
 const output = resolve(process.argv[3]);
@@ -51,7 +52,7 @@ for (const mode of ['baseline','receiver-shadow-factor-one']) {
     assert(image?.bytes&&image.width===live.width&&image.height===live.height);
     const pixels=image.bytes.slice();
     if(image.format.startsWith('bgra'))for(let i=0;i<pixels.length;i+=4)[pixels[i],pixels[i+2]]=[pixels[i+2],pixels[i]];
-    writeFileSync(resolve(output,mode+'.png'),writeReferencePng(pixels,image.width,image.height));
+    writeFileSync(resolve(output,mode+'.png'),encodePng(image.width, image.height, pixels));
     const row={mode,patches,workIndex:result.workIndex,format:image.format,liveDifference:difference(pixels,live.pixels),unshadowedReferenceDifference:difference(pixels,reference.pixels)};
     if(mode==='baseline')assert(row.liveDifference.peakByteDifference<=2,'unmodified fresh-device replay must reproduce actual live frame');
     else {assert(patches>0,'must patch actual receiver function');assert(row.unshadowedReferenceDifference.peakByteDifference<=2,'only the actual receiver shadow factor must explain the false darkening');}

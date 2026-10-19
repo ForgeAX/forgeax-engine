@@ -8,7 +8,7 @@ import {
   createToolApiPlugin,
   startNativePlugin,
 } from '@forgeax/engine-plugin';
-import { createNativePreviewHost, RESOURCE_PREVIEW_DEFAULT_SIZE } from '@forgeax/engine-preview';
+import { createPreviewHost, RESOURCE_PREVIEW_DEFAULT_SIZE } from '@forgeax/engine-preview';
 import type {
   ArtifactRef,
   JsonValue,
@@ -430,7 +430,7 @@ export async function runNativePreviewTool(
     await ctx.plugin(createToolApiPlugin());
     const api = ctx.get('toolApi', false) as ToolApi | undefined;
     if (api === undefined) throw new Error('native preview owner did not install ToolApi');
-    const host = createNativePreviewHost({
+    const host = createPreviewHost({
       runId: `${contribution.descriptor.id}:native`,
       snapshot,
       projectRoot,

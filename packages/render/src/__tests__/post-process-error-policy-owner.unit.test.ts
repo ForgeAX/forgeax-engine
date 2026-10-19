@@ -61,9 +61,9 @@ const evidence = [
       detail: { paramName: 'radius', value: -0.25 },
     }),
     expected: 'SSAO radius must be > 0',
-    hint: "SSAO parameter 'radius' is -0.25, must be greater than 0. Set config.ssao.radius to a positive value (default 0.5) or disable SSAO with config.ssao.enabled = false.",
+    hint: "SSAO parameter 'radius' is -0.25, must be greater than 0. Set config.ssao.radius to a positive value (default 0.25) or disable SSAO with config.ssao.enabled = false.",
     message:
-      "post-process: ssao-radius-non-positive (SSAO parameter 'radius' is -0.25, must be greater than 0. Set config.ssao.radius to a positive value (default 0.5) or disable SSAO with config.ssao.enabled = false.)",
+      "post-process: ssao-radius-non-positive (SSAO parameter 'radius' is -0.25, must be greater than 0. Set config.ssao.radius to a positive value (default 0.25) or disable SSAO with config.ssao.enabled = false.)",
   },
   {
     code: 'ssao-bias-negative',
@@ -72,9 +72,9 @@ const evidence = [
       detail: { paramName: 'bias', value: -0.1 },
     }),
     expected: 'SSAO bias must be >= 0',
-    hint: "SSAO parameter 'bias' is -0.1, must be >= 0. Set config.ssao.bias to a non-negative value (default 0.025) or disable SSAO.",
+    hint: "SSAO parameter 'bias' is -0.1, must be >= 0. Set config.ssao.bias to a non-negative value (default 0) or disable SSAO.",
     message:
-      "post-process: ssao-bias-negative (SSAO parameter 'bias' is -0.1, must be >= 0. Set config.ssao.bias to a non-negative value (default 0.025) or disable SSAO.)",
+      "post-process: ssao-bias-negative (SSAO parameter 'bias' is -0.1, must be >= 0. Set config.ssao.bias to a non-negative value (default 0) or disable SSAO.)",
   },
   {
     code: 'params-size-mismatch',

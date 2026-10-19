@@ -1,12 +1,6 @@
 import { defineComponent } from '@forgeax/engine/ecs';
 import type { EndpointEvent, NetEndpoint, PeerId, ReplicationProfile } from '@forgeax/engine/net';
-import {
-  decodeReplicationPacket,
-  defineReplication,
-  ENDPOINT_ERROR_HINTS,
-  ENDPOINT_EXPECTED,
-  EndpointError,
-} from '@forgeax/engine/net';
+import { decodeReplicationPacket, defineReplication, EndpointError } from '@forgeax/engine/net';
 import { err, ok } from '@forgeax/engine/types';
 
 export const AUTHORITY_PEER = 1 as PeerId;
@@ -25,8 +19,6 @@ export function healthProfile(name = 'feature-lab-health'): ReplicationProfile |
 function failure(): EndpointError {
   return new EndpointError({
     code: 'connection-failed',
-    expected: ENDPOINT_EXPECTED['connection-failed'],
-    hint: ENDPOINT_ERROR_HINTS['connection-failed'],
     detail: { address: 'feature-lab-hub', cause: 'peer is not attached' },
   });
 }

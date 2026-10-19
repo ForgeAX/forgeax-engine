@@ -29,6 +29,9 @@
     "lint:brand-cast": "node scripts/lint-brand-cast.mjs",
     "lint:brand-runtime": "node scripts/lint-brand-runtime.mjs"
   },
+  "dependencies": {
+    "@forgeax/engine-types": "workspace:*"
+  },
   "forgeax": {
     "metrics": {
       "bundle-size": {

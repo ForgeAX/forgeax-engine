@@ -31,11 +31,7 @@ export {
   type PixelSurfaceOptions,
   type PixelSurfaceRect,
 } from './pixel-surface.js';
-export type {
-  EmittedSubAsset,
-  ExistingExternalAssetPackage,
-  ExistingSubAsset,
-} from './reimport-reuse-meta.js';
+export type { ExistingExternalAssetPackage } from './reimport-reuse-meta.js';
 export { reimportReuseMeta } from './reimport-reuse-meta.js';
 export type { Result, ResultErr, ResultOk } from './result.js';
 export { err, ok } from './result.js';
@@ -46,7 +42,6 @@ export type { SubAssetKey, SubAssetKeyInput } from './sub-asset-key.js';
 export { subAssetKey, subAssetKeyEqual } from './sub-asset-key.js';
 export type {
   ExternalAssetPackage,
-  ExternalSubAsset,
   ImageImportSettings,
 } from './to-asset-pack.js';
 export { toAssetPack } from './to-asset-pack.js';

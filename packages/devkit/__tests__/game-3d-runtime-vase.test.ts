@@ -8,7 +8,7 @@ import type { ExecutionReport } from '@forgeax/engine-app';
 import { expect, it } from 'vitest';
 import { devCommand } from '../src/commands.js';
 import { disposeDevKitHosts } from '../src/host.js';
-import { createBrowserCapture, type BrowserCaptureSession } from '../src/software-capture.js';
+import { createBrowserCapture, type BrowserCaptureSession } from '../src/browser-capture.js';
 // @ts-expect-error The template's shared browser probe is native JavaScript.
 import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
 // @ts-expect-error The template's shared browser probe is native JavaScript.

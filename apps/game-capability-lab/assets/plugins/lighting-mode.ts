@@ -38,8 +38,8 @@ export type LightingTable = {
     readonly bloom: number;
     readonly bloomThreshold: number;
     readonly bloomIntensity: number;
-    readonly bloomSoftKnee: number;
-    readonly bloomScatter: number;
+    readonly bloomSmoothWidth: number;
+    readonly bloomRadius: number;
   };
 };
 
@@ -64,8 +64,8 @@ export const GAME_DEFAULT_LIGHTING_TABLES: Readonly<Record<LightingModeName, Lig
       bloom: BLOOM_ENABLED,
       bloomThreshold: 1,
       bloomIntensity: 1,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
     }),
   }),
   Night: Object.freeze({
@@ -87,8 +87,8 @@ export const GAME_DEFAULT_LIGHTING_TABLES: Readonly<Record<LightingModeName, Lig
       bloom: BLOOM_ENABLED,
       bloomThreshold: 0.82,
       bloomIntensity: 1.25,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
     }),
   }),
 });
@@ -119,8 +119,8 @@ export type LightingModeSnapshot = {
     readonly bloom: number;
     readonly bloomThreshold: number;
     readonly bloomIntensity: number;
-    readonly bloomSoftKnee: number;
-    readonly bloomScatter: number;
+    readonly bloomSmoothWidth: number;
+    readonly bloomRadius: number;
   };
 };
 
@@ -226,8 +226,8 @@ export function installLightingModeProjection(args: {
         bloom: cameraData?.ok === true ? cameraData.value.bloom : 0,
         bloomThreshold: cameraData?.ok === true ? cameraData.value.bloomThreshold : 0,
         bloomIntensity: cameraData?.ok === true ? cameraData.value.bloomIntensity : 0,
-        bloomSoftKnee: cameraData?.ok === true ? cameraData.value.bloomSoftKnee : 0,
-        bloomScatter: cameraData?.ok === true ? cameraData.value.bloomScatter : 0,
+        bloomSmoothWidth: cameraData?.ok === true ? cameraData.value.bloomSmoothWidth : 0,
+        bloomRadius: cameraData?.ok === true ? cameraData.value.bloomRadius : 0,
       },
     };
   };

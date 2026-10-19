@@ -151,6 +151,9 @@ export function lowerStandardContract(
   }
   const defines = {
     ...(standard ? defineStandardFeatures(schema.value, layerPlan) : {}),
+    ...(parameters.some((parameter) => parameter.name === 'fragmentOutput')
+      ? { MATERIAL_FRAGMENT_OUTPUT_AVAILABLE: true }
+      : {}),
     MATERIAL_CLIPPING_AVAILABLE: parameters.some(
       (parameter) => parameter.name === 'clippingControl',
     ),

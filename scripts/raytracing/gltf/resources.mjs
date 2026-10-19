@@ -1,8 +1,8 @@
 import {
   getOrCreateMipmapPipeline,
-  numMipLevels,
   prepareMipmaps,
 } from '../../../packages/assets-runtime/dist/index.mjs';
+import { numMipLevels } from '../../../packages/types/dist/index.mjs';
 /** Original imported textures, mip chains and scene snapshot shared by reference carriers. */
 export async function createGltfResources(device, compile, prepared, load, progress = () => {}) {
   const owned = [];

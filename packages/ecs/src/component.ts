@@ -35,8 +35,7 @@ export { componentDefinition } from './component-schema';
 // Two-tier vocabulary:
 //
 //   1. Legacy scalar set: 11 keywords backed by TypedArray storage. Concrete
-//      byte-sizes + TypedArray constructors are internal constants consumed by
-//      `scalarRow()` to build TYPE_METADATA rows (see M4 §FIELD_SIZE_BYTES / VIEW_CTORS).
+//      TypedArray constructors derive byte widths and TYPE_METADATA rows.
 //
 //   2. Schema-vocab keywords: 7 template-literal patterns expressing
 //      ECS-managed types whose storage is owned by separate subsystems:
@@ -52,23 +51,23 @@ export { componentDefinition } from './component-schema';
 // longer a valid schema field type — the union has narrowed it out.
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Bytes per element for each scalar field type. */
-const FIELD_SIZE_BYTES = {
-  f32: 4,
-  f64: 8,
-  i32: 4,
-  u32: 4,
-  i16: 2,
-  u16: 2,
-  i8: 1,
-  u8: 1,
-  bool: 1,
-  enum: 4,
-  ref: 4,
+/** Native constructors own scalar conversion and byte width. */
+const VIEW_CTORS = {
+  f32: Float32Array,
+  f64: Float64Array,
+  i32: Int32Array,
+  u32: Uint32Array,
+  i16: Int16Array,
+  u16: Uint16Array,
+  i8: Int8Array,
+  u8: Uint8Array,
+  bool: Uint8Array,
+  enum: Uint32Array,
+  ref: Uint32Array,
 } as const;
 
-/** Numeric scalar field types backed by TypedArray storage (legacy tier). */
-export type ScalarFieldType = keyof typeof FIELD_SIZE_BYTES;
+/** Numeric scalar field types backed by TypedArray storage. */
+export type ScalarFieldType = keyof typeof VIEW_CTORS;
 
 /**
  * Legal element-type whitelist for the `array<T,N>` / `array<T>` vocab
@@ -167,7 +166,7 @@ export function fieldTypeToMetaKey(fieldType: string): string | null {
   if (fieldType.startsWith('buffer<') && fieldType.endsWith('>')) return 'buffer';
   if (fieldType.startsWith('array<') && fieldType.endsWith('>')) return 'array';
   // Legacy scalar — the 11 types are keys in TYPE_METADATA.
-  if (TYPE_METADATA[fieldType] !== undefined) return fieldType;
+  if (Object.hasOwn(TYPE_METADATA, fieldType)) return fieldType;
   return null;
 }
 
@@ -500,39 +499,25 @@ export type FieldInputType<T extends SchemaFieldType> = T extends 'bool'
  * The `extends SchemaFieldType` upper bound matches `ComponentSchema[K]`
  * so query bundle types do not have to pre-filter.
  */
-export type TypedArrayFor<T extends SchemaFieldType> = T extends 'f32'
-  ? Float32Array
-  : T extends 'f64'
-    ? Float64Array
-    : T extends 'i32'
-      ? Int32Array
-      : T extends 'u32' | 'enum' | 'ref' | 'entity'
-        ? Uint32Array
-        : T extends 'i16'
-          ? Int16Array
-          : T extends 'u16'
-            ? Uint16Array
-            : T extends 'i8'
-              ? Int8Array
-              : T extends 'u8' | 'bool'
-                ? Uint8Array
-                : T extends 'string'
-                  ? ManagedColumnReader<'string'>
-                  : T extends `unique<${string}>`
-                    ? ManagedColumnReader<T>
-                    : T extends `shared<${string}>`
-                      ? ManagedColumnReader<T>
-                      : T extends 'buffer'
-                        ? ManagedColumnReader<'buffer'>
-                        : T extends `buffer<${number}>`
-                          ? Uint8Array
-                          : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
-                            ? TypedArrayFor<
-                                Elem extends 'entity' | `shared<${string}>` ? 'u32' : Elem
-                              >
-                            : T extends `array<${string}>`
-                              ? ManagedColumnReader<T>
-                              : never;
+export type TypedArrayFor<T extends SchemaFieldType> = T extends ScalarFieldType
+  ? (typeof VIEW_CTORS)[T]['prototype']
+  : T extends 'entity'
+    ? Uint32Array
+    : T extends 'string'
+      ? ManagedColumnReader<'string'>
+      : T extends `unique<${string}>`
+        ? ManagedColumnReader<T>
+        : T extends `shared<${string}>`
+          ? ManagedColumnReader<T>
+          : T extends 'buffer'
+            ? ManagedColumnReader<'buffer'>
+            : T extends `buffer<${number}>`
+              ? Uint8Array
+              : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
+                ? TypedArrayFor<Elem extends 'entity' | `shared<${string}>` ? 'u32' : Elem>
+                : T extends `array<${string}>`
+                  ? ManagedColumnReader<T>
+                  : never;
 
 /**
  * Relationship metadata (feat-20260531 M2 / plan-strategy D-5). Declares this
@@ -656,75 +641,16 @@ export interface Component<N extends string = string, S extends ComponentSchema 
   readonly [__componentBrand]: ShapeOf<S>;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// TypedArray constructors — internal; consumed by `scalarRow()` to build
-// TYPE_METADATA rows (feat-20260602 M4, w12).
-// ────────────────────────────────────────────────────────────────────────────
-
-/** TypedArray constructor for each scalar field type. */
-const VIEW_CTORS: Readonly<
-  Record<
-    ScalarFieldType,
-    | Float32ArrayConstructor
-    | Float64ArrayConstructor
-    | Int32ArrayConstructor
-    | Uint32ArrayConstructor
-    | Int16ArrayConstructor
-    | Uint16ArrayConstructor
-    | Int8ArrayConstructor
-    | Uint8ArrayConstructor
-  >
-> = {
-  f32: Float32Array,
-  f64: Float64Array,
-  i32: Int32Array,
-  u32: Uint32Array,
-  i16: Int16Array,
-  u16: Uint16Array,
-  i8: Int8Array,
-  u8: Uint8Array,
-  bool: Uint8Array,
-  enum: Uint32Array,
-  ref: Uint32Array,
-};
-
-// ────────────────────────────────────────────────────────────────────────────
-// TYPE_METADATA — global per-type metadata table (feat-20260602 M1 / D-A6)
-//
-// Converges the 12 scattered type-intrinsic structures (3 tables + 9
-// predicate / tool functions) into a single per-type authoritative table.
-// Exports FIELD_SIZE_BYTES / VIEW_CTORS / isSchemaVocabKeyword /
-// managedArrayElementBytes / SUPPORTED_FIELD_TYPES / storageFieldType were
-// deleted M4 (w12); internal FIELD_SIZE_BYTES + VIEW_CTORS constants remain as
-// build inputs for scalarRow(). All former consumers now read TYPE_METADATA:
-// storage routing via fieldTypeToMetaKey() + TYPE_METADATA[key].storage,
-// scalar checks via TYPE_METADATA[key]?.isScalar.
-//
-// Mixed key granularity (D-5): the 11 scalars are keyed by their concrete
-// type (`f32` ... `ref`); the 6 vocab families are keyed by family (`entity`
-// / `string` / `buffer` / `ref` / `handle` / `array`). The `array` row's T/N
-// parameters are NOT table columns — they are parsed per-field into
-// `arrayMeta` (see FieldDescriptor below). The vocab `ref` family row and
-// the scalar `ref` row share the `'ref'` key intentionally: the scalar is a
-// u32 column placeholder and the vocab `ref<T>` form maps to the same
-// managed-ref storage, so one row carries both (isScalar + isManaged both
-// true). tweak-20260612-ecs-concept-compression dropped redundant columns:
-// `isVocabKeyword` (zero production consumers), the per-vocab managed-
-// ref predicate column (100% duplicate of `isManaged`), and the YAGNI
-// `fixedByteLength` placeholder;
-// `isLegacyScalar` was renamed `isScalar` (the "legacy" prefix labelled the
-// historical M2-introduction tense; the 11 scalars are first-class).
-// ────────────────────────────────────────────────────────────────────────────
+// Column storage metadata. Parametric field types normalize to these keys;
+// managed families store u32 handles while retaining distinct lifecycle flags.
 
 /**
  * One row of the global type-metadata table. Carries the type-intrinsic
  * properties a field type has regardless of which component declares it.
  *
- * - `byteSize` — element byte width for the column-storage scalar; `undefined`
- *   for families whose storage byte size is not a fixed per-type constant
- *   (variable buffer / array slot ids are u32-stored, surfaced via `storage`).
- * - `viewCtor` — TypedArray constructor for the column storage; `undefined`
- *   for families without a direct TypedArray column.
+ * - `byteSize` — element byte width, derived from the native constructor.
+ * - `viewCtor` — TypedArray constructor for the column storage. Managed
+ *   families store u32 handles; their payload size is a separate concern.
  * - `storage` — the column-storage scalar type this field routes to (every
  *   vocab family stores a u32 slot id / handle).
  * - `isScalar` — member of the 11 concrete scalar types
@@ -735,17 +661,15 @@ const VIEW_CTORS: Readonly<
  * - `isArray` — an `array<T>` / `array<T,N>` keyword.
  */
 export interface TypeMetadataRow {
-  readonly byteSize: number | undefined;
-  readonly viewCtor:
-    | Float32ArrayConstructor
-    | Float64ArrayConstructor
-    | Int32ArrayConstructor
-    | Uint32ArrayConstructor
-    | Int16ArrayConstructor
-    | Uint16ArrayConstructor
-    | Int8ArrayConstructor
-    | Uint8ArrayConstructor
-    | undefined;
+  readonly byteSize: number;
+  readonly viewCtor: {
+    new (
+      buffer: ArrayBufferLike,
+      byteOffset?: number,
+      length?: number,
+    ): TypedArrayFor<ScalarFieldType>;
+    new (length: number): TypedArrayFor<ScalarFieldType>;
+  };
   readonly storage: ScalarFieldType;
   readonly isScalar: boolean;
   readonly isManaged: boolean;
@@ -757,7 +681,7 @@ export interface TypeMetadataRow {
 /** Build a scalar row from the concrete scalar type. */
 function scalarRow(t: ScalarFieldType): TypeMetadataRow {
   return {
-    byteSize: FIELD_SIZE_BYTES[t],
+    byteSize: VIEW_CTORS[t].BYTES_PER_ELEMENT,
     viewCtor: VIEW_CTORS[t],
     storage: t,
     isScalar: true,
@@ -791,65 +715,11 @@ export const TYPE_METADATA: Readonly<Record<string, TypeMetadataRow>> = Object.f
   bool: scalarRow('bool'),
   enum: scalarRow('enum'),
   ref: scalarRow('ref'),
-  entity: {
-    byteSize: 4,
-    viewCtor: Uint32Array,
-    storage: 'u32',
-    isScalar: false,
-    isManaged: false,
-    isBuffer: false,
-    isEntityRef: true,
-    isArray: false,
-  },
-  string: {
-    byteSize: 4,
-    viewCtor: Uint32Array,
-    storage: 'u32',
-    isScalar: false,
-    isManaged: true,
-    isBuffer: false,
-    isEntityRef: false,
-    isArray: false,
-  },
-  buffer: {
-    byteSize: 4,
-    viewCtor: Uint32Array,
-    storage: 'u32',
-    isScalar: false,
-    isManaged: false,
-    isBuffer: true,
-    isEntityRef: false,
-    isArray: false,
-  },
-  // feat-20260614-ecs-shared-component-and-unique-rename M3 (plan-strategy
-  // D-3): independent `'shared'` row, NOT a reuse of the `'ref'` (post-M2:
-  // `'unique<T>'` family) row. `isManaged: true` so write-barrier dispatch
-  // routes shared<T> fields through release on despawn / removeComponent /
-  // set-overwrite, but the M4 sub-dispatch in releaseManagedFieldOnRow will
-  // separate shared (rc--) from unique (direct slot drop) using the
-  // fieldType.startsWith('shared<') predicate. Keeping the meta key
-  // independent preserves the "meta key = release semantics" invariant
-  // (architecture-principles.md #1 SSOT).
-  shared: {
-    byteSize: 4,
-    viewCtor: Uint32Array,
-    storage: 'u32',
-    isScalar: false,
-    isManaged: true,
-    isBuffer: false,
-    isEntityRef: false,
-    isArray: false,
-  },
-  array: {
-    byteSize: 4,
-    viewCtor: Uint32Array,
-    storage: 'u32',
-    isScalar: false,
-    isManaged: false,
-    isBuffer: false,
-    isEntityRef: false,
-    isArray: true,
-  },
+  entity: { ...scalarRow('u32'), isScalar: false, isEntityRef: true },
+  string: { ...scalarRow('u32'), isScalar: false, isManaged: true },
+  buffer: { ...scalarRow('u32'), isScalar: false, isBuffer: true },
+  shared: { ...scalarRow('u32'), isScalar: false, isManaged: true },
+  array: { ...scalarRow('u32'), isScalar: false, isArray: true },
 });
 
 // ────────────────────────────────────────────────────────────────────────────

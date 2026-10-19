@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import { create, globals } from '@forgeax/engine-dawn-node';
 import UPNG from 'upng-js';
 import {
@@ -38,19 +39,7 @@ const replay = (
   await openReplay(tape, { device, createShaderModule: backend.createShaderModule })
 ).unwrap();
 const half = (data, offset) => {
-  const bits = data.getUint16(offset, true),
-    exponent = (bits >> 10) & 31,
-    mantissa = bits & 1023;
-  return (
-    (bits & 32768 ? -1 : 1) *
-    (exponent === 0
-      ? mantissa * 2 ** -24
-      : exponent === 31
-        ? mantissa
-          ? NaN
-          : Infinity
-        : (1 + mantissa / 1024) * 2 ** (exponent - 15))
-  );
+  return halfFloat.f16ToF32(data.getUint16(offset, true));
 };
 try {
   const outputs = {};

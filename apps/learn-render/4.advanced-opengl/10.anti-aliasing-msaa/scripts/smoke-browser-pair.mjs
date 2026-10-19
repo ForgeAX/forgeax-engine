@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 // Browser/RHI-debug MSAA OFF/ON capture gate.
 // It keeps the tutorial's user-facing toggle on the public path and checks the
 // tape facts that a single default-OFF capture cannot prove.
@@ -32,23 +33,15 @@ const browserHeadless = !['0', 'false'].includes(
 );
 
 async function findFreePort() {
-  return await new Promise((resolvePort, reject) => {
-    const portServer = createServer();
-    portServer.once('error', reject);
-    portServer.listen(0, '127.0.0.1', () => {
-      const address = portServer.address();
-      const port = typeof address === 'object' && address !== null ? address.port : undefined;
-      portServer.close((error) => {
-        if (error) {
-          reject(error);
-        } else if (port === undefined) {
-          reject(new Error('could not resolve an ephemeral Vite port'));
-        } else {
-          resolvePort(String(port));
-        }
-      });
-    });
+  const portServer = createServer();
+  await once(portServer.listen(0, '127.0.0.1'), 'listening');
+  const address = portServer.address();
+  const port = typeof address === 'object' && address !== null ? address.port : undefined;
+  await new Promise((resolveClose, reject) => {
+    portServer.close((error) => error ? reject(error) : resolveClose());
   });
+  if (port === undefined) throw new Error('could not resolve an ephemeral Vite port');
+  return String(port);
 }
 
 async function stopViteServer(server) {

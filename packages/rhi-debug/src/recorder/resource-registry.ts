@@ -2,7 +2,7 @@ import type { DebugRhiInstance } from '../recorder';
 import type { HandleId } from '../types';
 import { snapshotResourceBytes } from './core';
 
-export interface ResourceCandidate {
+interface ResourceCandidate {
   readonly handleId: HandleId;
   readonly kind: 'buffer' | 'texture';
   readonly estimatedBytes: number;

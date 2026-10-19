@@ -1,6 +1,7 @@
 import * as webgl from '@forgeax/engine-rhi-wgpu';
 import { expect, it } from 'vitest';
 import type { Tape } from '../protocol/types';
+import { wrap } from '../recorder';
 import { readReplayResource } from '../replay/readback';
 import { ResourceTable } from '../replay/resources';
 import { openReplay } from '../replay/session';
@@ -151,6 +152,79 @@ it.each([
     }
   } finally {
     table.dispose().unwrap();
+    canvas.getContext('webgl2')?.getExtension('WEBGL_lose_context')?.loseContext();
+    canvas.remove();
+  }
+});
+
+it.each([
+  'single',
+  'batch',
+] as const)('snapshots retained depth32float layers and mips through the %s path on WebGL2', async (mode) => {
+  const canvas = document.createElement('canvas');
+  document.body.append(canvas);
+  await webgl.ensureReady();
+  const recorder = wrap(webgl.rhi, webgl.createShaderModule);
+  const device = (
+    await (await recorder.requestAdapter(undefined, canvas)).unwrap().requestDevice()
+  ).unwrap();
+  const texture = device
+    .createTexture({
+      size: { width: 4, height: 4, depthOrArrayLayers: 2 },
+      format: 'depth32float',
+      mipLevelCount: 2,
+      usage: 0x14,
+    })
+    .unwrap();
+  try {
+    expect(device.caps.backendKind).toBe('wgpu-webgl2');
+    const expected: number[] = [];
+    const encoder = device.createCommandEncoder({}).unwrap();
+    for (let layer = 0; layer < 2; layer++) {
+      for (let mip = 0; mip < 2; mip++) {
+        const value = (layer * 2 + mip + 1) / 4;
+        expected.push(...Array((4 >> mip) ** 2).fill(value));
+        const view = device
+          .createTextureView(texture, {
+            dimension: '2d',
+            baseArrayLayer: layer,
+            arrayLayerCount: 1,
+            baseMipLevel: mip,
+            mipLevelCount: 1,
+            aspect: 'depth-only',
+          })
+          .unwrap();
+        encoder
+          .beginRenderPass({
+            colorAttachments: [],
+            depthStencilAttachment: {
+              view,
+              depthLoadOp: 'clear',
+              depthStoreOp: 'store',
+              depthClearValue: value,
+            },
+          })
+          .end();
+      }
+    }
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const handleId = [...recorder.descriptorTable().keys()][0];
+    if (handleId === undefined) throw new Error('missing retained depth');
+    recorder.arm(1).unwrap();
+    if (mode === 'single') (await recorder.snapshotResource(handleId)).unwrap();
+    else (await recorder.snapshotAllLiveResources()).unwrap();
+    const seed = recorder
+      .getEvents()
+      .find((event) => event.kind === 'initialData' && event.handleId === handleId);
+    if (seed?.kind !== 'initialData') throw new Error('missing depth seed');
+    const bytes = recorder.getBlobPool().get(seed.dataHash);
+    if (bytes === undefined) throw new Error('missing depth bytes');
+    expect([...new Float32Array(bytes)]).toEqual(expected);
+  } finally {
+    device.destroyTexture(texture).unwrap();
+    recorder.transitionToError();
+    recorder.disposeError();
     canvas.getContext('webgl2')?.getExtension('WEBGL_lose_context')?.loseContext();
     canvas.remove();
   }

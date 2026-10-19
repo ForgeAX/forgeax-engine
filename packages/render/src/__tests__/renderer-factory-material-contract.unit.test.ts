@@ -4,6 +4,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { ok, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import {
   createMaterialProgramArtifactReceipt,
+  createMaterialShaderProgram,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
   type ShaderCatalog,
@@ -1158,6 +1159,71 @@ describe('material shader color-domain contract', () => {
 });
 
 describe('material shader vertex input contract', () => {
+  it('ignores vertex inputs inside nested comments', () => {
+    const source = '/* outer /* inner */ @vertex fn hidden(@location(0) p: vec3f) {} */';
+    expect(resolveMaterialShaderVertexInputContract(source)).toBe('none');
+  });
+
+  it('consumes the admitted program fact without reading its source again', () => {
+    for (const required of [false, true]) {
+      const source = required
+        ? 'struct Input { @location(0) pos: vec3f } @vertex fn main(v: Input) {}'
+        : '@vertex fn main(@builtin(vertex_index) id: u32) {}';
+      const program = {
+        ...createMaterialShaderProgram(source),
+        get source(): string {
+          throw Error('admitted source was rescanned');
+        },
+      };
+      expect(resolveMaterialShaderVertexInputContract(program)).toBe(
+        required ? 'render-material' : 'none',
+      );
+    }
+  });
+
+  it('keeps raw source fallback consistent for nested comments and separated tokens', () => {
+    const source =
+      '/* outer /* inner */ struct Input { @location(0) pos: vec3f } @vertex fn unused(v: Input) {} */ @vertex fn main(@builtin(vertex_index) id: u32) {}';
+    expect(resolveMaterialShaderVertexInputContract(source)).toBe('none');
+    expect(resolveMaterialShaderVertexInputContract(createMaterialShaderProgram(source))).toBe(
+      'none',
+    );
+    expect(
+      resolveMaterialShaderVertexInputContract(
+        'struct/**/Input { @location(0) pos: vec3f } @vertex/**/fn main(v: Input) {}',
+      ),
+    ).toBe('render-material');
+  });
+  it('selects exact first-parameter types across entry points and irrelevant structs', () => {
+    const structs = `
+      struct Input { @location(0) position: vec3<f32> }
+      struct InputExtended { @builtin(vertex_index) index: u32 }
+      struct Output { @location(0) uv: vec2<f32> }
+    `;
+    const fullscreen =
+      '@vertex fn full(input: InputExtended) -> Output { var out: Output; return out; }';
+    expect(resolveMaterialShaderVertexInputContract(structs + fullscreen)).toBe('none');
+    expect(
+      resolveMaterialShaderVertexInputContract(
+        structs +
+          fullscreen +
+          '@vertex fn mesh(input: Input) -> Output { var out: Output; return out; }',
+      ),
+    ).toBe('render-material');
+    expect(
+      resolveMaterialShaderVertexInputContract(
+        structs +
+          fullscreen +
+          '/* @vertex fn commented(input: Input) {} */\n// @vertex fn commented2(input: Input) {}',
+      ),
+    ).toBe('none');
+    expect(
+      resolveMaterialShaderVertexInputContract(
+        '@vertex fn direct(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return vec4(position, 1.0); }',
+      ),
+    ).toBe('render-material');
+  });
+
   it('recognizes VsIn-style vertex input structs', () => {
     const source = `
       struct VsIn { @location(0) position: vec3<f32> }

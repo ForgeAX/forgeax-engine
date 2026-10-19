@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const WIDTH = testQuality.viewport.width;
 const HEIGHT = testQuality.viewport.height;
@@ -98,8 +99,8 @@ console.log(`[smoke] marker moved=${moved} maxBright=${maxBright.toFixed(4)} err
 
 const outDir = resolve(here, '..', 'dist', 'smoke');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'viewport-early.png'), writeReferencePng(early, WIDTH, HEIGHT));
-writeFileSync(resolve(outDir, 'viewport-late.png'), writeReferencePng(late, WIDTH, HEIGHT));
+writeFileSync(resolve(outDir, 'viewport-early.png'), encodePng(WIDTH, HEIGHT, early));
+writeFileSync(resolve(outDir, 'viewport-late.png'), encodePng(WIDTH, HEIGHT, late));
 
 const passed = frames >= MIN_FRAMES && moved && maxBright >= 0.1 && errors.length === 0;
 if (!passed) {

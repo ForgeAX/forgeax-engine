@@ -21,7 +21,7 @@ export interface ProductionSourceChange {
   readonly sourceKey: string;
 }
 
-export interface ProductionStateContext<TState = undefined> {
+interface ProductionStateContext<TState = undefined> {
   readonly generation: number;
   readonly sourceKeys: readonly string[];
   readonly intent: 'attempt' | 'materialize';
@@ -29,14 +29,14 @@ export interface ProductionStateContext<TState = undefined> {
   readonly acceptedState: TState | undefined;
 }
 
-export interface ProductionInventoryContext<TState = undefined> {
+interface ProductionInventoryContext<TState = undefined> {
   readonly generation: number;
   readonly sourceKeys: readonly string[];
   readonly signal: AbortSignal;
   readonly state: TState;
 }
 
-export interface ProductionProduceContext<TState = undefined> {
+interface ProductionProduceContext<TState = undefined> {
   readonly generation: number;
   readonly declaration: ProductionDeclaration;
   readonly intent: 'attempt' | 'materialize';
@@ -44,19 +44,18 @@ export interface ProductionProduceContext<TState = undefined> {
   readonly state: TState;
 }
 
-export interface ProductionPublication<TState = undefined> {
+interface ProductionPublication<TState = undefined> {
   readonly generation: number;
   readonly intent: 'attempt' | 'materialize';
   readonly signal: AbortSignal;
   readonly state: TState;
 }
 
-export interface ProductionDiscardContext<TState = undefined>
-  extends ProductionPublication<TState> {
+interface ProductionDiscardContext<TState = undefined> extends ProductionPublication<TState> {
   readonly error?: PluginPackFailure;
 }
 
-export interface ProductionSessionOptions<TState = undefined> {
+interface ProductionSessionOptions<TState = undefined> {
   readonly createState?: (context: ProductionStateContext<TState>) => TState;
   readonly inventory: (
     context: ProductionInventoryContext<TState>,

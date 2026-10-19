@@ -100,8 +100,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'project.capture': schema({
     ...root,
     output: string,
-    backend: string,
-    software: boolean,
+    backend: captureBackend,
     headless: boolean,
     port,
     width: integer,

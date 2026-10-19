@@ -82,7 +82,7 @@ records adapter, browser, resolution, UI witness, and errors. Mesa lavapipe serv
 offscreen readback; it does not compose browser DOM.
 
 auto permits software fallback; hardware requires a non-software adapter;
-software pins SwiftShader/lavapipe-compatible options. --software remains an alias.
+software pins SwiftShader/lavapipe-compatible options.
 Software first frames can be slower. The CLI polls canvas crops for non-flat pixels before adding
 wait-ms settling; uniform black cannot pass by dimensions alone. require-ui accepts
 only game UI mounted below #game-ui, not unrelated ShadowRoots. Sidecar

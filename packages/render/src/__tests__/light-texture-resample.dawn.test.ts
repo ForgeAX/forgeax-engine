@@ -147,8 +147,8 @@ async function readSlice(
     .unwrap();
   const encoder = device.createCommandEncoder().unwrap();
   encoder.copyTextureToBuffer(
-    { texture: texture as never, mipLevel: level, origin: { x: 0, y: 0, z: slice } },
-    { buffer: readback as never, bytesPerRow, rowsPerImage: size },
+    { texture: texture, mipLevel: level, origin: { x: 0, y: 0, z: slice } },
+    { buffer: readback, bytesPerRow, rowsPerImage: size },
     { width: size, height: size, depthOrArrayLayers: 1 },
   );
   device.queue.submit([encoder.finish().unwrap()]).unwrap();

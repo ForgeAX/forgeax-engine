@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // Dawn smoke for the built consumer. The imported entry is the same Vite
 // bundle served by the browser path; this harness only supplies a canvas,
 // WebGPU, and a deterministic frame clock.
@@ -9,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { spawnSync } from 'node:child_process';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -266,7 +267,7 @@ const result = {
 };
 writeFileSync(outputPath, JSON.stringify(result, null, 2));
 writeFileSync(rawPath, finalPixels);
-writeFileSync(screenshotPath, writeReferencePng(finalPixels, width, height));
+writeFileSync(screenshotPath, encodePng(width, height, finalPixels));
 
 if (process.env.PERF_LIGHT_CONTROL !== '1') {
   const controlOutput = `${outputPath}.no-lights.json`;

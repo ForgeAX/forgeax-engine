@@ -1,9 +1,7 @@
 import type {
-  ExistingOutput,
   ImportedOutputDeclaration,
   KindChange,
   MatchConflict,
-  ProposedOutput,
   TopologyDiff,
   TopologyPreserved,
 } from '@forgeax/engine-types';
@@ -14,13 +12,13 @@ function sourceKey(output: ImportedOutputDeclaration): string | undefined {
     : output.sourceKey;
 }
 
-function bySourceKey<T extends ImportedOutputDeclaration>(
-  outputs: readonly T[],
+function bySourceKey(
+  outputs: readonly ImportedOutputDeclaration[],
   side: 'previous' | 'next',
   ambiguous: MatchConflict[],
   duplicateKeys: Set<string>,
-): Map<string, T> {
-  const result = new Map<string, T>();
+): Map<string, ImportedOutputDeclaration> {
+  const result = new Map<string, ImportedOutputDeclaration>();
   for (const output of outputs) {
     const key = sourceKey(output);
     if (key === undefined) continue;
@@ -30,8 +28,8 @@ function bySourceKey<T extends ImportedOutputDeclaration>(
       ambiguous.push({
         reason: 'duplicate-source-key',
         sourceKey: key,
-        previous: side === 'previous' ? [prior as ExistingOutput, output as ExistingOutput] : [],
-        next: side === 'next' ? [prior as ProposedOutput, output as ProposedOutput] : [],
+        previous: side === 'previous' ? [prior, output] : [],
+        next: side === 'next' ? [prior, output] : [],
       });
       continue;
     }
@@ -50,12 +48,12 @@ function topologyKey(output: ImportedOutputDeclaration): string {
  * multi-output declarations without one are explicitly ambiguous.
  */
 export function diffTopology(
-  previous: readonly ExistingOutput[],
-  next: readonly ProposedOutput[],
+  previous: readonly ImportedOutputDeclaration[],
+  next: readonly ImportedOutputDeclaration[],
 ): TopologyDiff {
   const preserved: TopologyPreserved[] = [];
-  const added: ProposedOutput[] = [];
-  const removed: ExistingOutput[] = [];
+  const added: ImportedOutputDeclaration[] = [];
+  const removed: ImportedOutputDeclaration[] = [];
   const changedKind: KindChange[] = [];
   const ambiguous: MatchConflict[] = [];
   const duplicateKeys = new Set<string>();

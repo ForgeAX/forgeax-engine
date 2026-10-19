@@ -5,7 +5,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import { querySubmittedTerrainHeight } from '@forgeax/engine-render';
 import { Terrain } from '@forgeax/engine-terrain';
-import { derive, projectMaterialParameterSchema } from '@forgeax/engine-types';
+import { derive, numMipLevels, projectMaterialParameterSchema } from '@forgeax/engine-types';
 import { terrainHarness } from './harness.mjs';
 
 const dir = resolve(import.meta.dirname, '../.forgeax-debug/surface-proof');
@@ -68,7 +68,7 @@ try {
     const indexBytes = bufferAt(work.indexBuffer.bufferHandleId, work);
     const indices = new Uint32Array(indexBytes.buffer, work.indexBuffer.offset ?? 0);
     ibos.add(work.indexBuffer.bufferHandleId);
-    const texture = device.createTexture({ size: [n, n], format: 'rgba8unorm', mipLevelCount: Math.log2(n) + 1, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    const texture = device.createTexture({ size: [n, n], format: 'rgba8unorm', mipLevelCount: numMipLevels({ width: n, height: n }), usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     let offset = 0;
     for (let mip = 0, size = n; size >= 1; mip++, size /= 2) {
       device.queue.writeTexture({ texture, mipLevel: mip }, heightData.subarray(offset, offset + size * size * 4), { bytesPerRow: size * 4 }, [size, size]);

@@ -103,7 +103,7 @@ export function buildSpatialAudioWorld(world: World, aspect: number): SpatialAud
   );
   world.spawn({
     component: DirectionalLight,
-    data: { direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 2 },
+    data: { castShadow: true, direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 2 },
   });
 
   return { camera, listener: camera, emitter, leftEar, rightEar };

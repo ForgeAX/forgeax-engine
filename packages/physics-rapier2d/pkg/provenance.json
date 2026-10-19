@@ -31,9 +31,9 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "dd7696938b9285b1c3f6f68fec2994de6f232a2d4a19776aa85ad85ab5df9409",
+    "rapier-native.mjs": "f15c69d4e4fd71c6dd9813287a2ab19a2d2ad4613423d92094db95f89851f0b7",
     "rapier.d.mts": "1b1debe12b0a95abe52765446c546dd75e0f7643f919543679aa0b72b32cda5c",
-    "rapier.mjs": "97fbc826a34914378aa191cc0ce4fd9cff6ca88c8432ef88882f27bac0098b0e",
-    "rapier.wasm": "ac17b4aa186f7dc16ddb4e5ff1980cd5556bf624fd7ce11d074dfa1601d53378"
+    "rapier.mjs": "6d333c149be59f4214a088d04db97613bb9d619ed58e0da668cf637cf2373487",
+    "rapier.wasm": "db873092cf78201f26a55c11959f52f7ac24b9b98a2304908c45c2289d02d160"
   }
 }

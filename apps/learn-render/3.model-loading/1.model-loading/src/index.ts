@@ -183,7 +183,7 @@ function spawnLights(world: World): void {
   world.spawn(
     {
       component: DirectionalLight,
-      data: {
+      data: { castShadow: true,
         direction: [d[0] * invLen, d[1] * invLen, d[2] * invLen],
         color: [1.0, 0.95, 0.85],
         intensity: 3.0,

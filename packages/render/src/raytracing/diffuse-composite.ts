@@ -11,12 +11,13 @@ import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
 import { rayReferenceFailure } from './scene';
 
 /** One raster frame's attachments and the matching raw unit-receiver D. */
-export interface RayDiffuseCompositeInputs {
+interface RayDiffuseCompositeInputs {
   readonly irradiance: Buffer;
   readonly depth: TextureView;
   readonly normal: TextureView;
   readonly albedoMetallic: TextureView;
   readonly f0Occlusion: TextureView;
+  readonly reflectionResponse?: TextureView;
   readonly view: Extract<RhiBindingResource, { kind: 'buffer' }>['value'];
 }
 
@@ -27,41 +28,50 @@ export function createRayDiffuseComposite(
   module: ShaderModule,
   signal: 'raw' | 'reconstructed',
 ) {
-  const layout = device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: 2, buffer: { type: 'read-only-storage' } },
-      { binding: 1, visibility: 2, texture: { sampleType: 'depth' } },
-      ...[2, 3, 4].map((binding) => ({
-        binding,
-        visibility: 2,
-        texture: { sampleType: 'uint' as const },
-      })),
-      { binding: 5, visibility: 2, buffer: { type: 'uniform' } },
-    ],
-  });
-  if (!layout.ok) return layout;
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
-  if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createRenderPipeline({
-    label: 'ray-diffuse.composite',
-    layout: pipelineLayout.value,
-    vertex: { module, entryPoint: 'vs_ray_diffuse', buffers: [] },
-    fragment: {
-      module,
-      entryPoint: signal === 'raw' ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed',
-      targets: [
-        {
-          format: 'rgba16float',
-          blend: {
-            color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-            alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-          },
-        },
+  const createPipeline = (reflections: boolean) => {
+    const layout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: 2, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: 2, texture: { sampleType: 'depth' } },
+        ...[2, 3, 4].map((binding) => ({
+          binding,
+          visibility: 2,
+          texture: { sampleType: 'uint' as const },
+        })),
+        { binding: 5, visibility: 2, buffer: { type: 'uniform' } },
+        ...(reflections
+          ? [{ binding: 6, visibility: 2, texture: { sampleType: 'float' as const } }]
+          : []),
       ],
-    },
-    primitive: { topology: 'triangle-list' },
-  });
-  if (!pipeline.ok) return pipeline;
+    });
+    if (!layout.ok) return layout;
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
+    if (!pipelineLayout.ok) return pipelineLayout;
+    const pipeline = device.createRenderPipeline({
+      label: 'ray-diffuse.composite',
+      layout: pipelineLayout.value,
+      vertex: { module, entryPoint: 'vs_ray_diffuse', buffers: [] },
+      fragment: {
+        module,
+        entryPoint: `${signal === 'raw' ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed'}${reflections ? '_reflections' : ''}`,
+        targets: [
+          {
+            format: 'rgba16float',
+            blend: {
+              color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+              alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+            },
+          },
+        ],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+    if (!pipeline.ok) return pipeline;
+    return ok({ layout: layout.value, pipeline: pipeline.value });
+  };
+  const base = createPipeline(false);
+  if (!base.ok) return base;
+  let reflected: ReturnType<typeof createPipeline> | undefined;
   return ok({
     record(pass: RhiRenderPassEncoder, input: RayDiffuseCompositeInputs, pixelCount: number) {
       const stride = signal === 'raw' ? RAY_ACCUMULATION_STRIDE : 16;
@@ -74,8 +84,14 @@ export function createRayDiffuseComposite(
           'expected a positive diffuse receiver count within the storage binding limit',
           true,
         );
+      let selected = base.value;
+      if (input.reflectionResponse !== undefined) {
+        reflected ??= createPipeline(true);
+        if (!reflected.ok) return reflected;
+        selected = reflected.value;
+      }
       const bindings = device.createBindGroup({
-        layout: layout.value,
+        layout: selected.layout,
         entries: [
           {
             binding: 0,
@@ -94,10 +110,18 @@ export function createRayDiffuseComposite(
             }),
           ),
           { binding: 5, resource: { kind: 'buffer', value: input.view } },
+          ...(input.reflectionResponse === undefined
+            ? []
+            : [
+                {
+                  binding: 6,
+                  resource: { kind: 'textureView' as const, value: input.reflectionResponse },
+                },
+              ]),
         ],
       });
       if (!bindings.ok) return bindings;
-      pass.setPipeline(pipeline.value);
+      pass.setPipeline(selected.pipeline);
       pass.setBindGroup(0, bindings.value);
       pass.draw(3);
       return ok(undefined);

@@ -137,7 +137,7 @@ describe('SSR spatial RhiNull integration', () => {
       ]),
     );
     expect(projected.value.trace).toMatchObject({
-      resolution: 'half',
+      resolution: 'full',
       coarseSteps: 48,
       refineSteps: 5,
     });

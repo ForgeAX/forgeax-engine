@@ -1,7 +1,7 @@
 import { BLAS_INPUT_BUFFER_USAGE, RAY_QUERY_WGSL_ENABLE, type Tlas } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import { makeRhiDevice } from '../device';
-import { createShaderModuleImmediate, requestDevice } from '../index';
+import { createShaderModuleImmediate, requestAdapterFrom } from '../index';
 import { createMockGpu } from './__mocks__/gpu-device';
 
 function code(result: { ok: boolean; error?: { code: string } }): string | undefined {
@@ -11,7 +11,7 @@ function code(result: { ok: boolean; error?: { code: string } }): string | undef
 describe('rhi-webgpu Ray Query capability', () => {
   it('reports backend-has-no-ray-query and refuses acceleration structures before reaching GPUDevice', async () => {
     const gpu = createMockGpu();
-    const device = (await requestDevice({ gpu })).unwrap();
+    const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
     expect(device.caps.rayQuery).toEqual({ supported: false, reason: 'backend-has-no-ray-query' });
     expect(
       code(device.createBlas({ geometries: [{ vertexFormat: 'float32x3', vertexCount: 3 }] })),
@@ -35,7 +35,7 @@ describe('rhi-webgpu Ray Query capability', () => {
 
   it('refuses Ray Query WGSL and admits ordinary WGSL', async () => {
     const gpu = createMockGpu();
-    const device = (await requestDevice({ gpu })).unwrap();
+    const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
     const refused = createShaderModuleImmediate(device, {
       code: `${RAY_QUERY_WGSL_ENABLE}\n@compute @workgroup_size(1) fn main() {}`,
     });

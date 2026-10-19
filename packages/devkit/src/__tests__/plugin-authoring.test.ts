@@ -225,6 +225,16 @@ describe('plugin asset authoring', () => {
   });
 });
 describe('one-shot schema migration', () => {
+  it('rejects dot-prefixed child outputs as part of the original project', async () => {
+    const { root } = await fixture('2.0.0');
+    const result = await pluginMigrateCommand({ root, output: resolve(root, '..candidate') });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'output must be outside the original project' } },
+    });
+    expect(await readdir(root)).not.toContain('..candidate');
+  });
+
   it('compiles a candidate without executing plugins or changing the original', async () => {
     const { root, output } = await fixture('2.0.0');
     const before = await readFile(resolve(root, 'forge.json'), 'utf8');

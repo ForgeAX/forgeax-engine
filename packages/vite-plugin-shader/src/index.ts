@@ -1,3 +1,4 @@
+import { isValidAssetGuidString } from '@forgeax/engine-types';
 // @forgeax/engine-vite-plugin-shader — Vite plugin 4 hooks + ShaderError → RollupLog wrap (w14).
 //
 // Top-level surface (charter proposition 1 progressive disclosure /
@@ -27,6 +28,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import { isStandardRootModule } from '@forgeax/engine-pack';
+
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import {
   createMaterialProgramArtifactReceipt,
@@ -348,9 +350,9 @@ async function buildEngineShaderManifestUncached(
     // by dawn smoke -- omitted them, so smoke could never catch a bloom
     // break). They import only forgeax_view::common, like tonemap/fxaa, so
     // they compose through naga_oil cleanly; identified downstream by their
-    // BloomDownsampleParams / BloomUpsampleParams / BloomCompositeParams struct names.
-    eng.bloomDownsample,
-    eng.bloomUpsample,
+    // BloomHorizontalParams / BloomVerticalParams / BloomCompositeParams struct names.
+    eng.bloomHorizontal,
+    eng.bloomVertical,
     eng.bloomComposite,
     eng.atmosphereCube,
     eng.atmosphereBackground,
@@ -429,7 +431,9 @@ async function buildEngineShaderManifestUncached(
         file: {
           ...file,
           source:
-            defines === undefined ? file.source : stripFalseImports(file.source, effectiveDefines),
+            defines === undefined
+              ? file.source
+              : projectShaderConditionals(file.source, effectiveDefines),
         },
         options: {
           id:
@@ -755,10 +759,7 @@ function parseMaterialPackage(value: unknown, packagePath: string): MaterialPack
     payload?: unknown;
     refs?: unknown;
   };
-  if (
-    typeof asset.guid !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(asset.guid)
-  ) {
+  if (!isValidAssetGuidString(asset.guid)) {
     throw new Error(`material pack asset has invalid guid: ${packagePath}`);
   }
   if (
@@ -858,7 +859,9 @@ async function compileUserMaterialVariants(
       ...(defines?.POINT_SHADOW_AVAILABLE === true ? { POINT_SHADOW_AVAILABLE: true } : {}),
     };
     const variantSource =
-      defines === undefined ? sourceForRouting : stripFalseImports(sourceForRouting, defines);
+      defines === undefined
+        ? sourceForRouting
+        : projectShaderConditionals(sourceForRouting, defines);
     const variantImports =
       defines === undefined
         ? transitiveImports
@@ -1027,7 +1030,7 @@ async function prepareAuthoredMaterial(
         source:
           defines === undefined || standardRoot
             ? record.source
-            : stripFalseImports(record.source, defines, scanVariantAxes(record.source)),
+            : projectShaderConditionals(record.source, defines, scanVariantAxes(record.source)),
       }));
     const variantCatalog = buildMaterialSourceCatalog({
       engine: projectVariantSources(sources.engine),
@@ -1715,99 +1718,9 @@ function stripFalseImportSources(
   return Object.fromEntries(
     Object.entries(imports).map(([moduleId, source]) => [
       moduleId,
-      stripFalseImports(source, defines),
+      projectShaderConditionals(source, defines),
     ]),
   );
-}
-
-// M5-hotfix scope-amendment (co-cluster-binding-defensive): flatten false
-// #ifdef blocks in the source before passing to naga_oil. naga_oil resolves
-// symbols (including #import targets and function calls) before evaluating
-// #ifdef. Authored variant axes also request the true branch to be flattened,
-// so the closed MaterialVariantContext does not need to carry user axes. This
-// pre-processor handles these shapes:
-//   (a) #ifdef AXIS ... #endif (no #else) when AXIS=false: remove entirely.
-//   (b) #ifdef AXIS ... #else ... #endif when AXIS=false: keep only the #else
-//       body, drop all #ifdef/#else/#endif directives.
-//   (c) #ifdef AXIS ... #endif when AXIS=true: pass through by default.
-//   (d) the same true branch when AXIS is in flattenTrueAxes: keep only its body.
-// The companion checkImportsResolvable in engine-shader-compiler is also
-// #ifdef-aware (M5-hotfix Fix 3).
-function stripFalseImports(
-  source: string,
-  defines: Record<string, boolean>,
-  flattenTrueAxes: readonly string[] = [],
-): string {
-  if (flattenTrueAxes.length === 0) return projectShaderConditionals(source, defines);
-  const axes = Object.keys(defines);
-  if (axes.length === 0) return source;
-  const lines = source.split(/\r?\n/);
-  // [disabled, seenElse, ifdefRemoved, startIndex]
-  // ifdefRemoved=true when the #ifdef line was NOT pushed to out (block started disabled).
-  const disableStack: Array<[boolean, boolean, boolean, number]> = [];
-  const out: string[] = [];
-  for (const line of lines) {
-    const ifMatch = /^\s*#if\s+(\w+)\s*(?:==\s*(true|false))?\s*$/.exec(line);
-    const ifdefMatch = /^\s*#ifdef\s+(\w+)/.exec(line);
-    const ifndefMatch = /^\s*#ifndef\s+(\w+)/.exec(line);
-    if (ifMatch && flattenTrueAxes.includes(ifMatch[1] ?? '')) {
-      const axis = ifMatch[1] ?? '';
-      const expected = ifMatch[2] !== 'false';
-      const parentDisabled = disableStack.length > 0 && disableStack[disableStack.length - 1]?.[0];
-      const enabled = (defines[axis] ?? false) === expected;
-      const disabled = parentDisabled || !enabled;
-      disableStack.push([disabled, false, true, out.length]);
-      continue;
-    }
-    if (ifdefMatch) {
-      const axis = ifdefMatch[1] ?? '';
-      const parentDisabled = disableStack.length > 0 && disableStack[disableStack.length - 1]?.[0];
-      const disabled = parentDisabled || !(defines[axis] ?? false);
-      const removeDirectives = disabled || flattenTrueAxes.includes(axis);
-      disableStack.push([disabled, false, removeDirectives, out.length]);
-      if (!disabled && !removeDirectives) out.push(line);
-      continue;
-    }
-    if (ifndefMatch) {
-      const axis = ifndefMatch[1] ?? '';
-      const parentDisabled = disableStack.length > 0 && disableStack[disableStack.length - 1]?.[0];
-      const disabled = parentDisabled || (defines[axis] ?? false);
-      const removeDirectives = disabled || flattenTrueAxes.includes(axis);
-      disableStack.push([disabled, false, removeDirectives, out.length]);
-      if (!disabled && !removeDirectives) out.push(line);
-      continue;
-    }
-    if (/^\s*#else\b/.exec(line)) {
-      if (disableStack.length > 0) {
-        const top = disableStack[disableStack.length - 1];
-        if (top !== undefined && !top[1]) {
-          const parentDisabled =
-            disableStack.length > 1 && disableStack[disableStack.length - 2]?.[0];
-          if (!parentDisabled) top[0] = !top[0];
-          top[1] = true;
-        }
-      }
-      // Skip the #else directive if the block started disabled. We want the
-      // #else body to flow through (since top[0] flipped to false), but the
-      // #else line itself is meaningless without a matching #ifdef.
-      const top = disableStack.length > 0 ? (disableStack[disableStack.length - 1] ?? null) : null;
-      if (top?.[2]) continue; // #ifdef was removed, skip #else too
-      out.push(line);
-      continue;
-    }
-    if (/^\s*#endif/.exec(line)) {
-      if (disableStack.length > 0) {
-        const top = disableStack.pop();
-        if (top?.[2]) continue; // #ifdef was removed, skip #endif too
-      }
-      out.push(line);
-      continue;
-    }
-    // Skip lines in disabled blocks.
-    if (disableStack.length > 0 && disableStack[disableStack.length - 1]?.[0]) continue;
-    out.push(line);
-  }
-  return out.join('\n');
 }
 
 async function compileEngineEntry(
@@ -1890,7 +1803,7 @@ async function compileEngineEntry(
     // eliminated at the TS layer.
     const perVariantSource =
       variantAxes.length > 0
-        ? stripFalseImports(sourceForRouting, effectiveDefines)
+        ? projectShaderConditionals(sourceForRouting, effectiveDefines)
         : sourceForRouting;
     variantJobs.push({
       defines,
@@ -2476,8 +2389,8 @@ export function forgeaxShader(options: ForgeaXShaderOptions = {}): ForgeaXShader
       // feat-20260531-bloom-first-declarative-render-graph-pass / w9:
       // 3 bloom engine entries (bright / blur / composite) compiled at
       // buildStart alongside the other engine entries.
-      await compileEngineEntry(state, eng.bloomDownsample, eng.imports);
-      await compileEngineEntry(state, eng.bloomUpsample, eng.imports);
+      await compileEngineEntry(state, eng.bloomHorizontal, eng.imports);
+      await compileEngineEntry(state, eng.bloomVertical, eng.imports);
       await compileEngineEntry(state, eng.bloomComposite, eng.imports);
       // Volumetric fog entries share the same composed engine import map as
       // the rest of the render path. Compile them during buildStart so both

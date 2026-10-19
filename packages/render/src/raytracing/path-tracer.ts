@@ -210,7 +210,10 @@ export async function createSubmittedRayPathTracer(
     if (!shader.ok) return shader;
     const values = {
       ...Object.fromEntries(
-        shader.value.paramSchema.map((parameter) => [parameter.name, parameter.default]),
+        shader.value.paramSchema.map((parameter) => [
+          parameter.name,
+          'default' in parameter ? parameter.default : undefined,
+        ]),
       ),
       ...snapshot.paramSnapshot,
     };

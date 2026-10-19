@@ -40,6 +40,11 @@ import {
   skylightBindGroupResources,
 } from '../ibl/skylight-bind-group';
 import {
+  isReflectedTransform,
+  reflectedRenderState,
+  transformRenderState,
+} from '../material-render-state';
+import {
   buildPbrMaterialUserRegionEntries,
   createPbrSkinMeshBindGroupEntries,
   omittedStandardMaterialBindings,
@@ -737,13 +742,6 @@ function prepareShadowResidualSelection(
     : prepareShadowDispatchProjection(c, dispatch);
 }
 
-function shadowRasterState(
-  state: MaterialRenderState | undefined,
-  reflected: boolean,
-): MaterialRenderState | undefined {
-  return reflected ? { ...state, frontFace: state?.frontFace === 'cw' ? 'ccw' : 'cw' } : state;
-}
-
 function shadowPipeline(
   c: _InternalRenderPipelineContext,
   reflected = false,
@@ -752,7 +750,7 @@ function shadowPipeline(
     c.runtime.getMaterialShaderPipeline?.(
       SHADOW_CASTER_SHADER_ID,
       false,
-      shadowRasterState(undefined, reflected),
+      reflectedRenderState(undefined, reflected),
       'triangle-list',
       undefined,
       shadowCasterVariantSet(c.runtime.device.caps.storageBuffer, false),
@@ -1157,7 +1155,7 @@ function requestGpuDrivenShadowPipeline(
     // batching while its specialization key owns the actual WGSL module.
     shadowArtifact.specializationKey ?? shadowArtifact.material,
     false,
-    shadowRasterState(projection.shadowRenderState, reflected),
+    reflectedRenderState(projection.shadowRenderState, reflected),
     batch.key.topology,
     batch.key.drawKind === 'indexed' ? projection.mesh.indexFormat : undefined,
     shadowVariantSet,
@@ -2061,9 +2059,9 @@ function resolveShadowMaterialPipeline(
   preparation = false,
 ): RenderPipeline | null {
   const entryShadowShaderId = shadowDispatch?.materialShaderId;
-  const entryShadowRenderState = shadowRasterState(
+  const entryShadowRenderState = reflectedRenderState(
     receiver ? { ...shadowDispatch?.renderState, cullMode: 'front' } : shadowDispatch?.renderState,
-    reflected,
+    reflected !== isReflectedTransform(entry.source.transform.world),
   );
   const skinned = entry.source.skin !== undefined;
   return (
@@ -2258,6 +2256,10 @@ export function prepareShadowMaterialPipelines(
             preparedHiddenDraws.set(entry, selected);
           }
           selected.add(draw.sourceDrawIndex);
+          const shadowRenderState = transformRenderState(
+            pass.renderState,
+            entry.source.transform.world,
+          );
           for (const reflected of reflections) {
             if (
               requestGpuDrivenShadowPipeline(
@@ -2271,9 +2273,7 @@ export function prepareShadowMaterialPipelines(
                   vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
                     (a) => a.key === 'color',
                   ),
-                  ...(pass.renderState === undefined
-                    ? {}
-                    : { shadowRenderState: pass.renderState }),
+                  ...(shadowRenderState === undefined ? {} : { shadowRenderState }),
                   ...(pass.vertexEntry === undefined
                     ? {}
                     : { shadowVertexEntry: pass.vertexEntry }),
@@ -2561,7 +2561,10 @@ export function recordShadowCasterDraws(
         const skinned = entry.source.skin !== undefined;
         let entryShadowPipeline: RenderPipeline | null = shadowPipeline;
         const needsDedicatedPipeline =
-          shadowDispatch !== undefined || skinned || sm.topology !== 'triangle-list';
+          shadowDispatch !== undefined ||
+          skinned ||
+          sm.topology !== 'triangle-list' ||
+          isReflectedTransform(entry.source.transform.world);
         if (shadowDispatch !== undefined && entryShadowShaderId === undefined) {
           throw new RhiError({
             code: 'rhi-not-available',

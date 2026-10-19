@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import {
   type CatalogDelta,
   createStandaloneRuntimeAssetBinding,
@@ -42,6 +43,56 @@ describe('runtime-scoped pack routes', () => {
     vi.restoreAllMocks();
     await close?.();
     if (root !== undefined) await rm(root, { recursive: true, force: true });
+  });
+
+  it('shares complete publication envelopes in the scoped catalog HTTP response', async () => {
+    root = await mkdtemp(join(tmpdir(), 'forgeax-runtime-scope-wire-'));
+    const assets = Array.from({ length: 32 }, (_, index) => ({
+      guid: `01900000-0000-7000-8000-${String(index).padStart(12, '0')}`,
+      kind: 'test-effect',
+      execution: 'direct',
+      payload: { marker: index },
+      refs: [],
+      artifacts: {},
+    }));
+    await writeFile(
+      join(root, 'shared.pack.json'),
+      JSON.stringify({
+        schemaVersion: '2.0.0',
+        kind: 'internal-text-package',
+        assets,
+      }),
+    );
+    const plugin = pluginPack({ roots: [root] });
+    close = () => plugin.closeBundle();
+    const middlewares: Middleware[] = [];
+    plugin.configureServer({
+      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
+      ws: { send: () => {} },
+    });
+    const binding = createStandaloneRuntimeAssetBinding('scoped-wire');
+    await plugin.rebind(binding, [root]);
+    const response = await request(middlewares, binding.catalogUrl);
+    expect(response.statusCode).toBe(200);
+    const wire = JSON.parse(response.body);
+    expect(wire).toMatchObject({
+      schemaVersion: RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
+      scopeId: binding.scopeId,
+      generation: binding.generation,
+      authority: 'authoritative',
+      entries: { schemaVersion: 'pack-index-tables/1' },
+    });
+    const rows = decodeCatalogWire(wire).unwrap();
+    expect(rows.map((row) => row.guid).sort()).toEqual(assets.map((asset) => asset.guid).sort());
+    expect(wire.entries.publications).toHaveLength(1);
+    const publication = rows[0]?.publication;
+    expect(publication?.outputs).toHaveLength(assets.length);
+    expect(publication?.receipt.outputSetDigest).toBe(publication?.outputSetDigest);
+    expect(rows.every((row) => row.publication === publication)).toBe(true);
+    expect(rows.every((row) => row.packageUrl.startsWith(binding.packageUrlBase))).toBe(true);
+    expect(response.body.match(/"schemaVersion":"asset-publication\/1"/g)).toHaveLength(1);
+    expect(response.body.length).toBeLessThan(JSON.stringify({ ...wire, entries: rows }).length);
+    expect((await request(middlewares, binding.catalogUrl)).body).toBe(response.body);
   });
 
   it('waits for startup when a bound scope is still transitioning before lazy import', async () => {
@@ -247,18 +298,14 @@ describe('runtime-scoped pack routes', () => {
     ).toHaveLength(1);
     expect(catalog.statusCode).toBe(200);
     expect(catalog.headers['cache-control']).toBe('no-store');
-    const snapshot = JSON.parse(catalog.body) as {
-      authority: string;
-      entries: Array<{ guid: string; packageUrl: string }>;
-    };
-    expect(snapshot.authority).toBe('authoritative');
-    expect(snapshot.entries).toHaveLength(1);
-    expect(snapshot.entries[0]).toMatchObject({ guid: GUID });
-    expect(snapshot.entries[0]?.packageUrl).toBe(
+    const snapshot = decodeCatalogWire(JSON.parse(catalog.body)).unwrap();
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0]).toMatchObject({ guid: GUID });
+    expect(snapshot[0]?.packageUrl).toBe(
       `/__pack/scopes/active/7/asset/__forgeax-ddc/${GUID}.pack.json`,
     );
 
-    const packageResponse = await request(middlewares, snapshot.entries[0]?.packageUrl ?? '');
+    const packageResponse = await request(middlewares, snapshot[0]?.packageUrl ?? '');
     expect(packageResponse.statusCode).toBe(200);
     expect(JSON.parse(packageResponse.body).assets[0].guid).toBe(GUID);
 
@@ -347,13 +394,11 @@ describe('runtime-scoped pack routes', () => {
 
     const catalog = await request(middlewares, '/__pack/scopes/active/7/catalog.json');
     expect(catalog.statusCode).toBe(200);
-    const snapshot = JSON.parse(catalog.body) as {
-      entries: Array<{ guid: string; packageUrl: string }>;
-    };
-    expect(snapshot.entries[0]?.packageUrl).toBe(
+    const snapshot = decodeCatalogWire(JSON.parse(catalog.body)).unwrap();
+    expect(snapshot[0]?.packageUrl).toBe(
       `/preview/__pack/scopes/active/7/asset/__forgeax-ddc/${GUID}.pack.json`,
     );
-    expect(snapshot.entries[0]?.packageUrl).not.toContain('/asset/preview/');
+    expect(snapshot[0]?.packageUrl).not.toContain('/asset/preview/');
 
     const baseCatalog = await request(middlewares, '/preview/__pack/scopes/active/7/catalog.json');
     expect(baseCatalog.statusCode).toBe(200);
@@ -465,7 +510,7 @@ describe('runtime-scoped pack routes', () => {
     expect(secondImport.statusCode).toBe(200);
     const afterSecondImport = await request(middlewares, '/__pack/scopes/active/9/catalog.json');
     expect(afterSecondImport.body).not.toBe(afterImport.body);
-    expect(JSON.parse(afterSecondImport.body).entries).toEqual(
+    expect(decodeCatalogWire(JSON.parse(afterSecondImport.body)).unwrap()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ guid: UI_GUID, publication: expect.any(Object) }),
       ]),
@@ -493,13 +538,8 @@ describe('runtime-scoped pack routes', () => {
 
     const catalog = await request(middlewares, '/__pack/scopes/active/9/catalog.json');
     expect(catalogSerializations()).toBe(4);
-    const snapshot = JSON.parse(catalog.body) as {
-      entries: Array<{
-        guid: string;
-        publication?: { schemaVersion?: string; generation?: number };
-      }>;
-    };
-    const entry = snapshot.entries.find((candidate) => candidate.guid === IMAGE_GUID);
+    const snapshot = decodeCatalogWire(JSON.parse(catalog.body)).unwrap();
+    const entry = snapshot.find((candidate) => candidate.guid === IMAGE_GUID);
     expect(entry?.publication).toMatchObject({ schemaVersion: 'asset-publication/1' });
     expect(entry?.publication?.generation).toBeGreaterThan(0);
     const changed = deltas
@@ -537,10 +577,10 @@ describe('runtime-scoped pack routes', () => {
       .flatMap((delta) => delta.added)
       .reverse()
       .find((row) => row.guid === GUID);
-    const nextCatalog = JSON.parse((await request(middlewares, bound.catalogUrl)).body) as {
-      entries: PackIndexEntry[];
-    };
-    expect(added).toEqual(nextCatalog.entries.find((row) => row.guid === GUID));
+    const nextCatalog = decodeCatalogWire(
+      JSON.parse((await request(middlewares, bound.catalogUrl)).body),
+    ).unwrap();
+    expect(added).toEqual(nextCatalog.find((row) => row.guid === GUID));
     expect((await request(middlewares, added?.packageUrl ?? '')).statusCode).toBe(200);
     await rm(authoredPath);
     await expect.poll(() => deltas.flatMap((delta) => delta.removed)).toContain(GUID);
@@ -595,10 +635,8 @@ describe('runtime-scoped pack routes', () => {
     );
 
     const initial = await request(middlewares, '/__pack/scopes/active/11/catalog.json');
-    const initialSnapshot = JSON.parse(initial.body) as {
-      entries: Array<{ guid: string; packageUrl: string }>;
-    };
-    const initialEntry = initialSnapshot.entries.find((entry) => entry.guid === UI_GUID);
+    const initialSnapshot = decodeCatalogWire(JSON.parse(initial.body)).unwrap();
+    const initialEntry = initialSnapshot.find((entry) => entry.guid === UI_GUID);
     expect(initialEntry).toBeDefined();
 
     const packageResponse = await request(middlewares, initialEntry?.packageUrl ?? '');
@@ -606,10 +644,8 @@ describe('runtime-scoped pack routes', () => {
     expect(JSON.parse(packageResponse.body).assets[0].guid).toBe(UI_GUID);
 
     const afterPackage = await request(middlewares, '/__pack/scopes/active/11/catalog.json');
-    const afterPackageSnapshot = JSON.parse(afterPackage.body) as {
-      entries: Array<{ guid: string }>;
-    };
-    expect(afterPackageSnapshot.entries.some((entry) => entry.guid === UI_GUID)).toBe(true);
+    const afterPackageSnapshot = decodeCatalogWire(JSON.parse(afterPackage.body)).unwrap();
+    expect(afterPackageSnapshot.some((entry) => entry.guid === UI_GUID)).toBe(true);
 
     const imported = await request(
       middlewares,
@@ -618,10 +654,8 @@ describe('runtime-scoped pack routes', () => {
     );
     expect(imported.statusCode).toBe(200);
     const afterImport = await request(middlewares, '/__pack/scopes/active/11/catalog.json');
-    const afterImportSnapshot = JSON.parse(afterImport.body) as {
-      entries: Array<{ guid: string }>;
-    };
-    expect(afterImportSnapshot.entries.some((entry) => entry.guid === UI_GUID)).toBe(true);
+    const afterImportSnapshot = decodeCatalogWire(JSON.parse(afterImport.body)).unwrap();
+    expect(afterImportSnapshot.some((entry) => entry.guid === UI_GUID)).toBe(true);
   });
 
   it('exposes degraded catalog evidence but fails closed for lazy import', async () => {

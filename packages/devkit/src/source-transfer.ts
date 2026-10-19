@@ -12,7 +12,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import {
   type AuthorPackClosure,
   assertAuthorPackUnchanged,
@@ -29,6 +29,11 @@ import {
 } from './build/plugin-assets.js';
 import { pluginProgramSource, pluginRuntimeProjection } from './build/plugin-programs.js';
 import { execFileCommand } from './child-process.js';
+import {
+  filesystemPathRelative,
+  filesystemPathSegments,
+  isFilesystemPathWithin,
+} from './filesystem-path.js';
 import { commandError, readProjectFacts } from './project.js';
 import type { CommandResult, ProjectCommandOptions } from './types.js';
 
@@ -50,11 +55,10 @@ function conflict(path: string, reason: string): never {
 }
 /** Source mutations reject symlink ancestors instead of writing outside the selected project. */
 async function assertWritablePath(root: string, path: string): Promise<void> {
-  const rel = relative(root, path).replaceAll('\\', '/');
-  if (rel === '..' || rel.startsWith('../') || isAbsolute(rel))
-    conflict(path, 'write escapes project');
+  const rel = filesystemPathRelative(root, path);
+  if (rel === undefined) conflict(path, 'write escapes project');
   let current = root;
-  for (const part of rel.split('/')) {
+  for (const part of filesystemPathSegments(rel)) {
     current = resolve(current, part);
     try {
       if ((await lstat(current)).isSymbolicLink())
@@ -282,10 +286,9 @@ export async function assetSourceImportCommand(
     const root = await realpath(facts.value.root);
     const target = resolve(root, options.targetPath);
     if (
-      !facts.value.assetRoots.some((directory) => {
-        const path = relative(resolve(root, directory), target).replaceAll('\\', '/');
-        return path !== '' && path !== '..' && !path.startsWith('../') && !isAbsolute(path);
-      })
+      !facts.value.assetRoots.some((directory) =>
+        isFilesystemPathWithin(resolve(root, directory), target, false),
+      )
     )
       conflict(
         options.targetPath,

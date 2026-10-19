@@ -2,7 +2,7 @@ import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
-import { Skin } from '@forgeax/engine-skinning';
+import { Skin, skinVertexPosition } from '@forgeax/engine-skinning';
 import { type MeshAsset, type SkeletonAsset, toShared } from '@forgeax/engine-types';
 
 /** Query-local world vertices: no retained pose, GPU readback or World mutation. */
@@ -55,46 +55,13 @@ export function skinnedPositions(
 
   const posed = out ?? new Float32Array(positions.length);
   const bounds = new Float32Array([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+  const point = new Float64Array(4);
   for (let vertex = 0; vertex < count; vertex++) {
     const offset = vertex * 3;
-    const x = positions[offset] as number;
-    const y = positions[offset + 1] as number;
-    const z = positions[offset + 2] as number;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined;
-    let px = 0,
-      py = 0,
-      pz = 0;
-    for (let lane = 0; lane < 4; lane++) {
-      const influence = vertex * 4 + lane;
-      const joint = indices[influence] as number;
-      const weight = weights[influence] as number;
-      if (joint >= jointCount || !Number.isFinite(weight)) return undefined;
-      if (weight === 0) continue;
-      const base = joint * 16;
-      // Match the shader's affine XYZ sum, including non-unit weight sums:
-      // jointWorld × IBM is already world-space; never apply the mesh node.
-      px +=
-        weight *
-        ((palette[base] as number) * x +
-          (palette[base + 4] as number) * y +
-          (palette[base + 8] as number) * z +
-          (palette[base + 12] as number));
-      py +=
-        weight *
-        ((palette[base + 1] as number) * x +
-          (palette[base + 5] as number) * y +
-          (palette[base + 9] as number) * z +
-          (palette[base + 13] as number));
-      pz +=
-        weight *
-        ((palette[base + 2] as number) * x +
-          (palette[base + 6] as number) * y +
-          (palette[base + 10] as number) * z +
-          (palette[base + 14] as number));
-    }
-    posed[offset] = px;
-    posed[offset + 1] = py;
-    posed[offset + 2] = pz;
+    if (!skinVertexPosition(point, positions, indices, weights, palette, vertex)) return undefined;
+    posed[offset] = point[0] as number;
+    posed[offset + 1] = point[1] as number;
+    posed[offset + 2] = point[2] as number;
     for (let axis = 0; axis < 3; axis++) {
       const value = posed[offset + axis] as number;
       if (!Number.isFinite(value)) return undefined;

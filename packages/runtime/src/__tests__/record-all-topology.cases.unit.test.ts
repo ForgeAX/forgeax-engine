@@ -104,7 +104,6 @@ import {
   type ClusterBinError,
   calculateSphereClusterBounds,
   clusterSpaceObjectAabb,
-  deriveCullingRadius,
   ndcPositionToCluster,
   viewZToZSlice,
 } from '../../../render/src/cluster-binner';
@@ -203,7 +202,6 @@ void [
   createSphereGeometry,
   createTorusGeometry,
   defineComponent,
-  deriveCullingRadius,
   deriveRenderDataCubemap,
   deriveRenderDataMesh,
   deriveRenderDataTexture,

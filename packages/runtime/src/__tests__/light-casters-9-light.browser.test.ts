@@ -216,6 +216,7 @@ function spawnDirectional(world: World): void {
     .spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [0, -1, -0.2],
@@ -282,6 +283,7 @@ function spawnSpotAimingAtOrigin(
       {
         component: SpotLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           direction: [dx, dy, dz],
           color: [0.8, 1, 0.7],

@@ -2,12 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import { createTriangleQuery } from '../../../packages/geometry/src/triangle-query.ts';
-import {
-  buildFrameModel,
-  decodeTape,
-  halfToFloat,
-} from '../../../packages/rhi-debug/dist/index.mjs';
+import { buildFrameModel, decodeTape } from '../../../packages/rhi-debug/dist/index.mjs';
 
 const [cardsPath, worldPath, outputPath] = process.argv.slice(2).map((p) => resolve(p));
 assert(
@@ -124,7 +121,8 @@ for (let wi = 0; wi < model.works.length; wi += 4) {
     );
     planes.push({ data: view(bytes), ...desc.desc.size });
   }
-  const value = (plane, t, c) => halfToFloat(planes[plane].data.getUint16(t * 8 + c * 2, true));
+  const value = (plane, t, c) =>
+    halfFloat.f16ToF32(planes[plane].data.getUint16(t * 8 + c * 2, true));
   const evaluate = (position, normal, instance, margin) => {
     let state = 0,
       best = -1,

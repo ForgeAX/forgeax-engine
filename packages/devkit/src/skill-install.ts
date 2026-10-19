@@ -11,6 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
+import { isFilesystemPathWithin } from './filesystem-path.js';
 import { commandError, readProjectFacts } from './project.js';
 import type { SdkContext, SdkSkill } from './sdk.js';
 import type { CommandResult, ProjectCommandOptions } from './types.js';
@@ -53,11 +54,6 @@ export interface SkillInstallReport {
 
 function slash(path: string): string {
   return path.split(sep).join('/');
-}
-
-function contained(parent: string, child: string): boolean {
-  const path = relative(parent, child);
-  return path !== '' && path !== '..' && !path.startsWith(`..${sep}`) && !path.startsWith(sep);
 }
 
 async function pathKind(path: string): Promise<'missing' | 'directory' | 'file' | 'symlink'> {
@@ -137,7 +133,10 @@ export async function copySdkSkills(sdk: SdkContext, projectRoot: string): Promi
   for (const skill of sdk.manifest.skills) {
     const source = resolve(sdk.root, skill.root);
     const destination = resolve(projectRoot, skill.root);
-    if (!contained(sdk.root, source) || !contained(projectRoot, destination)) {
+    if (
+      !isFilesystemPathWithin(sdk.root, source, false) ||
+      !isFilesystemPathWithin(projectRoot, destination, false)
+    ) {
       throw new Error(`sdk-skill-path-invalid: ${skill.id}`);
     }
     const actual = await skillRow(resolve(sdk.root, 'skills'), skill.id);

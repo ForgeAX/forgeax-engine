@@ -37,7 +37,7 @@ function snapshot(entityKey: number): RenderableSnapshot {
     materialHandle: entityKey % 32,
     materialShaderId: prepared.identity.material,
     materialParamSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
-    paramSnapshot: Object.fromEntries(STANDARD_PIPELINE_PARAM_SCHEMA.map((entry) => [entry.name, entry.default])),
+    paramSnapshot: Object.fromEntries(STANDARD_PIPELINE_PARAM_SCHEMA.map((entry) => [entry.name, 'default' in entry ? entry.default : undefined])),
     textureHandles: new Map(),
     samplerHandles: new Map(),
   } as MaterialSnapshot;

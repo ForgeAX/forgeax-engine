@@ -372,9 +372,9 @@ async function pixels(
       ],
       encode: ({ encoder, resources }) =>
         encoder.copyTextureToBuffer(
-          { texture: resources.texture(output).unwrap() as unknown as GPUTexture },
+          { texture: resources.texture(output).unwrap() },
           {
-            buffer: resources.buffer(destination).unwrap() as unknown as GPUBuffer,
+            buffer: resources.buffer(destination).unwrap(),
             bytesPerRow: 256,
             rowsPerImage: 16,
           },

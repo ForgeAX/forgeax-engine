@@ -1,8 +1,12 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
+import {
+  serializeCookedMaterialRecord,
+  validateCookedMaterialRecord,
+} from '@forgeax/engine-pack/material-cook';
 import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
 import {
   type MaterialAsset,
@@ -341,6 +345,42 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
   });
 
+  it('publishes identical material bytes after relocation while retaining local source dependencies', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'forgeax-material-publication-'));
+    const first = join(directory, 'first-checkout');
+    const relocated = join(directory, 'relocated-checkout');
+    await mkdir(first);
+    await writeFile(join(first, 'pulse.wgsl'), source);
+    const cook = (root: string) =>
+      createMaterialPackCooker([root]).cook({
+        guid: 'relocated-material',
+        source: material,
+      });
+    const publicationDigest = (draft: { readonly payload: unknown }) =>
+      createHash('sha256')
+        .update(serializeCookedMaterialRecord(packRecord(cookedPayload(draft))))
+        .digest('hex');
+    try {
+      const before = await cook(first);
+      await rename(first, relocated);
+      const after = await cook(relocated);
+      expect(after.sourceDependencies).toContain(join(relocated, 'pulse.wgsl'));
+      expect(after.sourceDependencies).not.toContain(join(first, 'pulse.wgsl'));
+      expect(after.inputFingerprint).toBe(before.inputFingerprint);
+      expect(publicationDigest(after)).toBe(publicationDigest(before));
+
+      await writeFile(
+        join(relocated, 'pulse.wgsl'),
+        source.replace('return color;', 'return color * 0.5;'),
+      );
+      const changed = await cook(relocated);
+      expect(changed.inputFingerprint).not.toBe(after.inputFingerprint);
+      expect(publicationDigest(changed)).not.toBe(publicationDigest(after));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('projects an engine-owned Standard source into a Pack-owned material alias', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-material-standard-alias-'));
     const packageRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -645,7 +685,7 @@ fn fs_main() -> @location(0) vec4<f32> { return material.baseColor; }`;
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error.message);
     expect(result.value.passes[0]?.sourceClosure).toEqual([
-      'root.wgsl',
+      'game::root',
       'forgeax_material::parameters',
       'game::helper',
     ]);

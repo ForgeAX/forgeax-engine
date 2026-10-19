@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CATALOG_DELTA_EVENT } from '../catalog-transport.js';
-import { type DevWatchListener, watchDevRoots } from '../dev/watcher.js';
+import { createRevisionObserver, type DevWatchListener } from '../dev/revision-observer.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
 
 const WATCHER_EVENT_TIMEOUT_MS = 30_000;
@@ -100,7 +100,7 @@ describe('dev watcher regression', () => {
     await writeFile(secondPath, new Uint8Array([1]));
 
     const batches: Array<{ readonly sources: readonly { readonly filename: string }[] }> = [];
-    const stop = watchDevRoots({
+    const stop = createRevisionObserver({
       roots: [join(root, 'assets'), secondRoot],
       debounceMs: 10,
       onBatch: (batch) => {
@@ -134,7 +134,7 @@ describe('dev watcher regression', () => {
       readonly sidecars: readonly { readonly filename: string }[];
       readonly sources: readonly { readonly filename: string }[];
     }> = [];
-    const watcher = watchDevRoots({
+    const watcher = createRevisionObserver({
       roots: [join(root, 'assets'), secondRoot],
       debounceMs: 10,
       onBatch: (batch) => {
@@ -169,7 +169,7 @@ describe('dev watcher regression', () => {
           .every((change) => isAbsolute(change.filename)),
       ).toBe(true);
     } finally {
-      await watcher.stop();
+      await watcher.close();
     }
 
     const countAfterStop = batches.length;
@@ -188,7 +188,7 @@ describe('dev watcher regression', () => {
       readonly sidecars: readonly { readonly filename: string }[];
       readonly sources: readonly { readonly filename: string }[];
     }> = [];
-    const watcher = watchDevRoots({
+    const watcher = createRevisionObserver({
       roots: [join(root, 'assets')],
       // Chokidar's bounded polling interval is 100ms; keep one debounce
       // window around the two pre-ready writes so their producer generation
@@ -210,7 +210,7 @@ describe('dev watcher regression', () => {
         ),
       );
     } finally {
-      await watcher.stop();
+      await watcher.close();
     }
   });
 
@@ -235,7 +235,7 @@ describe('dev watcher regression', () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
     });
-    const stop = watchDevRoots({
+    const stop = createRevisionObserver({
       roots: [join(root, 'assets')],
       debounceMs: 10,
       onBatch: async (batch) => {
@@ -296,7 +296,7 @@ describe('dev watcher regression', () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
     });
-    const stop = watchDevRoots({
+    const stop = createRevisionObserver({
       roots: [join(root, 'assets')],
       debounceMs: 10,
       onBatch: async (batch) => {
@@ -343,7 +343,7 @@ describe('dev watcher regression', () => {
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
     });
     vi.setSystemTime(0);
-    const stop = watchDevRoots({
+    const stop = createRevisionObserver({
       roots: [join(root, 'assets')],
       debounceMs: 10,
       onBatch: (batch) => {

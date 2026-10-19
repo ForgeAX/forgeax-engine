@@ -39,7 +39,7 @@ const CHANNEL_WRITE_MASK: Readonly<Record<CompositeChannels, number>> = Object.f
   cyan: 0x2 | 0x4,
 });
 
-export interface CompositeView {
+interface CompositeView {
   readonly texture: Texture;
   readonly viewport: ReturnType<typeof cameraViewExtent>;
   readonly channels?: CompositeChannels;

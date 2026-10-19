@@ -214,3 +214,14 @@ Xvfb display for the real Worker JS/TS x dev/build paths. The same gate belongs
 to `pnpm test:browser` and Actions browser shard 1. Keep the full hello/learn
 300-frame smoke and Dawn rosters; Node producer tests alone do not prove browser
 module delivery or native plugin execution.
+
+## Cached asset thumbnails
+
+Use `engine.assets.thumbnails` with the current project ID and at most 32 GUIDs.
+Subscribe to workspace `thumbnailEpoch` for progressive `queued` / `cooking` /
+`ready` results. The Engine queue reuses ordinary resource/SceneAsset previews
+and one retained renderer; do not add a View-side loader, renderer or cache.
+Transparent PNGs are disposable DDC outputs. Source publication dependencies,
+the Preview preset and producer bytes determine invalidation; inspect a failed
+row's structured error before retrying the owning asset pipeline. See
+[DevKit's thumbnail contract](../../packages/devkit/README.md#progressive-asset-thumbnails).

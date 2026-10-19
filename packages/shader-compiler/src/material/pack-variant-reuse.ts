@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto';
-import { type MaterialAsset, ok, selectMaterialStaticContract } from '@forgeax/engine-types';
+import {
+  type MaterialAsset,
+  ok,
+  resolveMaterialAsset,
+  selectMaterialStaticContract,
+} from '@forgeax/engine-types';
 import type { compileShader } from '../compile.js';
 import { cookMaterialAsset, type MaterialCookedAsset, type MaterialCookRequest } from './cook.js';
-import { resolveMaterialAsset } from './resolve.js';
 import { deriveSurfaceShadowPasses } from './surface-shadow.js';
 
 const MAX_ENTRIES = 128;

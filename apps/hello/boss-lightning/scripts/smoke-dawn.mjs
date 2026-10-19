@@ -1,6 +1,7 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -676,7 +677,7 @@ if (process.env.BOSS_LIGHTNING_DAWN_SCREENSHOT !== undefined) {
   for (let y = 0; y < HEIGHT; y += 1) {
     tight.set(pixels.subarray(y * bytesPerRow, y * bytesPerRow + WIDTH * 4), y * WIDTH * 4);
   }
-  writeFileSync(process.env.BOSS_LIGHTNING_DAWN_SCREENSHOT, writeReferencePng(tight, WIDTH, HEIGHT));
+  writeFileSync(process.env.BOSS_LIGHTNING_DAWN_SCREENSHOT, encodePng(WIDTH, HEIGHT, tight));
 }
 
 function zoneEnergy(x0, x1, y0, y1) {

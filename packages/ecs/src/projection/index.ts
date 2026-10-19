@@ -143,8 +143,7 @@ function readProjectionSpans(
 }
 
 /** Create the render-owned lease from the ECS projection boundary. */
-export function createRenderReadLease(world: World, token: object = {}): RenderReadLease {
-  void token;
+export function createRenderReadLease(world: World): RenderReadLease {
   let disposed = false;
 
   const assertLive = (): void => {

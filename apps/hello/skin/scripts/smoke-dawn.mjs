@@ -559,7 +559,7 @@ world.spawn(
 );
 world.spawn({
   component: DirectionalLight,
-  data: { direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 1 },
+  data: { castShadow: true, direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 1 },
 });
 
 // --- 5. Render loop + pixel readback -------------------------------------------

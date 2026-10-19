@@ -338,6 +338,86 @@ export function validateCatalogDelta(
   return ok(value as unknown as CatalogDelta);
 }
 
+function revisionDiagnostic(
+  code: string,
+  expected: string,
+  actual: string,
+  hint: string,
+  rootId?: string,
+): CatalogDiagnostic {
+  return {
+    code,
+    severity: 'blocking',
+    authority: 'catalog',
+    expected,
+    actual,
+    hint,
+    ...(rootId === undefined ? {} : { subject: { type: 'package' as const, id: rootId } }),
+  };
+}
+
+export function checkCatalogRevisionContinuity(
+  window: CatalogRevisionWindow,
+  hasChanges: boolean,
+): CatalogDiagnostic | undefined {
+  const baselineByRoot = new Map(window.baseline.map((point) => [point.rootId, point]));
+  const currentRoots = new Set(window.current.map((point) => point.rootId));
+
+  for (const point of window.current) {
+    const baseline = baselineByRoot.get(point.rootId);
+    if (baseline === undefined) {
+      return revisionDiagnostic(
+        'catalog-revision-conflict',
+        'every current root must have a verified baseline',
+        point.rootId,
+        'restore the latest verified snapshot for this root before applying the delta',
+        point.rootId,
+      );
+    }
+    if (point.revision < baseline.revision) {
+      return revisionDiagnostic(
+        'catalog-revision-stale',
+        'current revision must not be older than baseline',
+        `${baseline.revision} -> ${point.revision}`,
+        'discard the stale update and request a fresh catalog snapshot',
+        point.rootId,
+      );
+    }
+    if (point.revision === baseline.revision && hasChanges) {
+      return revisionDiagnostic(
+        'catalog-revision-conflict',
+        'a changed delta must advance the root revision',
+        `${baseline.revision} -> ${point.revision}`,
+        'keep the verified baseline and serialize concurrent updates before retrying',
+        point.rootId,
+      );
+    }
+    if (point.revision > baseline.revision + 1) {
+      return revisionDiagnostic(
+        'catalog-revision-conflict',
+        'the next revision must be exactly baseline + 1',
+        `${baseline.revision} -> ${point.revision}`,
+        'request the missing revisions or rebuild from the latest verified snapshot',
+        point.rootId,
+      );
+    }
+  }
+
+  for (const point of window.baseline) {
+    if (!currentRoots.has(point.rootId)) {
+      return revisionDiagnostic(
+        'catalog-revision-conflict',
+        'every baseline root must be present in the current revision set',
+        point.rootId,
+        'do not apply a partial root set over the verified baseline',
+        point.rootId,
+      );
+    }
+  }
+
+  return undefined;
+}
+
 function canonicalCatalogValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalCatalogValue).join(',')}]`;
   if (isRecord(value)) {

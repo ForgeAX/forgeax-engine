@@ -2,7 +2,7 @@ import type { AudioState } from '@forgeax/engine-audio';
 import type { World } from '@forgeax/engine-ecs';
 import { err } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
-import { executionAudioReport } from './report';
+import { executionAudioReport, executionWorldReport } from './report';
 import type { ExecutionControl, ExecutionEngineHealth, ExecutionReport } from './types';
 import { serializableDetail } from './worker-error';
 
@@ -37,15 +37,7 @@ export function createLocalExecutionControl(
       return cloneExecutionReport({
         ...current,
         engine: fault == null ? current.engine : { ...current.engine, health: 'faulted' },
-        world:
-          world === undefined
-            ? current.world
-            : {
-                identity: world.identity,
-                health: world.health,
-                partialWrite: fault?.partialWrite ?? false,
-                retryable: fault?.retryable ?? true,
-              },
+        world: world === undefined ? current.world : executionWorldReport(world),
         fault:
           world === undefined
             ? current.fault

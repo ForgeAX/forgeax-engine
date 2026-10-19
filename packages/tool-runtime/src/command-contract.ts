@@ -1,3 +1,4 @@
+import { isSerializableValue, isToolEvidenceKind } from './artifacts.js';
 import { type ToolJsonSchema, toolJsonSchema } from './json-schema.js';
 import type { ToolContribution, ToolDescriptor, ToolEvidenceKind, ToolExecutor } from './types.js';
 import { TOOL_REALMS } from './types.js';
@@ -22,43 +23,13 @@ export function defineToolCommandContract(
     throw new TypeError('invalid or duplicate tool command declaration');
   return value;
 }
-function jsonTree(value: unknown, ancestors = new Set<object>()): boolean {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (
-    typeof value !== 'object' ||
-    ancestors.has(value) ||
-    Object.getOwnPropertySymbols(value).length
-  )
-    return false;
-  if (
-    !Array.isArray(value) &&
-    Object.getPrototypeOf(value) !== Object.prototype &&
-    Object.getPrototypeOf(value) !== null
-  )
-    return false;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (
-    Array.isArray(value) &&
-    (Object.keys(value).length !== value.length ||
-      Object.keys(value).some((key, index) => key !== String(index)))
-  )
-    return false;
-  ancestors.add(value);
-  for (const [key, descriptor] of Object.entries(descriptors)) {
-    if (Array.isArray(value) && key === 'length') continue;
-    if (
-      !descriptor.enumerable ||
-      !('value' in descriptor) ||
-      !jsonTree(descriptor.value, ancestors)
-    )
-      return false;
-  }
-  ancestors.delete(value);
-  return true;
-}
 export function isToolCommandContract(value: unknown): value is ToolCommandContract {
-  if (!jsonTree(value) || value === null || typeof value !== 'object' || Array.isArray(value))
+  if (
+    !isSerializableValue(value) ||
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value)
+  )
     return false;
   const contract = value as Partial<ToolCommandContract>;
   if (
@@ -111,7 +82,7 @@ export function isToolCommandContract(value: unknown): value is ToolCommandContr
     if (
       command.evidence !== undefined &&
       (!Array.isArray(command.evidence) ||
-        command.evidence.some((kind) => !['rhi-tape', 'profile-capture', 'png'].includes(kind)))
+        command.evidence.some((kind) => !isToolEvidenceKind(kind)))
     )
       return false;
     if (
@@ -123,7 +94,10 @@ export function isToolCommandContract(value: unknown): value is ToolCommandContr
       return false;
     try {
       for (const value of [command.argsSchema, command.resultSchema]) {
-        if (value !== undefined && (typeof value !== 'string' || !jsonTree(schema(value))))
+        if (
+          value !== undefined &&
+          (typeof value !== 'string' || !isSerializableValue(schema(value)))
+        )
           return false;
       }
     } catch {

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
@@ -159,9 +160,11 @@ describe('source package dev/build parity', () => {
         plugin.configureServer(server);
         try {
           await plugin.rebind(binding, [assets]);
-          const catalog = JSON.parse(String((await request(server, binding.catalogUrl)).body));
-          expect(catalog.error).toBeUndefined();
-          const row = catalog.entries.find((entry: { guid: string }) => entry.guid === MAIN_GUID);
+          const response = await request(server, binding.catalogUrl);
+          expect(response.statusCode).toBe(200);
+          const catalog = decodeCatalogWire(JSON.parse(String(response.body))).unwrap();
+          const row = catalog.find((entry) => entry.guid === MAIN_GUID);
+          if (row?.publication === undefined) throw new Error('expected the source publication');
           const pack = JSON.parse(String((await request(server, row.packageUrl)).body));
           return { publication: row.publication, pack };
         } finally {
@@ -203,16 +206,9 @@ describe('source package dev/build parity', () => {
       dev.configureServer(server);
       const binding = createStandaloneRuntimeAssetBinding('pack-parity');
       await dev.rebind(binding, [assets]);
-      const catalog = (
-        JSON.parse(String((await request(server, binding.catalogUrl)).body)) as {
-          entries: Array<{
-            guid: string;
-            packageUrl: string;
-            sourcePath?: string;
-            publication?: { sourcePath?: string };
-          }>;
-        }
-      ).entries;
+      const catalog = decodeCatalogWire(
+        JSON.parse(String((await request(server, binding.catalogUrl)).body)),
+      ).unwrap();
       const devRow = catalog.find((entry) => entry.guid.toLowerCase() === MAIN_GUID);
       expect(devRow).toBeDefined();
       expect(devRow?.publication?.sourcePath).toBe(devRow?.sourcePath);

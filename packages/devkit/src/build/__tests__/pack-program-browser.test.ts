@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import { build, createServer, type Plugin, preview, type ViteDevServer } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { defined } from '../../__tests__/assert-defined.js';
-import { type BrowserCaptureSession, createBrowserCapture } from '../../software-capture.js';
+import { type BrowserCaptureSession, createBrowserCapture } from '../../browser-capture.js';
 import { executionWorkerEntries } from '../execution-workers.js';
 import { runtimePacksSource } from '../runtime-packs-source.js';
 

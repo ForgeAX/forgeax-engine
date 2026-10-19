@@ -25,6 +25,7 @@
     "@forgeax/apps-shared": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

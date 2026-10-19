@@ -26,6 +26,7 @@
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createOwnedProcessGroupStopper } from '../apps/shared/scripts/rhi-debug-process.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -41,19 +42,24 @@ if (!pkg) {
 const bridgeOff = process.env.FORGEAX_ENGINE_BRIDGE === '0';
 const bridgePort = process.env.FORGEAX_ENGINE_BRIDGE_PORT ?? '5733';
 
-const children = [];
+const stoppers = [];
 
 function spawnChild(label, cmd, args, extraEnv = {}) {
   const child = spawn(cmd, args, {
     cwd: ROOT,
     stdio: 'inherit',
+    detached: process.platform !== 'win32',
     env: { ...process.env, ...extraEnv },
+  });
+  if (child.pid !== undefined) stoppers.push(createOwnedProcessGroupStopper(child));
+  child.on('error', (error) => {
+    console.error(`[dev-live] ${label} failed: ${error.message}`);
+    void shutdown(1);
   });
   child.on('exit', (code, signal) => {
     console.log(`[dev-live] ${label} exited (code=${code} signal=${signal}) — shutting down`);
-    shutdown();
+    void shutdown(code ?? 1);
   });
-  children.push(child);
   return child;
 }
 
@@ -75,19 +81,22 @@ console.log(`[dev-live] starting app dev server: pnpm --filter ${pkg} dev ...`);
 spawnChild('app', 'pnpm', ['--filter', pkg, 'dev'], appEnv);
 
 let shuttingDown = false;
-function shutdown() {
+async function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  for (const c of children) {
-    try {
-      c.kill('SIGTERM');
-    } catch {
-      /* already gone */
+  const results = await Promise.allSettled(stoppers.map((stop) => stop()));
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error('[dev-live] cleanup failed:', result.reason);
+      exitCode = 1;
     }
   }
-  // Give children a beat to exit, then hard-exit.
-  setTimeout(() => process.exit(0), 300);
+  process.exit(exitCode);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => {
+  void shutdown();
+});
+process.on('SIGTERM', () => {
+  void shutdown();
+});

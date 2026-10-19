@@ -4,9 +4,10 @@ import {
   createPackageResponse,
   createRuntimePackPublication,
   decodePackBlob,
-  encodePackBlob,
+  encodePackData,
   type FixedPackPublication,
   loadPackProgram,
+  type PackBinary,
   type PackBlob,
   type PackProgram,
   type PackProgramHost,
@@ -52,6 +53,7 @@ import {
   type AssetPublicationOutput,
   type CatalogDelta,
   type CatalogEntry,
+  encodeBase64,
   err,
   ImportError,
   ok,
@@ -70,7 +72,6 @@ import {
   parseRuntimePackInstance,
   parseRuntimePackSnapshot,
 } from './runtime-pack-content.js';
-import { encodeRuntimePackData, type RuntimePackBinary } from './runtime-pack-data.js';
 import {
   collectRuntimePackDependencies,
   matchesRuntimePackPin as matchesPinnedPublication,
@@ -113,7 +114,7 @@ export interface RuntimePackContent {
 }
 export interface RuntimePackSnapshot {
   readonly schemaVersion: 'runtime-pack-source/2';
-  readonly binary?: RuntimePackBinary;
+  readonly binary?: PackBinary;
   readonly packs: readonly RuntimePackContent[];
   readonly instances: readonly PackInstanceJson[];
   /** Fixed output selections use the same recipes as historical dependencies. */
@@ -237,7 +238,7 @@ async function bytesDigest(bytes: Uint8Array): Promise<string> {
 function json<T>(value: T): T {
   return JSON.parse(
     JSON.stringify(value, (_key, child) =>
-      child instanceof Uint8Array ? encodePackBlob(child) : child,
+      child instanceof Uint8Array ? encodeBase64(child) : child,
     ),
   ) as T;
 }
@@ -552,7 +553,7 @@ export class RuntimePackProducer {
     return new Map([...this.programs].map(([key, value]) => [key, json(value)]));
   }
   snapshot(): RuntimePackSnapshot {
-    return encodeRuntimePackData(
+    return encodePackData(
       saveRuntimePackSnapshot(
         [...this.packs.values()],
         [...this.executions.values()].flatMap((value) =>
@@ -586,7 +587,7 @@ export class RuntimePackProducer {
         throw new TypeError(`source version unavailable ${guid}@${digest}`);
       recipes.add(pin.recipe);
     }
-    return encodeRuntimePackData(saveRuntimePackSnapshot([], [], [...recipes]));
+    return encodePackData(saveRuntimePackSnapshot([], [], [...recipes]));
   }
   private reusableDependency(
     pin: RuntimePackPinnedAsset,

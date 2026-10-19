@@ -48,7 +48,7 @@ function phases(stage?: 'build' | 'encode' | 'finish' | 'submit') {
 }
 
 describe('SSR temporal history owner', () => {
-  it('allocates two half-resolution color-depth and confidence history slots', async () => {
+  it('allocates two full-resolution color-depth and confidence history slots', async () => {
     const device = await createDevice();
     const scope = DeviceScope.create(41, 'renderer');
     const owner = createSsrHistoryOwner({ device, scope, width: 5, height: 3 }).unwrap();
@@ -56,9 +56,9 @@ describe('SSR temporal history owner', () => {
     expect(owner.resources).toMatchObject({
       width: 5,
       height: 3,
-      halfWidth: 2,
-      halfHeight: 1,
-      bytes: 48,
+      traceWidth: 5,
+      traceHeight: 3,
+      bytes: 360,
       descriptor: { format: 'rgba16float', sampleCount: 1 },
     });
     expect(owner.resources.slots).toHaveLength(2);
@@ -68,7 +68,7 @@ describe('SSR temporal history owner', () => {
     expect(owner.inspect()).toMatchObject({
       state: 'first-frame',
       historyCount: 2,
-      activeBytes: 48,
+      activeBytes: 360,
       candidateBytes: 0,
       retiringBytes: 0,
       historyValid: false,
@@ -91,7 +91,7 @@ describe('SSR temporal history owner', () => {
     });
     expect(consumer.inspect()).toMatchObject({
       sharedEpoch: 1,
-      history: { state: 'stable', historyValid: true, activeBytes: 48, candidateBytes: 0 },
+      history: { state: 'stable', historyValid: true, activeBytes: 360, candidateBytes: 0 },
     });
 
     const second = consumer.run({ current: 'frame-2', antialias: 'none' }, phases());
@@ -194,11 +194,11 @@ describe('SSR temporal history owner', () => {
     expect(owner.inspect()).toMatchObject({
       width: 9,
       height: 5,
-      activeBytes: 192,
-      retiringBytes: 48,
+      activeBytes: 1080,
+      retiringBytes: 360,
     });
     owner.retireAfterFence(queue, (cause) => failures.push(cause));
-    expect(owner.inspect().retiringBytes).toBe(48);
+    expect(owner.inspect().retiringBytes).toBe(360);
     queue.complete();
     await Promise.resolve();
     await Promise.resolve();
@@ -206,7 +206,7 @@ describe('SSR temporal history owner', () => {
     expect(owner.inspect().retiringBytes).toBe(0);
 
     owner.retireAfterFence(queue, (cause) => failures.push(cause));
-    expect(owner.inspect().activeBytes).toBe(192);
+    expect(owner.inspect().activeBytes).toBe(1080);
     queue.complete();
     await Promise.resolve();
     await Promise.resolve();

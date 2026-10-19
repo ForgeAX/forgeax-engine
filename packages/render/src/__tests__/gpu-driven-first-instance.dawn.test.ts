@@ -454,8 +454,8 @@ describe('GPU-driven native first-instance addressing', () => {
             ],
             encode: ({ encoder, resources }) =>
               encoder.copyTextureToBuffer(
-                { texture: resources.texture(output).unwrap() as unknown as GPUTexture },
-                { buffer: pixels as unknown as GPUBuffer, bytesPerRow: ROW_BYTES, rowsPerImage: 2 },
+                { texture: resources.texture(output).unwrap() },
+                { buffer: pixels, bytesPerRow: ROW_BYTES, rowsPerImage: 2 },
                 { width: WIDTH, height: 2, depthOrArrayLayers: 1 },
               ),
           })

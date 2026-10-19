@@ -16,11 +16,11 @@ import { join, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { inspectEngineWorkspace } from '../engine-binding.js';
+import { isFilesystemPathWithin } from '../filesystem-path.js';
 import {
   createRunSnapshot,
   inspectRunDependencyClosure,
   runStateDirectory,
-  snapshotDirectoryInsideProject,
 } from '../run-snapshot.js';
 
 it('shares independent run ownership across project directory aliases', async () => {
@@ -967,12 +967,12 @@ it('rejects a snapshot directory stored inside the project', async () => {
 
 it('treats another Windows volume as outside the project inputs', () => {
   expect(
-    snapshotDirectoryInsideProject('E:\\game', 'C:\\Users\\Temp\\forgeax-editor-play-x', win32),
+    isFilesystemPathWithin('E:\\game', 'C:\\Users\\Temp\\forgeax-editor-play-x', true, win32),
   ).toBe(false);
-  expect(snapshotDirectoryInsideProject('E:\\game', 'E:\\game', win32)).toBe(true);
-  expect(snapshotDirectoryInsideProject('E:\\game', 'E:\\game\\snapshot', win32)).toBe(true);
-  expect(snapshotDirectoryInsideProject('E:\\game', 'E:\\other\\snapshot', win32)).toBe(false);
-  expect(snapshotDirectoryInsideProject('E:\\game', 'E:\\game-extra\\snapshot', win32)).toBe(false);
+  expect(isFilesystemPathWithin('E:\\game', 'E:\\game', true, win32)).toBe(true);
+  expect(isFilesystemPathWithin('E:\\game', 'E:\\game\\snapshot', true, win32)).toBe(true);
+  expect(isFilesystemPathWithin('E:\\game', 'E:\\other\\snapshot', true, win32)).toBe(false);
+  expect(isFilesystemPathWithin('E:\\game', 'E:\\game-extra\\snapshot', true, win32)).toBe(false);
 });
 
 for (const triggerRead of [1, 2]) {

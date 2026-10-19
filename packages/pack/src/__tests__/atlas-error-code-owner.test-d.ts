@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
-import type { IMAGE_ERROR_HINTS } from '@forgeax/engine-types';
+import type { IMAGE_ERROR_EXPECTED, IMAGE_ERROR_HINTS } from '@forgeax/engine-types';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-type AtlasErrorCode = Extract<keyof typeof IMAGE_ERROR_HINTS, `atlas-${string}`>;
+type AtlasErrorCode = Extract<keyof typeof IMAGE_ERROR_EXPECTED, `atlas-${string}`>;
 
 const ownerSource = readFileSync(new URL('../atlas/run-atlas.ts', import.meta.url), 'utf8');
 
@@ -12,10 +12,16 @@ describe('runAtlas ErrorEnvelope.code owner', () => {
       'atlas-empty-input' | 'atlas-size-exceeded' | 'atlas-region-mismatch'
     >();
     expectTypeOf<'atlas-unknown'>().not.toExtend<AtlasErrorCode>();
+    expectTypeOf<AtlasErrorCode>().toEqualTypeOf<
+      Extract<keyof typeof IMAGE_ERROR_HINTS, `atlas-${string}`>
+    >();
   });
 
-  it('derives ErrorEnvelope.code from ATLAS_EXPECTED', () => {
-    expect(ownerSource).toContain('readonly code: keyof typeof ATLAS_EXPECTED;');
+  it('derives ErrorEnvelope.code from the shared Image error facts', () => {
+    expect(ownerSource).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Match the source type syntax.
+      'readonly code: Extract<keyof typeof IMAGE_ERROR_EXPECTED, `atlas-${string}`>;',
+    );
     expect(ownerSource).not.toContain(
       "readonly code: 'atlas-empty-input' | 'atlas-size-exceeded' | 'atlas-region-mismatch';",
     );

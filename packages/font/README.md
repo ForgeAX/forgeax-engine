@@ -59,7 +59,7 @@ forgeax asset import <font.ttf> --root ./game --json
 | Output | Atlas PNG + sidecar JSON. The sidecar carries `distanceRange` + per-glyph metrics (1:1 BMFont char-block mapping: `advance <- xadvance`, `bearingX <- xoffset`, `bearingY <- yoffset`, `size <- width/height`, `region <- x/y/w/h`). |
 | Failure | A generator throw surfaces as `FontError('bake-failed')` (charter P3: no silent fake-success). `@zappar/msdf-generator` runs in a browser Worker (comlink); a Node-only run with no Worker host reports `bake-failed` honestly rather than emitting a placeholder atlas. |
 
-Pure helpers (`bakeFont` / `encodePng` / `atlasToSidecar`) are exported so consumers + tests can drive the bake with an injected `MsdfGenerator` (real `@zappar`; mock in tests).
+Build-time helpers (`bakeFont` / `atlasToSidecar`) are exported from the Node-only `@forgeax/engine/font/cli-font` module so consumers + tests can drive the bake with an injected `MsdfGenerator` (real `@zappar`; mock in tests).
 
 ## Sidecar dispatch + load (build-time -> runtime)
 
@@ -71,7 +71,7 @@ const font = (await engine.assets.loadByGuid<FontAsset>(fontGuid)).unwrap();
 
 `loadByGuid` fetches the font pack file, recursively resolves the atlas `TextureAsset` + `SamplerAsset` handles, constructs the `FontAsset` POD, and registers it (AC-05). The returned `Handle<'FontAsset','unmanaged'>` narrows to `FontAsset` under `assets.get(handle)` with no `as` cast (AC-17).
 
-The importer keeps the Pack v2 atlas artifact in raw RGBA8 form (`application/octet-stream`), matching the runtime texture loader's non-Basis artifact contract. The standalone CLI still writes a PNG for inspection or external tooling; that PNG is not silently treated as GPU pixel bytes by the Pack v2 runtime path.
+The importer keeps the Pack v2 atlas artifact in raw RGBA8 form (`application/octet-stream`), matching the runtime texture loader's non-Basis artifact contract. The Node-only `bakeFont` API writes a PNG for inspection or external tooling; that PNG is not silently treated as GPU pixel bytes by the Pack v2 runtime path.
 
 ## Layout (runtime)
 
@@ -95,4 +95,6 @@ Both surface via the `FontError` / `TextError` classes (four-field `.code` / `.e
 
 ## Dependency boundary
 
-`@zappar/msdf-generator` is a `dependencies` entry but reached only through the CLI / build-time entry (`cli-font.ts`), mirroring `@forgeax/engine-gltf`'s `cli-gltf.ts`. `@forgeax/engine-runtime` does not depend on `@forgeax/engine-font` -- the `FontAsset` POD lives in `@forgeax/engine-types` and the runtime only knows the `Asset` union -- so the generator never enters the runtime bundle (AC-18, D-9).
+`@zappar/msdf-generator` is a `dependencies` entry but reached only through the build-time producer entry (`cli-font.ts`), mirroring `@forgeax/engine-gltf`'s `cli-gltf.ts`. `@forgeax/engine-runtime` does not depend on `@forgeax/engine-font` -- the `FontAsset` POD lives in `@forgeax/engine-types` and the runtime only knows the `Asset` union -- so the generator never enters the runtime bundle (AC-18, D-9).
+
+Atlas PNG output uses Image’s `encodePng`; font baking owns glyph/atlas semantics.

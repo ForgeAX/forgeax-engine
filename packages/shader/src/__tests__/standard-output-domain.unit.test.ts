@@ -17,7 +17,10 @@ describe('Standard output shader domain contract', () => {
   });
 
   it('keeps tone mapping in linear HDR to linear LDR and preserves alpha', () => {
-    expect(tonemap).toContain('fn toneMapLinearLdr');
+    expect(readFileSync(resolve(shaderRoot, 'tone-mapping.wgsl'), 'utf8')).toContain(
+      'fn toneMapLinearLdr',
+    );
+    expect(tonemap).toContain('#import forgeax_view::tone_mapping::{mapTone}');
     expect(tonemap).toContain('fn mapTonemap');
     expect(tonemap).toContain('fn fs_tone_only');
     expect(tonemap).toContain('return vec4<f32>(mapTonemap(source.rgb), source.a);');

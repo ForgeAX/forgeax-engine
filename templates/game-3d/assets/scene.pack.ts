@@ -196,16 +196,11 @@ function showcaseScene(): SceneAsset {
           Name: { value: 'Sun' },
           DirectionalLight: {
             direction: SUN_OUTGOING_DIRECTION,
+            // Template art direction; projection and CSM inherit engine defaults.
             color: [1, 0.98, 0.93],
             intensity: 3.2,
+            // Bare lights default off; this game explicitly requests sun shadows.
             castShadow: true,
-            cascadeCount: 3,
-            splitLambda: 0.72,
-            cascadeBlend: 0.18,
-            mapSize: 1024,
-            depthBias: 0.005,
-            normalBias: 0.06,
-            shadowDistance: 56,
           },
         },
       }),
@@ -248,9 +243,9 @@ function showcaseScene(): SceneAsset {
             ],
           },
           Camera: {
-            ...perspective({ fov: Math.PI / 4, aspect: 16 / 9, near: 0.1, far: 120 }),
+            ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }),
+            // Explicit presentation style; generic Camera defaults remain neutral.
             tonemap: TONEMAP_ACES_FILMIC,
-            exposure: 0.92,
             antialias: ANTIALIAS_FXAA,
             clearColor: [0.08, 0.12, 0.2, 1],
           },

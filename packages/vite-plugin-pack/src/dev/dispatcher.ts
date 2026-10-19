@@ -10,7 +10,7 @@ export interface DispatcherResponse {
   end(chunk: string | Uint8Array): void;
 }
 
-export type DispatcherNext = (error?: unknown) => void;
+type DispatcherNext = (error?: unknown) => void;
 export type DispatcherHandler = (
   request: DispatcherRequest,
   response: DispatcherResponse,

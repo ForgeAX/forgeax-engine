@@ -46,8 +46,8 @@ export async function runTextureReuseGraph() {
         ],
         encode: ({ encoder, resources }) =>
           encoder.copyTextureToBuffer(
-            { texture: resources.texture(texture).unwrap() as unknown as GPUTexture },
-            { buffer: readback as unknown as GPUBuffer, bytesPerRow: 256, rowsPerImage: 1 },
+            { texture: resources.texture(texture).unwrap() },
+            { buffer: readback, bytesPerRow: 256, rowsPerImage: 1 },
             { width: 1, height: 1, depthOrArrayLayers: 1 },
           ),
       })

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 import UPNG from 'upng-js';
 
 const [directory] = process.argv.slice(2);
@@ -35,9 +36,7 @@ for (const [stem, size, exposure] of [
         if (!Number.isFinite(raw) || raw < 0)
           throw new Error(`invalid radiance in ${stem}-${name}`);
         const value = (exposure * raw) / (1 + exposure * raw);
-        return Math.round(
-          255 * (value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055),
-        );
+        return Math.round(255 * linearChannelToSrgb(value));
       });
       for (let y = 0; y < width / size; y++)
         for (let x = 0; x < width / size; x++) {

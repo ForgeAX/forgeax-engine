@@ -1,6 +1,5 @@
 import { stat } from 'node:fs/promises';
 import { isAbsolute, win32 } from 'node:path';
-import { createAcceptedPublication } from '@forgeax/engine-ddc';
 import { normalizeMeshPayload } from '@forgeax/engine-geometry';
 import {
   finalizePackageTransportSource,
@@ -42,7 +41,7 @@ import type {
   ResourceRevision,
   Result,
 } from '@forgeax/engine-types';
-import { AssetError, err, ok } from '@forgeax/engine-types';
+import { AssetError, createAssetPublication, err, ok } from '@forgeax/engine-types';
 import type { DdcPack, ImportRunnerFs, RunImportMeta } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
 import { projectImportProductForBuild } from './pack-projection.js';
@@ -1091,7 +1090,7 @@ async function finalizeScriptablePackProduct(
     product.inputFingerprint,
     source.sourceClosure,
   );
-  const publication = createAcceptedPublication({
+  const publication = createAssetPublication({
     sourcePath: source.displaySourcePath,
     sourceRevision: product.inputFingerprint,
     generation: source.publicationGeneration,

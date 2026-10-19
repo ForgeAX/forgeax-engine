@@ -3,6 +3,12 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { RhiDebugError } from './errors';
 import { digestBytesAsync } from './protocol/digest-async';
+import {
+  CHUNK_DIGEST_HEADER,
+  RAW_TAPE_ROUTE,
+  type RawTapeArtifactRef,
+  type TapeChunk,
+} from './protocol/upload';
 import type {
   CaptureFrameOptions,
   EncodedTape,
@@ -26,12 +32,8 @@ export interface BrowserCaptureOptions {
   readonly chunkAttempts?: number;
 }
 
-export interface BrowserArtifactRef {
-  readonly kind: 'rhi-tape';
-  readonly digest: string;
-  readonly path?: string;
-  readonly bytes?: number;
-}
+export type BrowserArtifactRef = Pick<RawTapeArtifactRef, 'kind' | 'digest'> &
+  Partial<RawTapeArtifactRef>;
 
 export type BrowserUploadStage = 'status' | 'chunk' | 'commit';
 
@@ -75,12 +77,6 @@ export async function captureAndUpload(
   return uploadTape(captured.value, options);
 }
 
-interface ReceivedChunk {
-  readonly offset: number;
-  readonly length: number;
-  readonly digest: string;
-}
-
 /**
  * Resumable chunked upload. Each window carries its SHA-256; windows the
  * server already holds with the same digest are skipped, so a retried or
@@ -91,7 +87,7 @@ export async function uploadTape(
   tape: Pick<TapeArtifact, 'byteLength' | 'chunks'>,
   options: BrowserCaptureOptions = {},
 ): Promise<Result<BrowserArtifactRef, BrowserCaptureError>> {
-  const endpoint = options.endpoint ?? '/__forgeax-debug/tape';
+  const endpoint = options.endpoint ?? RAW_TAPE_ROUTE;
   const runId = options.runId ?? createRunId();
   const chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
   const attempts = Math.max(1, options.chunkAttempts ?? 3);
@@ -104,10 +100,10 @@ export async function uploadTape(
   if (!status.ok) return status;
   const statusBody = await readJson(endpoint, status.value);
   if (!statusBody.ok) return statusBody;
-  const received = new Map<number, ReceivedChunk>();
+  const received = new Map<number, TapeChunk>();
   for (const chunk of receivedChunks(statusBody.value)) received.set(chunk.offset, chunk);
 
-  const manifest: ReceivedChunk[] = [];
+  const manifest: TapeChunk[] = [];
   // At most UPLOAD_WINDOW chunks are in flight: hashing the next window
   // overlaps the previous PUT while renderer memory stays bounded.
   const inFlight: Promise<Result<Response, BrowserCaptureError> | undefined>[] = [];
@@ -180,7 +176,6 @@ export async function uploadTape(
 
 const DEFAULT_CHUNK_BYTES = 16 * 1024 * 1024;
 const UPLOAD_WINDOW = 2;
-const CHUNK_DIGEST_HEADER = 'x-forgeax-chunk-digest';
 
 async function request(
   endpoint: string,
@@ -242,11 +237,11 @@ async function readJson(
   }
 }
 
-function receivedChunks(value: unknown): ReceivedChunk[] {
+function receivedChunks(value: unknown): TapeChunk[] {
   const chunks = (value as { chunks?: unknown } | null)?.chunks;
   if (!Array.isArray(chunks)) return [];
   return chunks.filter(
-    (chunk): chunk is ReceivedChunk =>
+    (chunk): chunk is TapeChunk =>
       typeof chunk?.offset === 'number' &&
       typeof chunk.length === 'number' &&
       typeof chunk.digest === 'string',

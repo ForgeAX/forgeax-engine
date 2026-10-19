@@ -8,6 +8,7 @@ import type {
   TextureView,
   Tlas,
 } from '@forgeax/engine-rhi';
+import { mipDimension } from '@forgeax/engine-types';
 import { err, ok, RenderGraphError, type Result } from './errors.js';
 import type { ResolvedColorTargetDescriptor } from './graph.js';
 import type {
@@ -1000,10 +1001,10 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         if (view === undefined || extent === undefined) {
           return err(resolutionError(texture?.record.label ?? 'texture view'));
         }
-        const divisor = 2 ** (view.descriptor.baseMipLevel ?? 0);
+        const level = view.descriptor.baseMipLevel ?? 0;
         return ok({
-          width: Math.max(1, Math.floor(extent.width / divisor)),
-          height: Math.max(1, Math.floor(extent.height / divisor)),
+          width: mipDimension(extent.width, level),
+          height: mipDimension(extent.height, level),
         });
       },
       accelerationStructure: (resource) => {

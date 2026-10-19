@@ -1,3 +1,4 @@
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 // Pure image metrics and encoders shared by the smoke and the reference tool.
 // Every image is a tightly packed linear RGB Float32Array, row 0 at the top.
 
@@ -87,7 +88,7 @@ export function readPfm(path) {
 
 const srgb = (v) => {
   const c = Math.max(0, v);
-  return c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055;
+  return linearChannelToSrgb(c);
 };
 
 /** Display encoding: exposure, Reinhard, sRGB transfer, to RGBA8. */

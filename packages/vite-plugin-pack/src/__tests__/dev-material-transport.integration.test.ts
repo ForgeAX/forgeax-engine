@@ -2,9 +2,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import {
+  decodeCatalogWire,
+  serializeCookedMaterialRecord,
+  validateCookedMaterialRecord,
+} from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
-import type { PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
+import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
 import { createAssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
@@ -115,8 +119,8 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     const base = `http://127.0.0.1:${address.port}`;
     const catalogResponse = await fetch(new URL(accepted.catalogUrl, base));
     expect(catalogResponse.status).toBe(200);
-    const catalog = (await catalogResponse.json()) as { entries: PackIndexEntry[] };
-    const entry = catalog.entries.find((candidate) => candidate.guid === record.guid);
+    const catalog = decodeCatalogWire(await catalogResponse.json()).unwrap();
+    const entry = catalog.find((candidate) => candidate.guid === record.guid);
     if (entry?.publication === undefined) throw new Error('accepted material publication missing');
     const publicationBefore = JSON.stringify(entry.publication);
     const served = await fetch(new URL(entry.packageUrl, base));
@@ -140,14 +144,14 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     expect(JSON.stringify(original)).toBe(originalBefore);
     const afterResponse = await fetch(new URL(accepted.catalogUrl, base));
     expect(afterResponse.status).toBe(200);
-    const afterCatalog = (await afterResponse.json()) as { entries: PackIndexEntry[] };
-    expect(
-      JSON.stringify(afterCatalog.entries.find((row) => row.guid === record.guid)?.publication),
-    ).toBe(publicationBefore);
+    const afterCatalog = decodeCatalogWire(await afterResponse.json()).unwrap();
+    expect(JSON.stringify(afterCatalog.find((row) => row.guid === record.guid)?.publication)).toBe(
+      publicationBefore,
+    );
 
     registry = createAssetRegistry({
       scopeId: accepted.scopeId,
-      catalog: createCatalogSource({ entries: catalog.entries }),
+      catalog: createCatalogSource({ entries: catalog }),
       fetcher: (input, init) => fetch(new URL(String(input), base), init),
     });
     decoder = registry.installDecoder(materialContribution.kind, materialContribution.decoder);

@@ -1260,6 +1260,7 @@ describe('Engine workspace public runtime', () => {
         sourceKey: 'scene/main',
       },
       { guid: 'mesh-guid', kind: 'mesh', sourcePath: 'meshes/cube.mesh' },
+      { guid: 'effect-guid', kind: 'particle-effect', sourcePath: 'effects/particles.pack.json' },
     ] as never);
     expect(assets).toEqual([
       expect.objectContaining({
@@ -1269,6 +1270,7 @@ describe('Engine workspace public runtime', () => {
         previewable: true,
       }),
       expect.objectContaining({ guid: 'mesh-guid', kind: 'mesh', previewable: true }),
+      expect.objectContaining({ guid: 'effect-guid', kind: 'vfx', previewable: true }),
     ]);
     expect(assets[1]).not.toHaveProperty('sourceKey');
   });

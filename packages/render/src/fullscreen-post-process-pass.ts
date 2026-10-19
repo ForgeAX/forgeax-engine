@@ -243,7 +243,12 @@ export interface FullscreenPostProcessDeviceContext {
  * Create a linear clamp-to-edge sampler — reused across all fullscreen passes
  * (identical to the recordFxaaPass sampler).
  */
+const fullscreenSamplers = new WeakMap<RhiDevice, Sampler>();
+const depthSamplers = new WeakMap<RhiDevice, Sampler>();
+
 function createFullscreenSampler(device: RhiDevice): Sampler | null {
+  const cached = fullscreenSamplers.get(device);
+  if (cached !== undefined) return cached;
   const res = device.createSampler({
     addressModeU: 'clamp-to-edge',
     addressModeV: 'clamp-to-edge',
@@ -251,6 +256,7 @@ function createFullscreenSampler(device: RhiDevice): Sampler | null {
     minFilter: 'linear',
   });
   if (!res.ok) return null;
+  fullscreenSamplers.set(device, res.value);
   return res.value;
 }
 
@@ -262,6 +268,8 @@ function createFullscreenSampler(device: RhiDevice): Sampler | null {
  * shader reads raw depth values via `textureSampleLevel`, not PCF shadow lookup).
  */
 function createDepthSampler(device: RhiDevice): Sampler | null {
+  const cached = depthSamplers.get(device);
+  if (cached !== undefined) return cached;
   const res = device.createSampler({
     magFilter: 'nearest',
     minFilter: 'nearest',
@@ -269,6 +277,7 @@ function createDepthSampler(device: RhiDevice): Sampler | null {
     addressModeV: 'clamp-to-edge',
   });
   if (!res.ok) return null;
+  depthSamplers.set(device, res.value);
   return res.value;
 }
 

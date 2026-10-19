@@ -13,6 +13,8 @@
 
 /// <reference types="@webgpu/types" />
 
+import type { recordReplayCapabilities } from './capabilities';
+
 /**
  * Unique identifier for a recorded RHI handle within a tape.
  *
@@ -34,7 +36,7 @@ export type RecordedCanvasColorSpace = 'srgb' | 'display-p3';
  * Canvas format is included because it determines swap-chain format,
  * which affects color-attachment pixel encoding.
  */
-export interface RhiCapsRecorded {
+export interface RhiCapsRecorded extends ReturnType<typeof recordReplayCapabilities> {
   readonly canvasFormat: GPUTextureFormat;
   /**
    * Presentation color space of the configured canvas, as reported by the
@@ -42,15 +44,6 @@ export interface RhiCapsRecorded {
    * surface bytes are encoded for this space; replay writes offscreen bytes.
    */
   readonly canvasColorSpace: RecordedCanvasColorSpace;
-  readonly rgba16floatRenderable: boolean;
-  readonly rg11b10ufloatRenderable: boolean;
-  readonly float32Filterable: boolean;
-  readonly firstInstanceIndirect: boolean;
-  readonly textureCompressionBc: boolean;
-  readonly textureCompressionEtc2: boolean;
-  readonly textureCompressionAstc: boolean;
-  readonly storageBuffer: boolean;
-  readonly timestampQuery: boolean;
 }
 
 // ============================================================================

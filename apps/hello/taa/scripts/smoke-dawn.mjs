@@ -863,8 +863,8 @@ const camera = world
               bloom: render.BLOOM_ENABLED,
               bloomThreshold: 0.7,
               bloomIntensity: 0.35,
-              bloomSoftKnee: 0.5,
-              bloomScatter: 0.7,
+              bloomSmoothWidth: 0.01,
+              bloomRadius: 0,
             }
           : {}),
       },

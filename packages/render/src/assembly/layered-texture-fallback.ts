@@ -6,7 +6,7 @@ import { runShimSyncStep } from './renderer-helpers';
 // single layer to TEXTURE_2D.
 const ARRAY_FALLBACK_LAYERS = 2;
 
-export interface LayeredTextureFallbackViews {
+interface LayeredTextureFallbackViews {
   /** 1x1x1 white volume bound to `texture_3d` params until a source promotes. */
   readonly defaultWhite3dTextureView: TextureView;
   /** Two-layer white array bound to `texture_2d_array` params until a source promotes. */

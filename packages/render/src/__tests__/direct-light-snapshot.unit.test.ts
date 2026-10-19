@@ -106,15 +106,4 @@ describe('direct light snapshot consumers', () => {
     expect(packed).toHaveLength(3);
     expect(packed.every((slot) => slot.byteLength === 96)).toBe(true);
   });
-
-  it('requires both direct and cluster consumers to name the same packer', async () => {
-    const frameLighting = await readFile(
-      new URL('../record/frame-lighting.ts', import.meta.url),
-      'utf8',
-    );
-    const clusterBinner = await readFile(new URL('../cluster-binner.ts', import.meta.url), 'utf8');
-
-    expect(frameLighting).toContain('packDirectLightSlot');
-    expect(clusterBinner).toContain('deriveCullingRadius');
-  });
 });

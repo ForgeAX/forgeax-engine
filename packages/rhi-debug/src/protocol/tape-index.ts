@@ -1,4 +1,11 @@
-import { EVENT_SEMANTICS, eventKinds, isWorkEvent, resourceKindForEvent } from './event-semantics';
+import {
+  createdHandles,
+  eventKinds,
+  isWorkEvent,
+  resourceKindForEvent,
+  retiredHandles,
+  type workEventKinds,
+} from './event-semantics';
 import type { EventKind, ResourceKind, Tape } from './types';
 
 export interface TapePassEntry {
@@ -13,15 +20,7 @@ export interface TapeWorkEntry {
   readonly workIndex: number;
   readonly eventIndex: number;
   readonly passIndex: number;
-  readonly kind: Extract<
-    EventKind,
-    | 'draw'
-    | 'drawIndexed'
-    | 'drawIndirect'
-    | 'drawIndexedIndirect'
-    | 'dispatchWorkgroups'
-    | 'dispatchWorkgroupsIndirect'
-  >;
+  readonly kind: (typeof workEventKinds)[number];
 }
 
 export interface TapeResourceEntry {
@@ -51,7 +50,7 @@ export function buildTapeIndex(tape: Tape): TapeIndex {
     | undefined;
   for (const [eventIndex, event] of tape.events.entries()) {
     passIndexByEvent[eventIndex] = passIndex;
-    const semantics = EVENT_SEMANTICS[event.kind];
+
     if (event.kind === 'beginRenderPass' || event.kind === 'beginComputePass') {
       passIndex++;
       passIndexByEvent[eventIndex] = passIndex;
@@ -63,7 +62,7 @@ export function buildTapeIndex(tape: Tape): TapeIndex {
     }
     if (isWorkEvent(event.kind)) {
       const workIndex = works.length;
-      works.push({ workIndex, eventIndex, passIndex, kind: event.kind as TapeWorkEntry['kind'] });
+      works.push({ workIndex, eventIndex, passIndex, kind: event.kind });
       currentPass?.workIndices.push(workIndex);
     }
     if (event.kind === 'endRenderPass' || event.kind === 'endComputePass') {
@@ -79,7 +78,7 @@ export function buildTapeIndex(tape: Tape): TapeIndex {
       }
     }
     const kind = resourceKindForEvent(event.kind);
-    for (const resourceId of semantics.created(event)) {
+    for (const resourceId of createdHandles(event)) {
       if (kind)
         resources.set(resourceId, {
           resourceId,
@@ -89,7 +88,7 @@ export function buildTapeIndex(tape: Tape): TapeIndex {
           destroyEventIndex: undefined,
         });
     }
-    for (const resourceId of semantics.destroyed(event)) {
+    for (const resourceId of retiredHandles(event)) {
       const previous = resources.get(resourceId);
       if (previous) resources.set(resourceId, { ...previous, destroyEventIndex: eventIndex });
     }

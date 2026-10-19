@@ -385,3 +385,42 @@ it('does not bypass factory pending or admit a failed program, and releases scop
   await f.draw();
   expect(pipelines).toHaveBeenCalledTimes(4);
 });
+
+it('retains one graph input binding while still uploading parameters and observing factory failures', async () => {
+  const f = await fixture();
+  const built = await f.build();
+  const groups = vi.spyOn(f.device, 'createBindGroup');
+  const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+  const execute = async () => {
+    const encoder = f.device.createCommandEncoder().unwrap();
+    built.compiled.execute({ ...built.frame, encoder }).unwrap();
+    f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    await f.device.queue.onSubmittedWorkDone();
+  };
+  try {
+    await execute();
+    new DataView(built.params.buffer).setFloat32(0, 0.5, true);
+    await execute();
+    expect(groups).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveBeenCalledTimes(2);
+    const pending = err(
+      new RhiError({ code: 'rhi-not-available', expected: 'pending', hint: 'retry' }),
+    );
+    vi.spyOn(f.factory, 'createShaderModule').mockReturnValueOnce(pending);
+    await expect(execute()).rejects.toBeDefined();
+    expect(groups).toHaveBeenCalledTimes(1);
+    const replacement = f.device.createBuffer({ size: 32, usage: 0x48 }).unwrap();
+    vi.spyOn(built.frame.runtime, 'getPostProcessParamsBuffer').mockReturnValue(replacement);
+    groups.mockReturnValueOnce(pending);
+    await expect(execute()).rejects.toBeDefined();
+    await execute();
+    await execute();
+    expect(groups).toHaveBeenCalledTimes(3);
+    f.modules.clear();
+    await execute();
+    expect(groups).toHaveBeenCalledTimes(4);
+  } finally {
+    (await built.compiled.retire()).unwrap();
+    f.scope.retire();
+  }
+});

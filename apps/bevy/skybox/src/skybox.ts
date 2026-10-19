@@ -21,7 +21,7 @@ export function buildSkyboxWorld(
 ): void {
   world.spawn({
     component: DirectionalLight,
-    data: { direction: [0, -1, 0], color: [1, 1, 1], intensity: 32_000 },
+    data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 32_000 },
   }).unwrap();
 
   world.spawn({

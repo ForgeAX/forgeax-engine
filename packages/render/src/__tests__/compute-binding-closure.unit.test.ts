@@ -57,7 +57,7 @@ it('keeps every dispatch while deriving the shared binding closure once', async 
         })),
       })
       .unwrap();
-    expect(resolved.dispatches.map((d) => d.workgroups)).toEqual([
+    expect(resolved.dispatches.map((d) => ('workgroups' in d ? d.workgroups : undefined))).toEqual([
       [1, 1, 1],
       [2, 1, 1],
       [3, 1, 1],
@@ -133,7 +133,9 @@ it('keeps separate indirect offsets, indirect-read usage and generation rejectio
       })),
     };
     const resolved = f.session.resolveComputePass('compute-closure', descriptor).unwrap();
-    expect(resolved.dispatches.map((d) => d.indirectOffset)).toEqual([0, 12, 24]);
+    expect(
+      resolved.dispatches.map((d) => ('indirectOffset' in d ? d.indirectOffset : undefined)),
+    ).toEqual([0, 12, 24]);
     expect(resolved.buffers.map((b) => b.access)).toEqual(['storage-read-write', 'indirect-read']);
     const last = descriptor.dispatches[2];
     if (last === undefined) throw new Error('Missing indirect fixture');

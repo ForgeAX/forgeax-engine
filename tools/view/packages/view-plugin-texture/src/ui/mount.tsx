@@ -1,6 +1,6 @@
 import type { ComponentProps } from 'react';
 import '@forgeax/view-components/styles.css';
-import { OverlayRootProvider } from '@forgeax/view-components';
+import { OverlayRootProvider, PanelVisibilityProvider } from '@forgeax/view-components';
 import '../i18n/index.ts';
 import { createRoot } from 'react-dom/client';
 import { TexturePreviewPanel } from './TexturePreviewPanel';
@@ -13,9 +13,9 @@ function mountPanel(node: Parameters<ReturnType<typeof createRoot>['render']>[0]
   if (!props.mountElement) throw new TypeError('texture panel mount requires mountElement');
   const root = createRoot(props.mountElement);
   root.render(
-    <OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
+    <PanelVisibilityProvider element={props.mountElement}><OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
       {node}
-    </OverlayRootProvider>,
+    </OverlayRootProvider></PanelVisibilityProvider>,
   );
   return async () => root.unmount();
 }

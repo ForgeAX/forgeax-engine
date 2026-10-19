@@ -1,5 +1,5 @@
 import type { Buffer, Result, RhiDevice, RhiError, Sampler, Texture } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-types';
+import { mipDimension, numMipLevels, ok } from '@forgeax/engine-types';
 import type { DeviceScope } from '../../device/device-scope';
 
 export const EXTENDED_LIGHTING_TOPOLOGY = 'extendedLighting' as const;
@@ -14,14 +14,17 @@ export const COOKIE_SLICE_SIZE = 256;
  * and projectors read level 0; RectAreaLight source textures select a
  * prefiltered level from the LTC lobe footprint.
  */
-export const COOKIE_MIP_LEVEL_COUNT = Math.log2(COOKIE_SLICE_SIZE) + 1;
+export const COOKIE_MIP_LEVEL_COUNT = numMipLevels({
+  width: COOKIE_SLICE_SIZE,
+  height: COOKIE_SLICE_SIZE,
+});
 /** Bytes of one RGBA8 slice including every mip level, level 0 first. */
 export const COOKIE_SLICE_MIP_CHAIN_BYTES = cookieMipChainBytes();
 
 function cookieMipChainBytes(): number {
   let bytes = 0;
   for (let level = 0; level < COOKIE_MIP_LEVEL_COUNT; level += 1) {
-    const size = COOKIE_SLICE_SIZE >> level;
+    const size = mipDimension(COOKIE_SLICE_SIZE, level);
     bytes += size * size * 4;
   }
   return bytes;
@@ -36,7 +39,7 @@ export function writeCookieSliceMipChain(
 ): Result<void, RhiError> {
   let offset = 0;
   for (let level = 0; level < COOKIE_MIP_LEVEL_COUNT; level += 1) {
-    const size = COOKIE_SLICE_SIZE >> level;
+    const size = mipDimension(COOKIE_SLICE_SIZE, level);
     const bytes = size * size * 4;
     const result = device.queue.writeTexture(
       { texture, mipLevel: level, origin: { x: 0, y: 0, z: slice } },

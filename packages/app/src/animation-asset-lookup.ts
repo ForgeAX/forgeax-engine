@@ -1,7 +1,7 @@
 import type { AnimationPayloadLookup } from '@forgeax/engine-animation';
 import type { AnimationClip } from '@forgeax/engine-types';
 
-export interface AnimationPayloadSource {
+interface AnimationPayloadSource {
   lookup<T = unknown>(guid: string): T | undefined;
 }
 

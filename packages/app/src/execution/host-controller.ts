@@ -1,6 +1,7 @@
 import { createHostAudioConsumer, type HostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 import { attachBrowserInputBackend, type InputBackend } from '@forgeax/engine-input';
 import {
+  type DisplayFacts,
   type PlatformEvent,
   type PlatformRelease,
   releasePlatformResources,
@@ -44,7 +45,10 @@ export interface CreateWorkerExecutionAppOptions {
   readonly canvas: HTMLCanvasElement;
   readonly appOptions: CreateAppOptions;
   /** Host-owned resize policy applied before each frame sent to the worker. */
-  readonly syncCanvas?: (canvas: HTMLCanvasElement) => CanvasDrawingBufferSize;
+  readonly syncCanvas?: (
+    canvas: HTMLCanvasElement,
+    display: DisplayFacts | undefined,
+  ) => CanvasDrawingBufferSize;
   readonly bundler?: BundlerOptions;
   readonly capabilities: ExecutionCapabilities;
   readonly selection: ExecutionSelection;
@@ -128,6 +132,7 @@ export async function createWorkerExecutionApp(
   if (!initialPlatform.ok) return err(platformError(initialPlatform.error));
   let platform = initialPlatform.value;
   let releasePlatformEvents: PlatformRelease | undefined;
+  let display: DisplayFacts | undefined;
   let renderEpoch = 1;
   let lastSurfaceRequestId = 0;
   let started: Awaited<ReturnType<typeof startEngineWorker>>;
@@ -298,18 +303,13 @@ export async function createWorkerExecutionApp(
     if (value.revokeInjectedLease === undefined) value.clearInjected?.();
   };
 
+  const initialReport = createExecutionReport(options.capabilities, options.selection);
   let report: ExecutionReport = {
-    ...createExecutionReport(options.capabilities, options.selection),
-    engine: { realm: 'worker', health: 'idle' },
+    ...initialReport,
     ...(options.selection.render.enabled
       ? { render: { epoch: 1, state: 'alive' as const, submittedFrame: 0, completedFrame: 0 } }
       : {}),
-    world: {
-      identity: session.ready.worldIdentity,
-      health: 'healthy',
-      partialWrite: false,
-      retryable: true,
-    },
+    world: { ...initialReport.world, identity: session.ready.worldIdentity },
   };
   let state: 'idle' | 'running' | 'paused' | 'stopped' | 'faulted' = 'idle';
   let ledger = new FrameCreditLedger(session.ready.worldIdentity);
@@ -620,7 +620,7 @@ export async function createWorkerExecutionApp(
     const deltaSeconds = lastTimestamp === undefined ? 0 : (timestamp - lastTimestamp) / 1_000;
     lastTimestamp = timestamp;
     const canvasSize =
-      syncCanvas?.(canvas) ??
+      syncCanvas?.(canvas, display) ??
       ({
         width: canvas.width,
         height: canvas.height,
@@ -723,9 +723,15 @@ export async function createWorkerExecutionApp(
           pauseFrames();
         }
       } else if (resumeAfterHostShow && state === 'paused') resumeFrames();
-    } else if (event.kind === 'surface-lost') failPlatform(event.cause);
+    } else if (event.kind === 'display') display = event.display;
+    else if (event.kind === 'surface-lost') failPlatform(event.cause);
   };
   const subscribePlatform = (): void => {
+    if (syncCanvas !== undefined) {
+      const current = platform.display();
+      if (!current.ok) throw platformError(current.error);
+      display = current.value;
+    }
     const subscribed = platform.subscribe(onPlatformEvent);
     if (!subscribed.ok) throw platformError(subscribed.error);
     releasePlatformEvents = subscribed.value;
@@ -1052,7 +1058,7 @@ export async function createWorkerExecutionApp(
       case 'fault':
         terminalFault(message);
         return;
-      case 'rebuilt':
+      case 'rebuilt': {
         clearFrameAdmissionWatchdog();
         rejectPendingInspections(
           new Error('The previous World was replaced before inspection execution.'),
@@ -1092,9 +1098,11 @@ export async function createWorkerExecutionApp(
         frameDue = false;
         resumeAfterHostShow = false;
         temporalResetAfterFrame = undefined;
+        const freshReport = createExecutionReport(report.capabilities, report.workers);
         report = {
           ...report,
-          engine: { ...report.engine, health: 'idle' },
+          ...freshReport,
+          audio: report.audio,
           // The rebuilt ACK follows complete source, kernel and renderer startup.
           // Its earlier render-ready event was ignored while the old World was faulted.
           ...(report.render === undefined
@@ -1107,32 +1115,14 @@ export async function createWorkerExecutionApp(
                   completedFrame: 0,
                 },
               }),
-          world: {
-            identity: message.worldIdentity,
-            health: 'healthy',
-            partialWrite: false,
-            retryable: true,
-          },
-          kernelDispatch: {
-            eligible: false,
-            usedShared: false,
-            reason: 'no-eligible-kernel',
-            dispatched: 0,
-            completed: 0,
-          },
-          fault: null,
-          performance: {
-            hostFrameMs: null,
-            engineUpdateMs: null,
-            kernelWaitMs: null,
-            hostAudioMs: null,
-          },
+          world: { ...freshReport.world, identity: message.worldIdentity },
           frame: ledger.inspect(),
         };
         rebuildResolve?.(ok(cloneExecutionReport(report)));
         rebuildResolve = undefined;
         rebuildInFlight = undefined;
         return;
+      }
       case 'host-control':
         if (message.command === 'set-pointer-lock-allowed') {
           input.setPointerLockAllowed?.(message.allowed);

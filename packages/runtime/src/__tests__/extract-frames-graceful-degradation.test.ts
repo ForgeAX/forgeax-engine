@@ -102,11 +102,7 @@ describe('extractFrames per-world injection failure graceful degradation (m2-t3,
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 1, 1],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0, -1, 0] },
         },
       )
       .unwrap();
@@ -138,11 +134,7 @@ describe('extractFrames per-world injection failure graceful degradation (m2-t3,
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 1, 1],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0, -1, 0] },
         },
       )
       .unwrap();
@@ -154,11 +146,7 @@ describe('extractFrames per-world injection failure graceful degradation (m2-t3,
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [0, 1, 0],
-            intensity: 2,
-            direction: [1, 0, 0],
-          },
+          data: { castShadow: true, color: [0, 1, 0], intensity: 2, direction: [1, 0, 0] },
         },
       )
       .unwrap();
@@ -198,11 +186,7 @@ describe('extractFrames per-world injection failure graceful degradation (m2-t3,
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 1, 1],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0, -1, 0] },
         },
       )
       .unwrap();
@@ -228,11 +212,7 @@ describe('extractFrames per-world injection failure graceful degradation (m2-t3,
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 1, 1],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0, -1, 0] },
         },
       ).unwrap();
       worlds.push(w);
@@ -271,11 +251,7 @@ describe('extractFrames per-world injection failure graceful degradation (m2-t3,
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 1, 1],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0, -1, 0] },
         },
       )
       .unwrap();

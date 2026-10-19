@@ -1,3 +1,5 @@
+import { retainJsonMaterialFacts } from './retained-material-facts.js';
+
 // Capture optional platform methods without consulting response.text or function.call.
 // The fast path assumes standard platform Body semantics, not arbitrary polyfills.
 // A global subclass or adapter prototype must retain the original json-reader path.
@@ -60,8 +62,10 @@ export function parseRetainedPackJson(text: string): unknown {
           typeof asset.payload === 'object' &&
           asset.payload.kind === asset.kind,
       )
-    )
+    ) {
+      retainJsonMaterialFacts(pack.assets);
       return value;
+    }
   }
   const pending = [value];
   while (pending.length > 0) {

@@ -27,7 +27,7 @@ export interface WorldAccelerationInstance {
   readonly transform: ArrayLike<number>;
 }
 
-export interface WorldAccelerationBudget {
+interface WorldAccelerationBudget {
   readonly maxInstances: number;
   /** Capacity of the `faceNormals` table across every resident geometry. */
   readonly maxTriangles: number;
@@ -40,7 +40,7 @@ export interface WorldAccelerationBudget {
  * (`VkAccelerationStructureInstanceKHR` / `MTLAccelerationStructureInstanceDescriptor`
  * as wgpu packs it) that every TLAS build uploads.
  */
-export const TLAS_INSTANCE_BYTES = 64;
+const TLAS_INSTANCE_BYTES = 64;
 
 /** The work one `update` encoded. */
 export interface WorldAccelerationBuild {

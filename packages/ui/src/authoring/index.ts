@@ -4,10 +4,10 @@ import { uiResourcePath } from '../resources.js';
 import { parseCssAuthoring } from './css.js';
 import { hasBlockingDiagnostics } from './diagnostics.js';
 import { parseHtmlAuthoring } from './html.js';
-import { pickClassification, type UiAuthoringCategory } from './profile.js';
+import { pickAuthoringCategory, type UiAuthoringCategory } from './profile.js';
 
 export { type CssAuthoringOptions, parseCssAuthoring } from './css.js';
-export { serializeDiagnostics } from './diagnostics.js';
+export { serializeDiagnostics, type UiAuthoringParse } from './diagnostics.js';
 export { type HtmlAuthoringOptions, parseHtmlAuthoring } from './html.js';
 export {
   UI_AUTHORING_PROFILE,
@@ -50,10 +50,7 @@ function parseAuthoring(input: Omit<UiAuthoringInput, 'readCompanion'>) {
   const html = parseHtmlAuthoring(input.html, input.sourcePath, options);
   const css = parseCssAuthoring(input.css, input.sourcePath.replace(/\.html?$/i, '.css'), options);
   return {
-    category: pickClassification(
-      { category: html.category, blocking: html.category !== 'native' },
-      { category: css.category, blocking: css.category !== 'native' },
-    ).category,
+    category: pickAuthoringCategory(html.category, css.category),
     diagnostics: [...html.diagnostics, ...css.diagnostics],
     references: [...html.references, ...css.references],
   };

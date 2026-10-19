@@ -1,6 +1,11 @@
 import { RhiError, type ShaderModule } from '@forgeax/engine-rhi';
 import type { ManifestEntry } from '@forgeax/engine-types';
-import type { DepthPyramidShaderSources, SsrShaderSources } from '../render-contract';
+import type {
+  AtmosphereShaderSources,
+  DepthPyramidShaderSources,
+  SsrShaderSources,
+  VolumetricFogShaderSources,
+} from '../render-contract';
 
 /** `[source key, pipeline label, WGSL entry point]`; the label equals the manifest stage. */
 type UtilityShaderStage<Key extends string> = readonly [Key, string, string];
@@ -15,6 +20,21 @@ export const SSR_SHADER_STAGES = [
   ['temporal', 'ssr_temporal', 'ssr_temporal'],
   ['compose', 'ssr_compose', 'vs_ssr_compose'],
 ] as const satisfies readonly UtilityShaderStage<keyof SsrShaderSources>[];
+
+export const ATMOSPHERE_SHADER_STAGES = [
+  ['compose', 'atmosphere_compose', 'atmosphere_compose_vs'],
+  ['luts', 'atmosphere_luts', 'atmosphere_transmittance'],
+  ['cube', 'atmosphere_cube', 'atmosphere_cubemap_vs'],
+  ['background', 'atmosphere_background', 'atmosphere_background_vs'],
+  ['ibl', 'atmosphere_ibl', 'atmosphere_ibl_vs'],
+] as const satisfies readonly UtilityShaderStage<keyof AtmosphereShaderSources>[];
+
+export const VOLUMETRIC_FOG_SHADER_STAGES = [
+  ['inject', 'volume_inject', 'volume_inject'],
+  ['temporal', 'volume_temporal', 'volume_temporal'],
+  ['integrate', 'volume_integrate', 'volume_integrate'],
+  ['composite', 'volume_composite', 'volume_fs'],
+] as const satisfies readonly UtilityShaderStage<keyof VolumetricFogShaderSources>[];
 
 /**
  * Admit and compile one utility bundle before exposing any of its modules.

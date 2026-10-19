@@ -159,14 +159,17 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     },
     { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
   );
-  (await host.initialization).unwrap();
+  expect((await host.initialization).ok).toBe(true);
   const renderer = exposeRenderer(host);
-  renderer
-    .setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false })
-    .unwrap();
+  expect(
+    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
+  ).toBe(true);
   const world = new World();
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const color = new Float32Array(((mesh.attributes.position?.length ?? 0) / 3) * 4).fill(1);
+  const positions = mesh.attributes.position;
+  if (!(positions instanceof Float32Array) || mesh.indices === undefined)
+    throw new Error('Missing indexed box fixture');
+  const color = new Float32Array((positions.length / 3) * 4).fill(1);
   const candidateMesh = createMeshBuilder({
     attributes: { ...mesh.attributes, color },
     indices: mesh.indices,
@@ -231,7 +234,9 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
       .unwrap();
   world.update(1 / 60).unwrap();
   propagateTransforms(world).unwrap();
-  const lease = published ? undefined : renderer.attach(world).unwrap();
+  const attached = published ? undefined : renderer.attach(world);
+  if (attached !== undefined && !attached.ok) throw attached.error;
+  const lease = attached?.value;
   const publisher = published
     ? createRenderPublisher(world, host.assetRegistry, identity, device.caps)
     : undefined;
@@ -253,10 +258,10 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
           ? undefined
           : { leases: [lease], camera: { lease }, environment: { lease } };
     if (request === undefined) throw new Error('missing frame owner');
-    const receipt = renderer
-      .draw(pointShadow ? { ...request, geometryLane: 'direct' } : request)
-      .unwrap();
-    (await receipt.completed).unwrap();
+    const drawn = renderer.draw(pointShadow ? { ...request, geometryLane: 'direct' } : request);
+    if (!drawn.ok) throw drawn.error;
+    const receipt = drawn.value;
+    expect((await receipt.completed).ok).toBe(true);
     await new Promise<void>((resolve) => setImmediate(resolve));
     if (packet !== undefined) {
       const transfer = renderPublicationTransfers(packet);
@@ -354,7 +359,9 @@ async function compilationStarted(
 it('presents overflow spot lights after all four admitted shadow tiles are prepared', async () => {
   const f = await fixture('shadow');
   try {
-    f.renderer.setProfile({ ...f.renderer.inspect().profile, lightCount: 256 }).unwrap();
+    expect(f.renderer.setProfile({ ...f.renderer.inspect().profile, lightCount: 256 }).ok).toBe(
+      true,
+    );
     for (let light = 0; light < 5; light++)
       f.world
         .spawn(
@@ -719,7 +726,7 @@ it('rejects a published candidate whose renderer is retired before native prepar
     const disposing = f.renderer.dispose();
     f.release();
     expect((await pending).ok).toBe(false);
-    (await disposing).unwrap();
+    expect((await disposing).ok).toBe(true);
     expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
   } finally {
     await f.dispose();

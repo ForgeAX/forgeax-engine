@@ -53,14 +53,18 @@ export async function verifyTextureCopyDefaults(height: number) {
     const layoutFields = height === 1 ? {} : { bytesPerRow: 256 };
     // The legacy upload overload still spells native handles; these are RHI-owned.
     encoder.copyBufferToTexture(
-      { buffer: source, ...layoutFields } as never,
-      { texture } as never,
+      { buffer: source, ...layoutFields },
+      { texture },
       { width: 1, height },
     );
-    encoder.copyTextureToBuffer({ texture }, { buffer: output, ...layoutFields } as never, {
-      width: 1,
-      height,
-    });
+    encoder.copyTextureToBuffer(
+      { texture },
+      { buffer: output, ...layoutFields },
+      {
+        width: 1,
+        height,
+      },
+    );
     const pass = encoder.beginComputePass({});
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, group);

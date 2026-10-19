@@ -171,6 +171,13 @@ dialog remains available: enter the **Project path** and select **Open project**
 browser opens the Engine-generated workspace document. Scene and asset
 previews use inline Engine surfaces; **Play** explicitly creates the isolated
 game iframe. Hierarchy and Inspector operate on the selected Engine target.
+The selected Play immediately requests the panel's measured device-pixel extent
+through Engine `preview.resize` when attached, including during startup; Engine
+waits for its native readiness before applying it. Repeated measurements share
+the pending request, and later layout changes debounce. This preserves Retina
+layout without leaving an initial resize behind capture and picking commands.
+Detaching or hiding the panel cancels its resize requests while the same game
+document continues running until Engine acknowledges cleanup.
 Opening a project does not start an independent AI run.
 In Content Browser, select a folder or asset and choose **Open**, double-click
 it, or press **Enter**. A single click selects it for inspection. **Preparing
@@ -304,7 +311,9 @@ and a bounded project HTML file listing. Incomplete listings are visible.
 Asset cards query `assets.thumbnails` in batches of at most 32 visible GUIDs.
 Engine publishes `thumbnailEpoch` through `engine.workspace.state` when a result
 changes; View relays that epoch in its page-scoped workspace state and refreshes
-the visible batch. Image bytes stay in the Content Browser, outside workspace
+the visible batch. Catalog revisions retire ready image rows before replacement
+queries, so a completion notification cannot cancel the query and retain an old
+image. Image bytes stay in the Content Browser, outside workspace
 snapshots and the catalog. Folder and source cards keep their own presentation.
 `summary.get` is the bounded workspace query for external status readers:
 it exposes project identity, phase, browser generation, revision and at most 16
@@ -1040,3 +1049,17 @@ Public `view.start` and `view.status` publish `presentationId`, derived from the
 The public `viewer/panels` bundle derives from the same selected `panelsEntry` as the browser build. Integrated frontend plugins and their panel exports therefore share one build input. Connection startup failures retain their full detail in the console while the header shows a short description.
 
 Theme preferences are system (default), light and dark. System uses host appearance when provided, otherwise OS appearance. The navigation row carries brand, tabs and actions. Asset context menus expose conversation references only when the platform supports them; references use accepted asset/project facts and never submit the draft. Clipboard feedback reports success or failure. Hidden Scene Tree, Inspector and Play image observations stop active reads and resume when visible, retaining panel state and independent Engine ownership.
+
+### Texture viewer
+
+Open a Texture or Equirect asset from Content Browser. The viewer offers RGBA
+channel switches (single-channel grayscale), real mip selection, nearest/linear
+sampling, exposure, grayscale, checker/solid backgrounds, Fit, 100% and drag/wheel
+navigation. Array textures expose layers; volume textures expose depth slices.
+Environment images offer a panorama, directional environment, cube cross and
+six individual faces. Equirect sources contain one mip; lighting prefilter mips
+are not source image levels.
+
+The UI and public `view.workspace.preview.texture.get/set` operations address
+the exact Engine target/generation. Settings change that preview's display and
+never rewrite the asset. Pixel generation stays on the Engine-owned surface.

@@ -1,4 +1,5 @@
 import type { Mat4Like } from '@forgeax/engine-math';
+import { isFiniteBounds3 } from '@forgeax/engine-types';
 
 // `fingerprintNumericArray` runs on every bounds-cache lookup. Keep the bit
 // reinterpretation scratch outside the hot path so a cache hit does not
@@ -45,27 +46,6 @@ export function fingerprintNumericArray(values: ArrayLike<number>): number {
     hash = Math.imul(hash ^ (fingerprintBits[0] ?? 0), 0x01000193) >>> 0;
   }
   return hash >>> 0;
-}
-
-function finiteAabb(aabb: ArrayLike<number> | undefined): aabb is ArrayLike<number> {
-  if (aabb === undefined || aabb.length < 6) return false;
-  const minX = aabb[0] as number;
-  const minY = aabb[1] as number;
-  const minZ = aabb[2] as number;
-  const maxX = aabb[3] as number;
-  const maxY = aabb[4] as number;
-  const maxZ = aabb[5] as number;
-  return (
-    Number.isFinite(minX) &&
-    Number.isFinite(minY) &&
-    Number.isFinite(minZ) &&
-    Number.isFinite(maxX) &&
-    Number.isFinite(maxY) &&
-    Number.isFinite(maxZ) &&
-    minX <= maxX &&
-    minY <= maxY &&
-    minZ <= maxZ
-  );
 }
 
 function finiteMatrix(matrix: ArrayLike<number>): matrix is Mat4Like {
@@ -211,7 +191,7 @@ function transformAabb(
     out[3] = centerWorldX + extentWorldX;
     out[4] = centerWorldY + extentWorldY;
     out[5] = centerWorldZ + extentWorldZ;
-    return finiteAabb(out);
+    return isFiniteBounds3(out);
   }
 
   // Projective/non-affine matrices need the reference corner route. A w
@@ -287,7 +267,7 @@ function transformAabb(
   out[3] = unionMaxX;
   out[4] = unionMaxY;
   out[5] = unionMaxZ;
-  return finiteAabb(out);
+  return isFiniteBounds3(out);
 }
 
 /**
@@ -301,7 +281,7 @@ export function deriveInstancesUnionBounds(
   input: DerivedInstancesUnionBoundsInput,
 ): Float32Array | undefined {
   const { meshAabb, entityWorld, transforms } = input;
-  if (!finiteAabb(meshAabb) || !finiteMatrix(entityWorld) || transforms === undefined) {
+  if (!isFiniteBounds3(meshAabb) || !finiteMatrix(entityWorld) || transforms === undefined) {
     return undefined;
   }
   if (transforms.length === 0 || transforms.length % 16 !== 0) return undefined;
@@ -316,7 +296,7 @@ export function deriveInstancesUnionBounds(
     if (!finiteMatrix(composed) || !transformAabb(transformed, local, composed)) return undefined;
     initialized = includeBox(union, transformed, initialized);
   }
-  return initialized && finiteAabb(union) ? union : undefined;
+  return initialized && isFiniteBounds3(union) ? union : undefined;
 }
 
 /** Children per hierarchy node; four levels cover 65,536 rows. */
@@ -466,7 +446,7 @@ class InstanceRowBoundsHierarchy {
     const root = this.levels[this.levels.length - 1] as (typeof this.levels)[number];
     if (root.filled[0] !== 1) return undefined;
     const union = root.boxes.slice(0, 6);
-    return finiteAabb(union) ? union : undefined;
+    return isFiniteBounds3(union) ? union : undefined;
   }
 }
 
@@ -577,7 +557,7 @@ export class InstanceBoundsCache {
     if (
       input.collectionId === undefined ||
       input.revision === undefined ||
-      !finiteAabb(meshAabb) ||
+      !isFiniteBounds3(meshAabb) ||
       !finiteMatrix(entityWorld) ||
       transforms === undefined ||
       transforms.length === 0 ||

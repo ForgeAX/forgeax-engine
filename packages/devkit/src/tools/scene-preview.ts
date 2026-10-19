@@ -3,7 +3,7 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { createEngineWorkspaceRuntime, type EngineWorkspaceAsset } from '@forgeax/engine-app';
 import type { ArtifactRef, JsonValue, ToolTerminal } from '@forgeax/engine-tool-runtime';
-import { createBrowserCapture } from '../software-capture.js';
+import { createBrowserCapture } from '../browser-capture.js';
 import { createDevKitWorkspaceProvider } from '../workspace-provider.js';
 
 const DEFAULT_SIZE = 1024;

@@ -10,7 +10,7 @@ import {
   RhiError,
 } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import type { Handle, MeshAsset, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
+import type { MeshAsset, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { toShared } from '@forgeax/engine-types';
 import { createFeatureSceneInputs } from '../assembly/feature-scene-inputs';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
@@ -78,11 +78,8 @@ import {
 } from '../record/typed-frame-graph';
 import { emptyVolumetricFogParams } from '../record/volume-params';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
-import type {
-  ExtractedFrame,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../render-system-extract';
+import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
+import { materialSamplerHandles, materialTextureHandles } from '../render-system-residency';
 import type { PersistentGpuDrivenCandidate, PersistentRenderScene } from '../scene/render-scene';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import { ReadonlyDynamicInputPage, type SurfaceDynamicInputFrame } from '../surface/dynamic-input';
@@ -167,90 +164,6 @@ export interface RenderSystemRecoveryOwner {
   ): Result<RecoveryGraphSetupSubmission, RhiError>;
   publishRecoveryGraphCandidate(candidate: RecoveryGraphCandidate): void;
   discardRecoveryGraphCandidate(candidate: RecoveryGraphCandidate): void;
-}
-
-/**
- * Keep the missing-texture sentinel out of residency preparation. A zero
- * handle is the same absent-reference value used by materialHandle; resolving
- * it as a real TextureAsset would otherwise pass an undefined pod to the GPU
- * store and fail before the renderer can produce a structured readiness
- * result.
- */
-export function materialTextureHandlesForResidency(
-  candidates: Iterable<Handle<'TextureAsset', 'shared'> | undefined>,
-): readonly Handle<'TextureAsset', 'shared'>[] {
-  let occupied = false;
-  let firstKey = 0;
-  let firstValue = 0 as Handle<'TextureAsset', 'shared'>;
-  let overflow: Map<number, Handle<'TextureAsset', 'shared'>> | undefined;
-  for (const handle of candidates) {
-    if (handle === undefined || Number(handle) === 0) continue;
-    const key = Number(handle);
-    if (overflow !== undefined) overflow.set(key, handle);
-    else if (!occupied) {
-      occupied = true;
-      firstKey = key;
-      firstValue = handle;
-    } else if (key === firstKey || Object.is(key, firstKey)) firstValue = handle;
-    else {
-      overflow = new Map();
-      overflow.set(firstKey, firstValue);
-      overflow.set(key, handle);
-    }
-  }
-  return overflow === undefined ? (occupied ? [firstValue] : []) : [...overflow.values()];
-}
-
-const EMPTY_TEXTURE_HANDLES: readonly Handle<'TextureAsset', 'shared'>[] = Object.freeze([]);
-const EMPTY_SAMPLER_HANDLES: readonly Handle<'SamplerAsset', 'shared'>[] = Object.freeze([]);
-
-export function materialTextureHandles(
-  material: MaterialSnapshot,
-): readonly Handle<'TextureAsset', 'shared'>[] {
-  const textureHandles = material.textureHandles;
-  if (textureHandles === undefined || textureHandles.size === 0) {
-    const baseColor = material.baseColorTexture;
-    const metallicRoughness = material.metallicRoughnessTexture;
-    const normal = material.normalTexture;
-    const emissive = material.emissiveTexture;
-    const occlusion = material.occlusionTexture;
-    if (
-      (baseColor === undefined || baseColor === 0) &&
-      (metallicRoughness === undefined || metallicRoughness === 0) &&
-      (normal === undefined || normal === 0) &&
-      (emissive === undefined || emissive === 0) &&
-      (occlusion === undefined || occlusion === 0)
-    )
-      return EMPTY_TEXTURE_HANDLES;
-    return materialTextureHandlesForResidency([
-      baseColor,
-      metallicRoughness,
-      normal,
-      emissive,
-      occlusion,
-    ]);
-  }
-  return materialTextureHandlesForResidency([
-    ...textureHandles.values(),
-    material.baseColorTexture,
-    material.metallicRoughnessTexture,
-    material.normalTexture,
-    material.emissiveTexture,
-    material.occlusionTexture,
-  ]);
-}
-
-export function materialSamplerHandles(
-  material: MaterialSnapshot,
-): readonly Handle<'SamplerAsset', 'shared'>[] {
-  const candidates = material.samplerHandles;
-  if (candidates === undefined || candidates.size === 0) return EMPTY_SAMPLER_HANDLES;
-  if (candidates.size === 1) return [...candidates.values()];
-  const handles = new Map<number, Handle<'SamplerAsset', 'shared'>>();
-  for (const handle of candidates.values()) {
-    handles.set(Number(handle), handle);
-  }
-  return [...handles.values()];
 }
 
 export function createRenderSystemRecovery(
@@ -1103,15 +1016,15 @@ export function createRenderSystemRecovery(
         if (
           bloom === null ||
           bloom === undefined ||
-          bloom.bloomDownsamplePipeline === null ||
-          bloom.bloomUpsamplePipeline === null ||
+          bloom.bloomHorizontalPipeline === null ||
+          bloom.bloomVerticalPipeline === null ||
           bloom.bloomCompositePipeline === null ||
-          bloom.bloomDownsampleBindGroupLayout === null ||
-          bloom.bloomUpsampleBindGroupLayout === null ||
+          bloom.bloomHorizontalBindGroupLayout === null ||
+          bloom.bloomVerticalBindGroupLayout === null ||
           bloom.bloomCompositeBindGroupLayout === null ||
           bloom.bloomSampler === null ||
-          bloom.bloomDownsampleParamsBuffer === null ||
-          bloom.bloomUpsampleParamsBuffer === null ||
+          bloom.bloomHorizontalParamsBuffer === null ||
+          bloom.bloomVerticalParamsBuffer === null ||
           bloom.bloomCompositeParamsBuffer === null
         ) {
           throw new Error('recovery Bloom resources are incomplete');

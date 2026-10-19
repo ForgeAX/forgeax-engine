@@ -24,7 +24,8 @@ export interface ToolCallerIdentity {
   readonly sourceGeneration?: number;
 }
 
-export type ToolEvidenceKind = 'rhi-tape' | 'profile-capture' | 'png';
+export const TOOL_EVIDENCE_KINDS = ['rhi-tape', 'profile-capture', 'png'] as const;
+export type ToolEvidenceKind = (typeof TOOL_EVIDENCE_KINDS)[number];
 
 /** Stable subject identity carried by a domain contribution, never a live handle. */
 export interface ToolSubjectRef {

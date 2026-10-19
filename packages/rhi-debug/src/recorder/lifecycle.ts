@@ -2,21 +2,24 @@
 
 /// <reference types="@webgpu/types" />
 
-import type { Result } from '@forgeax/engine-rhi';
+import type { Result, Texture } from '@forgeax/engine-rhi';
 import { err as makeErr, ok as makeOk } from '@forgeax/engine-types';
+import { recordReplayCapabilities } from '../capabilities';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 import { digestBytesAsync } from '../protocol/codec';
-import { EVENT_SEMANTICS } from '../protocol/event-semantics';
+import { createdHandles, handleAccess } from '../protocol/event-semantics';
 import {
   readbackBufferBytes,
   readbackBufferBytesBatch,
   readbackTexturePixels,
   readbackTexturePixelsBatch,
 } from '../readback';
+import { readbackDepthTexture } from '../readback-depth';
 import { computeTextureLayout, projectTextureExtent } from '../texel-layout';
 import type { HandleId, RhiCallEvent, Tape } from '../types';
 import { _collectFrameReferencedHandleIds, _computeClosure, _topoSortClosure } from './closure';
 import {
+  type CreateShaderModuleFn,
   isMappableBuffer,
   isSnapshottableTexture,
   pushSnapshotEvent,
@@ -42,7 +45,10 @@ const NO_CURRENT_RESOURCE = {
   currentSizeBytes: null,
 } as const satisfies Partial<SnapshotProgress>;
 
-export function createRecorderLifecycle(s: RecorderInternal) {
+export function createRecorderLifecycle(
+  s: RecorderInternal,
+  createShaderModule: CreateShaderModuleFn,
+) {
   async function storeSnapshotBlob(
     handleId: HandleId,
     kind: 'buffer' | 'texture',
@@ -165,7 +171,7 @@ export function createRecorderLifecycle(s: RecorderInternal) {
     // during the recorded frame and their create event is in s.events.
     // Collect handleIds that are directly declared by create* events in s.events.
     // Only include the handleId field of the create event itself — NOT backward-refs
-    // (layoutHandleId, resourceHandleIds, etc.) from EVENT_SEMANTICS read edges.
+    // (layoutHandleId, resourceHandleIds, etc.) from handleAccess read edges.
     //
     // Backward-refs from in-frame create events often point to persistent resources
     // (buffers, textures, pipelines) that were created before arm(). Including them
@@ -178,7 +184,7 @@ export function createRecorderLifecycle(s: RecorderInternal) {
     // bootstrapCreates and s.events.
     const inFrameHandleIds = new Set<HandleId>();
     for (const e of s.events) {
-      for (const handleId of EVENT_SEMANTICS[e.kind].created(e)) inFrameHandleIds.add(handleId);
+      for (const handleId of createdHandles(e)) inFrameHandleIds.add(handleId);
     }
 
     // Collect frame-referenced handleIds from per-frame events.
@@ -212,7 +218,7 @@ export function createRecorderLifecycle(s: RecorderInternal) {
       const referencingEventKind =
         referencingEventIndex >= 0 ? s.events[referencingEventIndex]?.kind : undefined;
       const referencingCreate = [...s.bootstrapCreates.entries()].find(([, event]) =>
-        EVENT_SEMANTICS[event.kind].read(event).includes(missing),
+        handleAccess(event).read.includes(missing),
       );
       return createRhiDebugError('tape-invalid', {
         stage: 'validate',
@@ -239,15 +245,7 @@ export function createRecorderLifecycle(s: RecorderInternal) {
         ...(s.recordedCaps ?? {
           canvasFormat: 'bgra8unorm' as GPUTextureFormat,
           canvasColorSpace: 'srgb' as const,
-          rgba16floatRenderable: false,
-          rg11b10ufloatRenderable: false,
-          float32Filterable: false,
-          firstInstanceIndirect: false,
-          textureCompressionBc: false,
-          textureCompressionEtc2: false,
-          textureCompressionAstc: false,
-          storageBuffer: false,
-          timestampQuery: false,
+          ...recordReplayCapabilities(),
         }),
         ...s.canvasConfiguration,
       },
@@ -358,8 +356,9 @@ export function createRecorderLifecycle(s: RecorderInternal) {
     // entirely for the readback staging buffer.
     const realDevice = recorderDeviceIdentity(device) ?? device;
     const snapshotIsActive = () =>
-      snapshotGeneration === undefined ||
-      (s.state === RecorderState.Snapshotting && s.snapshotGeneration === snapshotGeneration);
+      s.descriptorTable.has(handleId) &&
+      (snapshotGeneration === undefined ||
+        (s.state === RecorderState.Snapshotting && s.snapshotGeneration === snapshotGeneration));
     const cancelled = () =>
       makeErr(
         createRhiDebugError('capture-snapshot-failed', {
@@ -392,7 +391,14 @@ export function createRecorderLifecycle(s: RecorderInternal) {
         }
         if (!snapshotIsActive()) return cancelled();
       } else {
-        const { width, height, layerCount } = projectTextureExtent(entry.size);
+        const extent = projectTextureExtent(entry.size);
+        if (extent === undefined)
+          return fail(
+            'copy',
+            'a positive recorded texture extent',
+            'the texture descriptor has invalid dimensions',
+          );
+        const { width, height, layerCount } = extent;
         const layout = computeTextureLayout(
           entry.format,
           width,
@@ -417,20 +423,30 @@ export function createRecorderLifecycle(s: RecorderInternal) {
           const blob = new Uint8Array(layout.totalBytes);
           for (const slice of layout.slices) {
             if (!snapshotIsActive()) return cancelled();
-            const sub = await readbackTexturePixels(
-              realDevice,
-              entry.resource,
-              slice.width,
-              slice.height,
-              {
+            const depth =
+              entry.format === 'depth32float'
+                ? await readbackDepthTexture(
+                    realDevice,
+                    entry.resource as Texture,
+                    slice.width,
+                    slice.height,
+                    slice.mip,
+                    slice.layer,
+                    createShaderModule,
+                    layerCount > 1 || entry.textureBindingViewDimension === '2d-array',
+                    () => !snapshotIsActive(),
+                  )
+                : undefined;
+            if (depth !== undefined && !depth.ok) return depth;
+            const sub =
+              depth?.value ??
+              (await readbackTexturePixels(realDevice, entry.resource, slice.width, slice.height, {
                 bytesPerBlock: layout.bytesPerBlock,
                 blockWidth: layout.blockWidth,
                 blockHeight: layout.blockHeight,
                 mipLevel: slice.mip,
                 baseArrayLayer: slice.layer,
-                ...(entry.format === 'depth32float' ? { aspect: 'depth-only' as const } : {}),
-              },
-            );
+              }));
             if (!snapshotIsActive()) return cancelled();
             blob.set(sub.subarray(0, slice.byteLength), slice.byteOffset);
           }
@@ -768,10 +784,37 @@ export function createRecorderLifecycle(s: RecorderInternal) {
             completeProgressResource();
           }
         } else {
-          const requests = batchEntries
+          // Depth copies are unavailable on WebGL2. Use the same exact float
+          // load as replay, one resource at a time, and keep color copies batched.
+          for (const [handleId, entry] of batchEntries) {
+            if (entry.format !== 'depth32float') continue;
+            if (!s.descriptorTable.has(handleId)) {
+              skipProgressResource();
+              continue;
+            }
+            startProgressResource(handleId, 'texture', null);
+            const depth = await snapshotResource(handleId, snapshotGeneration);
+            if (!snapshotIsActive()) return cancelledResult();
+            if (!s.descriptorTable.has(handleId)) {
+              skipProgressResource();
+              continue;
+            }
+            if (!depth.ok) return depth;
+            completeProgressResource();
+          }
+          const colorEntries = batchEntries.filter(([handleId, entry]) => {
+            if (entry.format === 'depth32float') return false;
+            if (s.descriptorTable.has(handleId)) return true;
+            skipProgressResource();
+            return false;
+          });
+          const requests = colorEntries
             .filter(([handleId]) => !s.tinyTextureShadow.has(handleId))
             .map(([handleId, entry]) => {
-              const { width, height, layerCount } = projectTextureExtent(entry.size);
+              const extent = projectTextureExtent(entry.size);
+              if (extent === undefined)
+                throw new Error(`texture '${handleId}' has invalid dimensions`);
+              const { width, height, layerCount } = extent;
               const layout = computeTextureLayout(
                 entry.format,
                 width,
@@ -785,7 +828,6 @@ export function createRecorderLifecycle(s: RecorderInternal) {
               return {
                 handleId,
                 texture: entry.resource,
-                ...(entry.format === 'depth32float' ? { aspect: 'depth-only' as const } : {}),
                 bytesPerBlock: layout.bytesPerBlock,
                 blockWidth: layout.blockWidth,
                 blockHeight: layout.blockHeight,
@@ -802,7 +844,7 @@ export function createRecorderLifecycle(s: RecorderInternal) {
                 });
           if (!batch.ok) return batch;
           if (!snapshotIsActive()) return cancelledResult();
-          for (const [handleId] of batchEntries) {
+          for (const [handleId] of colorEntries) {
             // A transient texture can be released while its batch is waiting
             // on the GPU. The copy was intentionally isolated and cleaned up,
             // but the released handle must not become a seed for the next

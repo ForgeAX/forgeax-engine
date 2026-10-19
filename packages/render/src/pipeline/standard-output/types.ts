@@ -1,6 +1,6 @@
 import type { ColorValueDomain } from '@forgeax/engine-render-graph';
 
-export const STANDARD_OUTPUT_LOGICAL_STAGES = [
+const STANDARD_OUTPUT_LOGICAL_STAGES = [
   'temporal',
   'meter',
   'dof',
@@ -18,14 +18,8 @@ export const STANDARD_OUTPUT_LOGICAL_STAGES = [
 ] as const;
 
 export type StandardOutputLogicalStage = (typeof STANDARD_OUTPUT_LOGICAL_STAGES)[number];
-export type StandardOutputLane = 'direct' | 'clustered';
-export type StandardOutputEncoding = 'explicit-oetf' | 'srgb-attachment';
-
-export interface StandardColorLutBinding {
-  readonly viewDimension: '3d';
-  readonly size: number;
-  readonly strength: number;
-}
+type StandardOutputLane = 'direct' | 'clustered';
+type StandardOutputEncoding = 'explicit-oetf' | 'srgb-attachment';
 
 export interface StandardOutputRequest {
   readonly lane: StandardOutputLane;

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { AssetGuid, parsePackSourceJson } from '@forgeax/engine-pack/source';
 import { GameProjectSchema, PluginRealmSchema } from '@forgeax/engine-project';
 import { discoverPluginAssets } from './build/plugin-assets.js';
+import { isFilesystemPathWithin } from './filesystem-path.js';
 import { commandError, readProjectFacts } from './project.js';
 import type {
   CommandResult,
@@ -19,13 +20,10 @@ export async function pluginCreateCommand(
     const facts = await readProjectFacts(options.root);
     if (!facts.ok) return facts;
     const path = resolve(facts.value.root, options.path);
-    const localPath = relative(facts.value.root, path);
     const scriptable = path.endsWith('.pack.ts');
     if (
       (!scriptable && !path.endsWith('.pack.json')) ||
-      localPath === '..' ||
-      localPath.startsWith('../') ||
-      isAbsolute(localPath)
+      !isFilesystemPathWithin(facts.value.root, path)
     ) {
       throw new TypeError('plugin source path must be a project-local .pack.ts or .pack.json file');
     }

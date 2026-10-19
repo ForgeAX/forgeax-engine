@@ -1,7 +1,6 @@
 import {
   blitMipmapsSync,
   getOrCreateMipmapPipeline,
-  type MipmapShaderModuleFactory,
 } from '@forgeax/engine-assets-runtime';
 
 // The generator copies each rendered level into the target.
@@ -96,7 +95,7 @@ export async function runMipmapPipelineProbe(canvas: HTMLCanvasElement): Promise
       const pipelineResult = await getOrCreateMipmapPipeline(
         device,
         format,
-        createShaderModule as MipmapShaderModuleFactory,
+        createShaderModule,
       );
       if (!pipelineResult.ok) {
         publish(fail('module-and-pipeline', backendKind, pipelineCreated, pipelineFormats, pipelineResult.error));

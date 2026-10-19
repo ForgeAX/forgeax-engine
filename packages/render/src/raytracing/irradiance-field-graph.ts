@@ -310,7 +310,13 @@ export function addIrradianceFieldPasses(
   const scope = { graph, current, target, extent, handles, extentBuffer, view: viewUniform(graph) };
   const gathered =
     consume === undefined
-      ? addFieldGatherPasses({ ...scope, label: 'irradiance-field' })
+      ? addFieldGatherPasses({
+          ...scope,
+          label: 'irradiance-field',
+          ...(extent.reflection === undefined || target.reflection === undefined
+            ? {}
+            : { reflectionResponse: target.reflection.response.view }),
+        })
       : consume(handles);
   if (!gathered.ok) return gathered;
   return addFieldReflectionPasses(scope);
@@ -486,7 +492,8 @@ export interface FieldGatherExtent {
   readonly gathered: Buffer | undefined;
   readonly upsampled: Buffer | undefined;
 }
-export interface FieldGatherScope<E extends FieldGatherExtent> {
+interface FieldGatherScope<E extends FieldGatherExtent> {
+  readonly reflectionResponse?: GraphTextureView;
   /** Pass label prefix, the lane's inspection identity. */
   readonly label: string;
   readonly graph: RenderGraphBuilder<RenderPipelineFrame>;
@@ -504,6 +511,7 @@ export interface FieldGatherScope<E extends FieldGatherExtent> {
 
 /** Per-pixel gather (-> upsample) -> the shared additive diffuse composite. */
 export function addFieldGatherPasses<E extends FieldGatherExtent>({
+  reflectionResponse,
   label,
   graph,
   current,
@@ -593,6 +601,9 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
       { resource: target.albedo.view, usage: 'sampled-read' },
       { resource: target.f0.view, usage: 'sampled-read' },
       { resource: view, usage: 'uniform-read' },
+      ...(reflectionResponse === undefined
+        ? []
+        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
     ],
     colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
     encode: ({ pass, resources }) =>
@@ -601,6 +612,9 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
           pass,
           {
             irradiance: resources.buffer(signal).unwrap(),
+            ...(reflectionResponse === undefined
+              ? {}
+              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
             albedoMetallic: resources.textureView(target.albedo.view).unwrap(),

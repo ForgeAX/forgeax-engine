@@ -12,6 +12,12 @@
 // barrel re-exported to external consumers. Downstream apps repoint to this
 // package in w15 (the runtime barrel no longer re-exports any asset symbol).
 
+// ─── Mesh binary container decode ───────────────────────────────────────────
+export {
+  MeshBinAssetError,
+  type UnpackedMeshBin,
+  unpackMeshBin,
+} from '@forgeax/engine-geometry';
 export type {
   AnimationClip,
   AnimationGraph,
@@ -77,7 +83,6 @@ export type {
 } from './errors/asset.js';
 export {
   MaterialResolvedEmptyPassesError,
-  MeshBinAssetError,
   MeshSsboCapacityExceededError,
   MeshSsboCeilingReachedError,
   SceneCollectAssetGuidUnresolvedError,
@@ -119,11 +124,6 @@ export {
   skinLoader,
   tilesetLoader,
 } from './loaders/inline-pack.js';
-// ─── Mesh binary container decode ───────────────────────────────────────────
-export {
-  type UnpackedMeshBin,
-  unpackMeshBin,
-} from './loaders/mesh-bin.js';
 export {
   equirectLoader,
   fontLoader,
@@ -164,6 +164,7 @@ export {
   materialParametersToParamSchema,
   projectMaterialRecord,
   runtimeMaterialShaderId,
+  sameMaterialContext,
   selectMaterialPassProgram,
 } from './material/runtime-shader.js';
 // ─── Mipmap generation helpers ──────────────────────────────────────────────
@@ -171,11 +172,9 @@ export {
   blitMipmapsSync,
   encodeMipmapLevel,
   getOrCreateMipmapPipeline,
-  type MipmapBlitDevice,
   type MipmapEncoderWork,
   type MipmapShaderModuleFactory,
   mipmapCacheSize,
-  numMipLevels,
   prepareMipmaps,
 } from './mipmap-generator.js';
 // ─── Register-time payload validation ───────────────────────────────────────

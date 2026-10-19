@@ -72,7 +72,7 @@ export function assertMaterialStaticSelection(
   throw Object.assign(new Error(error.message), error);
 }
 
-function sameMaterialContext(
+export function sameMaterialContext(
   left: MaterialCookProgramContext,
   right: MaterialCookProgramContext,
 ): boolean {
@@ -299,7 +299,11 @@ export function installMaterialReadyShaders(
   const paramSchema = materialParametersToParamSchema(
     readiness.record.parameterContract.parameters,
     readiness.record.guid,
-  ).map(({ default: _default, ...parameter }) => parameter);
+  ).map((entry) => {
+    if (!('default' in entry)) return entry;
+    const { default: _default, ...parameter } = entry;
+    return parameter;
+  });
   const entries = readiness.record.programs.map((program) => {
     const source = new TextDecoder().decode(program.artifact.bytes);
     if (source.length === 0)

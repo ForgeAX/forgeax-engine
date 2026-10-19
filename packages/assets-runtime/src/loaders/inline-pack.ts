@@ -9,8 +9,10 @@ import {
   deriveVertexLayoutProjection,
   MESH_GEOMETRIC_DISTANCE_FIELD_CODEC,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
+  MeshBinAssetError,
   PROCEDURAL_FLOATS_PER_VERTEX,
   prepareMeshData,
+  unpackMeshBin,
   validateMeshCollisionAttachment,
 } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -40,9 +42,7 @@ import {
   parseShadowCapsuleSet,
   resolveMaterialTextureCoordinates,
 } from '@forgeax/engine-types';
-import { MeshBinAssetError } from '../errors/asset';
 import { parseScenePayload } from '../scene-payload';
-import { unpackMeshBin } from './mesh-bin';
 import { renderPipelineLoader, tilesetLoader } from './pack-artifact';
 
 type ParsedMeshLodPayload = {

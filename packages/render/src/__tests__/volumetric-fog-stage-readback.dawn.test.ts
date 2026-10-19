@@ -804,8 +804,8 @@ async function runInjectReadback(
     encoder.value.copyBufferToBuffer(shadowCalls.value, 0, shadowCallsReadback.value, 0, 8);
   }
   encoder.value.copyTextureToBuffer(
-    { texture: outputTexture.value as never },
-    { buffer: injectReadback.value as never, bytesPerRow: BYTES_PER_ROW, rowsPerImage: injectSize },
+    { texture: outputTexture.value },
+    { buffer: injectReadback.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: injectSize },
     { width: injectSize, height: injectSize, depthOrArrayLayers: PACKED_LAYERS * owners },
   );
   const integrateCompute = encoder.value.beginComputePass();
@@ -814,8 +814,8 @@ async function runInjectReadback(
   integrateCompute.dispatchWorkgroups(1, 1, 1);
   integrateCompute.end();
   encoder.value.copyTextureToBuffer(
-    { texture: resolvedTexture.value as never },
-    { buffer: integrateReadback.value as never, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
+    { texture: resolvedTexture.value },
+    { buffer: integrateReadback.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
     { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
   );
   const temporalCompute = encoder.value.beginComputePass();
@@ -824,8 +824,8 @@ async function runInjectReadback(
   temporalCompute.dispatchWorkgroups(1, 1, 1);
   temporalCompute.end();
   encoder.value.copyTextureToBuffer(
-    { texture: temporalTexture.value as never },
-    { buffer: temporalReadback.value as never, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
+    { texture: temporalTexture.value },
+    { buffer: temporalReadback.value, bytesPerRow: BYTES_PER_ROW, rowsPerImage: SIZE },
     { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
   );
   const command = encoder.value.finish();

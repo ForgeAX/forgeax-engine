@@ -8,7 +8,9 @@
 //     (rewrite from feat-20260517-vite-plugin-image-build-time-cook D-4;
 //     supersedes feat-20260515 AC-15a literal grep).
 //
-//     Three sub-clauses, all must hold over `packages/runtime/src/`:
+//     Source-content clauses cover production files; __tests__ directories hold
+//     diagnostics outside runtime entry points. Legacy filenames remain forbidden
+//     throughout the package, including tests and build output.
 //
 //       (a.1) forbidden implementation symbols -- AST-friendly regex
 //             tripwire that fires when runtime re-declares a disk-side
@@ -25,7 +27,7 @@
 //             loader-injection / w27, AC-15) -- inverted from the
 //             pre-strip "runtime MUST import the decoder" anchor.
 //             Two conjuncts:
-//               (a.2-anti) NO file under `packages/runtime/src/` may
+//               (a.2-anti) NO production file under `packages/runtime/src/` may
 //                 carry a static `import` from `@forgeax/engine-image`
 //                 (any subpath). The runtime no longer decodes disk
 //                 images: the decoder moved to the build-time
@@ -345,7 +347,7 @@ function walk(dir, cb) {
     return;
   }
   for (const name of entries) {
-    if (name === 'node_modules') continue;
+    if (name === 'node_modules' || name === '__tests__') continue;
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) walk(p, cb);

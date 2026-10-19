@@ -13,6 +13,7 @@ import {
   type StagedImportPublication,
   stageImportPublication,
 } from '@forgeax/engine-import';
+import { encodeCatalogWire } from '@forgeax/engine-pack';
 import type { CatalogBuildResult } from '@forgeax/engine-pack/build';
 import {
   bindRuntimePackScope,
@@ -345,17 +346,19 @@ export function createPluginPackInternal(
     ) {
       return serializedCatalog.body;
     }
-    const body = JSON.stringify({
-      schemaVersion: RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
-      scopeId: binding.scopeId,
-      generation: binding.generation,
-      authority: binding.authority === 'degraded' ? ('degraded' as const) : projection.authority,
-      entries: projection.entries.map((entry) => scopedCatalogEntry(binding, entry)),
-      diagnostics:
-        binding.authority === 'degraded'
-          ? (binding.diagnostics ?? projectRuntimeDiagnostics(projection.diagnostics))
-          : projectRuntimeDiagnostics(projection.diagnostics),
-    } satisfies RuntimeCatalogSnapshot);
+    const body = JSON.stringify(
+      encodeCatalogWire({
+        schemaVersion: RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
+        scopeId: binding.scopeId,
+        generation: binding.generation,
+        authority: binding.authority === 'degraded' ? ('degraded' as const) : projection.authority,
+        entries: projection.entries.map((entry) => scopedCatalogEntry(binding, entry)),
+        diagnostics:
+          binding.authority === 'degraded'
+            ? (binding.diagnostics ?? projectRuntimeDiagnostics(projection.diagnostics))
+            : projectRuntimeDiagnostics(projection.diagnostics),
+      } satisfies RuntimeCatalogSnapshot),
+    );
     serializedCatalog = { projection, binding, body };
     return body;
   }

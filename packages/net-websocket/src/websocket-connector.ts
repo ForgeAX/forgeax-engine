@@ -5,11 +5,12 @@ import {
   type WebSocketConstructor,
 } from './websocket-client-core';
 
-export interface WebSocketConnectorOptions {
-  readonly maxQueuedEvents?: number | undefined;
-}
+export type ConnectWebSocketClientEndpointOptions = Pick<
+  WebSocketClientCoreOptions,
+  'maxQueuedEvents'
+>;
 
-export interface WebSocketConnectorRuntime {
+interface WebSocketConnectorRuntime {
   readonly WebSocket: WebSocketConstructor;
   readonly toBytes: WebSocketClientCoreOptions['toBytes'];
 }
@@ -17,15 +18,15 @@ export interface WebSocketConnectorRuntime {
 export function createWebSocketConnectorAdapter(
   runtime: WebSocketConnectorRuntime,
   url: string,
-  options: WebSocketConnectorOptions = {},
+  options: ConnectWebSocketClientEndpointOptions = {},
 ): NetEndpointConnector {
   let nextPeerId = 1;
   return {
     connect: (signal) => {
       const peerId = nextPeerId++ as PeerId;
       return createWebSocketClientEndpoint(runtime.WebSocket, {
+        ...options,
         url,
-        maxQueuedEvents: options.maxQueuedEvents,
         peerId,
         signal,
         toBytes: runtime.toBytes,

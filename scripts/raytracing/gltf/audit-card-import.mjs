@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
@@ -61,7 +62,7 @@ const server = createServer((request, response) => {
   response.statusCode = value === undefined ? 404 : 200;
   response.end(value);
 });
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+await once(server.listen(0, '127.0.0.1'), 'listening');
 try {
   const base = `http://127.0.0.1:${server.address().port}`;
   const finalized = await finalizePackageProduct(

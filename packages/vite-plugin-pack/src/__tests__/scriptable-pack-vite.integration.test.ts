@@ -26,7 +26,7 @@ import {
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { describe, expect, it, vi } from 'vitest';
-import { classifyWatchedPath } from '../dev/watcher.js';
+import { classifyWatchedPath } from '../dev/revision-observer.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -304,20 +304,19 @@ async function cookExternalParticleProgram(): Promise<ParticleEffectAsset['progr
   };
 }
 
-interface ScopedCatalog {
-  readonly entries: readonly PackIndexEntry[];
-}
-
 async function waitForCatalogRevision(
   middlewares: readonly Middleware[],
   url: string,
   previousDigest: string,
-): Promise<ScopedCatalog> {
+): Promise<readonly PackIndexEntry[]> {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     const response = await request(middlewares, url);
-    const snapshot = JSON.parse(String(response.body)) as ScopedCatalog;
-    if (snapshot.entries[0]?.revision?.digest !== previousDigest) return snapshot;
+    const snapshot = JSON.parse(String(response.body));
+    if (snapshot.authority === 'authoritative') {
+      const entries = decodeCatalogWire(snapshot).unwrap();
+      if (entries[0]?.revision?.digest !== previousDigest) return entries;
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('timed out waiting for a fresh ScriptablePack Catalog revision');
@@ -423,19 +422,23 @@ describe.sequential('ScriptablePack Vite publication', () => {
         JSON.parse(String((await request(middlewares, binding.catalogUrl)).body));
       const baseline = await catalog();
       expect(baseline.authority).toBe('authoritative');
+      const baselineDigest = decodeCatalogWire(baseline).unwrap()[0]?.revision?.digest;
+      expect(baselineDigest).toBeDefined();
 
       await writeFile(source, authored(2));
       await plugin.rebuildCatalogInPlace([source]);
       const revised = await catalog();
       expect(revised.authority).toBe('authoritative');
-      expect(revised.entries[0].revision.digest).not.toBe(baseline.entries[0].revision.digest);
+      const revisedDigest = decodeCatalogWire(revised).unwrap()[0]?.revision?.digest;
+      expect(revisedDigest).toBeDefined();
+      expect(revisedDigest).not.toBe(baselineDigest);
 
       // A queued watch batch can arrive after the producer already read these
       // bytes. The explicit content-refresh route uses the same batch applier.
       await plugin.rebuildCatalogInPlace([source]);
       const repeated = await catalog();
       expect(repeated.authority).toBe('authoritative');
-      expect(repeated.entries).toEqual(revised.entries);
+      expect(decodeCatalogWire(repeated).unwrap()).toEqual(decodeCatalogWire(revised).unwrap());
       expect(repeated.diagnostics).toEqual([]);
     } finally {
       await plugin.closeBundle();
@@ -693,12 +696,10 @@ describe.sequential('ScriptablePack Vite publication', () => {
         });
         const binding = createStandaloneRuntimeAssetBinding('all-kinds-dev');
         await devPlugin.rebind(binding, [assets]);
-        const devCatalog = JSON.parse(
-          String((await request(middlewares, binding.catalogUrl)).body),
-        ) as {
-          readonly entries: readonly PackIndexEntry[];
-        };
-        expect(new Set(devCatalog.entries.map((entry) => entry.kind))).toEqual(new Set(ALL_KINDS));
+        const devCatalog = decodeCatalogWire(
+          JSON.parse(String((await request(middlewares, binding.catalogUrl)).body)),
+        ).unwrap();
+        expect(new Set(devCatalog.map((entry) => entry.kind))).toEqual(new Set(ALL_KINDS));
         for (const guid of Object.values(ALL_KIND_GUIDS)) {
           const imported = await request(middlewares, `${binding.importUrlBase}/${guid}`, 'POST');
           expect(imported.statusCode).toBe(200);
@@ -855,12 +856,10 @@ export default {
         });
         const binding = createStandaloneRuntimeAssetBinding('scriptable-parity');
         await devPlugin.rebind(binding, [join(root, 'assets')]);
-        const snapshot = JSON.parse(
-          String((await request(middlewares, binding.catalogUrl)).body),
-        ) as {
-          readonly entries: readonly PackIndexEntry[];
-        };
-        const devRow = snapshot.entries[0];
+        const snapshot = decodeCatalogWire(
+          JSON.parse(String((await request(middlewares, binding.catalogUrl)).body)),
+        ).unwrap();
+        const devRow = snapshot[0];
         expect(devRow).toMatchObject({
           guid: catalog[0]?.guid,
           lifecycle: 'current',
@@ -967,10 +966,8 @@ export default {
         await plugin.rebind(binding, [assets]);
         const catalog = await request(middlewares, binding.catalogUrl);
         expect(catalog.statusCode).toBe(200);
-        const snapshot = JSON.parse(String(catalog.body)) as {
-          readonly entries: readonly PackIndexEntry[];
-        };
-        expect(snapshot.entries).toEqual(
+        const snapshot = decodeCatalogWire(JSON.parse(String(catalog.body))).unwrap();
+        expect(snapshot).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ guid: DEPENDENCY_GUID }),
             expect.objectContaining({
@@ -979,9 +976,7 @@ export default {
             }),
           ]),
         );
-        const generatedRows = snapshot.entries.filter((entry) =>
-          entry.sourcePath.endsWith('.pack.ts'),
-        );
+        const generatedRows = snapshot.filter((entry) => entry.sourcePath.endsWith('.pack.ts'));
         expect(generatedRows).toHaveLength(2);
         const generatedPublication = generatedRows.find((entry) =>
           entry.sourcePath.endsWith('/derived.pack.ts'),
@@ -1031,22 +1026,18 @@ export default {
       const binding = createStandaloneRuntimeAssetBinding('scriptable-atomic');
       await plugin.rebind(binding, [assets]);
       const initialResponse = await request(middlewares, binding.catalogUrl);
-      const initial = JSON.parse(String(initialResponse.body)) as {
-        readonly entries: readonly PackIndexEntry[];
-      };
-      expect(initial.entries).toHaveLength(2);
-      const first = initial.entries.find((entry) => entry.sourcePath.endsWith('/a.pack.ts'));
-      const second = initial.entries.find((entry) => entry.sourcePath.endsWith('/b.pack.ts'));
+      const initial = decodeCatalogWire(JSON.parse(String(initialResponse.body))).unwrap();
+      expect(initial).toHaveLength(2);
+      const first = initial.find((entry) => entry.sourcePath.endsWith('/a.pack.ts'));
+      const second = initial.find((entry) => entry.sourcePath.endsWith('/b.pack.ts'));
       if (first === undefined || second === undefined)
         throw new Error('ScriptablePack rows missing');
       await request(middlewares, `${binding.importUrlBase}/${first.guid}`, 'POST');
       await request(middlewares, `${binding.importUrlBase}/${second.guid}`, 'POST');
-      const accepted = JSON.parse(
-        String((await request(middlewares, binding.catalogUrl)).body),
-      ) as {
-        readonly entries: readonly PackIndexEntry[];
-      };
-      const acceptedFirst = accepted.entries.find((entry) => entry.guid === first.guid);
+      const accepted = decodeCatalogWire(
+        JSON.parse(String((await request(middlewares, binding.catalogUrl)).body)),
+      ).unwrap();
+      const acceptedFirst = accepted.find((entry) => entry.guid === first.guid);
       if (acceptedFirst === undefined) {
         throw new Error('accepted ScriptablePack rows missing');
       }
@@ -1120,10 +1111,8 @@ export default {
       warnings.mockClear();
 
       const beforeCatalog = await request(middlewares, binding.catalogUrl);
-      const beforeSnapshot = JSON.parse(String(beforeCatalog.body)) as {
-        readonly entries: readonly PackIndexEntry[];
-      };
-      const beforeEntry = beforeSnapshot.entries[0];
+      const beforeSnapshot = decodeCatalogWire(JSON.parse(String(beforeCatalog.body))).unwrap();
+      const beforeEntry = beforeSnapshot[0];
       const beforeDigest = beforeEntry?.revision?.digest;
       if (beforeDigest === undefined) throw new Error('healthy ScriptablePack row has no revision');
       const beforePackUrl = beforeEntry?.packageUrl;
@@ -1179,8 +1168,8 @@ export default {
         binding.catalogUrl,
         beforeDigest,
       );
-      expect(afterRetrySnapshot.entries).toHaveLength(1);
-      const afterRetryEntry = afterRetrySnapshot.entries[0];
+      expect(afterRetrySnapshot).toHaveLength(1);
+      const afterRetryEntry = afterRetrySnapshot[0];
       const afterRetryPackUrl = afterRetryEntry?.packageUrl;
       expect(afterRetryPackUrl).toBeDefined();
       expect(afterRetryPackUrl).not.toBe(beforePackUrl);

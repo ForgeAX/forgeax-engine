@@ -9,13 +9,13 @@ import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ec
 /**
  * Schema-derived ScreenSpaceReflection authoring data.
  *
- * The defaults are conservative and are validated against the active camera
+ * Distances follow Three r184 SSRNode (metres). Values are validated against the active camera
  * view range before a spatial candidate is admitted.
  */
 export const ScreenSpaceReflection = defineComponent('ScreenSpaceReflection', {
-  maxDistance: { type: 'f32', default: 40 },
-  thickness: { type: 'f32', default: 0.2 },
-  maxRoughness: { type: 'f32', default: 0.6 },
+  maxDistance: { type: 'f32', default: 1 },
+  thickness: { type: 'f32', default: 0.1 },
+  maxRoughness: { type: 'f32', default: 1 },
 });
 
 export type ScreenSpaceReflectionData = ShapeOf<SchemaOf<typeof ScreenSpaceReflection>>;

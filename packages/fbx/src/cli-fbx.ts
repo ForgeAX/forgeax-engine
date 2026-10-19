@@ -1,8 +1,5 @@
-#!/usr/bin/env node
-
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   createFbxMeta,
   type FbxMetaPreviousDocument,
@@ -224,26 +221,4 @@ export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Pr
     });
   }
   return 0;
-}
-
-const isBinEntry = await (async (): Promise<boolean> => {
-  const argv1 = process.argv[1];
-  if (typeof argv1 !== 'string') return false;
-  const argv1Real = await realpath(argv1).catch(() => argv1);
-  const selfReal = await realpath(fileURLToPath(import.meta.url)).catch(() =>
-    fileURLToPath(import.meta.url),
-  );
-  return argv1Real === selfReal;
-})();
-
-if (isBinEntry) {
-  const exitCode = await runCliFbx(process.argv.slice(2), {
-    stdoutWrite: (line) => {
-      process.stdout.write(`${line}\n`);
-    },
-    stderrWrite: (line) => {
-      process.stderr.write(`${line}\n`);
-    },
-  });
-  process.exit(exitCode);
 }

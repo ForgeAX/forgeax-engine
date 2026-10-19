@@ -58,7 +58,7 @@ export interface SparseTagSet {
   size: number;
 }
 
-export function createSparseTagSet(component: Component): SparseTagSet {
+function createSparseTagSet(component: Component): SparseTagSet {
   const sparse = new Int32Array(INITIAL_SPARSE_CAPACITY);
   sparse.fill(-1);
   return {
@@ -80,7 +80,7 @@ export function sparseTagHas(set: SparseTagSet, entity: EntityHandle): boolean {
   return sparseTagIndex(set, entity) >= 0;
 }
 
-export function insertSparseTag(set: SparseTagSet, entity: EntityHandle, epoch: number): number {
+function insertSparseTag(set: SparseTagSet, entity: EntityHandle, epoch: number): number {
   const present = sparseTagIndex(set, entity);
   if (present >= 0) {
     set.changed[present] = epoch;
@@ -240,7 +240,7 @@ export function publishComponentRange(
   );
 }
 
-export function getOrCreateSparseTagSet(graph: ArchetypeGraph, component: Component): SparseTagSet {
+function getOrCreateSparseTagSet(graph: ArchetypeGraph, component: Component): SparseTagSet {
   const current = graph.sparseTags.get(componentOwner.componentId(component));
   if (current !== undefined) return current;
   const set = createSparseTagSet(component);

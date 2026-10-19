@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -25,7 +26,7 @@ import {
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import * as backend from '@forgeax/engine-rhi-webgpu';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 const dir = resolve(
   process.env.TERRAIN_SHADOW_MODES_DIR ??
@@ -123,7 +124,7 @@ try {
           if (name.startsWith('spot'))
             components.push({
               component: SpotLight,
-              data: {
+              data: { castShadow: true,
                 direction: [0, below ? 1 : -1, 0],
                 intensity: 20,
                 range: 40,
@@ -160,7 +161,7 @@ try {
           phase('live-pixels-complete', { renderPath, name });
           writeFileSync(
             resolve(dir, `${renderPath}-${name}.png`),
-            writeReferencePng(livePixels, 640, 480),
+            encodePng(640, 480, livePixels),
           );
           const resource = (id) => model.resources.find((r) => r.resourceId === id);
           const depthOf = (w) =>

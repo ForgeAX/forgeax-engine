@@ -82,7 +82,7 @@ export function buildTonemappingWorld(world: World, aspect: number): Tonemapping
     }
   }
 
-  world.spawn({ component: DirectionalLight, data: { direction: [0.4, -1, 0.3], intensity: 2 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0.4, -1, 0.3], intensity: 2 } });
   const eye: [number, number, number] = [0, 3.2, 12];
   const camera = world.spawn(
     {

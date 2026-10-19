@@ -2,6 +2,7 @@ import {
   DEFAULT_VERTEX_ATTRIBUTE_MAP,
   deriveVertexLayoutProjection,
 } from '@forgeax/engine-geometry';
+import { fnv1aUtf16 } from '@forgeax/engine-types';
 import { renderStateHash } from '../../pipeline-spec';
 import type { RenderSystemInternals } from '../../record/render-context';
 import type { LayoutKind } from '../material-shader-policy';
@@ -37,9 +38,7 @@ export class MaterialPipelineRequestCache<T> {
         const cached = this.strings.get(fact);
         if (cached !== undefined) word = cached;
         else {
-          word = 2166136261;
-          for (let index = 0; index < fact.length; index++)
-            word = Math.imul(word ^ fact.charCodeAt(index), 16777619);
+          word = fnv1aUtf16(fact);
           if (this.strings.size >= this.capacity * 8) this.strings.clear();
           this.strings.set(fact, word);
         }

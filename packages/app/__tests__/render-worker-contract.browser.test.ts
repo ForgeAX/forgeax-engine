@@ -154,7 +154,7 @@ it.each([
     expect(frame?.barrelDistortion).toMatchObject({ width: 64, height: 64 });
     // Picking must use the transported picture even with a different live World.
     expect(
-      computeDisplayScreenRay(new World(), 0 as never, 32, 32, frame?.barrelDistortion, 64, 64),
+      computeDisplayScreenRay(32, 32, frame?.barrelDistortion, 64, 64),
     ).toBeDefined();
   } finally {
     (await f.dispose()).unwrap();

@@ -80,6 +80,37 @@ function submit(scene: RenderScene, entityKey: number): void {
 }
 
 describe('RenderScene temporal retry boundary', () => {
+  it('owns visibility captures across hidden submissions, slot reuse and reset', () => {
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    const initial = snapshot(7, 1);
+    scene.apply([updateSnapshot(initial)]);
+    const first = scene.slot(0, 7);
+    if (first === undefined) throw new Error('missing first slot');
+    const visible = scene.captureSubmission([initial, initial]);
+    scene.commitSubmission(visible);
+    expect(scene.wasLastSubmittedVisible(first.slot, first.generation)).toBe(true);
+    const hidden = scene.captureSubmission([]);
+    expect(scene.wasLastSubmittedVisible(first.slot, first.generation)).toBe(true);
+    scene.commitSubmission(hidden);
+    expect(scene.temporalSnapshotBySlot(first.slot)?.reactiveReasons).toEqual(['reentered']);
+    // Captures retain their original membership when a later submission commits.
+    scene.commitSubmission(visible);
+    expect(scene.wasLastSubmittedVisible(first.slot, first.generation)).toBe(true);
+    scene.apply([{ kind: 'remove', worldId: 0, entityKey: 7 }, updateSnapshot(snapshot(8, 2))]);
+    const reused = scene.slot(0, 8);
+    if (reused === undefined) throw new Error('missing reused slot');
+    expect(reused.slot).toBe(first.slot);
+    expect(reused.generation).not.toBe(first.generation);
+    expect(scene.wasLastSubmittedVisible(reused.slot, reused.generation)).toBe(false);
+    expect(() => scene.commitSubmission(visible)).toThrow(RangeError);
+    submit(scene, 8);
+    expect(scene.wasLastSubmittedVisible(first.slot, first.generation)).toBe(false);
+    expect(scene.wasLastSubmittedVisible(reused.slot, reused.generation)).toBe(true);
+    scene.reset([snapshot(8, 2)]);
+    expect(scene.wasLastSubmittedVisible(reused.slot, reused.generation)).toBe(false);
+  });
+
   it('rejects replaced geometry locally while a static background keeps its submitted history', () => {
     const scene = new RenderScene();
     scene.setTemporalTracking(true);

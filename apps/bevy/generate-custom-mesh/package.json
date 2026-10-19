@@ -61,6 +61,7 @@
     "@forgeax/engine-render": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
     "@webgpu/types": "^0.1.74",

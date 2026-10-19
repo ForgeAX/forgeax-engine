@@ -7,7 +7,7 @@ const LOG_PREFIX = '[forgeax.view.resource-open]';
 
 /** Scene viewport hosts the scene world. Other kinds never acquire scene ownership. */
 export const SCENE_ASSET_KIND = 'scene';
-export const TYPE_PREVIEW_KINDS = Object.freeze(['material', 'mesh', 'texture']);
+export const TYPE_PREVIEW_KINDS = Object.freeze(['material', 'mesh', 'texture', 'equirect']);
 
 export function summarizeResourceAsset(asset: WorkspaceAsset | null | undefined) {
   if (!asset || typeof asset !== 'object') return null;

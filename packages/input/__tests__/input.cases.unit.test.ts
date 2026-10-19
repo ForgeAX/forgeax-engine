@@ -210,8 +210,8 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         expect([...begin.pointerIds].sort()).toEqual([1, 2]);
         expect(begin.pointerType).toBe('touch');
       }
-      expect(r.gestureState.pinchScale).toBeCloseTo(1.0, 5);
-      expect(r.gestureState.rotationAngle).toBeCloseTo(0, 5);
+      expect(r.newState.gesture.pinchScale).toBeCloseTo(1.0, 5);
+      expect(r.newState.gesture.rotationAngle).toBeCloseTo(0, 5);
     });
 
     it('fingers spread -> pinchScale increases proportionally', () => {
@@ -235,8 +235,8 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         s,
         1016,
       );
-      expect(r.gestureState.pinchScale).toBeCloseTo(2.0, 5);
-      expect(r.gestureState.rotationAngle).toBeCloseTo(0, 5);
+      expect(r.newState.gesture.pinchScale).toBeCloseTo(2.0, 5);
+      expect(r.newState.gesture.rotationAngle).toBeCloseTo(0, 5);
       // No new begin/end on a pure move frame.
       expect(r.gestureEvents.map((e) => e.kind)).not.toContain('pinch-begin');
     });
@@ -262,9 +262,9 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         s,
         1016,
       );
-      expect(r.gestureState.rotationAngle).toBeCloseTo(Math.PI / 2, 5);
+      expect(r.newState.gesture.rotationAngle).toBeCloseTo(Math.PI / 2, 5);
       // Distance unchanged (100) => scale stays 1.0.
-      expect(r.gestureState.pinchScale).toBeCloseTo(1.0, 5);
+      expect(r.newState.gesture.pinchScale).toBeCloseTo(1.0, 5);
     });
 
     it('2->1 lift emits end + freezes continuous value; back to 2 re-begins + resets (D-11/E-6)', () => {
@@ -293,11 +293,11 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
       const endKinds = rEnd.gestureEvents.map((e) => e.kind);
       expect(endKinds).toContain('pinch-end');
       expect(endKinds).toContain('rotate-end');
-      expect(rEnd.gestureState.pinchScale).toBeCloseTo(2.0, 5);
+      expect(rEnd.newState.gesture.pinchScale).toBeCloseTo(2.0, 5);
       s = rEnd.newState;
       // Idle frame with a single finger: frozen value retained (not identity).
       const rIdle = processGestureFrame([], pm([[2, 200, 0]]), s, 1048);
-      expect(rIdle.gestureState.pinchScale).toBeCloseTo(2.0, 5);
+      expect(rIdle.newState.gesture.pinchScale).toBeCloseTo(2.0, 5);
       s = rIdle.newState;
       // Second finger returns -> new begin, reset to identity 1.0/0.
       const rBegin = processGestureFrame(
@@ -310,8 +310,8 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         1064,
       );
       expect(rBegin.gestureEvents.map((e) => e.kind)).toContain('pinch-begin');
-      expect(rBegin.gestureState.pinchScale).toBeCloseTo(1.0, 5);
-      expect(rBegin.gestureState.rotationAngle).toBeCloseTo(0, 5);
+      expect(rBegin.newState.gesture.pinchScale).toBeCloseTo(1.0, 5);
+      expect(rBegin.newState.gesture.rotationAngle).toBeCloseTo(0, 5);
     });
 
     it('third finger down is ignored while a pair is locked (D-11)', () => {
@@ -347,14 +347,14 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
       );
       expect(r.gestureEvents.map((e) => e.kind)).not.toContain('pinch-begin');
       // Scale still reflects the locked pair (1,2): 200/100 = 2.0.
-      expect(r.gestureState.pinchScale).toBeCloseTo(2.0, 5);
+      expect(r.newState.gesture.pinchScale).toBeCloseTo(2.0, 5);
     });
 
     it('AC-12: no active gesture returns identity empty signal without throwing', () => {
       const s = createRecognizerState();
       const r = processGestureFrame([], EMPTY_MAP, s, 1000);
-      expect(r.gestureState.pinchScale).toBe(1);
-      expect(r.gestureState.rotationAngle).toBe(0);
+      expect(r.newState.gesture.pinchScale).toBe(1);
+      expect(r.newState.gesture.rotationAngle).toBe(0);
       expect(r.gestureEvents).toEqual([]);
     });
 
@@ -388,7 +388,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         s,
         1032,
       );
-      expect(r.gestureState.pinchScale).toBeCloseTo(3.0, 5);
+      expect(r.newState.gesture.pinchScale).toBeCloseTo(3.0, 5);
       expect(r.gestureEvents).toEqual([]);
     });
   });
@@ -613,12 +613,12 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
       expect(kinds).toContain('pinch-cancel');
       expect(kinds).toContain('rotate-cancel');
       // Continuous value reset to identity (NOT frozen, unlike the 2->1 end path).
-      expect(r.gestureState.pinchScale).toBe(1);
-      expect(r.gestureState.rotationAngle).toBe(0);
+      expect(r.newState.gesture.pinchScale).toBe(1);
+      expect(r.newState.gesture.rotationAngle).toBe(0);
       // Next idle frame emits no ghost gesture.
       const r2 = processGestureFrame([], EMPTY_MAP, r.newState, 1048);
       expect(r2.gestureEvents).toEqual([]);
-      expect(r2.gestureState.pinchScale).toBe(1);
+      expect(r2.newState.gesture.pinchScale).toBe(1);
     });
 
     it('onBlur path (cancel phases for all pointers) -> cancels + identity + no ghost next frame', () => {
@@ -631,7 +631,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         1032,
       );
       expect(r.gestureEvents.map((e) => e.kind)).toContain('pinch-cancel');
-      expect(r.gestureState.pinchScale).toBe(1);
+      expect(r.newState.gesture.pinchScale).toBe(1);
       const r2 = processGestureFrame([], EMPTY_MAP, r.newState, 1048);
       expect(r2.gestureEvents).toEqual([]);
     });
@@ -648,7 +648,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
           s,
           t,
         );
-        expect(r.gestureState.pinchScale).toBeCloseTo(2.0, 5);
+        expect(r.newState.gesture.pinchScale).toBeCloseTo(2.0, 5);
         expect(r.gestureEvents).toEqual([]);
         s = r.newState;
       }
@@ -692,7 +692,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         32,
       );
       expect(r.gestureEvents.map((e) => e.kind)).toContain('pinch-cancel');
-      expect(r.gestureState.pinchScale).toBe(1);
+      expect(r.newState.gesture.pinchScale).toBe(1);
       // After cancel, advancing the clock past 500ms fires NO long-press for finger 3.
       const r2 = processGestureFrame([], EMPTY_MAP, r.newState, 700);
       expect(r2.gestureEvents.filter((e) => e.kind === 'long-press')).toHaveLength(0);

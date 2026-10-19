@@ -62,7 +62,6 @@ import {
   materialLoader,
   meshLoader,
   mipmapCacheSize,
-  numMipLevels,
   PACK_ARTIFACT_LOADERS,
   resolveAssetHandle,
   sceneLoader,
@@ -92,7 +91,7 @@ import type {
   MaterialPass,
   SamplerAsset,
 } from '@forgeax/engine-types';
-import { AssetError, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
+import { AssetError, numMipLevels, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { deriveBuiltin } from '../../../pack/src/builtin';
 import { DeviceScope } from '../../../render/src/device/device-scope';

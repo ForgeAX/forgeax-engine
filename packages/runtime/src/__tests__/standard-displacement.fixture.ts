@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -13,7 +14,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
   tapeDigest,
@@ -41,7 +41,7 @@ const difference = (a: number[], b: number[]) =>
 function hdr(bytes: Uint8Array, pitch: number): number[] {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return Array.from({ length: size * size * 3 }, (_, i) =>
-    halfToFloat(
+    halfFloat.f16ToF32(
       v.getUint16(
         Math.floor(i / (size * 3)) * pitch + (Math.floor(i / 3) % size) * 8 + (i % 3) * 2,
         true,

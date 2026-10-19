@@ -404,4 +404,42 @@ describe('native Mini Game platform contract', () => {
     expect(platform.now().unwrap()).toBe(58);
     platform.dispose();
   });
+  it('honors subscription changes and disposal during the current event delivery', () => {
+    const native = nativeHost();
+    const platform = createWechatPlatform(native.host).unwrap();
+    const later = vi.fn();
+    let releaseLater = () => {};
+    platform
+      .subscribe(() => {
+        releaseLater();
+        platform.subscribe(later).unwrap();
+      })
+      .unwrap();
+    releaseLater = platform.subscribe(later).unwrap();
+    for (const callback of native.hide) callback();
+    expect(later).not.toHaveBeenCalled();
+    for (const callback of native.show) callback();
+    expect(later).toHaveBeenCalledOnce();
+    platform.subscribe(() => platform.dispose()).unwrap();
+    const afterDisposal = vi.fn();
+    platform.subscribe(afterDisposal).unwrap();
+    for (const callback of native.hide) callback();
+    expect(afterDisposal).not.toHaveBeenCalled();
+    expect(platform.visible()).toBe(false);
+  });
+
+  it('fences a native callback retained by a failed frame acquisition', () => {
+    const native = nativeHost();
+    let late = () => {};
+    native.host.requestAnimationFrame = (callback) => {
+      late = callback;
+      throw new Error('native acquisition failed');
+    };
+    const platform = createWechatPlatform(native.host).unwrap();
+    const callback = vi.fn();
+    expect(platform.requestFrame(callback).ok).toBe(false);
+    late();
+    expect(callback).not.toHaveBeenCalled();
+    platform.dispose();
+  });
 });

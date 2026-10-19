@@ -355,9 +355,9 @@ type __MergedKeep =
     ];
   }
 
-  describe('Camera schema (32 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
-    it('Camera.schema has 32 fields including auto exposure and color grading state', () => {
-      expect(Object.keys(Camera.fields).length).toBe(32);
+  describe('Camera schema (33 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
+    it('Camera.schema has 33 fields including auto exposure and color grading state', () => {
+      expect(Object.keys(Camera.fields).length).toBe(33);
       expect(componentFieldType(Camera, 'targetLayer')).toBe('u32');
       expect(componentFieldType(Camera, 'fov')).toBe('f32');
       expect(componentFieldType(Camera, 'aspect')).toBe('f32');
@@ -387,8 +387,8 @@ type __MergedKeep =
       expect(componentFieldType(Camera, 'bloom')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomThreshold')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomIntensity')).toBe('f32');
-      expect(componentFieldType(Camera, 'bloomSoftKnee')).toBe('f32');
-      expect(componentFieldType(Camera, 'bloomScatter')).toBe('f32');
+      expect(componentFieldType(Camera, 'bloomSmoothWidth')).toBe('f32');
+      expect(componentFieldType(Camera, 'bloomRadius')).toBe('f32');
       // feat-20260709 M3 / D-3: clear-color collapsed into one array<f32,4>.
       expect(componentFieldType(Camera, 'clearColor')).toBe('array<f32, 4>');
       // feat-20260617-host-engine-contract-and-video-cutscene / M3: aspect-sync

@@ -13,7 +13,7 @@ export const SSR_TRACE_FORMAT = 'rgba16float' as const;
 export const SSR_R32FLOAT_BYTES_PER_PIXEL = 4 as const;
 export const SSR_RGBA16FLOAT_BYTES_PER_PIXEL = 8 as const;
 export const SSR_TEMPORAL_PARAMS_BYTES = 32 as const;
-export const SSR_SPATIAL_MEMORY_BUDGET_BYTES = 45_088_768 as const;
+export const SSR_SPATIAL_MEMORY_BUDGET_BYTES = 134_217_728 as const;
 
 export interface SsrSpatialTexture {
   readonly texture: GraphTexture;
@@ -25,9 +25,9 @@ export interface SsrSpatialTexture {
 
 export interface SsrSpatialResources {
   readonly trace: SsrSpatialTexture;
-  /** Half-resolution reactivity of the admitted reflection source taps. */
+  /** Full-resolution reactivity of the admitted reflection source taps. */
   readonly hitReactivity: GraphTextureView;
-  /** Half-resolution resolved radiance/confidence when temporal resolve is active. */
+  /** Full-resolution resolved radiance/confidence when temporal resolve is active. */
   readonly resolved?: SsrSpatialTexture;
   /** Sampled view of all resolved reflection levels; mip 0 remains sharp. */
   readonly radiancePyramid?: GraphTextureView;
@@ -36,8 +36,8 @@ export interface SsrSpatialResources {
 export interface SsrSpatialMemoryEstimate {
   readonly width: number;
   readonly height: number;
-  readonly halfWidth: number;
-  readonly halfHeight: number;
+  readonly traceWidth: number;
+  readonly traceHeight: number;
   /** The view's shared depth pyramid, counted in SSR admission while SSR is its only closest-depth reader. */
   readonly depthPyramidBytes: number;
   readonly traceBytes: number;
@@ -53,10 +53,10 @@ export interface SsrSpatialMemoryEstimate {
   readonly withinBudget: boolean;
 }
 
-function halfExtent(extent: DepthPyramidExtent): DepthPyramidExtent {
+function traceExtentForView(extent: DepthPyramidExtent): DepthPyramidExtent {
   return {
-    width: Math.max(1, Math.floor(extent.width / 2)),
-    height: Math.max(1, Math.floor(extent.height / 2)),
+    width: Math.max(1, Math.floor(extent.width)),
+    height: Math.max(1, Math.floor(extent.height)),
   };
 }
 
@@ -68,24 +68,24 @@ function byteCount(width: number, height: number, bytesPerPixel: number): number
   return bytes;
 }
 
-/** Derive descriptor bytes for one admitted half-resolution SSR frame. */
+/** Derive descriptor bytes for one admitted full-resolution SSR frame. */
 export function estimateSsrSpatialMemory(
   extent: DepthPyramidExtent,
   options: { readonly temporal?: boolean } = {},
 ): SsrSpatialMemoryEstimate {
-  const half = halfExtent(extent);
+  const trace = traceExtentForView(extent);
   const plan = planViewDepthPyramid(extent);
   const temporal = options.temporal !== false;
   const depthPyramidBytes = estimateDepthPyramidMemory(extent);
-  const traceBytes = byteCount(half.width, half.height, SSR_RGBA16FLOAT_BYTES_PER_PIXEL);
-  const hitReactivityBytes = byteCount(half.width, half.height, SSR_R32FLOAT_BYTES_PER_PIXEL);
+  const traceBytes = byteCount(trace.width, trace.height, SSR_RGBA16FLOAT_BYTES_PER_PIXEL);
+  const hitReactivityBytes = byteCount(trace.width, trace.height, SSR_R32FLOAT_BYTES_PER_PIXEL);
   const resolvedBytes = temporal
-    ? plan.levels.reduce(
+    ? [trace, ...(Math.max(trace.width, trace.height) > 1 ? plan.levels : [])].reduce(
         (sum, level) => sum + byteCount(level.width, level.height, SSR_RGBA16FLOAT_BYTES_PER_PIXEL),
         0,
       )
     : 0;
-  const historyBytes = temporal ? half.width * half.height * 12 * 2 : 0;
+  const historyBytes = temporal ? trace.width * trace.height * 12 * 2 : 0;
   const temporalParamsBytes = temporal ? SSR_TEMPORAL_PARAMS_BYTES : 0;
   const fallbackInputBytes = byteCount(
     extent.width,
@@ -103,8 +103,8 @@ export function estimateSsrSpatialMemory(
   return Object.freeze({
     width: extent.width,
     height: extent.height,
-    halfWidth: half.width,
-    halfHeight: half.height,
+    traceWidth: trace.width,
+    traceHeight: trace.height,
     depthPyramidBytes,
     traceBytes,
     hitReactivityBytes,
@@ -146,7 +146,7 @@ export function createSsrSpatialResources(
   graph: RenderGraphBuilder<RenderGraphFrame>,
   extent: DepthPyramidExtent,
 ): Result<SsrSpatialResources, RenderGraphError> {
-  const traceExtent = halfExtent(extent);
+  const traceExtent = traceExtentForView(extent);
   const trace = texture(graph, 'ssr-trace', SSR_TRACE_FORMAT, traceExtent);
   if (!trace.ok) return trace;
   const hitTexture = graph.createTexture('ssr-hit-reactivity', {

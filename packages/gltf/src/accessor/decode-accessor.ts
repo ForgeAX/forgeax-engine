@@ -1,31 +1,6 @@
 import { err, type GltfError, gltfErr, ok, type Result } from '../errors.js';
+import { accessorShape, accessorStorage, COMPONENT_TYPE } from './layout.js';
 
-export const COMPONENT_TYPE = {
-  I8: 5120,
-  U8: 5121,
-  I16: 5122,
-  U16: 5123,
-  U32: 5125,
-  F32: 5126,
-} as const;
-export type ComponentTypeId = (typeof COMPONENT_TYPE)[keyof typeof COMPONENT_TYPE];
-const WIDTH: Readonly<Record<number, number>> = {
-  5120: 1,
-  5121: 1,
-  5122: 2,
-  5123: 2,
-  5125: 4,
-  5126: 4,
-};
-const SHAPE: Readonly<Record<string, readonly [number, number]>> = {
-  SCALAR: [1, 1],
-  VEC2: [2, 1],
-  VEC3: [3, 1],
-  VEC4: [4, 1],
-  MAT2: [2, 2],
-  MAT3: [3, 3],
-  MAT4: [4, 4],
-};
 export interface AccessorJson {
   readonly bufferView?: number;
   readonly byteOffset?: number;
@@ -70,8 +45,8 @@ export function decodeAccessor(input: DecodeAccessorInput): Result<DecodedAccess
   const fail = (reason: 'unknownComponentType' | 'layout' | 'sparse') =>
     err(gltfErr('gltf-accessor-type-mismatch', { accessorIndex, reason }));
   if (accessor == null || typeof accessor !== 'object') return fail('layout');
-  const componentWidth = WIDTH[accessor.componentType],
-    shape = SHAPE[accessor.type];
+  const componentWidth = accessorStorage(accessor.componentType)?.BYTES_PER_ELEMENT,
+    shape = accessorShape(accessor.type);
   if (componentWidth === undefined || shape === undefined) return fail('unknownComponentType');
   const width: number = componentWidth;
   const [rows, columns] = shape;
@@ -175,7 +150,7 @@ export function decodeAccessor(input: DecodeAccessorInput): Result<DecodedAccess
       ![5121, 5123, 5125].includes(sparse.indices.componentType)
     )
       return fail('sparse');
-    const indexWidth = WIDTH[sparse.indices.componentType];
+    const indexWidth = accessorStorage(sparse.indices.componentType)?.BYTES_PER_ELEMENT;
     if (indexWidth === undefined) return fail('sparse');
     if (
       bufferViews[sparse.indices.bufferView]?.byteStride !== undefined ||

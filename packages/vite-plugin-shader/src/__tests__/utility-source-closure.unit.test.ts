@@ -20,7 +20,7 @@ vi.mock('../engine-inputs/load-engine-shader-entries.js', async (original) => {
               }
             : Array.isArray(value)
               ? []
-              : { id: (value as { id: string }).id, source: entries.bloomDownsample.source },
+              : { id: (value as { id: string }).id, source: entries.bloomHorizontal.source },
         ]),
       );
     },

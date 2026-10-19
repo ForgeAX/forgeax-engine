@@ -18,8 +18,14 @@
 // proposition 5 consistent abstraction). Callers with an ArrayBuffer /
 // parsed JSON should keep using `parseGltf` / `parseGlb` directly.
 
-import { err, type GltfError, gltfErr, type Result } from './errors.js';
-import { type ExternalLoader, type GltfDoc, parseGlb, parseGltf } from './parse-gltf.js';
+import { err, gltfErr, type Result } from './errors.js';
+import {
+  type ExternalLoader,
+  type GltfDoc,
+  type GltfParseError,
+  parseGlb,
+  parseGltf,
+} from './parse-gltf.js';
 
 interface FsLike {
   readonly stat: (path: string) => Promise<unknown>;
@@ -59,7 +65,9 @@ function metaPathFor(filePath: string): string {
  * `<source>.meta.json`; if missing, return `gltf-meta-missing` without
  * reading the source bytes.
  */
-export async function parseGltfFromFile(filePath: string): Promise<Result<GltfDoc, GltfError>> {
+export async function parseGltfFromFile(
+  filePath: string,
+): Promise<Result<GltfDoc, GltfParseError>> {
   const fs = await loadFsModule();
   const path = await loadPathModule();
   const expectedMetaPath = metaPathFor(filePath);
@@ -86,7 +94,7 @@ export async function parseGltfFromFile(filePath: string): Promise<Result<GltfDo
  * Parse a `.glb` file from disk. Same fail-fast meta-stat pre-step as
  * `parseGltfFromFile`.
  */
-export async function parseGlbFromFile(filePath: string): Promise<Result<GltfDoc, GltfError>> {
+export async function parseGlbFromFile(filePath: string): Promise<Result<GltfDoc, GltfParseError>> {
   const fs = await loadFsModule();
   const expectedMetaPath = metaPathFor(filePath);
   if (!(await statExists(fs, expectedMetaPath))) {

@@ -8,6 +8,7 @@ import {
   depthOfFieldQualityFromF32,
   depthOfFieldSideFromF32,
 } from '../../components/depth-of-field';
+import type { CameraSnapshot } from '../../render-contract';
 
 export const DEPTH_OF_FIELD_PARAMS_BYTE_SIZE = 64;
 
@@ -121,12 +122,7 @@ export function resolveDepthOfFieldFrameParams(
   return accepted;
 }
 
-export interface DepthOfFieldCameraInput {
-  readonly projection: 'perspective' | 'orthographic';
-  readonly fov: number;
-  readonly near: number;
-  readonly far: number;
-}
+export type DepthOfFieldCameraInput = Pick<CameraSnapshot, 'projection' | 'fov' | 'near' | 'far'>;
 
 function invalid(
   field: string,

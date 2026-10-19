@@ -18,12 +18,12 @@ import {
 import { AutoExposureCapabilityUnavailableError } from './inspection';
 
 export const AUTO_EXPOSURE_HISTOGRAM_BYTES = 1024;
-export const AUTO_EXPOSURE_STATE_BYTES = 32;
-export const AUTO_EXPOSURE_CANDIDATE_BYTES = 16;
+const AUTO_EXPOSURE_STATE_BYTES = 32;
+const AUTO_EXPOSURE_CANDIDATE_BYTES = 16;
 /** Camera/time inputs consumed by adapt; this is not a CPU exposure estimate. */
-export const AUTO_EXPOSURE_PARAMETERS_BYTES = 32;
+const AUTO_EXPOSURE_PARAMETERS_BYTES = 32;
 
-export interface AutoExposureGpuParameters {
+interface AutoExposureGpuParameters {
   readonly compensationEv: number;
   readonly rangeMinEv: number;
   readonly rangeMaxEv: number;
@@ -43,14 +43,14 @@ export interface AutoExposureGpuResources {
   readonly generation: number;
 }
 
-export interface AutoExposureGraphResources {
+interface AutoExposureGraphResources {
   readonly histogram: GraphBuffer;
   readonly state: GraphBuffer;
   readonly candidate: GraphBuffer;
   readonly parameters: GraphBuffer;
 }
 
-export interface AutoExposureGraphProjection {
+interface AutoExposureGraphProjection {
   readonly source: RenderPipelineTarget;
   readonly resources: AutoExposureGraphResources;
   readonly width: number;
@@ -353,7 +353,7 @@ export function addAutoExposureGraphPasses(
   return meter.ok ? ok(undefined) : meter;
 }
 
-export interface AutoExposureWhiteBalance {
+interface AutoExposureWhiteBalance {
   readonly temperature: number;
   readonly tint: number;
 }

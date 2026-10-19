@@ -207,11 +207,11 @@ export async function runHzbGraph(): Promise<HzbGraphEvidence> {
       encode: ({ encoder, resources }) => {
         encoder.copyTextureToBuffer(
           {
-            texture: resources.texture(hierarchy).unwrap() as unknown as GPUTexture,
+            texture: resources.texture(hierarchy).unwrap(),
             mipLevel: HZB_MIPS - 1,
           },
           {
-            buffer: resources.buffer(readback).unwrap() as unknown as GPUBuffer,
+            buffer: resources.buffer(readback).unwrap(),
             bytesPerRow: 256,
             rowsPerImage: 1,
           },

@@ -281,6 +281,7 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
     world.spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         direction: [0, -1, -0.3],
         color: [1, 1, 1],
         intensity: 1,

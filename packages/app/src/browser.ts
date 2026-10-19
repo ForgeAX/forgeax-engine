@@ -229,7 +229,14 @@ export async function createApp(
       const workerApp = await createWorkerExecutionApp({
         canvas,
         appOptions: opts,
-        syncCanvas: (currentCanvas) => measureCanvasDrawingBuffer(currentCanvas),
+        syncCanvas: (currentCanvas, display) =>
+          measureCanvasDrawingBuffer(
+            currentCanvas,
+            undefined,
+            typeof currentCanvas.ownerDocument.defaultView?.ResizeObserver === 'function'
+              ? display
+              : undefined,
+          ),
         ...(bundler !== undefined ? { bundler } : {}),
         capabilities,
         selection: selected.value,
@@ -750,32 +757,19 @@ export async function createApp(
 
   const executionControl = createLocalExecutionControl(
     executionContext === undefined
-      ? {
-          ...createExecutionReport(
-            unavailableExecutionCapabilities('local assembly'),
-            selectExecutionWorkers({
-              workers: { engine: false },
-              capabilities: unavailableExecutionCapabilities('local assembly'),
-            }).unwrap(),
-          ),
-          engine: { realm: 'host', health: 'idle' },
-          world: {
-            identity: world.identity,
-            health: world.execution.health,
-            partialWrite: false,
-            retryable: true,
-          },
-        }
-      : {
-          ...createExecutionReport(executionContext.capabilities, executionContext.selection),
-          engine: { realm: 'host', health: 'idle' },
-          world: {
-            identity: world.identity,
-            health: world.execution.health,
-            partialWrite: false,
-            retryable: true,
-          },
-        },
+      ? createExecutionReport(
+          unavailableExecutionCapabilities('local assembly'),
+          selectExecutionWorkers({
+            workers: { engine: false },
+            capabilities: unavailableExecutionCapabilities('local assembly'),
+          }).unwrap(),
+          world.execution,
+        )
+      : createExecutionReport(
+          executionContext.capabilities,
+          executionContext.selection,
+          world.execution,
+        ),
     {
       ...(audioBackend === undefined ? {} : { audio: () => audioBackend.getState() }),
       world: () => world.execution,

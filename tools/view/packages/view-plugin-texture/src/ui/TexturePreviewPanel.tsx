@@ -11,6 +11,7 @@ import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspa
 import { RESOURCE_KINDS } from '../identity.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import './texture.css';
+import { TextureControls } from './TextureControls';
 
 
 export function TexturePreviewPanel({
@@ -97,6 +98,7 @@ function LivePreview({
   }
   return (
     <div className="fx-asset-viewer fx-asset-preview fx-ui" data-testid="panel-texture-preview">
+      <TextureControls key={preview.target.targetId + ":" + preview.target.generation} client={client} target={preview.target} surface={containerRef} />
       <div
         ref={containerRef}
         className="fx-asset-preview-surface"

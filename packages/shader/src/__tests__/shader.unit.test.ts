@@ -23,10 +23,7 @@ import type { ShaderError } from '../errors.js';
 import { err as errResult, ok as okResult } from '../errors.js';
 import { TONEMAP_LUMINANCE_EPSILON } from '../index.js';
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '../material-schemas.js';
-import {
-  registerDefaultStandardPbrSkin,
-  type SkinCaps,
-} from '../register-default-standard-pbr-skin.js';
+import { registerDefaultStandardPbrSkin } from '../register-default-standard-pbr-skin.js';
 import {
   FORGEAX_RESERVED_PATH_PREFIX,
   type MaterialShaderEntry,
@@ -193,7 +190,7 @@ import {
 
     it('contains EDGE_THRESHOLD_MAX constant', () => {
       expect(fxaaSource).toContain('EDGE_THRESHOLD_MAX');
-      expect(fxaaSource).toContain('0.125');
+      expect(fxaaSource).toContain('0.063');
     });
   });
 
@@ -1000,7 +997,6 @@ import {
   //   - plan-strategy section 5.3 critical test point register
 
   const STUB_WGSL = '// stub composed pbr-skin wgsl\n';
-  const STORAGE_CAPS: SkinCaps = { storageBuffer: true };
 
   const SHADER_MODULE_BRAND: unique symbol = Symbol('mock-shader-module');
   type MockShaderModule = { readonly [SHADER_MODULE_BRAND]: 'mock' };
@@ -1029,7 +1025,7 @@ import {
   describe('T-31 (a) — register + lookup happy path', () => {
     it('registers forgeax::pbr-skin and looks it back up', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
       const entry = lookup(registry);
       expect(entry.source).toBe(STUB_WGSL);
     });
@@ -1039,13 +1035,13 @@ import {
     it('source matches the passed-in composed wgsl', () => {
       const registry = makeMockRegistry();
       const src = '// composed pbr-skin wgsl v2\n';
-      registerDefaultStandardPbrSkin(registry, src, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, src);
       expect(lookup(registry).source).toBe(src);
     });
 
     it('source is never empty after registration', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, '// non-empty\n', STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, '// non-empty\n');
       expect(lookup(registry).source.length).toBeGreaterThan(0);
     });
   });
@@ -1053,21 +1049,21 @@ import {
   describe('T-31 (c) — paramSchema reuses default-standard-pbr schema (R-10)', () => {
     it('paramSchema length matches the default standard-PBR schema', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
       const entry = lookup(registry);
       expect(entry.paramSchema).toHaveLength(STANDARD_PIPELINE_PARAM_SCHEMA.length);
     });
 
     it('paramSchema names match default-standard-pbr schema field-for-field', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
       const entry = lookup(registry);
       expect(entry.paramSchema).toEqual(STANDARD_PIPELINE_PARAM_SCHEMA);
     });
 
     it('paramSchema types match expected value-level types', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
       const entry = lookup(registry);
       expect(entry.paramSchema.map((p) => p.type)).toEqual(
         STANDARD_PIPELINE_PARAM_SCHEMA.map((p) => p.type),
@@ -1085,17 +1081,17 @@ import {
   describe('T-31 (e) — duplicate register throws (fail-fast no overwrite)', () => {
     it('throws on same-name re-register', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
-      expect(() =>
-        registerDefaultStandardPbrSkin(registry, '// attempted drift\n', STORAGE_CAPS),
-      ).toThrow(/already registered/);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
+      expect(() => registerDefaultStandardPbrSkin(registry, '// attempted drift\n')).toThrow(
+        /already registered/,
+      );
     });
 
     it('original entry stays intact after failed re-register', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
       try {
-        registerDefaultStandardPbrSkin(registry, '// drift\n', STORAGE_CAPS);
+        registerDefaultStandardPbrSkin(registry, '// drift\n');
       } catch {
         // expected
       }
@@ -1106,7 +1102,7 @@ import {
   describe('T-31 (f) — non-registered identifier returns material-shader-not-found', () => {
     it('lookup after registration still fails for non-existent id', () => {
       const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL, STORAGE_CAPS);
+      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
       const r = registry.findMaterialArtifact('forgeax::no-such-skin');
       expect(r.ok).toBe(false);
       if (r.ok) return;

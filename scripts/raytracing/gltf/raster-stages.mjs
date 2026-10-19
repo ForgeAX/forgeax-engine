@@ -1,4 +1,4 @@
-import { halfToFloat } from '../../../packages/rhi-debug/dist/index.mjs';
+import { halfFloat } from '@forgeax/engine/math';
 
 const assert = (value, message) => {
   if (!value) throw new Error(message);
@@ -70,7 +70,7 @@ export async function inspectRasterStages(model, replay, save) {
     d = new Float32Array(depth.bytes.buffer, depth.bytes.byteOffset, depth.bytes.byteLength / 4);
   const hdr = Array.from(
     new Uint16Array(direct.bytes.buffer, direct.bytes.byteOffset, direct.bytes.byteLength / 2),
-    halfToFloat,
+    halfFloat.f16ToF32,
   );
   const emitted = Array.from(
     new Uint16Array(
@@ -78,7 +78,7 @@ export async function inspectRasterStages(model, replay, save) {
       emission.bytes.byteOffset,
       emission.bytes.byteLength / 2,
     ),
-    halfToFloat,
+    halfFloat.f16ToF32,
   );
   const images = Object.fromEntries(
     ['depth', 'normal', 'albedo', 'direct'].map((key) => [key, new Uint8Array(d.length * 4)]),

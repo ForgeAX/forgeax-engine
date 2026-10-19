@@ -43,32 +43,22 @@ test('EndpointErrorDetail derives from the complete code resolver', () => {
 test('EndpointError constructor preserves code-specific inference', () => {
   const peerNotFound = new EndpointError({
     code: 'peer-not-found',
-    expected: 'a peer',
-    hint: 'use a connected peer',
     detail: { peerId },
   });
   const connectionClosed = new EndpointError({
     code: 'connection-closed',
-    expected: 'an open connection',
-    hint: 'poll disconnects',
     detail: { peerId },
   });
   const sendFailed = new EndpointError({
     code: 'send-failed',
-    expected: 'delivered bytes',
-    hint: 'retry after reconnecting',
     detail: { peerId, cause: 'buffer full' },
   });
   const alreadyClosed = new EndpointError({
     code: 'already-closed',
-    expected: 'an open endpoint',
-    hint: 'create a new endpoint',
     detail: { cause: 'closed' },
   });
   const connectionFailed = new EndpointError({
     code: 'connection-failed',
-    expected: 'a reachable address',
-    hint: 'verify the address',
     detail: { address: '127.0.0.1:8787', cause: 'refused' },
   });
 
@@ -92,8 +82,6 @@ test('EndpointError constructor preserves code-specific inference', () => {
 test('EndpointError rejects mismatched code and detail pairs', () => {
   new EndpointError({
     code: 'already-closed',
-    expected: 'an open endpoint',
-    hint: 'create a new endpoint',
     // @ts-expect-error code/detail pairs remain correlated.
     detail: { peerId },
   });

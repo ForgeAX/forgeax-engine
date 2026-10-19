@@ -20,11 +20,11 @@ describe('game-default Day/Night lighting owner', () => {
       expect(actual.exposure).toBeCloseTo(expected.exposure, 5);
       expect(actual.bloomThreshold).toBeCloseTo(expected.bloomThreshold, 5);
       expect(actual.bloomIntensity).toBeCloseTo(expected.bloomIntensity, 5);
-      expect(actual.bloomSoftKnee).toBeCloseTo(expected.bloomSoftKnee, 5);
-      expect(actual.bloomScatter).toBeCloseTo(expected.bloomScatter, 5);
+      expect(actual.bloomSmoothWidth).toBeCloseTo(expected.bloomSmoothWidth, 5);
+      expect(actual.bloomRadius).toBeCloseTo(expected.bloomRadius, 5);
     };
     const world = new World();
-    const sun = world.spawn({ component: DirectionalLight, data: { direction: [-1, -1, -1] } }).unwrap();
+    const sun = world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-1, -1, -1] } }).unwrap();
     const skylight = world.spawn({ component: Skylight, data: {} }).unwrap();
     const skybox = world.spawn({ component: SkyboxBackground, data: {} }).unwrap();
     const camera = world.spawn(

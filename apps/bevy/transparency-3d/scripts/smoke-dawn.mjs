@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy's 3d/transparency_3d example.
@@ -8,7 +9,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const WIDTH = testQuality.viewport.width;
 const HEIGHT = testQuality.viewport.height;
@@ -122,7 +123,7 @@ async function capture(label) {
   }
   const pngPath = resolve(root, 'artifacts', `frame-${label}.png`);
   mkdirSync(dirname(pngPath), { recursive: true });
-  writeFileSync(pngPath, writeReferencePng(pixels, WIDTH, HEIGHT));
+  writeFileSync(pngPath, encodePng(WIDTH, HEIGHT, pixels));
   captures.push({ label, pixels, pngPath });
 }
 

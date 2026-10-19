@@ -31,7 +31,7 @@ function scales(t: ArrayLike<number>): number[] {
 }
 
 /** Result of one written edit; `added` lists each add's owned Global row. */
-export interface WrittenFieldEdit {
+interface WrittenFieldEdit {
   /** Every Card tile run the edit invalidated, merged. */
   readonly tiles: IndexRun[];
   /** Tile runs that adds installed (a subset of `tiles`). */

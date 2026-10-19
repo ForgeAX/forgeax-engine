@@ -3,16 +3,6 @@ import type { EventKind, ResourceKind, RhiCallEvent } from './types';
 
 export type EventCategory = 'resource' | 'pass' | 'state' | 'work' | 'copy' | 'submit' | 'marker';
 
-export interface EventSemantics {
-  readonly category: EventCategory;
-  /** Handles the event declares, including transient encoder and pass handles. */
-  readonly created: (event: RhiCallEvent) => readonly string[];
-  readonly read: (event: RhiCallEvent) => readonly string[];
-  readonly written: (event: RhiCallEvent) => readonly string[];
-  /** Handles the event retires, including pass handles closed by end*Pass. */
-  readonly destroyed: (event: RhiCallEvent) => readonly string[];
-}
-
 export const eventKinds = [
   'frameMark',
   'createBuffer',
@@ -87,13 +77,9 @@ export const workEventKinds = [
   'dispatchWorkgroupsIndirect',
 ] as const satisfies readonly EventKind[];
 
-export function isWorkEvent(kind: EventKind): boolean {
+export function isWorkEvent(kind: EventKind): kind is (typeof workEventKinds)[number] {
   return (workEventKinds as readonly string[]).includes(kind);
 }
-
-export const EVENT_SEMANTICS: Readonly<Record<EventKind, EventSemantics>> = Object.fromEntries(
-  eventKinds.map((kind) => [kind, semanticsFor(kind)]),
-) as Record<EventKind, EventSemantics>;
 
 export function resourceKindForEvent(kind: EventKind): ResourceKind | undefined {
   switch (kind) {
@@ -127,18 +113,7 @@ export function resourceKindForEvent(kind: EventKind): ResourceKind | undefined 
   }
 }
 
-function semanticsFor(kind: EventKind): EventSemantics {
-  const category = categoryFor(kind);
-  return {
-    category,
-    created: (event) => createdHandles(event),
-    read: (event) => handleAccess(event).read,
-    written: (event) => handleAccess(event).written,
-    destroyed: (event) => retiredHandles(event),
-  };
-}
-
-function categoryFor(kind: EventKind): EventCategory {
+export function categoryFor(kind: EventKind): EventCategory {
   if (isWorkEvent(kind)) return 'work';
   if (
     kind.startsWith('create') ||
@@ -160,7 +135,7 @@ function categoryFor(kind: EventKind): EventCategory {
   return 'state';
 }
 
-function createdHandles(event: RhiCallEvent): readonly string[] {
+export function createdHandles(event: RhiCallEvent): readonly string[] {
   if (event.kind === 'createTextureView') return [event.resultHandleId];
   if (event.kind === 'createCommandEncoder') return [event.cmdHandleId];
   if (event.kind === 'beginRenderPass' || event.kind === 'beginComputePass')
@@ -169,7 +144,7 @@ function createdHandles(event: RhiCallEvent): readonly string[] {
   return [];
 }
 
-function retiredHandles(event: RhiCallEvent): readonly string[] {
+export function retiredHandles(event: RhiCallEvent): readonly string[] {
   if (
     event.kind === 'destroyBuffer' ||
     event.kind === 'destroyTexture' ||
@@ -205,10 +180,10 @@ function pipelineLayout(layoutHandleId: string): string | undefined {
 
 /**
  * Handles an event names, which must therefore be declared before it (`read`),
- * and the subset whose contents it changes (`written`). One table feeds tape
+ * and the subset whose contents it changes (`written`). This operation feeds tape
  * validation, the recorder's bootstrap closure and FrameModel consumers.
  */
-function handleAccess(event: RhiCallEvent): HandleAccess {
+export function handleAccess(event: RhiCallEvent): HandleAccess {
   switch (event.kind) {
     case 'frameMark':
     case 'createBuffer':

@@ -9,7 +9,7 @@ import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observ
 import type { FrameReceipt } from '../render-contract';
 import type { RenderSystem } from '../render-system';
 
-export interface LodObservationLeaseCapture {
+interface LodObservationLeaseCapture {
   readonly lease: RenderReadLease;
   readonly worldIdentity: string;
   readonly generation: number;

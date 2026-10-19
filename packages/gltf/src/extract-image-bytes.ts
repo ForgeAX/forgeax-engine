@@ -26,10 +26,10 @@ import { dataUriBase64Payload, decodeBase64 } from './data-uri.js';
 import { parseGlbChunks } from './parse-glb-chunks.js';
 
 /** Source of an image: matches `GltfImageExtractFailedDetail.source`. */
-export type ImageSourceKind = 'bufferView' | 'data-uri' | 'external-uri';
+type ImageSourceKind = 'bufferView' | 'data-uri' | 'external-uri';
 
 /** One extracted image: bytes + the source kind that produced them. */
-export interface ExtractedImage {
+interface ExtractedImage {
   readonly bytes: Uint8Array;
   readonly mimeType: 'image/png' | 'image/jpeg';
   readonly source: ImageSourceKind;
@@ -41,7 +41,7 @@ export interface ExtractedImage {
  * (no uri / no bufferView), so the importer can name 'bufferView' (most
  * common) by default.
  */
-export interface ExtractFailure {
+interface ExtractFailure {
   readonly imageIndex: number;
   readonly source: ImageSourceKind;
   readonly reason: string;

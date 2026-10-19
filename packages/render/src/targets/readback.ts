@@ -1,3 +1,4 @@
+import { textureReadbackLayout } from '@forgeax/engine-rhi';
 import type { RenderError } from '../errors/render';
 import { RenderTargetOperationFailedError, RenderTargetStateInvalidError } from '../errors/render';
 import type { RenderResult } from '../render-contract';
@@ -8,7 +9,7 @@ export interface RenderTargetReadbackReceipt {
   readonly deviceGeneration: number;
 }
 
-export interface RenderTargetReadbackTicketInput {
+interface RenderTargetReadbackTicketInput {
   readonly frameId?: number;
   deviceGeneration: number;
   readonly mipLevel: number;
@@ -31,7 +32,7 @@ export interface RenderTargetReadbackTicket {
   consumed: boolean;
 }
 
-export interface RenderTargetReadbackResult {
+interface RenderTargetReadbackResult {
   readonly bytes: Uint8Array;
   readonly frameId: number;
   readonly deviceGeneration: number;
@@ -95,8 +96,11 @@ export function createRenderTargetReadbackTicket(
       }),
     };
   }
-  const unalignedRowBytes = input.width * input.bytesPerPixel;
-  const bytesPerRow = Math.ceil(unalignedRowBytes / 256) * 256;
+  const { bytesPerRow, byteLength } = textureReadbackLayout(input.width, input.height, {
+    blockWidth: 1,
+    blockHeight: 1,
+    bytesPerBlock: input.bytesPerPixel,
+  });
   return {
     ok: true,
     value: {
@@ -108,7 +112,7 @@ export function createRenderTargetReadbackTicket(
       width: input.width,
       height: input.height,
       bytesPerRow,
-      byteLength: bytesPerRow * input.height,
+      byteLength,
       consumed: false,
     },
   };

@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 // Shared Chromium admission for the single raw .rhitape browser path.
 
 import { createHash } from 'node:crypto';
@@ -264,10 +265,7 @@ function lastDrawOrdinal(events) {
 async function findFreePort() {
   const { createServer } = await import('node:net');
   const server = createServer();
-  await new Promise((resolveServer, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolveServer);
-  });
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : undefined;
   server.close();

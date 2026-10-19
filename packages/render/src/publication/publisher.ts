@@ -454,7 +454,11 @@ export function createRenderPublisher(
               frameNumber: revision + 1,
               ...(capabilities === undefined
                 ? {}
-                : { caps: capabilities, ...(limits === undefined ? {} : { limits }) }),
+                : {
+                    caps: capabilities,
+                    ...(limits === undefined ? {} : { limits }),
+                    ...renderMaterialContext(capabilities, limits),
+                  }),
               views: frame.cameras
                 .filter((camera) => camera.view?.enabled !== false)
                 .flatMap(stereoEyeCameras)

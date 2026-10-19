@@ -55,7 +55,7 @@ export interface AtlasRegion {
   readonly h: number;
 }
 
-export interface ShelfPackResult {
+interface ShelfPackResult {
   readonly atlasWidth: number;
   readonly atlasHeight: number;
   readonly regions: ReadonlyArray<AtlasRegion>;
@@ -67,7 +67,7 @@ export interface ShelfPackResult {
  * subsets; the caller projects each branch onto the matching
  * `ImageErrorDetail` variant before emitting the structured error.
  */
-export interface ShelfPackError {
+interface ShelfPackError {
   readonly code: Extract<ImageErrorCode, 'atlas-empty-input' | 'atlas-size-exceeded'>;
   readonly detail: {
     readonly name?: string;

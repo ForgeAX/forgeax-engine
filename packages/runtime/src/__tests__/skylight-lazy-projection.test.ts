@@ -31,7 +31,7 @@ import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
 import { RhiErrorListenerRegistry } from '../../../render/src/lifecycle';
 import {
   driveLazyEquirectProjection,
-  selectLazyEquirectHandle,
+  selectLazyEquirectHandles,
   warnMultiSkybox,
   warnMultiSkylight,
 } from '../../../render/src/record/helpers';
@@ -150,7 +150,7 @@ function configuredStore(device: unknown, caps: RhiCaps): GpuResidencyCache {
   const store = new GpuResidencyCache();
   let next = 9000;
   store.configureGpuDevice(
-    // biome-ignore lint/suspicious/noExplicitAny: mock device satisfies MipmapBlitDevice structurally
+    // biome-ignore lint/suspicious/noExplicitAny: mock device supplies the observed RHI operations
     device as any,
     undefined,
     (() => okShim(toShared<'EquirectAsset'>(next++))) as never,
@@ -186,10 +186,11 @@ function makeFrameState() {
 async function flushProjection(
   store: GpuResidencyCache,
   handle: Handle<'EquirectAsset', 'shared'>,
+  world: WorldType,
 ): Promise<void> {
   // Precompute yields through the event loop between bounded submission
   // batches, then publishes after the final queue-completion fence.
-  await vi.waitFor(() => expect(store.getCubemapStatus(handle)).toBe('ready'), {
+  await vi.waitFor(() => expect(store.getCubemapStatus(handle, world)).toBe('ready'), {
     timeout: 5_000,
   });
 }
@@ -222,10 +223,10 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
       handle as unknown as number,
     );
 
-    expect(store.getCubemapStatus(handle)).toBe('pending');
-    await flushProjection(store, handle);
+    expect(store.getCubemapStatus(handle, world)).toBe('pending');
+    await flushProjection(store, handle, world);
     expect(probe.textures).toBeGreaterThan(0);
-    expect(store.getCubemapStatus(handle)).toBe('ready');
+    expect(store.getCubemapStatus(handle, world)).toBe('ready');
     expect(seen).toEqual([]);
   });
 
@@ -238,7 +239,7 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     const frameState = makeFrameState();
 
     // No entry before the first drive.
-    expect(store.getCubemapStatus(handle)).toBeUndefined();
+    expect(store.getCubemapStatus(handle, world)).toBeUndefined();
 
     driveLazyEquirectProjection(
       makeInternals(store, reg, capsRenderable),
@@ -249,9 +250,9 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
 
     // The cube projection entry is pending until the IBL command submission
     // completion fence resolves; only then is it published as ready.
-    expect(store.getCubemapStatus(handle)).toBe('pending');
-    await flushProjection(store, handle);
-    expect(store.getCubemapStatus(handle)).toBe('ready');
+    expect(store.getCubemapStatus(handle, world)).toBe('pending');
+    await flushProjection(store, handle, world);
+    expect(store.getCubemapStatus(handle, world)).toBe('ready');
     expect(probe.textures).toBeGreaterThan(0);
   });
 
@@ -266,12 +267,12 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
 
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
     const texturesWhilePending = probe.textures;
-    expect(store.getCubemapStatus(handle)).toBe('pending');
+    expect(store.getCubemapStatus(handle, world)).toBe('pending');
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    expect(store.getCubemapStatus(handle)).toBe('pending');
+    expect(store.getCubemapStatus(handle, world)).toBe('pending');
     expect(probe.textures).toBe(texturesWhilePending);
-    await flushProjection(store, handle);
-    expect(store.getCubemapStatus(handle)).toBe('ready');
+    await flushProjection(store, handle, world);
+    expect(store.getCubemapStatus(handle, world)).toBe('ready');
     const texturesAfterFirst = probe.textures;
     expect(texturesAfterFirst).toBeGreaterThan(0);
 
@@ -303,7 +304,7 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     // fails before any await), but the lazy arm checked 'undefined' this frame,
     // so it only launched -- no error fired yet.
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
-    expect(store.getCubemapStatus(handle)).toBe('failed');
+    expect(store.getCubemapStatus(handle, world)).toBe('failed');
     expect(fired).toEqual([]);
 
     // Frame 2: status:'failed' observed -> fire the structured error ONCE.
@@ -320,7 +321,7 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
     expect(fired.length).toBe(1);
-    expect(store.getCubemapStatus(handle)).toBe('failed');
+    expect(store.getCubemapStatus(handle, world)).toBe('failed');
   });
 
   it('an 8-bit equirect reports its invalid-source-format cause through the projection error', () => {
@@ -343,7 +344,7 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
     driveLazyEquirectProjection(internals, world, frameState, handle as unknown as number);
 
-    expect(store.getCubemapStatus(handle)).toBe('failed');
+    expect(store.getCubemapStatus(handle, world)).toBe('failed');
     expect(causes).toEqual(['invalid-source-format']);
     expect(probe.textures).toBe(0);
   });
@@ -367,7 +368,7 @@ describe('driveLazyEquirectProjection — lazy projection state machine (M3 / w2
     );
 
     expect(probe.textures).toBe(0);
-    expect(store.getCubemapStatus(toShared<'EquirectAsset'>(staleHandle))).toBeUndefined();
+    expect(store.getCubemapStatus(toShared<'EquirectAsset'>(staleHandle), world)).toBeUndefined();
     expect(seen).toEqual([]);
   });
 });
@@ -419,17 +420,23 @@ describe('warnMultiSkylight / warnMultiSkybox — once-warn naming the winner (M
   });
 });
 
-describe('selectLazyEquirectHandle — shared Skylight/Skybox source selection', () => {
+describe('selectLazyEquirectHandles — shared Skylight/Skybox source selection', () => {
   it('falls back to SkyboxBackground when Skylight is color-only (handle 0)', () => {
-    expect(selectLazyEquirectHandle({ equirectHandle: 0 }, { equirectHandle: 77 })).toBe(77);
+    expect(selectLazyEquirectHandles({ equirectHandle: 0 }, { equirectHandle: 77 })).toEqual([77]);
   });
 
-  it('prefers a non-zero Skylight equirect over the SkyboxBackground source', () => {
-    expect(selectLazyEquirectHandle({ equirectHandle: 55 }, { equirectHandle: 77 })).toBe(55);
+  it('retains distinct Skylight and SkyboxBackground sources', () => {
+    expect(selectLazyEquirectHandles({ equirectHandle: 55 }, { equirectHandle: 77 })).toEqual([
+      55, 77,
+    ]);
+  });
+
+  it('deduplicates a shared image', () => {
+    expect(selectLazyEquirectHandles({ equirectHandle: 55 }, { equirectHandle: 55 })).toEqual([55]);
   });
 
   it('returns the solid-color sentinel when neither source has an equirect', () => {
-    expect(selectLazyEquirectHandle({ equirectHandle: 0 }, undefined)).toBe(0);
-    expect(selectLazyEquirectHandle(undefined, undefined)).toBe(0);
+    expect(selectLazyEquirectHandles({ equirectHandle: 0 }, undefined)).toEqual([]);
+    expect(selectLazyEquirectHandles(undefined, undefined)).toEqual([]);
   });
 });

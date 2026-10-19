@@ -74,7 +74,7 @@ describe('roots-scoped native catalog publication', () => {
     const binding = await plugin.rebind(runtimeBinding('active', 1), [active]);
     expect(binding.status).toBe('ready');
     const catalogResponse = await request(middlewares, binding.catalogUrl);
-    const entries = (JSON.parse(catalogResponse.body) as { entries: PackEntry[] }).entries;
+    const entries = decodeCatalogWire(JSON.parse(catalogResponse.body)).unwrap();
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       guid: EFFECT_GUID,
@@ -188,7 +188,7 @@ describe('roots-scoped native catalog publication', () => {
 
     const binding = await plugin.rebind(runtimeBinding('active', 1), [active]);
     const catalogResponse = await request(middlewares, binding.catalogUrl);
-    const discovered = (JSON.parse(catalogResponse.body) as { entries: PackEntry[] }).entries;
+    const discovered = decodeCatalogWire(JSON.parse(catalogResponse.body)).unwrap();
     expect(discovered).toHaveLength(1);
     expect(discovered[0]).toMatchObject({
       guid: IMPORTED_GUID,
@@ -306,20 +306,6 @@ describe('roots-scoped native catalog publication', () => {
     expect(cookCalls).toBeGreaterThan(0);
   });
 });
-
-interface PackEntry {
-  guid: string;
-  packageUrl: string;
-  kind?: string;
-  refs?: string[];
-  lifecycle?: string;
-  publication?: {
-    schemaVersion: string;
-    generation: number;
-    digest: string;
-    outputSetDigest: string;
-  };
-}
 
 function runtimeBinding(scopeId: string, generation: number) {
   return {

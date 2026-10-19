@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { getOrCreateIblCache } from '../ibl/IblPipelineCache';
+import { describe, expect, it, vi } from 'vitest';
+import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
 import type { RenderSystemInternals } from '../record/render-context';
 import { createProbeFilterState } from '../reflection/filter';
 import type { ReflectionProbeFact } from '../reflection/projection';
@@ -16,7 +16,9 @@ type ProbeOwnerFixture = {
 function fixture(intent: 'once' | 'on-change' | 'continuous') {
   const writes: Float32Array[] = [];
   const scope = { generation: 1 } as RenderSystemInternals['deviceScope'];
+  const getCubemapIbl = vi.fn<() => IblPrecomputeOutput | undefined>(() => undefined);
   const owner = new ReflectionProbeRecordOwner({
+    gpuStore: { getCubemapIbl },
     device: {
       caps: { rgba16floatRenderable: true },
       queue: {
@@ -56,7 +58,7 @@ function fixture(intent: 'once' | 'on-change' | 'continuous') {
     spare: undefined,
   } as unknown as NonNullable<ReturnType<(typeof owner)['resourceFor']>>;
   owner.resources.set('0:1', resource);
-  return { owner, fact, resource, writes, scope };
+  return { owner, fact, resource, writes, scope, getCubemapIbl };
 }
 
 describe('ReflectionProbe real resource update ownership', () => {
@@ -148,12 +150,14 @@ describe('ReflectionProbe global diffuse availability', () => {
     intensity: 2,
     rotation: [0, 0.6, 0, 0.8],
   };
-  function ready(scope: RenderSystemInternals['deviceScope']) {
-    const cache = getOrCreateIblCache(scope);
-    cache.irradianceView = {} as NonNullable<typeof cache.irradianceView>;
-    cache.prefilterView = {} as NonNullable<typeof cache.prefilterView>;
-    cache.brdfLutView = {} as NonNullable<typeof cache.brdfLutView>;
-    return cache;
+  function ready(f: ReturnType<typeof fixture>) {
+    const output = {
+      irradianceView: {},
+      prefilterView: {},
+      brdfLutView: {},
+    } as IblPrecomputeOutput;
+    f.getCubemapIbl.mockReturnValue(output);
+    return output;
   }
   function readPayload(f: { writes: Float32Array[] }) {
     const payload = f.writes.at(-1);
@@ -162,23 +166,28 @@ describe('ReflectionProbe global diffuse availability', () => {
   }
   function write(input: SkylightSnapshot | undefined, complete = false) {
     const f = fixture('once');
-    if (complete) ready(f.scope);
+    if (complete) ready(f);
     f.owner.resourceFor('0:1', f.fact, 0, '1', input);
     return { ...f, payload: readPayload(f) };
   }
+  it('preserves constant irradiance independently of a local reflection probe', () => {
+    const { payload } = write({ ...sky, ambientIrradiance: [1, 2, 3] });
+    expect(payload.slice(8, 11)).toEqual([0, 0, 0]);
+    expect(payload.slice(16)).toEqual([1, 2, 3, 0]);
+  });
   it('keeps explicit unavailable image diffuse zero without removing local probe specular', () => {
     const { payload } = write(sky);
-    expect(payload).toHaveLength(16);
+    expect(payload).toHaveLength(20);
     expect(payload[0]).toBe(-2);
     expect(payload.slice(1, 8)).toEqual([0, 0, 0, 2, 2, 2, 0]);
     expect(payload.slice(8, 11)).toEqual([0, 0, 0]);
     expect(payload[11]).toBe(1);
-    expect(payload.slice(12)).toEqual([...new Float32Array(sky.rotation)]);
+    expect(payload.slice(12, 16)).toEqual([...new Float32Array(sky.rotation)]);
   });
   it('retains ready image diffuse and authored rotation', () => {
     const { payload } = write(sky, true);
     expect(payload.slice(8, 11)).toEqual([...new Float32Array([0.8, 1.2, 1.6])]);
-    expect(payload.slice(12)).toEqual([...new Float32Array(sky.rotation)]);
+    expect(payload.slice(12, 16)).toEqual([...new Float32Array(sky.rotation)]);
   });
   it('retains explicit solid-color ambient without an image or cache', () => {
     expect(write({ ...sky, equirectHandle: 0 }).payload.slice(8, 11)).toEqual([
@@ -186,27 +195,16 @@ describe('ReflectionProbe global diffuse availability', () => {
     ]);
   });
   it('retains no-Skylight zero diffuse', () => {
-    expect(write(undefined).payload.slice(8)).toEqual([0, 0, 0, 1, 0, 0, 0, 1]);
-  });
-  it.each([
-    'irradianceView',
-    'prefilterView',
-    'brdfLutView',
-  ] as const)('keeps explicit image diffuse zero when %s is unavailable', (missing) => {
-    const f = fixture('once');
-    const cache = ready(f.scope);
-    delete cache[missing];
-    f.owner.resourceFor('0:1', f.fact, 0, '1', sky);
-    expect(readPayload(f).slice(8, 11)).toEqual([0, 0, 0]);
+    expect(write(undefined).payload.slice(8, 16)).toEqual([0, 0, 0, 1, 0, 0, 0, 1]);
   });
   it('rewrites the same resource through unavailable-ready-unavailable transitions', () => {
     const f = fixture('once');
     const first = f.owner.resourceFor('0:1', f.fact, 0, '1', sky);
     expect(readPayload(f).slice(8, 11)).toEqual([0, 0, 0]);
-    const cache = ready(f.scope);
+    ready(f);
     expect(f.owner.resourceFor('0:1', f.fact, 0, '1', sky)).toBe(first);
     expect(readPayload(f).slice(8, 11)).toEqual([...new Float32Array([0.8, 1.2, 1.6])]);
-    delete cache.irradianceView;
+    f.getCubemapIbl.mockReturnValue(undefined);
     expect(f.owner.resourceFor('0:1', f.fact, 0, '1', sky)).toBe(first);
     expect(readPayload(f).slice(8, 11)).toEqual([0, 0, 0]);
     expect(f.writes).toHaveLength(3);

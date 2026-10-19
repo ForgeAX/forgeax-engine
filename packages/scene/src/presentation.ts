@@ -30,6 +30,7 @@ interface Pose {
   pos: Float32Array;
   rotation: Float32Array;
   scale: Float32Array;
+  shear: Float32Array;
 }
 interface History {
   previous: Pose;
@@ -57,6 +58,7 @@ interface Presentation {
   position: Float32Array;
   rotation: ReturnType<typeof quat.create>;
   scale: Float32Array;
+  shear: Float32Array;
   version: number;
   prepared: number;
   time: number;
@@ -67,22 +69,36 @@ interface Presentation {
 const presentations = new WeakMap<World, Presentation>();
 
 function pose(): Pose {
-  return { pos: new Float32Array(3), rotation: new Float32Array(4), scale: new Float32Array(3) };
+  return {
+    pos: new Float32Array(3),
+    rotation: new Float32Array(4),
+    scale: new Float32Array(3),
+    shear: new Float32Array(3),
+  };
 }
 function readPose(world: World, entity: EntityHandle, target: Pose): boolean {
   const position = readRenderArrayView(world, entity, Transform, 'pos');
   const rotation = readRenderArrayView(world, entity, Transform, 'quat');
   const scale = readRenderArrayView(world, entity, Transform, 'scale');
-  if (position === undefined || rotation === undefined || scale === undefined) return false;
+  const shear = readRenderArrayView(world, entity, Transform, 'shear');
+  if (
+    position === undefined ||
+    rotation === undefined ||
+    scale === undefined ||
+    shear === undefined
+  )
+    return false;
   target.pos.set(position);
   target.rotation.set(rotation);
   target.scale.set(scale);
+  target.shear.set(shear);
   return true;
 }
 function copyPose(from: Pose, to: Pose): void {
   to.pos.set(from.pos);
   to.rotation.set(from.rotation);
   to.scale.set(from.scale);
+  to.shear.set(from.shear);
 }
 function equal(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
   if (a.length !== b.length) return false;
@@ -90,7 +106,12 @@ function equal(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
   return true;
 }
 function samePose(a: Pose, b: Pose): boolean {
-  return equal(a.pos, b.pos) && equal(a.rotation, b.rotation) && equal(a.scale, b.scale);
+  return (
+    equal(a.pos, b.pos) &&
+    equal(a.rotation, b.rotation) &&
+    equal(a.scale, b.scale) &&
+    equal(a.shear, b.shear)
+  );
 }
 function parent(world: World, entity: EntityHandle): number | undefined {
   const value = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
@@ -106,13 +127,16 @@ function validHistory(world: World, entity: EntityHandle, history: History): boo
   const position = readRenderArrayView(world, entity, Transform, 'pos');
   const rotation = readRenderArrayView(world, entity, Transform, 'quat');
   const scale = readRenderArrayView(world, entity, Transform, 'scale');
+  const shear = readRenderArrayView(world, entity, Transform, 'shear');
   return (
     position !== undefined &&
     rotation !== undefined &&
     scale !== undefined &&
     equal(history.current.pos, position) &&
     equal(history.current.rotation, rotation) &&
-    equal(history.current.scale, scale)
+    equal(history.current.scale, scale) &&
+    shear !== undefined &&
+    equal(history.current.shear, shear)
   );
 }
 
@@ -135,6 +159,7 @@ function refresh(world: World, state: Presentation): void {
       history.previous.pos.set(history.current.pos);
       history.previous.rotation.set(history.current.rotation);
       history.previous.scale.set(history.current.scale);
+      history.previous.shear.set(history.current.shear);
     }
     state.dropped = dropped;
   }
@@ -180,18 +205,27 @@ function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 |
         state.scale[axis] =
           (history.previous.scale[axis] ?? 1) +
           ((history.current.scale[axis] ?? 1) - (history.previous.scale[axis] ?? 1)) * alpha;
+        state.shear[axis] =
+          (history.previous.shear[axis] ?? 0) +
+          ((history.current.shear[axis] ?? 0) - (history.previous.shear[axis] ?? 0)) * alpha;
       }
       quat.slerp(state.rotation, history.previous.rotation, history.current.rotation, alpha);
-      mat4.compose(cached.local, state.position, state.rotation, state.scale);
+      mat4.compose(cached.local, state.position, state.rotation, state.scale, state.shear);
     } else {
       const position = readRenderArrayView(world, node, Transform, 'pos');
       const rotation = readRenderArrayView(world, node, Transform, 'quat');
       const scale = readRenderArrayView(world, node, Transform, 'scale');
-      if (position !== undefined && rotation !== undefined && scale !== undefined) {
-        mat4.compose(cached.local, position, rotation, scale);
+      const shear = readRenderArrayView(world, node, Transform, 'shear');
+      if (
+        position !== undefined &&
+        rotation !== undefined &&
+        scale !== undefined &&
+        shear !== undefined
+      ) {
+        mat4.compose(cached.local, position, rotation, scale, shear);
       } else {
         const local = world.get(node, Transform).unwrap();
-        mat4.compose(cached.local, local.pos, local.quat, local.scale);
+        mat4.compose(cached.local, local.pos, local.quat, local.scale, local.shear);
       }
     }
     if (resolved === undefined) cached.matrix.set(cached.local);
@@ -356,6 +390,7 @@ export function registerTransformInterpolation(world: World): () => void {
     position: new Float32Array(3),
     rotation: quat.create(),
     scale: new Float32Array(3),
+    shear: new Float32Array(3),
     version: 0,
     prepared: -1,
     time: -1,

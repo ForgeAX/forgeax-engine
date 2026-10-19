@@ -169,6 +169,7 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
       source: {
         worldId: 0,
         entityKey: options.entity,
+        transform: { world: matrix() },
         material: materialSnapshot,
         materials: [materialSnapshot],
         ...(options.instances === undefined

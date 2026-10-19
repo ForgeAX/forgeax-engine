@@ -28,7 +28,7 @@ const fixtures = vi.hoisted(() => {
 vi.mock('@forgeax/engine-app', () => ({
   createEngineWorkspaceRuntime: vi.fn(() => fixtures.runtime),
 }));
-vi.mock('../software-capture.js', () => ({
+vi.mock('../browser-capture.js', () => ({
   createBrowserCapture: vi.fn(() => fixtures.browser),
 }));
 vi.mock('../workspace-provider.js', () => ({

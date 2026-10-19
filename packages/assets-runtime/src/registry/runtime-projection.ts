@@ -2,7 +2,7 @@ import { err, ok, type Result } from '@forgeax/engine-rhi';
 import { ASSET_ERROR_HINTS, AssetError, type CatalogProjection } from '@forgeax/engine-types';
 import type { CatalogRecord } from './catalog';
 
-export interface RuntimeProjection {
+interface RuntimeProjection {
   readonly subject: CatalogProjection['subject'];
   readonly execution: CatalogProjection['execution'];
   readonly lifecycle: CatalogProjection['lifecycle'];

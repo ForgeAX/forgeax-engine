@@ -36,7 +36,7 @@ describe('RectAreaLight source texture extraction', () => {
     world
       .spawn(
         { component: Transform, data: { pos: [0, 3, 0] } },
-        { component: SpotLight, data: { direction: [0, -1, 0], cookie: shared } },
+        { component: SpotLight, data: { castShadow: true, direction: [0, -1, 0], cookie: shared } },
       )
       .unwrap();
     world

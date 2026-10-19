@@ -123,7 +123,14 @@ export interface ShadowStressEvidence {
     readonly spotShadowCount: number;
     readonly directionalCascadeCount: number;
   };
+  /** Workload Updates after the first ready presentation has completed. */
   frameProgress: number;
+  /** Updates before the first ready GPU completion; never part of the sample window. */
+  preparationFrames: number;
+  preparationCompletedFrames: number;
+  readyFrameId: number | null;
+  completedFrames: number;
+  pendingMeasuredFrames: number;
   simulationSeconds: number;
   appRendererErrors: Array<{ readonly code: string; readonly hint: string }>;
   profileCapture: unknown;
@@ -636,6 +643,11 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
       directionalCascadeCount: DIRECTIONAL_CASCADE_COUNT,
     },
     frameProgress: 0,
+    preparationFrames: 0,
+    preparationCompletedFrames: 0,
+    readyFrameId: null,
+    completedFrames: 0,
+    pendingMeasuredFrames: 0,
     simulationSeconds: 0,
     appRendererErrors: errors,
     profileCapture: null,
@@ -659,7 +671,33 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     errors.push({ code: 'profiler-start-failed', hint: errorText(capture.error) });
     return false;
   };
-  if (warmupFrames === 0 && !startProfile()) return;
+  app.renderer.subscribe((event) => {
+    if (event.kind !== 'frame-submitted') return;
+    const measured = evidence.readyFrameId !== null;
+    if (measured && event.receipt.presentation === 'pending') {
+      errors.push({
+        code: 'presentation-not-ready',
+        hint: `Workload frame ${evidence.frameProgress}: ${event.receipt.presentationPendingReason?.code}`,
+      });
+    }
+    void event.receipt.completed.then((result) => {
+      if (!result.ok) {
+        errors.push({ code: result.error.code, hint: errorText(result.error) });
+        return;
+      }
+      if (!measured) {
+        evidence.preparationCompletedFrames += 1;
+        if (event.receipt.presentation === 'ready' && evidence.readyFrameId === null) {
+          evidence.readyFrameId = event.frameId;
+          // App retains its profiler session through the current frame.
+          if (warmupFrames === 0) startProfile();
+        }
+      } else {
+        evidence.completedFrames += 1;
+        if (event.receipt.presentation !== 'ready') evidence.pendingMeasuredFrames += 1;
+      }
+    });
+  });
 
   world
     .addSystem(Update, {
@@ -669,6 +707,10 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         { write: [Transform], with: [Camera] },
       ],
       fn: (_world, results) => {
+        if (evidence.readyFrameId === null) {
+          evidence.preparationFrames += 1;
+          return;
+        }
         evidence.frameProgress += 1;
         evidence.simulationSeconds += FIXED_DELTA_SECONDS;
         const seconds = evidence.simulationSeconds;
@@ -723,6 +765,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         name: 'shadow-stress-movers',
         queries: [{ write: [Instances] }],
         fn: (world) => {
+          if (evidence.readyFrameId === null) return;
           const active = options.activeMoverCount;
           writeMoverTransforms(moverTransforms, options.moverCount, evidence.simulationSeconds, active);
           if (options.moverWrite === 'set') {
@@ -744,6 +787,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         name: 'shadow-stress-occasional',
         queries: [{ write: [Transform] }],
         fn: (world) => {
+          if (evidence.readyFrameId === null) return;
           const period = options.occasionalPeriod;
           const frame = evidence.frameProgress % period;
           const lift = (Math.floor(evidence.frameProgress / period) % 2) * 0.2;
@@ -769,6 +813,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         name: 'shadow-stress-spawn-storm',
         queries: [],
         fn: (_world, _results, commands) => {
+          if (evidence.readyFrameId === null) return;
           for (const entity of storm) commands.despawn(entity);
           const positions = spawnStormPositions(options.spawnStormCount, evidence.frameProgress);
           const next: EntityHandle[] = [];

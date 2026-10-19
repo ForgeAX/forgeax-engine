@@ -140,7 +140,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // w7 - 5 component schema runtime registration + multi-component spawn (TDD red).
   //
   // Locks plan-strategy 7.2 naming + requirements IN-1 schema field set:
-  //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3]   = 10 f32
+  //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3] + shear:[f32x3]
   //   MeshFilter:         assetHandle:'shared<MeshAsset>' (u32)
   //   MeshRenderer:       materials:'array<shared<MaterialAsset>>' (u32)
   //   Camera:             fov:f32 + aspect:f32 + near:f32 + far:f32   = 4 f32
@@ -157,15 +157,16 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // abstraction: components are flat-scalar SoA columns, not nested objects).
 
   describe('w7 - 5 component schemas register through defineComponent', () => {
-    it('Transform has the three authored local array fields', () => {
+    it('Transform has the four authored local affine array fields', () => {
       expect(Transform.name).toBe('Transform');
-      expect(Object.keys(componentSchema(Transform)).length).toBe(3);
+      expect(Object.keys(componentSchema(Transform)).length).toBe(4);
       // pos: inline [x, y, z]
       expect(componentSchema(Transform).pos).toBe('array<f32, 3>');
       // quat: inline [x, y, z, w] quaternion
       expect(componentSchema(Transform).quat).toBe('array<f32, 4>');
       // scale: inline [x, y, z]
       expect(componentSchema(Transform).scale).toBe('array<f32, 3>');
+      expect(componentSchema(Transform).shear).toBe('array<f32, 3>');
       expect(GlobalTransform.name).toBe('GlobalTransform');
       expect(componentSchema(GlobalTransform).world).toBe('array<f32, 16>');
     });
@@ -186,9 +187,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       });
     });
 
-    it('Camera has 32 fields including target, targetLayer, exposure, and color grading columns', () => {
+    it('Camera has 33 fields including target, targetLayer, exposure, and color grading columns', () => {
       expect(Camera.name).toBe('Camera');
-      expect(Object.keys(componentSchema(Camera)).length).toBe(32);
+      expect(Object.keys(componentSchema(Camera)).length).toBe(33);
       expect(componentSchema(Camera).targetLayer).toBe('u32');
       expect(componentSchema(Camera).fov).toBe('f32');
       expect(componentSchema(Camera).aspect).toBe('f32');
@@ -209,8 +210,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(Camera).bloom).toBe('f32');
       expect(componentSchema(Camera).bloomThreshold).toBe('f32');
       expect(componentSchema(Camera).bloomIntensity).toBe('f32');
-      expect(componentSchema(Camera).bloomSoftKnee).toBe('f32');
-      expect(componentSchema(Camera).bloomScatter).toBe('f32');
+      expect(componentSchema(Camera).bloomSmoothWidth).toBe('f32');
+      expect(componentSchema(Camera).bloomRadius).toBe('f32');
       // feat-20260709 M3: clear-color quartet collapsed into one inline
       // array<f32,4> column (clearColor); per-axis scalars are gone.
       expect(componentSchema(Camera).clearColor).toBe('array<f32, 4>');
@@ -467,6 +468,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(Transform).pos).toBe('array<f32, 3>');
       expect(componentSchema(Transform).quat).toBe('array<f32, 4>');
       expect(componentSchema(Transform).scale).toBe('array<f32, 3>');
+      expect(componentSchema(Transform).shear).toBe('array<f32, 3>');
     });
 
     it('ChildOf / Children frozen tokens (schema immutable)', () => {
@@ -1296,7 +1298,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //        refactoring — every field value must stay byte-identical)
   // ────────────────────────────────────────────────────────────────────────────
 
-  describe('camera factory 32-field schema snapshot (w14 AC-07 invariant)', () => {
+  describe('camera factory 33-field schema snapshot (w14 AC-07 invariant)', () => {
     it('perspective({ fov: Math.PI/3, aspect: 16/9 }) — all 20 fields match reference', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 16 / 9 });
       // Caller-supplied projection with shared clip defaults
@@ -1319,10 +1321,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
       expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
-      expect(pod.bloomSoftKnee).toBeCloseTo(0.5, 6);
-      expect(pod.bloomScatter).toBeCloseTo(0.7, 6);
+      expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
+      expect(pod.bloomRadius).toBeCloseTo(0, 6);
       // Clear-color default: transparent black array [0,0,0,0] (feat-20260709 M3;
       // E9 factory-pathway carries the new array default via
       // cameraPodFromDefaults()).
@@ -1347,10 +1349,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.whitePoint).toBeCloseTo(4.0, 6);
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
       expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
-      expect(pod.bloomSoftKnee).toBeCloseTo(0.5, 6);
-      expect(pod.bloomScatter).toBeCloseTo(0.7, 6);
+      expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
+      expect(pod.bloomRadius).toBeCloseTo(0, 6);
     });
 
     it('orthographic({ left: -10, right: 10, bottom: -10, top: 10 }) — all 20 fields match reference', () => {
@@ -1374,10 +1376,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
       expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
-      expect(pod.bloomSoftKnee).toBeCloseTo(0.5, 6);
-      expect(pod.bloomScatter).toBeCloseTo(0.7, 6);
+      expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
+      expect(pod.bloomRadius).toBeCloseTo(0, 6);
       // Clear-color default: transparent black array [0,0,0,0] (feat-20260709 M3).
       expect(Array.from(pod.clearColor)).toEqual([0, 0, 0, 0]);
       // aspect-sync opt-out default (feat-20260617 / M3): the sidecar only
@@ -1399,16 +1401,16 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.tonemap).toBe(TONEMAP_NONE);
     });
 
-    it('perspective + orthographic 31-field payload counts (31 factory Camera values)', () => {
+    it('perspective + orthographic 32-field payload counts (32 factory Camera values)', () => {
       const p = perspective({ fov: 60, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
-      // Both return exactly 31 values (including targetLayer 0): Camera.fields also
+      // Both return exactly 32 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
       // The returned values include exposure and color grading columns +
       // autoAspect bool column; feat-20260709 M3 collapsed the 4-scalar
       // clear-color quartet into one inline array<f32,4>).
-      expect(Object.keys(p).length).toBe(31);
-      expect(Object.keys(o).length).toBe(31);
+      expect(Object.keys(p).length).toBe(32);
+      expect(Object.keys(o).length).toBe(32);
     });
   });
 
@@ -1417,7 +1419,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // ────────────────────────────────────────────────────────────────────────────
 
   describe('Camera.fields reflection (w14 AC-07 SSOT)', () => {
-    it('Camera.fields has exactly 32 keys matching the Camera column set', () => {
+    it('Camera.fields has exactly 33 keys matching the Camera column set', () => {
       const keys = Object.keys(Camera.fields).sort();
       expect(keys).toEqual([
         'antialias',
@@ -1425,8 +1427,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'autoAspect',
         'bloom',
         'bloomIntensity',
-        'bloomScatter',
-        'bloomSoftKnee',
+        'bloomRadius',
+        'bloomSmoothWidth',
         'bloomThreshold',
         'bottom',
         'clearColor',
@@ -1441,6 +1443,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'left',
         'near',
         'projection',
+        'projectionOffset',
         'rangeEv',
         'rates',
         'right',
@@ -1462,7 +1465,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
             ? 'bool'
             : key === 'clearColor'
               ? 'array<f32, 4>'
-              : key === 'rangeEv' || key === 'rates'
+              : key === 'rangeEv' || key === 'rates' || key === 'projectionOffset'
                 ? 'array<f32, 2>'
                 : key === 'colorLut'
                   ? 'shared<TextureAsset>'
@@ -1486,6 +1489,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // projection factories inherit the same near/far defaults.
       const d = Camera.fields;
       expect(d.projection.default).toBe(0);
+      expect(Array.from(d.projectionOffset.default as Float32Array)).toEqual([0, 0]);
       expect(d.left.default).toBe(-1);
       expect(d.right.default).toBe(1);
       expect(d.bottom.default).toBe(-1);
@@ -1497,10 +1501,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(d.historyVersion.default).toBe(0);
       expect(d.targetLayer.default).toBe(0);
       expect(d.bloom.default).toBe(0);
-      expect(d.bloomThreshold.default).toBeCloseTo(1.0, 6);
+      expect(d.bloomThreshold.default).toBeCloseTo(0, 6);
       expect(d.bloomIntensity.default).toBeCloseTo(1.0, 6);
-      expect(d.bloomSoftKnee.default).toBeCloseTo(0.5, 6);
-      expect(d.bloomScatter.default).toBeCloseTo(0.7, 6);
+      expect(d.bloomSmoothWidth.default).toBeCloseTo(0.01, 6);
+      expect(d.bloomRadius.default).toBeCloseTo(0, 6);
       // Clear-color default: explicit layer-2 transparent black array (feat-20260709
       // M3; array layer-3 fallback is all-zero so the default MUST be explicit,
       // D-5).
@@ -1514,7 +1518,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(d.temperature.default).toBe(6504);
       expect(d.tint.default).toBe(0);
       expect(d.colorLut.default).toBe(0);
-      expect(d.colorLutStrength.default).toBe(0);
+      expect(d.colorLutStrength.default).toBe(1);
       expect(d.transparency.default).toBe(0);
       // Projection shape stays explicit; clip defaults belong to Camera.
       expect(d.fov.default).toBeUndefined();
@@ -1530,6 +1534,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         near: 0.1,
         far: 2000,
         projection: 0,
+        projectionOffset: new Float32Array([0, 0]),
         left: -1,
         right: 1,
         bottom: -1,
@@ -1541,10 +1546,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         historyVersion: 0,
         targetLayer: 0,
         bloom: 0,
-        bloomThreshold: 1.0,
+        bloomThreshold: 0,
         bloomIntensity: 1.0,
-        bloomSoftKnee: 0.5,
-        bloomScatter: 0.7,
+        bloomSmoothWidth: 0.01,
+        bloomRadius: 0,
         clearColor: new Float32Array([0, 0, 0, 0]),
         autoAspect: true,
         exposureMode: 0,
@@ -1554,7 +1559,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         temperature: 6504,
         tint: 0,
         colorLut: 0,
-        colorLutStrength: 0,
+        colorLutStrength: 1,
         transparency: 0,
       });
     });
@@ -1764,7 +1769,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.exposure).toBeCloseTo(1.0, 6);
     });
 
-    it('perspective return value has all 31 factory Camera fields', () => {
+    it('perspective return value has all 32 factory Camera fields', () => {
       const pod = perspective({ fov: 60, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
@@ -1773,8 +1778,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'autoAspect',
         'bloom',
         'bloomIntensity',
-        'bloomScatter',
-        'bloomSoftKnee',
+        'bloomRadius',
+        'bloomSmoothWidth',
         'bloomThreshold',
         'bottom',
         'clearColor',
@@ -1789,6 +1794,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'left',
         'near',
         'projection',
+        'projectionOffset',
         'rangeEv',
         'rates',
         'right',

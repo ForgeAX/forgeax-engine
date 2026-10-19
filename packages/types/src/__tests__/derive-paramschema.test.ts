@@ -380,6 +380,18 @@ describe('findUndeclaredSampledTextures', () => {
     expect(findUndeclaredSampledTextures(wgsl, [])).toEqual([]);
   });
 
+  it('ignores nested comments and never joins tokens across a comment', () => {
+    expect(
+      findUndeclaredSampledTextures(
+        '/* outer /* inner */ textureSample(baseColorTexture, smp, uv) */',
+        [],
+      ),
+    ).toEqual([]);
+    expect(
+      findUndeclaredSampledTextures('texture/* separation */Sample(baseColorTexture, smp, uv)', []),
+    ).toEqual([]);
+  });
+
   it('ignores commented-out textureSample calls (line + block comments)', () => {
     const lineComment = '// let s = textureSample(baseColorTexture, smp, uv);';
     expect(findUndeclaredSampledTextures(lineComment, [])).toEqual([]);

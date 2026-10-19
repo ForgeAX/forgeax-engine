@@ -20,3 +20,16 @@ export interface PhysicsContactSnapshot {
   readonly deltaTime: number;
   readonly manifolds: readonly PhysicsContactManifold[];
 }
+
+/** Strict world-space dot-product predicate applied to the normal toward the other entity. */
+export interface PhysicsContactNormalFilter {
+  readonly direction: PhysicsVector;
+  readonly minimumDot: number;
+}
+
+/** Unique entities with a nonempty solver contact in one completed step. */
+export interface PhysicsContactNeighborsSnapshot {
+  readonly fixedStep: number;
+  readonly deltaTime: number;
+  readonly entities: readonly number[];
+}

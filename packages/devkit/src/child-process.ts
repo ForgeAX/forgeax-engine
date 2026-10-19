@@ -5,13 +5,13 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-export interface CommandInvocation {
+interface CommandInvocation {
   readonly file: string;
   readonly args: readonly string[];
   readonly options: Pick<ExecFileOptions, 'windowsVerbatimArguments'>;
 }
 
-export interface CommandOutput {
+interface CommandOutput {
   readonly stdout: string;
   readonly stderr: string;
 }

@@ -3,14 +3,15 @@
 // === re-exports =====================================================================
 
 export type { ParamSchemaEntry } from '@forgeax/engine-types';
+export { type ResolvedMaterial, resolveMaterialAsset } from '@forgeax/engine-types';
 export { checkBindGroupOverflow, compareMaterialBindings } from './compare-param-schema.js';
 export {
   type CompileOptions,
   type CompileResult,
   compileShader,
-  projectShaderConditionals,
 } from './compile.js';
 export { getShaderCompilerFingerprint } from './compiler-fingerprint.js';
+export { projectShaderConditionals } from './conditionals.js';
 export {
   compileFailed,
   err,
@@ -99,7 +100,6 @@ export {
   cookRayMaterial,
   type RayMaterialCookRequest,
 } from './material/ray-material.js';
-export { type ResolvedMaterial, resolveMaterialAsset } from './material/resolve.js';
 export { validateMaterialProgramBindings } from './material/resource-contract.js';
 export { lowerSceneMaterialAddresses } from './material/scene-material-address.js';
 export {

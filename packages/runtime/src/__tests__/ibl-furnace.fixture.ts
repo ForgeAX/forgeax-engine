@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   Materials,
@@ -15,7 +16,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -42,10 +42,12 @@ const CENTERS = FURNACE_ROUGHNESS.map((_, i) => [
   -DEPTH,
 ]);
 
-/** Authored and naga-normalized forms of the compensated albedo return. */
-export const COMPENSATED = /return \(?fssEss \+ \(?fms \* ems\)?\)?;/g;
-/** Single-scatter split sum: the multiple-scattering term removed, nothing else. */
-const singleScatter = (wgsl: string) => wgsl.replace(COMPENSATED, 'return fssEss;');
+/** Authored and naga-normalized forms of the separated environment response. */
+export const COMPENSATED =
+  /return (EnvironmentScattering\w*)\((single\w*), ([A-Za-z_]\w*), (ems\w*)\);/g;
+/** Preserve directional single scattering; remove only the irradiance term. */
+const singleScatter = (wgsl: string) =>
+  wgsl.replace(COMPENSATED, 'return $1($2, vec3<f32>(0.0), $4);');
 
 /** The same engine manifest with every composed program reduced to single scattering. */
 export function singleScatterManifest(
@@ -176,7 +178,7 @@ export function linearLuminance(bytes: Uint8Array, bytesPerRow = FURNACE_SIZE * 
   for (let y = 0; y < FURNACE_SIZE; y++)
     for (let x = 0; x < FURNACE_SIZE; x++) {
       const at = (channel: number) =>
-        halfToFloat(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true));
+        halfFloat.f16ToF32(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true));
       out[y * FURNACE_SIZE + x] = 0.2126 * at(0) + 0.7152 * at(1) + 0.0722 * at(2);
     }
   return out;
@@ -297,7 +299,7 @@ export async function replayFurnace(
     const target = shading.at(-1);
     const color = target?.attachments?.colorViewHandleIds[0];
     if (target === undefined || color === undefined)
-      throw new Error('no captured draw evaluates specularEnvironmentAlbedo');
+      throw new Error('no captured draw evaluates environmentScattering');
     const read = async (source: V7Tape) => {
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const device = (

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 import UPNG from 'upng-js';
 import { distanceFieldTexel } from '../../packages/geometry/dist/index.mjs';
 import { CARD_LOOKUP_STRIDE } from '../../packages/render/dist/internal.mjs';
@@ -70,15 +72,9 @@ await png(
     ][lv.getUint32((3 + y * 32 + x) * CARD_LOOKUP_STRIDE, true)],
 );
 function half(view, offset) {
-  const v = view.getUint16(offset, true),
-    e = (v >> 10) & 31,
-    m = v & 1023;
-  return (v & 32768 ? -1 : 1) * (e === 0 ? m * 2 ** -24 : (1 + m / 1024) * 2 ** (e - 15));
+  return halfFloat.f16ToF32(view.getUint16(offset, true));
 }
-const srgb = (v) =>
-  Math.round(
-    255 * Math.max(0, Math.min(1, v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055)),
-  );
+const srgb = (v) => Math.round(255 * Math.max(0, Math.min(1, linearChannelToSrgb(v))));
 function decodeNormal(x, y) {
   const z = 1 - Math.abs(x) - Math.abs(y);
   if (z < 0) [x, y] = [(1 - Math.abs(y)) * (x < 0 ? -1 : 1), (1 - Math.abs(x)) * (y < 0 ? -1 : 1)];

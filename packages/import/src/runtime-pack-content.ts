@@ -1,6 +1,7 @@
 import {
   copyPackData,
   decodePackBlob,
+  decodePackData,
   type FixedPackPublication,
   validateFixedPackPublication,
   validatePackBlob,
@@ -21,7 +22,6 @@ import type {
   RuntimePackSnapshot,
   RuntimeScriptablePackSource,
 } from './runtime-pack.js';
-import { decodeRuntimePackData } from './runtime-pack-data.js';
 import { scriptablePackFingerprint as fingerprint } from './scriptable-pack-fingerprint.js';
 
 function record(value: unknown): Record<string, unknown> {
@@ -171,7 +171,7 @@ export function parseRuntimePackInstance(value: unknown): PackInstanceJson {
 }
 /** Structural validation precedes dependency recovery or any current publication. */
 export function parseRuntimePackSnapshot(value: unknown): RuntimePackSnapshot {
-  const copy = fields(decodeRuntimePackData(copyPackData(value) as object), [
+  const copy = fields(decodePackData(copyPackData(value) as object), [
     'schemaVersion',
     'packs',
     'instances',

@@ -8,7 +8,7 @@ import type {
   PeerId,
 } from '../src/endpoint/endpoint';
 import { createMemoryEndpointPair } from '../src/endpoint/memory';
-import { ENDPOINT_ERROR_HINTS, ENDPOINT_EXPECTED, EndpointError } from '../src/endpoint/errors';
+import { EndpointError } from '../src/endpoint/errors';
 import { createAuthorityCoordinator } from '../src/replication/authority';
 import { decodeReplicationPacket, encodeReplicationPacket } from '../src/replication/codec';
 import { createReplicaCoordinator } from '../src/replication/replica';
@@ -56,8 +56,6 @@ async function flushMicrotasks(): Promise<void> {
 function connectionFailure(): EndpointError {
   return new EndpointError({
     code: 'connection-failed',
-    expected: ENDPOINT_EXPECTED['connection-failed'],
-    hint: ENDPOINT_ERROR_HINTS['connection-failed'],
     detail: { address: 'memory', cause: 'transient failure' },
   });
 }
@@ -65,8 +63,6 @@ function connectionFailure(): EndpointError {
 function connectionClosed(peerId: PeerId): EndpointError {
   return new EndpointError({
     code: 'connection-closed',
-    expected: ENDPOINT_EXPECTED['connection-closed'],
-    hint: ENDPOINT_ERROR_HINTS['connection-closed'],
     detail: { peerId },
   });
 }

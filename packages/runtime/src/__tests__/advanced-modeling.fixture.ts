@@ -5,6 +5,7 @@ import {
   type Vec2Point,
   type Vec3Point,
 } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -17,7 +18,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -44,7 +44,9 @@ const hole: Vec2Point[] = [
 function floats(bytes: Uint8Array, width: number, height: number, stride: number): number[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return Array.from({ length: width * height * 4 }, (_, i) =>
-    halfToFloat(view.getUint16(Math.floor(i / (width * 4)) * stride + (i % (width * 4)) * 2, true)),
+    halfFloat.f16ToF32(
+      view.getUint16(Math.floor(i / (width * 4)) * stride + (i % (width * 4)) * 2, true),
+    ),
   );
 }
 export async function verifyAdvancedModeling(

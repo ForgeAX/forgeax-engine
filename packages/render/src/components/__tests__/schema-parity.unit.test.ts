@@ -12,7 +12,7 @@ describe('render schema parity', () => {
   it('keeps branded mesh and merged light fields in the canonical schema', () => {
     expect(MeshFilter.fields.assetHandle.type).toBe('shared<MeshAsset>');
     expect(DirectionalLight.fields.direction.type).toBe('array<f32, 3>');
-    expect(DirectionalLight.fields.castShadow.default).toBe(true);
+    expect(DirectionalLight.fields.castShadow.default).toBe(false);
     expect(DirectionalLight.fields.shadowFilter.labels).toEqual({
       pcf1: 1,
       pcf3: 2,

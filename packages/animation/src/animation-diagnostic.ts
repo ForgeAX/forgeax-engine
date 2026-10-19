@@ -1,29 +1,24 @@
 import type { World } from '@forgeax/engine-ecs';
 
-export type AnimationDiagnosticCode =
-  | 'animation-property-invalid'
-  | 'animation-target-missing'
-  | 'animation-target-transform-missing'
-  | 'animation-target-id-duplicate'
-  | 'animation-target-owner-stale'
-  | 'animation-channel-missing'
-  | 'animation-target-morph-weights-missing'
-  | 'animation-morph-weight-count-mismatch';
+const DIAGNOSTIC_CODES = {
+  'property-invalid': 'animation-property-invalid',
+  'target-missing': 'animation-target-missing',
+  'transform-missing': 'animation-target-transform-missing',
+  'target-id-duplicate': 'animation-target-id-duplicate',
+  'target-stale': 'animation-target-owner-stale',
+  'channel-missing': 'animation-channel-missing',
+  'morph-weights-missing': 'animation-target-morph-weights-missing',
+  'morph-weight-count-mismatch': 'animation-morph-weight-count-mismatch',
+} as const;
+
+export type AnimationDiagnosticCode = (typeof DIAGNOSTIC_CODES)[keyof typeof DIAGNOSTIC_CODES];
 
 export interface AnimationDiagnosticDetail {
   readonly player: number;
   readonly clip: number;
   readonly channel: number;
   readonly targetId: string;
-  readonly reason:
-    | 'property-invalid'
-    | 'target-missing'
-    | 'transform-missing'
-    | 'target-id-duplicate'
-    | 'target-stale'
-    | 'channel-missing'
-    | 'morph-weights-missing'
-    | 'morph-weight-count-mismatch';
+  readonly reason: keyof typeof DIAGNOSTIC_CODES;
   readonly target?: number;
   readonly property?: 'translation' | 'rotation' | 'scale' | 'weights' | 'property';
   readonly binding?: string;
@@ -59,21 +54,26 @@ export function isAnimationDevMode(): boolean {
   return Boolean((import.meta as { env?: { DEV?: unknown } }).env?.DEV) || proc !== undefined;
 }
 
-export function emitAnimationDiagnostic(world: World, diagnostic: AnimationDiagnostic): void {
+export function emitAnimationDiagnostic(
+  world: World,
+  detail: AnimationDiagnosticDetail,
+  hint: string,
+): void {
   if (!isAnimationDevMode()) return;
   let emitted = emittedKeysByWorld.get(world);
   if (emitted === undefined) {
     emitted = new Set();
     emittedKeysByWorld.set(world, emitted);
   }
-  const { player, clip, channel, targetId, reason } = diagnostic.detail;
+  const { player, clip, channel, targetId, reason } = detail;
   const emittedKey = `${player}|${clip}|${channel}|${targetId}|${reason}`;
   if (emitted.has(emittedKey)) return;
   emitted.add(emittedKey);
 
   const frozen = Object.freeze({
-    ...diagnostic,
-    detail: Object.freeze({ ...diagnostic.detail }),
+    code: DIAGNOSTIC_CODES[reason],
+    hint,
+    detail: Object.freeze({ ...detail }),
   });
   for (const listener of listeners) {
     try {

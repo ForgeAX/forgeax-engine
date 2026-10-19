@@ -3,6 +3,87 @@ import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
 
 describe('registry-owned material programs', () => {
+  it('reuses sampled texture facts while checking each staged schema and exact source', () => {
+    const source = `// textureSample(normalTexture, s, uv)
+      fn read() { textureSampleLevel(baseColorTexture, s, uv, 0); }
+      /* textureSample(metallicRoughnessTexture, s, uv) */`;
+    const receiving = new ShaderRegistry({ manifestUrl: undefined });
+    const warmed = receiving.materialProgram(source);
+    expect(warmed.sampledUserTextureFields).toEqual(['baseColorTexture']);
+    expect(Object.isFrozen(warmed.sampledUserTextureFields)).toBe(true);
+    const staged = new ShaderRegistry({ manifestUrl: undefined });
+    const schema = [{ name: 'baseColorTexture', type: 'texture2d' as const }];
+    staged.installMaterialArtifact('game::valid', { source, paramSchema: schema }, receiving);
+    receiving.installMaterialArtifactsFrom(staged);
+    expect(receiving.findMaterialArtifact('game::valid').unwrap().program).toBe(warmed);
+    expect(() =>
+      staged.installMaterialArtifact('game::missing', { source, paramSchema: [] }, receiving),
+    ).toThrow('samples texture(s) [baseColorTexture]');
+    const changed = `${source}\nfn normal() { textureSample(normalTexture, s, uv); }`;
+    expect(() =>
+      staged.installMaterialArtifact(
+        'game::changed',
+        { source: changed, paramSchema: schema },
+        receiving,
+      ),
+    ).toThrow('samples texture(s) [normalTexture]');
+    expect(receiving.findMaterialArtifact('game::missing').ok).toBe(false);
+    expect(receiving.findMaterialArtifact('game::changed').ok).toBe(false);
+    schema.push({ name: 'normalTexture', type: 'texture2d' });
+    expect(receiving.findMaterialArtifact('game::valid').unwrap().paramSchema).toHaveLength(1);
+    expect(receiving.forkForDevice({ createShaderModule: vi.fn() }).materialProgram(source)).toBe(
+      warmed,
+    );
+  });
+
+  it.each([
+    ['struct input', 'struct Input { @location(0) pos: vec3f } @vertex fn main(v: Input) {}', true],
+    ['direct input', '@vertex fn main(@location(0) pos: vec3f) {}', true],
+    [
+      'fullscreen output',
+      'struct Output { @location(0) uv: vec2f } @vertex fn main(@builtin(vertex_index) id: u32) -> Output {}',
+      false,
+    ],
+    [
+      'commented input',
+      '/* outer /* inner */ struct Input { @location(0) pos: vec3f } @vertex fn unused(v: Input) {} */ @vertex fn main(@builtin(vertex_index) id: u32) {}',
+      false,
+    ],
+    [
+      'separated tokens',
+      'struct/**/Input { @location(0) pos: vec3f } @vertex/**/fn main(v: Input) {}',
+      true,
+    ],
+    [
+      'exact type name',
+      'struct Input { @location(0) pos: vec3f } struct InputExtra { @builtin(vertex_index) id: u32 } @vertex fn main(v: InputExtra) {}',
+      false,
+    ],
+  ] as const)('retains the vertex input requirement with the immutable program: %s', (_name, source, required) => {
+    const registry = new ShaderRegistry({ manifestUrl: undefined });
+    const program = registry.materialProgram(source);
+    expect(program.vertexInputRequired).toBe(required);
+    expect(programs.materialShaderVertexInputRequired(source)).toBe(required);
+    expect(registry.forkForDevice({ createShaderModule: vi.fn() }).materialProgram(source)).toBe(
+      program,
+    );
+  });
+  it('selects the first declared vertex input with exact type names and preserves a UV absence', () => {
+    const source = `struct Output { @location(0) uv7: vec2f }
+      struct Input { @location(0) position: vec3f }
+      struct InputExtra { @location(1) uv3: vec2f }
+      @vertex fn first(v: InputExtra) -> Output { return Output(); }
+      @vertex fn second(v: Input) -> Output { return Output(); }`;
+    expect(programs.createMaterialShaderProgram(source).uvSetCount).toBeUndefined();
+    expect(
+      programs.createMaterialShaderProgram(source.replace('position: vec3f', 'uv1: vec2f'))
+        .uvSetCount,
+    ).toBe(2);
+    expect(
+      programs.createMaterialShaderProgram(source.replace('@vertex fn second', 'fn second'))
+        .uvSetCount,
+    ).toBe(4);
+  });
   it.each([
     ['line masks block opener', '// /* @group(2) @binding(3)\n', 'skin'],
     ['block masks line opener', '/* // @group(2) @binding(3)\n */', 'skin'],

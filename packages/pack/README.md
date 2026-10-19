@@ -797,7 +797,7 @@ state across entries, shared Engine identities and their owner lifetime.
 
 `FixedPackPublication` keeps complete Pack/Catalog/receipt evidence and original
 artifact bytes. `PackBlob` writes canonical base64 strings and reads both those
-strings and previously saved numeric byte arrays. `encodePackBlob` / `decodePackBlob`
+strings and previously saved numeric byte arrays. Types `encodeBase64` / Pack `decodePackBlob`
 are the shared JSON boundary; artifact format, compression and integrity are unchanged.
 Its optional `executions[target]` groups portable programs and
 explicit tool contracts; each plugin must be covered by at least one prepared
@@ -868,8 +868,12 @@ subclasses are rejected. Views retain byte offsets, lengths and backing aliases;
 unreferenced backing bytes are cleared. Runtime publication uses this same capture
 contract at the consuming owner boundary. Encoded Pack artifacts remain the portable
 storage and transport representation, with real integrity descriptors produced only
-when their bytes exist. See Import's `runtime-pack-source/2` snapshot contract for
-portable source archives.
+when their bytes exist. Pack's `encodePackData` / `decodePackData` own the shared
+binary transport table and the same typed-array allowlist as capture. They accept
+captured plain-object snapshot roots; root arrays and binary views are rejected.
+Encoding reserves the root `binary` field and rejects collisions before data can
+be overwritten. Nested author objects need no reserved fields. See Import's
+`runtime-pack-source/2` snapshot contract for portable source archives.
 
 Material publication uniqueness and direct/scene-index completeness include the
 color input derived from each ABI receipt. Plain and colored programs may share
@@ -886,17 +890,27 @@ An artifact may declare `delivery: 'stream'`. Finalization retains it and includ
 
 ### Immutable build catalog transport
 
-`pack-index.json` keeps the legacy array when its rows have no repeated complete
-publication. Repeated source envelopes use `pack-index-publications/1`: `entries`
-carry a `publicationIndex` into `publications`. `encodeCatalogWire` preserves every
-row and every field of the complete envelope; `decodeCatalogWire` restores the
-ordinary Catalog rows before existing identity, revision and scene-fence checks.
-Different receipts, output sets or source revisions remain separate table entries.
+`pack-index.json` keeps the array when its rows have no repeated complete
+publication or projection. Repeated values use `pack-index-tables/1`: `entries`
+carry a `publicationIndex` into `publications` and a `projectionIndex` into
+`projections`. The latter shares the complete producer operation matrix, reasons
+and last-known-good locators; it never regenerates policy from a row's kind.
+`encodeCatalogWire` preserves every row and every field; `decodeCatalogWire`
+restores ordinary Catalog rows before existing identity, revision and scene-fence
+checks. Different receipts, output sets, source revisions or projection values
+remain separate table entries. Equal values regain shared readonly identity after
+JSON transport. Encoder scratch indices are released after that one catalog.
+Encoding retains one serialized key per distinct publication or projection and only a numeric
+table index per object. Independently restored equal envelopes do not
+retain repeated serialized output rosters; the bounded-heap regression exercises
+this path with 4,096 rows and complete 512-output publications.
 The decoder returns `Result<readonly CatalogEntry[], AssetError>`; invalid
 references, inline conflicts and unused table entries return the existing
-`asset-parse-failed` code with the failing field and index.
+`asset-parse-failed` code with the failing field and index. The previous compact
+schema is retired: rebuild catalogs with this Engine before loading them. Plain
+Catalog arrays and the outer runtime scope protocol remain unchanged.
 Scoped snapshots retain their existing schema and publication authority. Bound
-production catalogs encode `entries` with the same array-or-compact transport;
+production and development catalogs encode `entries` with the same array-or-compact transport;
 the outer scope, generation, authority and diagnostics remain intact. Pack's
 `RuntimeCatalogWire` describes this transport; `RuntimeCatalogSnapshot` remains
 the domain value with decoded rows. The public
@@ -906,3 +920,17 @@ rows only: runtime binding still owns the expected scope/generation check.
 Use the public decoder when inspecting emitted build catalogs; the compact wire
 is a transport projection, and does not grant asset readiness or skip artifact
 integrity checks.
+
+Meta inventory and importers consume the Types-owned `ImportSubAsset` declaration.
+Format-specific GUID reuse and source-key matching remain with each producer;
+the shared declaration does not prescribe a matching algorithm.
+
+Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
+root membership, monotonicity and single-step rules in Pack production and Runtime
+replica admission. Shape validation and replica row/scope checks remain separate.
+
+Runtime Pack publication derives the complete protocol tuple through Types `createAssetPublication`, shared with DDC-backed producers. Pack retains its binary-aware content digest and source-key projection; scope rebinding does not change immutable content.
+
+UUID string admission uses `isValidAssetGuidString` from `@forgeax/engine-types`.
+Pack owns byte parsing/formatting, generation and source-key derivation, and
+reuses the Types `AssetGuid` brand.

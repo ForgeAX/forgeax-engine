@@ -216,6 +216,7 @@ describe('feat-20260531 M3 w13: AC-08 parent moves -> child follows (dawn)', () 
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [-0.4, -0.6, -0.7],

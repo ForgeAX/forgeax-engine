@@ -779,7 +779,7 @@ it.each([
       work = current.execution.passes;
     const execution = {
       ...current.execution,
-      passes: [work[0], work[1], work[3], work[4], work[2], work[5]],
+      passes: [work[0], work[1], work[3], work[4], work[2], work[5]].map(required),
     };
     const selected = required(work[1]),
       builder = new RenderGraphBuilder<Frame>(),

@@ -4,7 +4,7 @@
 #import forgeax_view::fog::{translucent_fog_transmission}
 #import forgeax_pbr::brdf::{f_schlick}
 #import forgeax_pbr::specular_aa::{geometricNormalSpread, specularAntiAliasedRoughness}
-#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular}
+#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular, environmentScattering}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal, applyTBN}
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactorAtPixel}
@@ -152,6 +152,7 @@ struct SkylightUniforms {
   // Probe mode retains the global diffuse environment independently.
   diffuseScale : vec4<f32>,
   diffuseRotation : vec4<f32>,
+  ambientIrradiance : vec4<f32>,
 };
 @group(1) @binding(17) var irradianceMap        : texture_cube<f32>;
 @group(1) @binding(18) var irradianceSampler    : sampler;
@@ -497,7 +498,8 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   // per-cascade light-space matrix in the fragment stage for shadow-map PCF
   // lookup (CSM, feat-20260613). Cluster owns punctual BRDF evaluation in the
   // clustered variant above.
-  let kD = (vec3<f32>(1.0) - f_schlick(max(dot(n, v), 0.0), f0)) * (1.0 - metallic);
+  let scattering = environmentScattering(max(dot(n, v), 0.001), iblRoughness, f0, brdfLut, irradianceSampler);
+  let kD = max(vec3<f32>(0.0), vec3<f32>(1.0) - scattering.single - scattering.multi) * (1.0 - metallic);
   var irradiance = vec3<f32>(0.0);
   var specularIbl = vec3<f32>(0.0);
   if (skylight.intensity < 0.0) {
@@ -533,7 +535,7 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   let skyFactor = select(skyColor * skylight.intensity, skylight.diffuseScale.xyz, skylight.intensity < 0.0);
   let specularEnvironmentScale = decodeSpecularEnvironmentScale(skyColor, skylight.intensity);
   var reflectionFallback = specularIbl * specularEnvironmentScale * (vec3<f32>(1.0) - coatF);
-  var ambient = (kD * irradiance * diffuseAlbedo * skyFactor + specularIbl * specularEnvironmentScale) * (vec3<f32>(1.0) - coatF);
+  var ambient = ((kD * diffuseAlbedo + scattering.multi) * irradiance * skyFactor + specularIbl * specularEnvironmentScale) * (vec3<f32>(1.0) - coatF);
 #ifdef PROBE_BLEND_AVAILABLE
   // group(3) is the per-object bind group; record zero is the object selected
   // by this draw, independent of instance count.
@@ -545,8 +547,12 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   let probeLocalBlendFraction = probeBlendRecords[0].z;
   let probeDiffuseK = kD / max(vec3<f32>(1.0 - metallic), vec3<f32>(0.0001));
   let probeDiffuse = composeProbeDiffuse(probeShPreblend, probeLocalBlendFraction, n, irradiance * skyFactor, probeDiffuseK, albedo, metallic);
-  ambient = (probeDiffuse + specularIbl * specularEnvironmentScale) * (vec3<f32>(1.0) - coatF);
+  let multiIrradiance = composeProbeDiffuse(probeShPreblend, probeLocalBlendFraction, n, irradiance * skyFactor,
+    vec3<f32>(1.0), vec3<f32>(1.0), 0.0);
+  ambient = (probeDiffuse + scattering.multi * multiIrradiance + specularIbl * specularEnvironmentScale) * (vec3<f32>(1.0) - coatF);
 #endif
+  ambient += skylight.ambientIrradiance.xyz * diffuseAlbedo * (1.0 - metallic)
+    * 0.3183098861837907 * (vec3<f32>(1.0) - coatF);
   if (factors.clearcoat != 0.0) {
     // Keep the clearcoat lobe on the same selected environment as the base
     // specular lobe. Probe mode reuses the packed center/extents lanes in the

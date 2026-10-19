@@ -354,32 +354,32 @@ type __MergedKeep =
       expect(componentFieldType(Camera, 'bloomIntensity')).toBe('f32');
     });
 
-    it('Camera schema includes bloomSoftKnee: f32 field', () => {
-      expect(componentFieldType(Camera, 'bloomSoftKnee')).toBe('f32');
+    it('Camera schema includes bloomSmoothWidth: f32 field', () => {
+      expect(componentFieldType(Camera, 'bloomSmoothWidth')).toBe('f32');
     });
 
-    it('Camera schema includes bloomScatter: f32 field', () => {
-      expect(componentFieldType(Camera, 'bloomScatter')).toBe('f32');
+    it('Camera schema includes bloomRadius: f32 field', () => {
+      expect(componentFieldType(Camera, 'bloomRadius')).toBe('f32');
     });
 
     it('Camera defaults bloom to 0 (BLOOM_DISABLED)', () => {
       expect(componentFieldDefault(Camera, 'bloom')).toBe(0);
     });
 
-    it('Camera defaults bloomThreshold to 1.0', () => {
-      expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(1.0);
+    it('Camera defaults bloomThreshold to 0', () => {
+      expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(0);
     });
 
     it('Camera defaults bloomIntensity to 1.0', () => {
       expect(componentFieldDefault(Camera, 'bloomIntensity')).toBe(1.0);
     });
 
-    it('Camera defaults bloomSoftKnee to 0.5', () => {
-      expect(componentFieldDefault(Camera, 'bloomSoftKnee')).toBe(0.5);
+    it('Camera defaults bloomSmoothWidth to 0.01', () => {
+      expect(componentFieldDefault(Camera, 'bloomSmoothWidth')).toBe(0.01);
     });
 
-    it('Camera defaults bloomScatter to 0.7', () => {
-      expect(componentFieldDefault(Camera, 'bloomScatter')).toBe(0.7);
+    it('Camera defaults bloomRadius to 0', () => {
+      expect(componentFieldDefault(Camera, 'bloomRadius')).toBe(0);
     });
 
     it('validates the complete Bloom range at the shared extract boundary', () => {
@@ -392,8 +392,8 @@ type __MergedKeep =
       ['bloomThreshold', [1, -0.001, 1, 0.5, 0.7]],
       ['bloomThreshold', [1, Number.NaN, 1, 0.5, 0.7]],
       ['bloomIntensity', [1, 1, 8.001, 0.5, 0.7]],
-      ['bloomSoftKnee', [1, 1, 1, -0.001, 0.7]],
-      ['bloomScatter', [1, 1, 1, 0.5, 0.951]],
+      ['bloomSmoothWidth', [1, 1, 1, -0.001, 0.7]],
+      ['bloomRadius', [1, 1, 1, 0.5, 1.001]],
     ] as const)('rejects invalid %s with the closed Camera error', (field, values) => {
       let thrown: unknown;
       try {

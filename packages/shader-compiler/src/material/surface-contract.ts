@@ -4,7 +4,7 @@ import type {
   MaterialSurfaceModel,
   Result,
 } from '@forgeax/engine-types';
-import { createMaterialError, err, ok } from '@forgeax/engine-types';
+import { createMaterialError, err, ok, stripWgslComments } from '@forgeax/engine-types';
 
 export const SURFACE_SLOT = 'surface' as const;
 export const SURFACE_EXPORT = 'evaluate_surface' as const;
@@ -85,7 +85,7 @@ function validateForbiddenInterfaces(
   request: SurfaceContractRequest,
   source: string,
 ): Result<true, SurfaceContractError> {
-  const withoutComments = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/.*$/gmu, '');
+  const withoutComments = stripWgslComments(source);
   for (const [pattern, interfaceName] of FORBIDDEN_INTERFACES) {
     if (pattern.test(withoutComments)) return err(forbiddenInterface(request, interfaceName));
   }

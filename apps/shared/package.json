@@ -24,6 +24,7 @@
     "./gpu-driven-evidence": "./src/gpu-driven-evidence.ts"
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-rhi-webgpu": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

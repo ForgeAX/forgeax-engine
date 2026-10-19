@@ -38,6 +38,7 @@ changing a runtime boundary. The north star
 is an index to these decisions, not a competing contract.
 
 | Decision, newest first | Current authority |
+| 2026-10-18 texture inspection | Texture and Equirect pages expose RGBA, actual mips/slices, HDR display and directional environment projections through exact-target Engine operations. The Engine retains source and GPU authority; View owns controls and input. Supersedes the fixed texture quad presentation. |
 | 2026-10-16 Engine operation history | Engine CLI/SDK command receipts and verified PNG artifacts persist without View. The optional native History frontend reads the accepted project's bounded public history APIs; it never replays operations, mirrors command state or starts a game. Runtime observation remains separate. |
 | 2026-10-16 View presentation API | `view.workspace.presentation.*` reads committed Shell/PageHost and native Dock/drawer facts and invokes the same page actions as the UI. Backend routes finite request/reply lifetimes to one authenticated document and joins its bounded workspace summary; it retains no UI mirror. Runtime `tabs.get/select` bindings remain separate. |
 | 2026-10-12 unified frontend platform | Browser default and optional MCP/Codex producers share one View mount; native platform Fibers own reversible realm behavior and retain public Engine/Host authority |
@@ -63,6 +64,7 @@ is an index to these decisions, not a competing contract.
 
 | Boundary | Working consensus |
 |:--|:--|
+| Texture inspection | Texture/Equirect pages send `preview.texture.get/set` to their exact Engine target and generation. Engine owns bound source facts, selection validation and normal material rendering; View owns channel/projection controls, pan/zoom input and per-page form state. Equirect source mip 0 is distinct from internal IBL prefilter mips. |
 | Operation history | `forgeax.view.page.history.frontend` owns timeline, pagination, details and saved-image choice. Engine owns durable invocation receipts and artifact digests. `view.workspace.history.*` delegates to `engine.history.*` with the accepted project root. Hidden pages cancel reads; new records do not switch the active tab. Frontend uses Engine owner types through type-only imports. |
 | Project and run | Engine observes authored files. An AI run owns frozen project and dependency inputs; Scene changes do not update that run. The Engine run service owns lifecycle, capture and errors; CLI submits requests |
 | AI Display | Runtime capture selects this document's Play or a read-only independent Engine run. The UI derives project root from the accepted workspace; `view.display.bind` can discover the current run once through `engine.run.observe`, then pins exact `{root, runId}`. Explicit API/CLI identities remain supported independently of Scene. Never follow a replacement run automatically. Preserve only the last accepted image on run retirement and mark it; a new binding clears it. Logs/identity are folded details. Hidden Play capture pages stop sampling; tabs, input, focus, resize, refresh, UI removal and View stop never control independent runs. Design: 2026-10-16 context-derived capture |

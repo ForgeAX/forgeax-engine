@@ -1,5 +1,5 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { RenderPipeline, RhiDevice, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import type { RenderPipeline, RhiDevice, RhiRenderPassEncoder, Texture } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { describe, expect, it, vi } from 'vitest';
 import type { ShadowViewIdentity } from '../gpu-driven/shadow-views';
@@ -42,6 +42,9 @@ const GPU_MAP_MODE_READ = 0x0001;
 const MAP_SIZE = 16;
 const CASCADES = 4;
 const SPOTS = 4;
+
+// This native-backend fixture inspects dimensions while retaining the graph's RHI handle.
+type ShadowTexture = Texture & Pick<GPUTexture, 'width' | 'height' | 'depthOrArrayLayers'>;
 
 function topology(): RenderPipelineTopology {
   return {
@@ -122,7 +125,7 @@ describe('typed shadow layers with partial per-view cache hits', () => {
     const directional = targets.directional;
     if (directional === undefined) throw new Error('directional shadow target missing');
     const readTarget = async (
-      compiledTexture: GPUTexture,
+      compiledTexture: ShadowTexture,
     ): Promise<{
       readonly layers: number;
       readonly width: number;
@@ -139,7 +142,7 @@ describe('typed shadow layers with partial per-view cache hits', () => {
       const encoder = device.createCommandEncoder().unwrap();
       encoder.copyTextureToBuffer(
         { texture: compiledTexture },
-        { buffer: buffer as unknown as GPUBuffer, bytesPerRow, rowsPerImage: height },
+        { buffer: buffer, bytesPerRow, rowsPerImage: height },
         { width, height, depthOrArrayLayers: layers },
       );
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
@@ -158,7 +161,7 @@ describe('typed shadow layers with partial per-view cache hits', () => {
       return { layers, width, data };
     };
 
-    const captured: { directional?: GPUTexture; spot?: GPUTexture } = {};
+    const captured: { directional?: ShadowTexture; spot?: ShadowTexture } = {};
     graph
       .addCopyPass('capture-shadow-textures', {
         accesses: [
@@ -166,10 +169,8 @@ describe('typed shadow layers with partial per-view cache hits', () => {
           { resource: targets.spot.view, usage: 'copy-src' },
         ],
         encode: ({ resources }) => {
-          captured.directional = resources
-            .texture(directional.texture)
-            .unwrap() as unknown as GPUTexture;
-          captured.spot = resources.texture(targets.spot.texture).unwrap() as unknown as GPUTexture;
+          captured.directional = resources.texture(directional.texture).unwrap() as ShadowTexture;
+          captured.spot = resources.texture(targets.spot.texture).unwrap() as ShadowTexture;
         },
       })
       .unwrap();

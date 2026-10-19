@@ -1,8 +1,4 @@
-import type {
-  MaterialDynamicFieldType,
-  MaterialDynamicInputLayout,
-  MaterialDynamicInputSchema,
-} from '@forgeax/engine-types';
+import type { MaterialDynamicInputLayout, MaterialDynamicInputSchema } from '@forgeax/engine-types';
 import { deriveMaterialDynamicInputLayout, err, ok, type Result } from '@forgeax/engine-types';
 
 export type DynamicInputValue = number | readonly number[];
@@ -162,20 +158,6 @@ function alignRange(ranges: DynamicInputDirtyRange[], start: number, end: number
   ranges.splice(index, 0, { byteStart: start, byteEnd: end });
 }
 
-function fieldWidth(type: MaterialDynamicFieldType): number {
-  switch (type) {
-    case 'f32':
-    case 'u32':
-      return 1;
-    case 'vec2<f32>':
-      return 2;
-    case 'vec3<f32>':
-      return 3;
-    case 'vec4<f32>':
-      return 4;
-  }
-}
-
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -328,7 +310,7 @@ export class ReadonlyDynamicInputPage {
           ),
         );
       }
-      const width = fieldWidth(field.type);
+      const width = field.size / 4;
       const numbers = typeof value === 'number' ? [value] : value;
       if (numbers.length !== width || numbers.some((candidate) => !finiteNumber(candidate))) {
         return err(

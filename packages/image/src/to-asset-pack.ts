@@ -1,4 +1,4 @@
-import type { AssetCompression, ImageMeta } from '@forgeax/engine-types';
+import type { AssetCompression, ImageMeta, ImportSubAsset } from '@forgeax/engine-types';
 
 /**
  * External-asset-package envelope shape mirroring the
@@ -13,7 +13,7 @@ export interface ExternalAssetPackage {
   readonly importer: 'image';
   readonly source: string;
   readonly importSettings: ImageImportSettings;
-  readonly subAssets: readonly ExternalSubAsset[];
+  readonly subAssets: readonly ImportSubAsset[];
 }
 
 /**
@@ -33,13 +33,6 @@ export interface ImageImportSettings
    * this value wins over the default table for this asset.
    */
   readonly compression?: AssetCompression;
-}
-
-export interface ExternalSubAsset {
-  readonly guid: string;
-  readonly sourceIndex: number;
-  readonly kind: string;
-  readonly name?: string;
 }
 
 /**

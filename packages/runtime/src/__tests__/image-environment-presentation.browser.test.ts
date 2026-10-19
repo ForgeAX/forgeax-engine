@@ -209,6 +209,7 @@ it.each([
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [0, -1, -1],

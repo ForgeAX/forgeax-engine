@@ -45,7 +45,7 @@ const MATERIAL_SAMPLEABLE_FORMATS: ReadonlySet<GPUTextureFormat> = new Set<GPUTe
 ]);
 const TEXTURE_BINDING = 0x04;
 
-export interface ExternalTextureHostOptions {
+interface ExternalTextureHostOptions {
   readonly getDevice: () => RhiDevice;
   readonly getGeneration: () => number;
   /** Renderer health owns loss; the RHI importer never subscribes to `device.lost`. */
@@ -73,7 +73,7 @@ interface Entry {
   readonly copyKeys: { readonly flipped: object; readonly direct: object };
 }
 
-export interface ExternalTextureHost extends ExternalTextureBinder {
+interface ExternalTextureHost extends ExternalTextureBinder {
   importTexture(input: ExternalTextureInput): Promise<RenderResult<ExternalTexture, RenderError>>;
   nativeDevice(): RenderResult<GPUDevice, RenderError>;
   beginFrame(): void;

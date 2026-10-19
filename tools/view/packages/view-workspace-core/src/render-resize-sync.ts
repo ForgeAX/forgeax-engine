@@ -29,14 +29,16 @@ export function attachPreviewRenderResizeSync({
     return () => {};
   }
 
-  let lastWidth = 0;
-  let lastHeight = 0;
+  let requestedWidth = target.width ?? 0;
+  let requestedHeight = target.height ?? 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   const controller = new AbortController();
 
   const submit = (width: number, height: number, attempt: number) => {
+    requestedWidth = width;
+    requestedHeight = height;
     void Promise.resolve()
       .then(() => !disposed && api.resizePreview({
         tabId: VIEW_WORKSPACE_TAB_ID,
@@ -47,36 +49,28 @@ export function attachPreviewRenderResizeSync({
         reportError: false,
         signal: controller.signal,
       }))
-      .then((result) => {
-        if (disposed || result === false) return;
-        lastWidth = width;
-        lastHeight = height;
-      })
       .catch((error: unknown) => {
         if (disposed || controller.signal.aborted) return;
+        const current = requestedWidth === width && requestedHeight === height;
         // Seeding the mesh pivot holds a camera transaction. Engine refuses
         // resize until that transaction commits, so wait and try the same extent.
-        if (cameraInteractionBusy(error) && attempt < CAMERA_BUSY_RETRIES) {
-          retryTimer = setTimeout(() => submit(width, height, attempt + 1), CAMERA_BUSY_RETRY_MS);
+        if (cameraInteractionBusy(error) && (!current || attempt < CAMERA_BUSY_RETRIES)) {
+          if (current) retryTimer = setTimeout(() => submit(width, height, attempt + 1), CAMERA_BUSY_RETRY_MS);
           return;
         }
+        if (current) requestedWidth = requestedHeight = 0;
         reportWorkspaceCommandError(error, { operation: 'preview.resize', signal: controller.signal });
       });
   };
 
   const flush = () => {
     if (disposed) return;
-    clearTimeout(retryTimer);
     const dpr = Math.max(1, surface.ownerDocument?.defaultView?.devicePixelRatio ?? 1);
     const width = Math.round(host.clientWidth * dpr);
     const height = Math.round(host.clientHeight * dpr);
     if (width <= 0 || height <= 0) return;
-    if (width === lastWidth && height === lastHeight) return;
-    if (target.width === width && target.height === height) {
-      lastWidth = width;
-      lastHeight = height;
-      return;
-    }
+    if (width === requestedWidth && height === requestedHeight) return;
+    clearTimeout(retryTimer);
     submit(width, height, 0);
   };
 
@@ -87,7 +81,8 @@ export function attachPreviewRenderResizeSync({
 
   const observer = new ResizeObserver(schedule);
   observer.observe(host);
-  schedule();
+  // The first extent belongs to attachment; only later layout changes debounce.
+  flush();
 
   return () => {
     disposed = true;

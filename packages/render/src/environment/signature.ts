@@ -1,6 +1,6 @@
 import type { EnvironmentCandidate, FogCandidate } from '../extract/environment';
 
-export interface EnvironmentSignatureInput {
+interface EnvironmentSignatureInput {
   readonly environments: readonly EnvironmentCandidate[];
   readonly fogs: readonly FogCandidate[];
   readonly suns: readonly {
@@ -11,7 +11,7 @@ export interface EnvironmentSignatureInput {
   }[];
 }
 
-export interface EnvironmentFactSignatures {
+interface EnvironmentFactSignatures {
   readonly environmentSignature: string;
   readonly fogSignature: string;
   readonly signature: string;
@@ -31,7 +31,7 @@ export function environmentSignature(input: EnvironmentSignatureInput): string {
 }
 
 /** Signature for Environment and Sun facts, excluding the independent Fog channel. */
-export function environmentOnlySignature(input: EnvironmentSignatureInput): string {
+function environmentOnlySignature(input: EnvironmentSignatureInput): string {
   return JSON.stringify({
     environments: sorted(input.environments),
     suns: sorted(input.suns),
@@ -39,7 +39,7 @@ export function environmentOnlySignature(input: EnvironmentSignatureInput): stri
 }
 
 /** Signature for the independent Fog channel. */
-export function fogOnlySignature(input: Pick<EnvironmentSignatureInput, 'fogs'>): string {
+function fogOnlySignature(input: Pick<EnvironmentSignatureInput, 'fogs'>): string {
   return JSON.stringify({ fogs: sorted(input.fogs) });
 }
 

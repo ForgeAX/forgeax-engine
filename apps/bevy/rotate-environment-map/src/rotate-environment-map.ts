@@ -46,7 +46,7 @@ export function buildEnvironmentWorld(
     { component: MeshRenderer, data: { materials: [gold] } },
   );
   world.spawn({ component: PointLight, data: { color: [1, 1, 1], intensity: 100_000, range: 40 } });
-  world.spawn({ component: DirectionalLight, data: { direction: [0.4, -1, 0.3], intensity: 500 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0.4, -1, 0.3], intensity: 500 } });
 
   const skylight = world.spawn({ component: Skylight, data: { equirect, intensity: 1, rotation: [0, 0, 0, 1] } }).unwrap();
   const skybox = world.spawn({ component: SkyboxBackground, data: { equirect, rotation: [0, 0, 0, 1] } }).unwrap();

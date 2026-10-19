@@ -51,10 +51,15 @@ capability or incomplete shader facts.
 | Concept | Owner | Contract |
 |:--|:--|:--|
 | `.rhitape` | [`protocol/codec.ts`](src/protocol/codec.ts) | One canonical v7 container: preamble, JSON index (events, capabilities, blob table with per-blob SHA-256), then blob payloads. |
-| `EventSemantics` | [`protocol/event-semantics.ts`](src/protocol/event-semantics.ts) | Maps each RHI method to its event kind, handle effects, and lifecycle rules. |
+| Event handle operations | [`protocol/event-semantics.ts`](src/protocol/event-semantics.ts) | Derives handle access, declarations, retirement and category directly from each event; recorder, validation and frame analysis share these operations. |
 | `TapeIndex` | [`protocol/tape-index.ts`](src/protocol/tape-index.ts) | Derives event, resource, and work lookup from the decoded tape. |
 | `FrameModel` | [`frame-model.ts`](src/frame-model.ts) | Derives one `workIndex` sequence for the Viewer and inspection clients. |
 | `ReplaySession` | [`replay/session.ts`](src/replay/session.ts) | Owns fresh-backend replay, typed resources, readback, and disposal. |
+
+Color readback byte sizes derive from the shared Types texture-block footprint.
+Binary16 decoding uses `halfFloat.f16ToF32` from Math; callers use that same
+Math entry for raw half values. CPU decoding and replay keep their supported-format admission rules; replayed
+depth/stencil planes use converted four-byte samples.
 
 The protocol, index, model, recorder, and replay layers each have one owner.
 Recorder blob deduplication uses the same SHA-256 digest as the tape codec.
@@ -318,6 +323,13 @@ Each requirement is retained even on an unsupported adapter,
 so device admission fails instead of replaying weaker work. An unenabled required feature fails
 with `replay-capability-mismatch` before replay resource creation.
 
+The internal `wrap(rhi, createShaderModule)` assembly receives the backend pair;
+`attachRecorder(backend)` supplies both for host integrations. Capture and replay
+share the exact unfiltered depth-load kernel, including on WebGL2 where direct
+depth-to-buffer copies are unavailable. Depth snapshots run one resource at a time;
+color and buffer snapshots retain bounded copy batches. Depth staging is estimated
+from the largest RGBA32F slice; a matching temporary output texture is also live.
+
 Retained `depth32float` textures are snapshotted across every array layer and
 mip level. Replay restores the exact floats through a depth-only raster pass,
 so a cached shadow map remains valid even when its producer is absent from the
@@ -377,7 +389,7 @@ uncompressed color format with a host texel reader decodes, including
 - `imageStats(image)` returns per-channel `min`/`max`/`mean` over finite
   texels plus the `nonFinite` texel count, so NaN propagation is visible.
 - `toRgba8(image, { exposure, range, tonemap })` maps HDR for display, and
-  `encodePng(width, height, rgba)` writes a deterministic PNG without a canvas.
+  `encodePng(width, height, rgba)` from `@forgeax/engine/image/png` writes a deterministic PNG without a canvas.
 
 `rhi.read` / `forgeax rhi read` composes these: up to 64 reads, each by
 `resourceId`, by `binding` plus `workIndex`, or by `output` (a `workOutputs`
@@ -642,3 +654,16 @@ WebGPU capability and replay failures remain explicit; loading a tape does not p
 `RecorderAttachment.readPipelineReference(device, pipeline, captureGeneration)` ????? handleMap ??? createRenderPipeline ??????????? ID??? shader ???????? recording ???? recorder/device ???? pipeline ????? capture???/???device loss?dispose ??? device ??????RHI ???? destroyPipeline ?????????????????????
 
 ?? `{ captureGeneration, handleId }` ????????? pipeline ? tape work ?? shader module ? descriptor?????? source ????????? recorder ??? opaque texture ??????????Null canvas ???????????????????
+
+Recorded device capabilities use one projection for both the captured device and
+an empty recorder; the tape type and replay's known-key set derive from it.
+Canvas format and color space remain surface facts. Compression requirements use
+the Types format catalogue, including signed BC6H, and the same capability-to-
+device-feature map as fresh replay device requests. Unknown future header
+capabilities keep the existing strict admission behavior.
+
+Replay resources have one physical tag per native value (for example,
+`render-pipeline`, `compute-pipeline`, `command`, and `render-pass`). The tag
+determines lookup and creation types; callers cannot choose a return type or
+combine a broad resource kind with an unrelated role. Recorded tape kinds and
+the serialized protocol remain owned by the tape schema.

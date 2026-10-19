@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { spawnReflectionScene, resolveSsrFixture, SSR_FIXTURE_REVISION, SSR_ANTIALIAS_MODES } from '../src/reflection-scene.mjs';
 import { dirname, relative, resolve } from 'node:path';
@@ -7,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import {
   deriveReflectionFallbackEvidence,
   deriveReflectionProbeRecoveryEvidence,
@@ -848,7 +849,7 @@ if (displayDir !== undefined) {
     if (name !== undefined) {
       const pixels = await readCanvasPixels();
       path = resolve(displayDir, `${name}.png`);
-      writeFileSync(path, writeReferencePng(pixels.bytes, WIDTH, HEIGHT));
+      writeFileSync(path, encodePng(WIDTH, HEIGHT, pixels.bytes));
     }
     return { path, before, after, execution: { before: executionBefore, after: executionAfter },
       ...(tape === undefined ? {} : { tape }) };
@@ -858,7 +859,7 @@ if (displayDir !== undefined) {
     (await latestDrawReceipt.completed).unwrap();
     const pixels = await readCanvasPixels();
     const path = resolve(displayDir, 'baseline.png');
-    writeFileSync(path, writeReferencePng(pixels.bytes, WIDTH, HEIGHT));
+    writeFileSync(path, encodePng(WIDTH, HEIGHT, pixels.bytes));
     journey.push({ stage: 'baseline', path, after: renderer.inspect().temporal });
     const objectOrigin = DISPLAY_OBJECT_MOTION
       ? Array.from(world.get(movingObjectEntity, Transform).unwrap().pos) : undefined;
@@ -916,7 +917,7 @@ if (captureFile !== undefined) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, captured.value.bytes);
     const pixels = await readCanvasPixels();
-    writeFileSync(resolve(dirname(path), 'frame.png'), writeReferencePng(pixels.bytes, WIDTH, HEIGHT));
+    writeFileSync(resolve(dirname(path), 'frame.png'), encodePng(WIDTH, HEIGHT, pixels.bytes));
     const frame = { path, digest: captured.value.digest, byteLength: captured.value.bytes.byteLength, before, after,
       cameraOffset, ...(objectOffset === undefined ? {} : { objectOffset }) };
     capturedFrames.push(frame);
@@ -950,7 +951,7 @@ if (captureFile !== undefined) {
         || after.viewIdentity !== before.viewIdentity || after.deviceGeneration !== before.deviceGeneration) {
         throw new Error(`Recovery did not preserve submitted history: ${JSON.stringify({ frame, before, after })}`);
       }
-      writeFileSync(resolve(recoveryDir, `frame-${frame}.png`), writeReferencePng(pixels.bytes, WIDTH, HEIGHT));
+      writeFileSync(resolve(recoveryDir, `frame-${frame}.png`), encodePng(WIDTH, HEIGHT, pixels.bytes));
       recovery.push({ frame, before, after, ...(tape === undefined ? {} : { digest: tape.digest }) });
     }
     writeFileSync(resolve(recoveryDir, 'frames.json'), JSON.stringify(recovery, null, 2));
@@ -978,7 +979,7 @@ if (process.env.SMOKE_RESOURCE_LIFECYCLE === '1') {
     const tightPixels = new Uint8Array(pixels.width * pixels.height * 4);
     for (let y = 0; y < pixels.height; y++) tightPixels.set(
       pixels.bytes.subarray(y * pixels.bytesPerRow, y * pixels.bytesPerRow + pixels.width * 4), y * pixels.width * 4);
-    writeFileSync(resolve(directory, `${stage}.png`), writeReferencePng(tightPixels, pixels.width, pixels.height));
+    writeFileSync(resolve(directory, `${stage}.png`), encodePng(pixels.width, pixels.height, tightPixels));
     const row = {
       stage, extent: { width: pixels.width, height: pixels.height }, digest: captured.digest, byteLength: captured.bytes.byteLength,
       inspection: { frame: renderer.inspect().frame, ssr: renderer.inspect().ssr, temporal: renderer.inspect().temporal,
@@ -1890,7 +1891,7 @@ if (SSR_REFLECTION_EVIDENCE) {
     resolve(manifestDir, 'validation.log'),
     reflectionFallbackValidationLog('dawn', report, evidence),
   );
-  writeFileSync(resolve(manifestDir, 'frame.png'), writeReferencePng(manifestPixels.bytes, WIDTH, HEIGHT));
+  writeFileSync(resolve(manifestDir, 'frame.png'), encodePng(WIDTH, HEIGHT, manifestPixels.bytes));
   writeFileSync(
     resolve(manifestDir, 'manifest.json'),
     `${JSON.stringify({

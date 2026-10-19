@@ -20,7 +20,7 @@ import { structuredPluginError } from '../structured-plugin-error.js';
 
 export type MinimalPluginContext = Pick<BuildProductionSink, 'emitFile' | 'getFileName'>;
 
-export interface PluginBuildContext {
+interface PluginBuildContext {
   readonly opts: import('../plugin-contract.js').PluginPackInternalOptions;
   readonly transportBase?: string | undefined;
   readonly registeredImporterKeys: ReadonlySet<string>;

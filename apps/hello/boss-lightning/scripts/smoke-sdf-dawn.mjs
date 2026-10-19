@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -35,7 +36,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import cases from '../src/sdf-cases.json' with { type: 'json' };
@@ -1204,7 +1205,7 @@ async function run(collision, depthOnly = false) {
     const rgba = toRgba8(decoded);
     writeFileSync(
       resolve(output, `${label}.png`),
-      writeReferencePng(rgba, decoded.width, decoded.height),
+      encodePng(decoded.width, decoded.height, rgba),
     );
     report.pixels = {
       format: image.format,

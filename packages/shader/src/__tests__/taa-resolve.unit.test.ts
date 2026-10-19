@@ -35,14 +35,14 @@ describe('taa-resolve.wgsl', () => {
     expect(source).toContain('taaNeighborhood');
     expect(source).toContain('clamp(rgbToYCoCg(history), clipMin, clipMax)');
     expect(source).toContain('reactiveFactor');
-    expect(source).toContain('velocityFactor');
+    expect(source).toContain('taaMotionCurrentWeight');
     expect(source).not.toContain('depthFactor');
-    expect(source).toContain('progressiveWeight * reactiveFactor * velocityFactor');
+    expect(source).toContain('min(progressiveWeight, motionWeight) * reactiveFactor');
     expect(source).not.toContain('unbiasedLumaDelta');
     expect(source).toContain('blendTaaHistory(current.rgb, clippedHistoryRgb, historyWeight)');
     expect(source).toContain('taaAccumulationWeight(params.temporalFrameIndex, steadyWeight)');
     expect(source).toContain(
-      'mix(0.95, 0.99, smoothstep(64.0, TAA_HISTORY_SETTLE_FRAMES, stableAge))',
+      'mix(select(0.95, 0.975, upscale), 0.99, smoothstep(64.0, TAA_HISTORY_SETTLE_FRAMES, stableAge))',
     );
     expect(source).toContain('progressiveWeight');
     expect(source).toContain('let dimensions = vec2<i32>(textureDimensions(currentColor, 0));');

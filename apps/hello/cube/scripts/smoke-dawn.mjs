@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 // hello-cube headless smoke (M4 / D-S10 / AC-12b).
 // feat-20260531-per-frame-bind-group-cache: also asserts AC-03 (stable scene,
@@ -198,7 +199,7 @@ world.spawn(
 );
 world.spawn({
   component: DirectionalLight,
-  data: { direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 1 },
+  data: { castShadow: true, direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 1 },
 });
 
 // feat-20260515-ecs-name-component-and-string-schema M3 / w3-hello-cube-smoke-asserts
@@ -267,15 +268,13 @@ let bindGroupCountFrame3;
 const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
-  // w25 — draw returns Result; errors continue to fan out through onError.
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  else framesObserved++;
+  framesObserved++;
 
   // Snapshot counter on frame 3 (1-indexed). The Renderer interface
   // exposes bindGroupCounts as a readonly getter; the counter is reset

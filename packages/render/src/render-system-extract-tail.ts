@@ -105,7 +105,6 @@ import { IES_SLICE_CAPACITY } from './prepare/extended-lighting/resources';
 import { worldEntityKey } from './record/frame-snapshot';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
-  CsmCameraData,
   DirectionalCsmConfig,
   DirectionalLightSnapshot,
   DispatchEntry,
@@ -669,27 +668,7 @@ export function extractFrames(
   // and need no merge-layer fix-up.
   const mergeCam = cameras[0];
   if (directionalCsmConfig !== undefined && directionalCsmDirection !== undefined) {
-    const mergeCameraData: CsmCameraData | undefined =
-      mergeCam !== undefined
-        ? {
-            world: mergeCam.world,
-            fov: mergeCam.fov,
-            aspect: mergeCam.aspect,
-            near: mergeCam.near,
-            far: mergeCam.far,
-            projection: mergeCam.projection,
-            orthoLeft: mergeCam.orthoLeft,
-            orthoRight: mergeCam.orthoRight,
-            orthoBottom: mergeCam.orthoBottom,
-            orthoTop: mergeCam.orthoTop,
-            ...(mergeCam.eye === undefined ? {} : { eye: mergeCam.eye }),
-          }
-        : undefined;
-    const csm = computeDirectionalCsm(
-      directionalCsmDirection,
-      directionalCsmConfig,
-      mergeCameraData,
-    );
+    const csm = computeDirectionalCsm(directionalCsmDirection, directionalCsmConfig, mergeCam);
     if (csm !== null) {
       lightViewProj = csm.lightViewProj;
       splitPlanes = csm.splitPlanes;

@@ -1227,6 +1227,30 @@ const STANDARD_MATERIAL: GltfMaterialIr = {
 }
 
 describe('meshIrToMeshAsset material slots', () => {
+  it('uses the normalized name for every collision suffix', () => {
+    const asset = meshIrToMeshAsset(
+      [0, 1, 2, 0].map((materialIndex) => ({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        indices: new Uint16Array([0, 1, 2]),
+        materialIndex,
+        meshIndex: 0,
+      })),
+      {
+        nameByIndex: new Map([
+          [0, ' Paint '],
+          [1, ' Paint '],
+          [2, 'Paint_2'],
+        ]),
+      },
+    );
+    expect(asset.materialSlots.map((slot) => slot.slotName)).toEqual([
+      'Paint',
+      'Paint_2',
+      'Paint_2_2',
+    ]);
+    expect(asset.submeshes.map((submesh) => submesh.materialSlot)).toEqual([0, 1, 2, 0]);
+  });
+
   it('deduplicates source materials into stable A/default/A slots', () => {
     const primitive = (materialIndex: number | null): GltfMeshIr => ({
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),

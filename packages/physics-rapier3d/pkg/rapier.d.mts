@@ -362,6 +362,7 @@ declare class RawContactPair {
     collider1(): number;
     collider2(): number;
     contactManifold(i: number): RawContactManifold | undefined;
+    has_solver_contact(flipped: boolean, filter_normal: boolean, x: number, y: number, z: number, minimum_dot: number): boolean;
     numContactManifolds(): number;
 }
 
@@ -4891,6 +4892,11 @@ declare class NarrowPhase {
      * is a sensor.
      */
     intersectionPairsWith(collider1: ColliderHandle, f: (collider2: ColliderHandle) => void): void;
+    /** Reads only solver adjacency; the caller admits the complete manifold roster budget. */
+    contactPairHasSolverContact(collider1: ColliderHandle, collider2: ColliderHandle, maximumManifolds: number, direction?: Vector, minimumDot?: number): {
+        manifoldCount: number;
+        touching: boolean;
+    };
     /**
      * Iterates through all the contact manifolds between the given pair of colliders.
      *

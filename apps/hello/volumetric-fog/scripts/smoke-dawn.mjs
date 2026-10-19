@@ -261,7 +261,7 @@ try {
   const light = world
     .spawn({
       component: DirectionalLight,
-      data: { direction: [-0.4, -0.7, -0.5], color: [1, 1, 1], intensity: 1 },
+      data: { castShadow: true, direction: [-0.4, -0.7, -0.5], color: [1, 1, 1], intensity: 1 },
     })
     .unwrap();
   world.spawn({ component: Skylight, data: { color: [1, 1, 1], intensity: 0 } }).unwrap();

@@ -1,6 +1,7 @@
 import { imageImporter } from '@forgeax/engine/image/image-importer';
 import type { ImportContext, TextureAsset } from '@forgeax/engine/types';
-import { encodeHdr, encodePng } from '../../../features/asset-formats/fixtures/image-files';
+import { encodePng } from '@forgeax/engine-image/png';
+import { encodeHdr } from '../../../features/asset-formats/fixtures/image-files';
 import { checker, errorCode, guid } from '../../../features/asset-formats/fixtures/memory-pack';
 
 export type SubAsset = ImportContext['subAssets'][number];

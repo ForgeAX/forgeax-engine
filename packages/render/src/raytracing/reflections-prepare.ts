@@ -28,7 +28,7 @@ export interface PreparedRayReflections {
   writeSample(): void;
 }
 
-export interface RayReflectionPreparationInputs {
+interface RayReflectionPreparationInputs {
   readonly device: RhiDevice;
   readonly profile: StandardExactDiffuseGi & { readonly reflections: StandardLiteReflections };
   readonly pixelCount: number;

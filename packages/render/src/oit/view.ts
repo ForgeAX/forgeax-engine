@@ -46,6 +46,7 @@ export interface TransparencyViewResolution {
 export function resolveTransparencyView(input: {
   readonly requested: Transparency;
   readonly rgba16floatRenderable: boolean;
+  /** Validation and camera projection preserve ascending renderable indices; holes are valid. */
   readonly rows: readonly {
     readonly renderableIndex: number;
     readonly source: Pick<RenderableSnapshot, 'skin' | 'materials' | 'material'>;
@@ -62,11 +63,21 @@ export function resolveTransparencyView(input: {
   let accumulated = 0;
   let sorted = 0;
   if (input.dispatch.length > 0) {
-    const rows = new Map<number, (typeof input.rows)[number]>();
-    for (const row of input.rows) rows.set(row.renderableIndex, row);
     for (const entry of input.dispatch) {
-      const row = rows.get(entry.renderableIndex);
-      if (row === undefined || !matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
+      if (!matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
+      let row = input.rows[entry.renderableIndex];
+      if (row?.renderableIndex !== entry.renderableIndex) {
+        let low = 0;
+        let high = input.rows.length;
+        while (low < high) {
+          const middle = (low + high) >>> 1;
+          const candidate = input.rows[middle] as (typeof input.rows)[number];
+          if (candidate.renderableIndex < entry.renderableIndex) low = middle + 1;
+          else high = middle;
+        }
+        row = input.rows[low];
+      }
+      if (row?.renderableIndex !== entry.renderableIndex) continue;
       const material =
         row.source.materials.find(
           (candidate) => (candidate.materialHandle ?? 0) === entry.materialHandle,

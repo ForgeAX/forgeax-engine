@@ -116,14 +116,21 @@ export function advanceAnimationPlayer(world: World, dt: number): void {
   clearAnimationEvents(world);
   refreshTargetMaps(world);
   const query = world.query({ with: [AnimationPlayer] }).unwrap();
-
-  // Collect entity handles inside the walk (the Entity.self view is transient),
-  // then resolve + mutate each player outside it.
-  const entities: EntityHandle[] = [];
-  for (const row of query) entities.push(row.entity);
-
-  for (const entityRaw of entities) {
-    advanceOnePlayer(world, entityRaw, dt);
+  let available = poseScratchByWorld.get(world);
+  if (available === undefined) {
+    available = [];
+    poseScratchByWorld.set(world, available);
+  }
+  const scratch = available.pop() ?? createPoseScratch();
+  try {
+    // Structural author callbacks can change target membership while a player
+    // advances. Collect handles before writes and keep nested evaluations isolated.
+    for (const row of query) scratch.entities.push(row.entity);
+    for (const entityRaw of scratch.entities) advanceOnePlayer(world, entityRaw, dt, scratch);
+  } finally {
+    scratch.entities.length = 0;
+    scratch.targets.length = 0;
+    available.push(scratch);
   }
 }
 
@@ -154,7 +161,7 @@ interface PlayerColumns {
  * `animation-player-slot-length-mismatch` error rather than silently padded or
  * truncated.
  */
-function advanceOnePlayer(world: World, entityRaw: number, dt: number): void {
+function advanceOnePlayer(world: World, entityRaw: number, dt: number, scratch: PoseScratch): void {
   const entity = entityRaw as EntityHandle;
   const apRes = world.get(entity, AnimationPlayer);
   if (!apRes.ok) return;
@@ -215,7 +222,7 @@ function advanceOnePlayer(world: World, entityRaw: number, dt: number): void {
   // clips / weights / speeds slots are left untouched.
   world.set(entity, AnimationPlayer, { times: newTimes });
 
-  if (activeSlots.length > 0) tickEntityTargets(world, entity, entityRaw, activeSlots);
+  if (activeSlots.length > 0) tickEntityTargets(world, entity, entityRaw, activeSlots, scratch);
   commitRoot?.();
   publishTimelineEvents(world, entity, events);
 }
@@ -294,14 +301,17 @@ function collectActiveSlotsAndAdvanceTimes(
  *     find the authoring point that has the channel; per-channel sumW
  *     normalize covers the runtime gap regardless.
  */
+interface ResolvedTarget {
+  readonly entity: EntityHandle;
+  readonly transform: boolean;
+  readonly index: number;
+}
+
 interface TargetMap {
   /** Null marks an ambiguous ID; each unique ID retains its binding snapshot. */
-  readonly bindings: ReadonlyMap<
-    string,
-    { readonly entity: EntityHandle; readonly transform: boolean } | null
-  >;
+  readonly bindings: ReadonlyMap<string, ResolvedTarget | null>;
   readonly hasStaleTarget: boolean;
-  readonly resolvedClips: WeakMap<AnimationClip, readonly (EntityHandle | undefined)[]>;
+  readonly resolvedClips: WeakMap<AnimationClip, readonly (ResolvedTarget | undefined)[]>;
 }
 
 interface TargetBinding {
@@ -387,10 +397,7 @@ function buildTargetMap(world: World, player: EntityHandle): TargetMap {
       resolvedClips: new WeakMap(),
     };
   }
-  const bindings = new Map<
-    string,
-    { readonly entity: EntityHandle; readonly transform: boolean } | null
-  >();
+  const bindings = new Map<string, ResolvedTarget | null>();
   let hasStaleTarget = false;
   for (const raw of targets.value.targets) {
     if (raw === ENTITY_NULL_RAW) continue;
@@ -402,7 +409,12 @@ function buildTargetMap(world: World, player: EntityHandle): TargetMap {
     }
     const targetId = id.value.value;
     if (bindings.has(targetId)) bindings.set(targetId, null);
-    else bindings.set(targetId, { entity: target, transform: world.get(target, Transform).ok });
+    else
+      bindings.set(targetId, {
+        entity: target,
+        transform: world.get(target, Transform).ok,
+        index: bindings.size,
+      });
   }
   return {
     bindings,
@@ -416,26 +428,24 @@ function tickEntityTargets(
   entity: EntityHandle,
   entityRaw: number,
   activeSlots: ActiveSlot[],
+  scratch: PoseScratch,
 ): void {
   const targetMap = targetMapForPlayer(world, entity);
   const root = world.hasComponent(entity, AnimationRootMotion)
     ? world.get(entity, AnimationRootMotion)
     : undefined;
 
-  // Per-joint accumulator: lazily allocated when first channel writes.
-  // A Map keyed by jointIndex keeps the typical case (a few animated
-  // joints out of 20+) sparse rather than allocating for every joint.
-  const accumulators: Map<number, JointAccumulator> = new Map();
-  const morphAccumulators: Map<number, MorphWeightAccumulator> = new Map();
+  const { channelSample } = scratch;
+  const morphAccumulators = new Map<number, MorphWeightAccumulator>();
   const propertyAccumulators = new Map<string, PropertyAccumulator>();
+  scratch.generation += 1;
+  scratch.targets.length = 0;
   // Per-slot signature of (joint, channel-kind) coverage — used to detect
   // channel-missing-on-some-slot once at the end of the channel walk. Lazy
   // build only when there are 2+ active slots and dev-mode is on (warn pass
   // is skipped in production by the shared diagnostics mode gate).
-  const slotCoverage: SlotCoverage = new Map();
-  const wantsCoverage = activeSlots.length >= 2 && isAnimationDevMode();
-  // Samples are folded immediately; only the accumulators own the blended pose.
-  const channelSample: number[] = [];
+  const slotCoverage: SlotCoverage | undefined =
+    activeSlots.length >= 2 && isAnimationDevMode() ? new Map() : undefined;
 
   for (let slotIdx = 0; slotIdx < activeSlots.length; slotIdx++) {
     // biome-ignore lint/style/noNonNullAssertion: bounded by activeSlots.length
@@ -501,7 +511,7 @@ function tickEntityTargets(
               )
             : resolvedTargets[chIdx];
       if (target === undefined) continue;
-      const targetRaw = target as number;
+      const targetRaw = target.entity as number;
 
       if (channel.property === 'weights') {
         let weights = morphAccumulators.get(targetRaw);
@@ -514,51 +524,40 @@ function tickEntityTargets(
           weights.values[i] = (weights.values[i] ?? 0) + weight * (sampled[i] ?? 0);
         }
         weights.sumW += weight;
-        if (wantsCoverage)
+        if (slotCoverage !== undefined)
           recordSlotCoverage(slotCoverage, slotIdx, channel.targetId, channel.property, chIdx);
         continue;
       }
 
-      let acc = accumulators.get(targetRaw);
+      let acc = scratch.joints[target.index];
       if (acc === undefined) {
         acc = createAccumulator();
-        accumulators.set(targetRaw, acc);
+        scratch.joints[target.index] = acc;
+      }
+      if (acc.generation !== scratch.generation) {
+        resetAccumulator(acc);
+        acc.generation = scratch.generation;
+        acc.target = target.entity;
+        scratch.targets.push(target.index);
       }
 
       foldChannelIntoAccumulator(acc, channel.property, sampled, weight);
 
-      if (wantsCoverage) {
+      if (slotCoverage !== undefined) {
         recordSlotCoverage(slotCoverage, slotIdx, channel.targetId, channel.property, chIdx);
       }
     }
   }
 
-  if (wantsCoverage) {
+  if (slotCoverage !== undefined) {
     emitMissingOnSomeSlotWarns(world, entityRaw, activeSlots, slotCoverage);
   }
 
   writeProperties(world, entity, propertyAccumulators);
-  for (const [targetRaw, acc] of accumulators) {
-    const target = targetRaw as EntityHandle;
-    const partial = finalizeAccumulator(acc);
-    let changed = false;
-    for (const field of Object.keys(partial)) {
-      const values = partial[field];
-      const current = readRenderArrayView(world, target, Transform, field);
-      // Transform stores f32 values. Compare the actual destination, so an
-      // external author write is restored even when clip time has not moved.
-      if (
-        values !== undefined &&
-        current !== undefined &&
-        current.length === values.length &&
-        values.every(
-          (value, index) => !Number.isNaN(value) && Object.is(current[index], Math.fround(value)),
-        )
-      )
-        delete partial[field];
-      else changed = true;
-    }
-    if (changed) world.set(target, Transform as never, partial as never);
+  for (let index = 0; index < scratch.targets.length; index++) {
+    const targetIndex = scratch.targets[index];
+    const acc = targetIndex === undefined ? undefined : scratch.joints[targetIndex];
+    if (acc !== undefined) writeAccumulator(world, acc.target, acc, scratch);
   }
   for (const [targetRaw, acc] of morphAccumulators) {
     if (acc.sumW <= 0) continue;
@@ -577,7 +576,7 @@ function resolveClipTargets(
   player: number,
   slot: ActiveSlot,
   targetMap: TargetMap,
-): readonly (EntityHandle | undefined)[] {
+): readonly (ResolvedTarget | undefined)[] {
   const cached = targetMap.resolvedClips.get(slot.clip);
   if (cached !== undefined) return cached;
 
@@ -608,7 +607,7 @@ function resolveChannelTarget(
   property: ChannelKind,
   expectedWeightCount: number | undefined,
   targetMap: TargetMap,
-): EntityHandle | undefined {
+): ResolvedTarget | undefined {
   const binding = targetMap.bindings.get(targetId);
   if (binding === null) {
     emitTargetDiagnostic(
@@ -617,7 +616,6 @@ function resolveChannelTarget(
       clip,
       channel,
       targetId,
-      'animation-target-id-duplicate',
       'target-id-duplicate',
       'assign a unique AnimationTargetId to each target owned by this player',
     );
@@ -630,7 +628,6 @@ function resolveChannelTarget(
       clip,
       channel,
       targetId,
-      'animation-target-transform-missing',
       'transform-missing',
       'attach Transform to the bound animation target',
       binding.entity as number,
@@ -644,7 +641,6 @@ function resolveChannelTarget(
       clip,
       channel,
       targetId,
-      targetMap.hasStaleTarget ? 'animation-target-owner-stale' : 'animation-target-missing',
       targetMap.hasStaleTarget ? 'target-stale' : 'target-missing',
       targetMap.hasStaleTarget
         ? 'remove the stale target relation or bind a live replacement'
@@ -656,10 +652,9 @@ function resolveChannelTarget(
   if (property === 'weights') {
     const weights = world.get(target, MorphWeights);
     if (!weights.ok) {
-      emitAnimationDiagnostic(world, {
-        code: 'animation-target-morph-weights-missing',
-        hint: 'attach MorphWeights to the morph target entity before playing a weights channel',
-        detail: {
+      emitAnimationDiagnostic(
+        world,
+        {
           player,
           clip,
           channel,
@@ -669,14 +664,14 @@ function resolveChannelTarget(
           property,
           ...(expectedWeightCount === undefined ? {} : { expectedWeightCount }),
         },
-      });
+        'attach MorphWeights to the morph target entity before playing a weights channel',
+      );
       return undefined;
     }
     if (expectedWeightCount !== undefined && weights.value.weights.length !== expectedWeightCount) {
-      emitAnimationDiagnostic(world, {
-        code: 'animation-morph-weight-count-mismatch',
-        hint: 'make MorphWeights.length equal the animation channel output width',
-        detail: {
+      emitAnimationDiagnostic(
+        world,
+        {
           player,
           clip,
           channel,
@@ -687,10 +682,11 @@ function resolveChannelTarget(
           expectedWeightCount,
           actualWeightCount: weights.value.weights.length,
         },
-      });
+        'make MorphWeights.length equal the animation channel output width',
+      );
       return undefined;
     }
-    return target;
+    return binding;
   }
   if (!world.get(target, Transform).ok) {
     emitTargetDiagnostic(
@@ -699,14 +695,13 @@ function resolveChannelTarget(
       clip,
       channel,
       targetId,
-      'animation-target-transform-missing',
       'transform-missing',
       'attach Transform to the bound animation target',
       target as number,
     );
     return undefined;
   }
-  return target;
+  return binding;
 }
 
 /** Target/kind coverage retains each slot's first channel as a diagnostic anchor. */
@@ -739,19 +734,13 @@ function emitTargetDiagnostic(
   clipHandleRaw: number,
   chIdx: number,
   targetId: string,
-  code:
-    | 'animation-target-missing'
-    | 'animation-target-transform-missing'
-    | 'animation-target-id-duplicate'
-    | 'animation-target-owner-stale',
   reason: 'target-missing' | 'transform-missing' | 'target-id-duplicate' | 'target-stale',
   hint: string,
   target?: number,
 ): void {
-  emitAnimationDiagnostic(world, {
-    code,
-    hint,
-    detail: {
+  emitAnimationDiagnostic(
+    world,
+    {
       player: entityRaw,
       clip: clipHandleRaw,
       channel: chIdx,
@@ -759,7 +748,8 @@ function emitTargetDiagnostic(
       reason,
       ...(target === undefined ? {} : { target }),
     },
-  });
+    hint,
+  );
 }
 
 /** Emit once at the first covering channel when any active slot lacks that kind. */
@@ -782,10 +772,9 @@ function emitMissingOnSomeSlotWarns(
         const [slotIndex, channel] = anchor;
         const slot = activeSlots[slotIndex];
         if (slot === undefined) continue;
-        emitAnimationDiagnostic(world, {
-          code: 'animation-channel-missing',
-          hint: `author the missing ${kind} channel on the slot whose clip lacks it`,
-          detail: {
+        emitAnimationDiagnostic(
+          world,
+          {
             player: entityRaw,
             clip: slot.clipHandleRaw,
             channel,
@@ -793,7 +782,8 @@ function emitMissingOnSomeSlotWarns(
             reason: 'channel-missing',
             property: kind,
           },
-        });
+          `author the missing ${kind} channel on the slot whose clip lacks it`,
+        );
       }
     }
   }
@@ -862,10 +852,21 @@ function foldChannelIntoAccumulator(
  * an animated channel always covers its whole pos/quat/scale vector, so the
  * per-field partial write semantics are unchanged by the column migration.
  */
-function finalizeAccumulator(acc: JointAccumulator): Record<string, number[]> {
-  const partial: Record<string, number[]> = {};
+function writeAccumulator(
+  world: World,
+  target: EntityHandle,
+  acc: JointAccumulator,
+  scratch: PoseScratch,
+): void {
+  const { pos, quat, scale } = scratch;
+  let fields = 0;
   if (acc.sumWPos > 0) {
-    partial.pos = [acc.posX / acc.sumWPos, acc.posY / acc.sumWPos, acc.posZ / acc.sumWPos];
+    pos[0] = acc.posX / acc.sumWPos;
+    pos[1] = acc.posY / acc.sumWPos;
+    pos[2] = acc.posZ / acc.sumWPos;
+    if (transformValuesChanged(world, target, 'pos', pos)) {
+      fields |= 1;
+    }
   }
   if (acc.sumWQuat > 0) {
     const qx = acc.quatX / acc.sumWQuat;
@@ -874,18 +875,42 @@ function finalizeAccumulator(acc: JointAccumulator): Record<string, number[]> {
     const qw = acc.quatW / acc.sumWQuat;
     const len = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
     if (len > 0) {
-      // Component order [x, y, z, w] (E6).
-      partial.quat = [qx / len, qy / len, qz / len, qw / len];
+      quat[0] = qx / len;
+      quat[1] = qy / len;
+      quat[2] = qz / len;
+      quat[3] = qw / len;
+      if (transformValuesChanged(world, target, 'quat', quat)) {
+        fields |= 2;
+      }
     }
   }
   if (acc.sumWScale > 0) {
-    partial.scale = [
-      acc.scaleX / acc.sumWScale,
-      acc.scaleY / acc.sumWScale,
-      acc.scaleZ / acc.sumWScale,
-    ];
+    scale[0] = acc.scaleX / acc.sumWScale;
+    scale[1] = acc.scaleY / acc.sumWScale;
+    scale[2] = acc.scaleZ / acc.sumWScale;
+    if (transformValuesChanged(world, target, 'scale', scale)) {
+      fields |= 4;
+    }
   }
-  return partial;
+  // World consumes these numeric arrays synchronously; it owns the stored pose.
+  if (fields !== 0) world.set(target, Transform as never, scratch.partials[fields] as never);
+}
+
+function transformValuesChanged(
+  world: World,
+  target: EntityHandle,
+  field: 'pos' | 'quat' | 'scale',
+  values: number[],
+): boolean {
+  const current = readRenderArrayView(world, target, Transform, field);
+  if (current === undefined || current.length !== values.length) return true;
+  // Compare the f32 destination, including negative zero, so external author
+  // writes are restored even when clip time has not moved.
+  for (let index = 0; index < values.length; index++) {
+    const value = values[index] as number;
+    if (Number.isNaN(value) || !Object.is(current[index], Math.fround(value))) return true;
+  }
+  return false;
 }
 
 /**
@@ -904,6 +929,8 @@ interface ActiveSlot {
 }
 
 interface JointAccumulator {
+  generation: number;
+  target: EntityHandle;
   posX: number;
   posY: number;
   posZ: number;
@@ -930,8 +957,68 @@ interface MorphWeightAccumulator {
   sumW: number;
 }
 
+interface PoseScratch {
+  readonly entities: EntityHandle[];
+  readonly targets: number[];
+  generation: number;
+  readonly joints: JointAccumulator[];
+  readonly channelSample: number[];
+  readonly pos: number[];
+  readonly quat: number[];
+  readonly scale: number[];
+  readonly partials: readonly { pos?: number[]; quat?: number[]; scale?: number[] }[];
+}
+
+// Only numeric work survives calls; no component or asset object is retained.
+// Nested evaluations borrow separate scratch instances.
+const poseScratchByWorld = new WeakMap<World, PoseScratch[]>();
+
+function createPoseScratch(): PoseScratch {
+  const pos = [0, 0, 0];
+  const quat = [0, 0, 0, 1];
+  const scale = [1, 1, 1];
+  return {
+    entities: [],
+    targets: [],
+    joints: [],
+    generation: 0,
+    channelSample: [],
+    pos,
+    quat,
+    scale,
+    partials: [
+      {},
+      { pos },
+      { quat },
+      { pos, quat },
+      { scale },
+      { pos, scale },
+      { quat, scale },
+      { pos, quat, scale },
+    ],
+  };
+}
+
+function resetAccumulator(acc: JointAccumulator): void {
+  acc.posX = 0;
+  acc.posY = 0;
+  acc.posZ = 0;
+  acc.sumWPos = 0;
+  acc.quatX = 0;
+  acc.quatY = 0;
+  acc.quatZ = 0;
+  acc.quatW = 0;
+  acc.sumWQuat = 0;
+  acc.scaleX = 0;
+  acc.scaleY = 0;
+  acc.scaleZ = 0;
+  acc.sumWScale = 0;
+}
+
 function createAccumulator(): JointAccumulator {
   return {
+    generation: -1,
+    target: 0 as EntityHandle,
     posX: 0,
     posY: 0,
     posZ: 0,

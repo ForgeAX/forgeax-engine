@@ -1,9 +1,10 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createAcceptedPublicationStore, scriptablePackOutputSetDigest } from '@forgeax/engine-ddc';
+import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
 import { buildCatalogResult } from '@forgeax/engine-import';
 import type { AssetPublicationEnvelope, AssetPublicationOutput } from '@forgeax/engine-types';
+import { assetPublicationOutputSetDigest } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { sourceDeclarationForCatalogPath } from '../dev/source-path.js';
 
@@ -31,7 +32,7 @@ describe('producer-owned catalog contract', () => {
         refs: ['01890000-0000-7000-8000-111111111111'],
       },
     ];
-    const outputSetDigest = scriptablePackOutputSetDigest(outputs);
+    const outputSetDigest = assetPublicationOutputSetDigest(outputs);
     const externalEvidence = [] as const;
     return {
       schemaVersion: 'asset-publication/1',

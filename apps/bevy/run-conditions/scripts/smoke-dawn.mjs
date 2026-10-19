@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-run-conditions headless Dawn smoke.
@@ -9,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const FRAMES = Math.max(SMOKE_MIN_FRAMES, 60);
@@ -172,8 +173,8 @@ console.log(`[smoke] motionMeanDelta=${motionMeanDelta.toFixed(5)}`);
 try {
   const output = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
   mkdirSync(output, { recursive: true });
-  if (earlyFrame) writeFileSync(resolve(output, 'frame-early.png'), writeReferencePng(earlyFrame, WIDTH, HEIGHT));
-  if (lateFrame) writeFileSync(resolve(output, 'frame-late.png'), writeReferencePng(lateFrame, WIDTH, HEIGHT));
+  if (earlyFrame) writeFileSync(resolve(output, 'frame-early.png'), encodePng(WIDTH, HEIGHT, earlyFrame));
+  if (lateFrame) writeFileSync(resolve(output, 'frame-late.png'), encodePng(WIDTH, HEIGHT, lateFrame));
 } catch (error) {
   console.warn(`[smoke] PNG dump skipped: ${error instanceof Error ? error.message : String(error)}`);
 }

@@ -47,9 +47,11 @@ const NDOTV: array<f32, ${NDOTV.length}> = array<f32, ${NDOTV.length}>(${NDOTV.m
   let ab = textureSampleLevel(lut, lutSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
   let white = specularEnvironmentAlbedo(NdotV, roughness, vec3<f32>(1.0), lut, lutSampler);
   let goldMs = specularEnvironmentAlbedo(NdotV, roughness, gold, lut, lutSampler);
-  let goldSs = fresnelSchlickRoughness(NdotV, gold, roughness) * ab.r + ab.g;
+  let goldSs = gold * ab.r + ab.g;
   // x: white multi-scatter, y: white single-scatter, z/w: gold blue lane.
   outputs[id.x] = vec4<f32>(white.x, ab.r + ab.g, goldMs.b, goldSs.b);
+  let dielectric = specularEnvironmentAlbedo(NdotV, roughness, vec3<f32>(0.04), lut, lutSampler);
+  outputs[id.x + ${ROUGHNESS.length * NDOTV.length}u] = vec4<f32>(1.0 - dielectric, 1.0);
 }`,
     { id: 'forgeax::ibl-furnace-probe-test', imports },
   );
@@ -67,11 +69,11 @@ const NDOTV: array<f32, ${NDOTV.length}> = array<f32, ${NDOTV.length}>(${NDOTV.m
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
   });
   const output = device.createBuffer({
-    size: count * 16,
+    size: count * 32,
     usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
   });
   const readback = device.createBuffer({
-    size: count * 16,
+    size: count * 32,
     usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ,
   });
   try {
@@ -120,7 +122,7 @@ const NDOTV: array<f32, ${NDOTV.length}> = array<f32, ${NDOTV.length}>(${NDOTV.m
     pass.setBindGroup(0, group);
     pass.dispatchWorkgroups(count);
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, count * 16);
+    encoder.copyBufferToBuffer(output, 0, readback, 0, count * 32);
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPUMapMode.READ);
     const values = new Float32Array(readback.getMappedRange()).slice();
@@ -156,6 +158,9 @@ const NDOTV: array<f32, ${NDOTV.length}> = array<f32, ${NDOTV.length}>(${NDOTV.m
       // Colored metal gains energy, bounded by the missing single-scatter share.
       expect(rough.goldMs - rough.goldSs).toBeGreaterThan(0.02);
       expect(rough.goldMs - rough.goldSs).toBeLessThan(1 - rough.single);
+      const diffuse = values[count * 4 + (n * ROUGHNESS.length + ROUGHNESS.length - 1) * 4] ?? NaN;
+      expect(diffuse, `rough dielectric diffuse at NdotV=${NDOTV[n]}`).toBeGreaterThan(0.9);
+      expect(diffuse).toBeLessThan(1);
     }
   } finally {
     readback.destroy();

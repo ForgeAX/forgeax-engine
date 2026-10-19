@@ -1,3 +1,4 @@
+import { mat4 } from '@forgeax/engine-math';
 import { RhiError, type RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
@@ -144,6 +145,7 @@ function frontDoors(prepared: boolean, nonempty = false, paged = false) {
             source: {
               worldId: 0,
               entityKey: 1,
+              transform: { world: mat4.identity(mat4.create()) },
               material: { materialHandle: 0 },
               materials: [{ materialHandle: 0 }],
             },

@@ -13,7 +13,8 @@
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COMPONENT_TYPE, decodeAccessor } from '../accessor/decode-accessor.js';
+import { decodeAccessor } from '../accessor/decode-accessor.js';
+import { COMPONENT_TYPE } from '../accessor/layout.js';
 import { parseAnimation } from '../parse-animation.js';
 import { parseGlbChunks, parseGltfHeader } from '../parse-glb-chunks.js';
 import type { GltfMeshIr } from '../parse-gltf.js';

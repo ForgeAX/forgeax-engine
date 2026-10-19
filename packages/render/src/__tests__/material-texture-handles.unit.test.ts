@@ -1,11 +1,11 @@
 import type { Handle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import type { MaterialSnapshot } from '../render-system-extract';
 import {
   materialSamplerHandles,
   materialTextureHandles,
-} from '../recovery/render-system-candidate';
-import { materialTextureHandlesForResidency } from '../render-system';
-import type { MaterialSnapshot } from '../render-system-extract';
+  materialTextureHandlesForResidency,
+} from '../render-system-residency';
 
 type TextureHandle = Handle<'TextureAsset', 'shared'>;
 

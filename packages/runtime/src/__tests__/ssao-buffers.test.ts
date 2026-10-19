@@ -39,7 +39,7 @@ function makeMockRuntime(capsOverride: Partial<RhiCaps> = {}): {
 } {
   const createBuffer = vi.fn(() => ({ ok: true, value: mockBuffer() }));
   const createTexture = vi.fn(() => ({ ok: true, value: mockTexture() }));
-  const createTextureView = vi.fn().mockReturnValue({ ok: true, value: {} });
+  const createTextureView = vi.fn().mockImplementation(() => ({ ok: true, value: {} }));
   const createSampler = vi.fn().mockReturnValue({ ok: true, value: { label: 'mock-sampler' } });
   const destroyBuffer = vi.fn().mockReturnValue({ ok: true, value: undefined });
   const destroyTexture = vi.fn().mockReturnValue({ ok: true, value: undefined });
@@ -236,6 +236,45 @@ describe('getOrCreateSsaoBuffers', () => {
     expect(getOrCreateSsaoBuffers(runtime)).toBe(first);
 
     expect(runtime.errorRegistry.fire).not.toHaveBeenCalled();
+  });
+
+  it('keeps one noise view per allocation and replaces it after reset or device change', () => {
+    const firstRuntime = makeMockRuntime();
+    const { runtime, createTextureView } = firstRuntime;
+    const first = getOrCreateSsaoBuffers(runtime);
+    expect(first).not.toBeNull();
+    expect(getOrCreateSsaoBuffers(runtime)?.noiseView).toBe(first?.noiseView);
+    expect(createTextureView).toHaveBeenCalledTimes(1);
+    expect(createTextureView).toHaveBeenCalledWith(
+      first?.noiseTexture,
+      expect.objectContaining({
+        dimension: '2d',
+        format: 'rgba32float',
+        arrayLayerCount: 1,
+      }),
+    );
+    resetSsaoResources(runtime);
+    const second = getOrCreateSsaoBuffers(runtime);
+    expect(second?.noiseView).not.toBe(first?.noiseView);
+    const replacement = makeMockRuntime();
+    Object.assign(runtime, { device: replacement.runtime.device });
+    expect(getOrCreateSsaoBuffers(runtime)?.noiseView).not.toBe(second?.noiseView);
+    expect(firstRuntime.destroyTexture).toHaveBeenCalledTimes(2);
+    expect(replacement.createTextureView).toHaveBeenCalledTimes(1);
+    resetSsaoResources(runtime);
+  });
+
+  it('rolls back a failed noise view and retries without publishing partial resources', () => {
+    const { runtime, createTextureView, destroyBuffer, destroyTexture } = makeMockRuntime();
+    const error = { code: 'webgpu-runtime-error', expected: 'view allocation', hint: 'test' };
+    createTextureView.mockReturnValueOnce({ ok: false, error });
+    expect(getOrCreateSsaoBuffers(runtime)).toBeNull();
+    expect(runtime.errorRegistry.fire).toHaveBeenCalledWith(error);
+    expect(destroyBuffer).toHaveBeenCalledTimes(1);
+    expect(destroyTexture).toHaveBeenCalledTimes(1);
+    expect(getOrCreateSsaoBuffers(runtime)).not.toBeNull();
+    expect(createTextureView).toHaveBeenCalledTimes(2);
+    resetSsaoResources(runtime);
   });
 
   it('resetSsaoResources destroys cached buffers and fallback texture exactly once', () => {

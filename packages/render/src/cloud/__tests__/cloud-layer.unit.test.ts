@@ -73,7 +73,7 @@ describe('CloudLayer authoring and deterministic field', () => {
     world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0.3, -0.9, 0.2], color: [1, 0.9, 0.8], intensity: 2 },
+        data: { castShadow: true, direction: [0.3, -0.9, 0.2], color: [1, 0.9, 0.8], intensity: 2 },
       })
       .unwrap();
     const feature = createCloudLayerFeature();

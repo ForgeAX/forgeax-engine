@@ -1,5 +1,6 @@
 import type { World } from '@forgeax/engine-ecs';
 import { box3, type Mat4Like, mat4 } from '@forgeax/engine-math';
+import { skinVertexPosition } from '@forgeax/engine-skinning';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { compareSkinGeometryBytes } from './skin-geometry-bytes';
 import type { SkinPose } from './systems/skin-palette-types';
@@ -329,20 +330,18 @@ export function skinPosedBounds(
   const matrix = mat4.multiply(mat4.create(), meshWorld, inverse);
   // Math deliberately returns identity for singular inverses. Such a mesh
   // transform cannot represent this world-space Skin envelope in local space.
-  if (
-    !matrix.every(
-      (value, index) =>
-        Number.isFinite(value) && Math.abs(value - (index % 5 === 0 ? 1 : 0)) <= 1e-4,
-    )
-  )
-    return undefined;
+  for (let index = 0; index < 16; index++) {
+    const value = matrix[index] as number;
+    if (!Number.isFinite(value) || Math.abs(value - (index % 5 === 0 ? 1 : 0)) > 1e-4)
+      return undefined;
+  }
   const palette = new Float32Array(pose.jointCount * 16);
   for (let joint = 0; joint < pose.jointCount; joint++) {
     const world = pose.jointWorlds[joint];
     const ibm = pose.inverseBindMatrices[joint];
     if (world === undefined || ibm === undefined || ibm.length !== 16) return undefined;
     mat4.multiply(matrix, world, ibm);
-    if (!matrix.every(Number.isFinite)) return undefined;
+    for (let index = 0; index < 16; index++) if (!Number.isFinite(matrix[index])) return undefined;
     palette.set(matrix, joint * 16);
   }
   // Read and validate the live palette first, including caller accessors and
@@ -370,47 +369,13 @@ export function skinPosedBounds(
   if (previous !== undefined) return previous;
   const minimum = [Infinity, Infinity, Infinity];
   const maximum = [-Infinity, -Infinity, -Infinity];
+  const point = new Float64Array(4);
   for (let vertex = 0; vertex < positions.length / 3; vertex++) {
-    const x = positions[vertex * 3] as number;
-    const y = positions[vertex * 3 + 1] as number;
-    const z = positions[vertex * 3 + 2] as number;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined;
-    let pointX = 0,
-      pointY = 0,
-      pointZ = 0;
-    let homogeneousWeight = 0;
-    for (let lane = 0; lane < 4; lane++) {
-      const influence = vertex * 4 + lane;
-      const joint = indices[influence] as number;
-      const weight = weights[influence] as number;
-      if (joint >= pose.jointCount || !Number.isFinite(weight)) return undefined;
-      if (weight === 0) continue;
-      const base = joint * 16;
-      homogeneousWeight +=
-        weight *
-        ((palette[base + 3] as number) * x +
-          (palette[base + 7] as number) * y +
-          (palette[base + 11] as number) * z +
-          (palette[base + 15] as number));
-      pointX +=
-        weight *
-        ((palette[base] as number) * x +
-          (palette[base + 4] as number) * y +
-          (palette[base + 8] as number) * z +
-          (palette[base + 12] as number));
-      pointY +=
-        weight *
-        ((palette[base + 1] as number) * x +
-          (palette[base + 5] as number) * y +
-          (palette[base + 9] as number) * z +
-          (palette[base + 13] as number));
-      pointZ +=
-        weight *
-        ((palette[base + 2] as number) * x +
-          (palette[base + 6] as number) * y +
-          (palette[base + 10] as number) * z +
-          (palette[base + 14] as number));
-    }
+    if (!skinVertexPosition(point, positions, indices, weights, palette, vertex)) return undefined;
+    const pointX = point[0] as number;
+    const pointY = point[1] as number;
+    const pointZ = point[2] as number;
+    const homogeneousWeight = point[3] as number;
     if (!(homogeneousWeight > 0)) return undefined;
     const projectedX = pointX / homogeneousWeight;
     const projectedY = pointY / homogeneousWeight;

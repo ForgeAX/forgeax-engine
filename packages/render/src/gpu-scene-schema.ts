@@ -1,5 +1,5 @@
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
-import { derive, type NumericParamType } from '@forgeax/engine-types';
+import { derive, MATERIAL_NUMERIC_LAYOUT, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 
 export type GpuSceneScalar = 'u32' | 'i32' | 'f32';
 export type GpuSceneFieldType =
@@ -34,12 +34,7 @@ export interface GpuSceneTableLayout {
 const TYPE_LAYOUT: Readonly<
   Record<GpuSceneFieldType, { readonly size: number; readonly alignment: number }>
 > = {
-  u32: { size: 4, alignment: 4 },
-  i32: { size: 4, alignment: 4 },
-  f32: { size: 4, alignment: 4 },
-  'vec2<f32>': { size: 8, alignment: 8 },
-  'vec3<f32>': { size: 12, alignment: 16 },
-  'vec4<f32>': { size: 16, alignment: 16 },
+  ...WGSL_NUMERIC_LAYOUT,
   'mat4x4<f32>': { size: 64, alignment: 16 },
 };
 
@@ -72,24 +67,6 @@ export function gpuSceneWgsl(layout: GpuSceneTableLayout): string {
   return `struct ${layout.name} {\n${fields}\n};`;
 }
 
-function gpuSceneTypeForNumeric(type: NumericParamType): GpuSceneFieldType {
-  switch (type) {
-    case 'f32':
-      return 'f32';
-    case 'i32':
-      return 'i32';
-    case 'u32':
-      return 'u32';
-    case 'vec3':
-      return 'vec3<f32>';
-    case 'vec4':
-    case 'color':
-      return 'vec4<f32>';
-    case 'vec2':
-      return 'vec2<f32>';
-  }
-}
-
 /**
  * Project the canonical Standard material UBO into the GPU Scene storage row.
  * The compiler-generated `MaterialParameters` struct, the row packer, and the
@@ -101,7 +78,7 @@ function deriveStandardMaterialFields(): readonly GpuSceneField[] {
   const fields = [
     ...derived.numericMembers.map((member) => ({
       offset: member.offset,
-      field: { name: member.name, type: gpuSceneTypeForNumeric(member.type) },
+      field: { name: member.name, type: MATERIAL_NUMERIC_LAYOUT[member.type].wgslType },
     })),
     ...derived.coordinateRecords.flatMap((record) => [
       {

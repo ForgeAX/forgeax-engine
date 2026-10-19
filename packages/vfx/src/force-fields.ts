@@ -1,4 +1,11 @@
-import { err, ok, type Result, type TextureAsset, type VfxForceField } from '@forgeax/engine-types';
+import {
+  err,
+  isValidAssetGuidString,
+  ok,
+  type Result,
+  type TextureAsset,
+  type VfxForceField,
+} from '@forgeax/engine-types';
 
 export const VFX_FORCE_FIELD_LIMIT = 8;
 export const VFX_VECTOR_FIELD_RESOLUTION_LIMIT = 64;
@@ -119,9 +126,7 @@ export function validateVfxForceFields(
       );
     if (
       field.kind === 'vector' &&
-      (typeof field.texture !== 'string' ||
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(field.texture) ||
-        !['nearest', 'trilinear'].includes(field.sampling))
+      (!isValidAssetGuidString(field.texture) || !['nearest', 'trilinear'].includes(field.sampling))
     )
       return vfxForceFieldFailure(
         'vfx-field-invalid',

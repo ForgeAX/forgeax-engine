@@ -830,7 +830,7 @@ export function attachBrowserInputBackend(
     // active/frozen continuous value (non-identity) or lifecycle events.
     const gestureEvents: readonly GestureEvent[] | undefined =
       gestureResult.gestureEvents.length > 0 ? gestureResult.gestureEvents : undefined;
-    const gs = gestureResult.gestureState;
+    const gs = gestureResult.newState.gesture;
     const gestures: GestureState | undefined =
       gs.pinchScale !== 1 || gs.rotationAngle !== 0 ? gs : undefined;
 

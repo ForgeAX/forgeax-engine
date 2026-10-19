@@ -29,6 +29,13 @@ export async function seedDepthInitialData(
   let upload: Texture | undefined;
   try {
     const extent = projectTextureExtent(event.desc.size);
+    if (extent === undefined)
+      return eventFailure(
+        -bootstrapIndex - 1,
+        event,
+        'lookup',
+        'the texture descriptor has invalid dimensions',
+      );
     upload = device
       .createTexture({
         size: { width: extent.width, height: extent.height, depthOrArrayLayers: extent.layerCount },

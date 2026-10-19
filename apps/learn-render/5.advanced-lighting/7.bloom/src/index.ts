@@ -15,7 +15,7 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 // threshold of 1.0 and glow.
 //
 // Bloom is opt-in via Camera fields (bloom, bloomThreshold, bloomIntensity,
-// bloomSoftKnee/bloomScatter) + Reinhard-extended tonemap. The engine declares the
+// bloomSmoothWidth/bloomRadius) + Reinhard-extended tonemap. The engine declares the
 // five-level multiscale chain (downsample -> upsample -> composite);
 // no custom pipeline code lives here. Contrast with 6.hdr's custom
 // RenderPipeline paradigm and apps/hello/bloom (which proves the bloom
@@ -347,8 +347,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           bloom: BLOOM_ENABLED,
           bloomThreshold: BLOOM_THRESHOLD,
           bloomIntensity: BLOOM_INTENSITY,
-          bloomSoftKnee: 0.5,
-          bloomScatter: 0.7,
+          bloomSmoothWidth: 0.01,
+          bloomRadius: 0,
         },
       },
     )

@@ -41,6 +41,7 @@ function setupWorld(cascadeCount: number): World {
   world.spawn({
     component: DirectionalLight,
     data: {
+      castShadow: true,
       direction: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]],
       cascadeCount,
       shadowDistance: 100,

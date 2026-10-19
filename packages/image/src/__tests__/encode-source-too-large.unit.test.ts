@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  type EncodeSourceInfo,
+  type BasisEncodeParams,
   encodeTextureToKtx2,
   MAX_ENCODE_SOURCE_PIXELS,
 } from '../ktx2-encode.js';
@@ -27,7 +27,13 @@ vi.mock('@forgeax/engine-codec/encode', () => ({
   basisEncode: (...args: unknown[]) => basisEncodeSpy(...args),
 }));
 
-const SRGB: EncodeSourceInfo = { colorSpace: 'srgb', isHdr: false, mipmap: false };
+const PARAMS: BasisEncodeParams = {
+  mode: 'etc1s',
+  srgb: true,
+  perceptual: true,
+  mipGen: false,
+  uastcSupercompression: false,
+};
 
 describe('encodeTextureToKtx2 -- source-pixel ceiling fail-fast', () => {
   it('MAX_ENCODE_SOURCE_PIXELS is 4096x4096 (16.78 Mpx)', () => {
@@ -39,7 +45,7 @@ describe('encodeTextureToKtx2 -- source-pixel ceiling fail-fast', () => {
     basisEncodeSpy.mockClear();
     // 8192x8192 = 67 Mpx, well over the ceiling. A 4-byte stub buffer suffices:
     // the pre-check reads only the dimensions.
-    const r = await encodeTextureToKtx2(new Uint8Array(4), 8192, 8192, 'etc1s', SRGB);
+    const r = await encodeTextureToKtx2(new Uint8Array(4), 8192, 8192, PARAMS);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('ktx2-encode-source-too-large');
@@ -51,7 +57,7 @@ describe('encodeTextureToKtx2 -- source-pixel ceiling fail-fast', () => {
 
   it('rejects the first over-limit size just past the ceiling (4097x4096)', async () => {
     basisEncodeSpy.mockClear();
-    const r = await encodeTextureToKtx2(new Uint8Array(4), 4097, 4096, 'etc1s', SRGB);
+    const r = await encodeTextureToKtx2(new Uint8Array(4), 4097, 4096, PARAMS);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe('ktx2-encode-source-too-large');
@@ -61,23 +67,12 @@ describe('encodeTextureToKtx2 -- source-pixel ceiling fail-fast', () => {
   it('an exactly-4096^2 source passes the ceiling and reaches the encoder', async () => {
     basisEncodeSpy.mockClear();
     basisEncodeSpy.mockResolvedValue({ ok: true, value: new Uint8Array([1, 2, 3]) });
-    const r = await encodeTextureToKtx2(new Uint8Array(4), 4096, 4096, 'etc1s', SRGB);
+    const r = await encodeTextureToKtx2(new Uint8Array(4), 4096, 4096, PARAMS);
     expect(basisEncodeSpy).toHaveBeenCalledTimes(1);
     // The stub bytes are not a KTX2, so the header read-back rejects them; the
     // ceiling itself did not.
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error).toMatchObject({ code: 'ktx2-encode-failed', mode: 'etc1s' });
-  });
-
-  it("the 'none' path still short-circuits before the ceiling check", async () => {
-    basisEncodeSpy.mockClear();
-    // Over-limit dimensions but mode 'none' -> resolves to null params first.
-    const r = await encodeTextureToKtx2(new Uint8Array(4), 8192, 8192, 'none', SRGB);
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.error.code).toBe('ktx2-encode-failed');
-    expect(r.error.mode).toBe('none');
-    expect(basisEncodeSpy).not.toHaveBeenCalled();
   });
 });

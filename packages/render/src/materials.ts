@@ -840,7 +840,7 @@ function standardDefault(opts: DefaultStandardOptions): MaterialAsset {
     subsurfaceWeight,
     baseColor: linearColorFromInput(opts.baseColor, 4),
     metallic: opts.metallic ?? 0,
-    roughness: opts.roughness ?? 0.5,
+    roughness: opts.roughness ?? 1,
     occlusionStrength,
     displacementScale: opts.displacementScale ?? 1,
     displacementBias: opts.displacementBias ?? 0,

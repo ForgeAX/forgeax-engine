@@ -37,7 +37,7 @@ Admission validates each canonical LOD grid, height/normal mip and control byte,
 
 Section materials use the ordinary Standard module with the Terrain surface slot and three canonical forward/deferred/shadow passes. The material cooker selects Terrain geometry from resolved passes, including inherited materials. Altered programs or pass rosters cannot enter a Terrain closure.
 
-The foundation source texture adapter accepts resident RGBA8 2D data. HDR Standard channels are packed as binary16. Unsupported shader/pass, physical-layer or coordinate extensions fail during cooking. Build tools may first import/decompress a texture through its existing owner; runtime never imports source files or compiles WGSL.
+The foundation source texture adapter accepts resident RGBA8 2D data. HDR Standard channels are packed as binary16 through the Math codec, after the producer rejects non-finite or out-of-range values. Unsupported shader/pass, physical-layer or coordinate extensions fail during cooking. Build tools may first import/decompress a texture through its existing owner; runtime never imports source files or compiles WGSL.
 
 `terrainHeightBounds(min, max, heightRange)` derives conservative GPU geometry bounds from the packed-height half-step and f32 decode/morph rounding. Input validation rejects spacing, extents and derived bounds that cannot be represented by finite f32 values. Author extrema remain author facts.
 

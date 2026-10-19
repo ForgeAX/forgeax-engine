@@ -1,3 +1,5 @@
+import { fnv1aUtf16 } from '@forgeax/engine-types';
+import { projectShaderConditionals } from './conditionals.js';
 // @forgeax/engine-shader-compiler — compileShader implementation.
 //
 // Top-level surface (charter proposition 1 progressive disclosure / proposition 5 consistent abstraction):
@@ -147,93 +149,6 @@ const MODULE_ID_PREFIX_RE = /^([A-Za-z0-9_-]+(?:::[A-Za-z0-9_-]+)*)/;
 const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_:-]+)/;
 
 /**
- * Project the boolean conditional surface that naga_oil resolves too late for
- * imported modules. Known `#ifdef`/`#ifndef` branches and the engine's simple
- * `#if NAME == true|false` expressions are folded; unknown `#if` expressions
- * remain intact for naga_oil. The stack tracks every conditional kind so a
- * nested numeric `#if` cannot steal an outer `#ifdef`'s `#else`.
- */
-
-export function projectShaderConditionals(
-  source: string,
-  defines: Record<string, boolean> = {},
-): string {
-  if (Object.keys(defines).length === 0) return source;
-  type ConditionalFrame = {
-    disabled: boolean;
-    seenElse: boolean;
-    removed: boolean;
-    opaque: boolean;
-  };
-  const stack: ConditionalFrame[] = [];
-  const parentDisabled = (): boolean => stack.some((frame) => frame.disabled);
-  const lines = source.split(/\r?\n/);
-  const out: string[] = [];
-
-  const knownIfCondition = (line: string): boolean | undefined => {
-    const match = /^\s*#if\s+(\w+)\s*==\s*(true|false)\s*$/.exec(line);
-    if (match === null) return undefined;
-    const name = match[1];
-    const expected = match[2] === 'true';
-    const actual = name === undefined ? undefined : defines[name];
-    return actual === undefined ? undefined : actual === expected;
-  };
-
-  for (const line of lines) {
-    const ifdefMatch = /^\s*#ifdef\s+(\w+)/.exec(line);
-    const ifndefMatch = /^\s*#ifndef\s+(\w+)/.exec(line);
-    const knownCondition = knownIfCondition(line);
-    if (ifdefMatch !== null || ifndefMatch !== null || knownCondition !== undefined) {
-      const name = ifdefMatch?.[1] ?? ifndefMatch?.[1];
-      const condition =
-        knownCondition ??
-        (name === undefined
-          ? false
-          : ifdefMatch !== null
-            ? (defines[name] ?? false)
-            : !(defines[name] ?? false));
-      const disabled = parentDisabled() || !condition;
-      stack.push({ disabled, seenElse: false, removed: disabled, opaque: false });
-      if (!disabled) out.push(line);
-      continue;
-    }
-    if (/^\s*#if\s+/.test(line)) {
-      const disabled = parentDisabled();
-      stack.push({ disabled, seenElse: false, removed: disabled, opaque: true });
-      if (!disabled) out.push(line);
-      continue;
-    }
-    if (/^\s*#else\b/.test(line)) {
-      const top = stack[stack.length - 1];
-      if (top === undefined) {
-        out.push(line);
-        continue;
-      }
-      if (top.seenElse) continue;
-      top.seenElse = true;
-      if (top.opaque) {
-        if (!top.removed && !parentDisabled()) out.push(line);
-        continue;
-      }
-      const outerDisabled = stack.slice(0, -1).some((frame) => frame.disabled);
-      if (!outerDisabled) top.disabled = !top.disabled;
-      // A removed known branch has no matching directive in the projected
-      // source; its else-body is now the active body and must flow through.
-      if (!top.removed) out.push(line);
-      continue;
-    }
-    if (/^\s*#endif\b/.test(line)) {
-      const top = stack.pop();
-      if (top === undefined || !top.removed) out.push(line);
-      continue;
-    }
-    if (parentDisabled()) continue;
-    out.push(line);
-  }
-  return out.join('\n');
-}
-
-/**
  * Specialize every module in one shader composition closure before naga_oil
  * sees it. naga_oil receives one define map for an entry, but imported WGSL
  * modules are parsed as independent source strings; leaving their conditional
@@ -245,59 +160,7 @@ function specializeConditionalDefines(
   source: string,
   defines: Readonly<Record<string, boolean>>,
 ): string {
-  type ConditionalFrame = {
-    parentActive: boolean;
-    branchActive: boolean;
-    elseSeen: boolean;
-  };
-  const frames: ConditionalFrame[] = [];
-  const output: string[] = [];
-  const active = (): boolean => {
-    const frame = frames[frames.length - 1];
-    return frame === undefined ? true : frame.parentActive && frame.branchActive;
-  };
-  const condition = (name: string, negated = false): boolean => {
-    const value = defines[name] === true;
-    return negated ? !value : value;
-  };
-
-  for (const line of source.split(/\r?\n/)) {
-    if (!line.includes('#')) {
-      if (active()) output.push(line);
-      continue;
-    }
-    const ifdef = /^\s*#ifdef\s+(\w+)/.exec(line);
-    const ifndef = /^\s*#ifndef\s+(\w+)/.exec(line);
-    const ifComparison = /^\s*#if\s+(\w+)\s*==\s*(true|false)\s*$/.exec(line);
-    const ifName = /^\s*#if\s*!?(\w+)\s*$/.exec(line);
-    if (ifdef !== null || ifndef !== null || ifComparison !== null || ifName !== null) {
-      const parentActive = active();
-      let branchActive = false;
-      if (ifdef !== null) branchActive = condition(ifdef[1] ?? '');
-      else if (ifndef !== null) branchActive = condition(ifndef[1] ?? '', true);
-      else if (ifComparison !== null) {
-        const expected = ifComparison[2] === 'true';
-        branchActive = condition(ifComparison[1] ?? '') === expected;
-      } else {
-        branchActive = condition(ifName?.[1] ?? '', line.includes('!'));
-      }
-      frames.push({ parentActive, branchActive, elseSeen: false });
-      continue;
-    }
-    if (/^\s*#else\b/.test(line)) {
-      const frame = frames[frames.length - 1];
-      if (frame !== undefined && !frame.elseSeen) {
-        frame.branchActive = !frame.branchActive;
-        frame.elseSeen = true;
-      }
-      continue;
-    }
-    if (/^\s*#endif\b/.test(line)) {
-      frames.pop();
-      continue;
-    }
-    if (active()) output.push(line);
-  }
+  const output = projectShaderConditionals(source, defines, 'all').split('\n');
   // An inlined Surface and its template may import different symbols from
   // the same module. naga_oil treats repeated symbol lists as replacements.
   // Merge only active group imports after conditional projection; otherwise a
@@ -892,18 +755,8 @@ function makeImportNotFound(args: {
 
 // === helper: content-addressable hash ==============================================
 
-/**
- * SHA-256-equivalent stub — M1 phase uses a deterministic FNV-1a 32-bit hex hash
- * string as a placeholder (the manifest schema SSOT requires a string field and
- * does not lock the hash algorithm). When M2 vite plugin lands generateBundle
- * triplet output, this can be upgraded to sha256 (post-MVP; out of scope for
- * this task).
- */
+/** Stable legacy manifest identity; this 32-bit hash is not an integrity proof. */
 function computeHash(source: string): string {
-  let hash = 0x811c9dc5; // FNV offset basis
-  for (let i = 0; i < source.length; i++) {
-    hash ^= source.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
+  const hash = fnv1aUtf16(source);
   return (hash >>> 0).toString(16).padStart(8, '0');
 }

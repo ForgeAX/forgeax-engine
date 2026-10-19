@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 // texel-decode.ts -- CPU decode of each uncompressed color format to RGBA8 for preview.
 //
 // The recorder promotes COPY_SRC onto every createTexture, so the replayer's
@@ -18,24 +19,6 @@
 // Related: plan "all-format color preview"; reuses formatInfo (rhi-debug texel-layout).
 
 import { bytesPerTexel, type FormatInfo, formatInfo } from './texel-layout';
-
-/** Decode a single IEEE half-float (16-bit) bit pattern to a JS number. */
-export function halfToFloat(h: number): number {
-  const sign = (h & 0x8000) >> 15;
-  const exp = (h & 0x7c00) >> 10;
-  const frac = h & 0x03ff;
-  const s = sign === 0 ? 1 : -1;
-  if (exp === 0) {
-    // Subnormal (or zero): 2^-14 * (frac / 1024).
-    return s * 2 ** -14 * (frac / 1024);
-  }
-  if (exp === 0x1f) {
-    // Inf / NaN.
-    return frac === 0 ? s * Number.POSITIVE_INFINITY : Number.NaN;
-  }
-  // Normal: 2^(exp-15) * (1 + frac/1024).
-  return s * 2 ** (exp - 15) * (1 + frac / 1024);
-}
 
 /**
  * Decode an unsigned-int bit pattern of an 11- or 10-bit unsigned float
@@ -108,7 +91,10 @@ function readTexel(
     let v: number;
     switch (info.channelType) {
       case 'float':
-        v = channelBytes === 2 ? halfToFloat(view.getUint16(co, true)) : view.getFloat32(co, true);
+        v =
+          channelBytes === 2
+            ? halfFloat.f16ToF32(view.getUint16(co, true))
+            : view.getFloat32(co, true);
         break;
       case 'unorm':
         v =

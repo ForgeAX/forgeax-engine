@@ -128,7 +128,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     { component: Transform, data: { pos: eye, quat: quat.fromLookAt(quat.create(), eye, [0, 0, 0], [0, 1, 0]), scale: [1, 1, 1] } },
     { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 16 / 9 }) },
   );
-  world.spawn({ component: DirectionalLight, data: { direction: [-0.4, -1, -0.3], intensity: 5 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -1, -0.3], intensity: 5 } });
   world.addSystem(Update, {
     name: 'update-gltf-scene-descendants',
     queries: [],

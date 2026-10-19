@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -6,7 +7,7 @@ import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { Transform } from '@forgeax/engine-scene';
 import { Terrain } from '@forgeax/engine-terrain';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 const startupBegin = performance.now();
 const renderPath = process.env.TERRAIN_PERF_RENDER_PATH ?? 'forward';
@@ -110,7 +111,7 @@ try {
       const pixels = await h.verify(receipt),
         bytes = await h.pixels();
       const name = `${moving ? 'moving' : 'static'}-${forcedLod < 0 ? 'auto' : `lod${forcedLod}`}-${report.cases.length}`;
-      writeFileSync(resolve(dir, `${name}.png`), writeReferencePng(bytes, 960, 540));
+      writeFileSync(resolve(dir, `${name}.png`), encodePng(960, 540, bytes));
       report.cases.push({
         name,
         moving,

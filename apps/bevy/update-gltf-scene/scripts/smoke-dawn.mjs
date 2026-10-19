@@ -101,7 +101,7 @@ const sceneRoot = instanceResult.value;
 const marked = world.addComponent(sceneRoot, { component: MovedScene, data: {} });
 if (!marked.ok) throw new Error(`mark scene failed: ${marked.error.code}`);
 world.spawn({ component: Transform, data: { pos: [2, 2, 4], quat: quat.fromLookAt(quat.create(), [2, 2, 4], [0, 0, 0], [0, 1, 0]), scale: [1, 1, 1] } }, { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 16 / 9 }) });
-world.spawn({ component: DirectionalLight, data: { direction: [-0.4, -1, -0.3], intensity: 5 } });
+world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -1, -0.3], intensity: 5 } });
 
 const descendants = sceneDescendants(world, sceneRoot);
 if (descendants.length === 0) throw new Error('instantiated glTF scene has no descendants');

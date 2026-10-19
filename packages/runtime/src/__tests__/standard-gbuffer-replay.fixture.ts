@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -16,7 +17,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   type ReplayReadbackResult,
@@ -52,7 +52,7 @@ const rgba = (read: ReplayReadbackResult) => {
   expect(read.format).toBe('rgba16float');
   return Array.from(
     new Uint16Array(read.bytes.buffer, read.bytes.byteOffset, read.bytes.byteLength / 2),
-    halfToFloat,
+    halfFloat.f16ToF32,
   );
 };
 const center = (values: readonly number[]) =>
@@ -316,7 +316,7 @@ export async function verifyStandardGBufferReplay(
         observed.bytes.byteLength,
       );
       const live = Array.from({ length: 64 * 64 * 4 }, (_, i) =>
-        halfToFloat(
+        halfFloat.f16ToF32(
           liveView.getUint16(
             Math.floor(i / 256) * observed.metadata.bytesPerRow + (i % 256) * 2,
             true,

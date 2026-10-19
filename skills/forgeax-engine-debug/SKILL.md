@@ -12,6 +12,13 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For View texture channels, source mip/slice or environment projection failures,
+run `tools/view-plugins/integration/verify-texture-preview.mjs` and inspect its
+PNG/pixel evidence under `artifacts/texture-preview`. It uses the real browser
+Pack path and the existing exact-target capture. One-level Equirect sources do
+not expose Renderer-owned IBL roughness mips. Follow RHI Debug first for an
+unexplained rendering failure; see the [View texture gate](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
+
 For a blank MCP View with React error #527, run its emitted frontend startup gate
 through the View contracts owner. The MCP builder resolves React and React DOM
 from View's installed dependencies; inspect that owner before changing startup
@@ -69,10 +76,17 @@ restore the CMake build tree.
 Package-script environment prefixes use the workspace's pnpm `shellEmulator`;
 direct child launchers must use `pnpmCommand`, including composite Smoke gates.
 Do not install an extra shell or replace a failed child with an exit-zero receipt.
+For a cold package build that imports an unbuilt workspace compiler, inspect its
+`forgeax.buildDependencies` selection and declared `devDependencies`; the package
+build graph owns ordering and cache invalidation for these build-only tools
+([CI guide](../../scripts/ci/README.md)). Do not add the compiler to a player import.
 For workflow ShellCheck failures, follow the [CI shell transport contract](../../scripts/ci/README.md#ci-code-ownership)
 and retain the original file roster and preparation failure exits.
-For a leaked Windows Vite port, use the shared owned process-tree cleanup and
-its actual TCP regression; never terminate unrelated Node processes. For Import
+For a leaked Vite port or a completed browser smoke that never exits, follow
+the [owned server lifetime route](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
+Inspect descendants that retain inherited output, use the shared owned
+process-tree cleanup and its actual TCP regression, and never terminate
+unrelated Node processes. For Import
 sidecar `EPERM`, compare the actual destination bytes: only an equivalent
 publication succeeds; mismatches retain the structured failure and rollback.
 For SSR recovery compilation near its 20-second deadline, inspect the actual
@@ -283,6 +297,9 @@ the shared canvas budget applies before UI edits, while full UI screenshots and
 both 60-frame execution routes remain intact. A View diagnostic resume must wait
 for the real buffer resize as well as frame completion; an old-size completion
 is not resize evidence.
+For Play capture followed by an `extent-mismatch` pick, verify that the completed
+receipt's output mapping still matches the current drawing buffer. A later
+canvas resize must not turn an old ready completion into a valid screenshot.
 Coverage placement estimates its parallel phase and serial exclusive tail separately;
 keep that shared plan independent of each Runner's execution resource limit.
 For Browser placement, use complete child costs (including startup/cleanup) from
@@ -527,6 +544,11 @@ retired submodules belongs only in disposable CI workspaces before preparation;
 never clean a contributor checkout or disable source admission. For backend-stop
 deadlines, keep the owner log and native disposal trace; a healthy game or complete
 replay does not prove retirement. Follow the CI guide's build and recovery routes.
+If a replay passes its pixel assertions but crashes during native shutdown,
+trace the `bootstrapDawn` disposal lease through every caller. Await replay
+disposal and the native owner; calling optional `destroy` on an opaque RHI
+device does nothing. Follow the CI guide's native cleanup ordering, including
+replacement timestamp devices, before treating the process as a pass.
 The textures bootstrap retains its existing exclusive short-renderer owner and
 original deadlines; an isolated passing run cannot replace complete CI.
 

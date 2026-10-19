@@ -1,4 +1,4 @@
-import type { PlatformEvent } from '@forgeax/engine-platform';
+import type { DisplayFacts, PlatformEvent } from '@forgeax/engine-platform';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionDiagnosticEvent } from '../execution/diagnostic-events';
@@ -20,6 +20,15 @@ const probes = vi.hoisted(() => {
     visible: true,
     platformListeners: new Set<(event: PlatformEvent) => void>(),
     platformDispose: vi.fn(),
+    display: {
+      width: 800,
+      height: 600,
+      pixelRatio: 1,
+      drawingWidth: 800,
+      drawingHeight: 600,
+      safeArea: { x: 0, y: 0, width: 800, height: 600 },
+    } as DisplayFacts,
+    displayReads: vi.fn(),
     sessionListen: vi.fn((listener: SessionListener) => {
       sessionListeners.push(listener);
       const initial = pending.message;
@@ -38,6 +47,10 @@ vi.mock('@forgeax/engine-platform-browser', async () => {
     createBrowserPlatform: vi.fn(() =>
       ok({
         now: () => ok(probes.now),
+        display: () => {
+          probes.displayReads();
+          return ok(probes.display);
+        },
         visible: () => probes.visible,
         requestFrame: (callback: () => void) => {
           let live = true;
@@ -153,12 +166,14 @@ function makeCanvas(): HTMLCanvasElement {
 async function createRunningApp(
   tier: 'engine-worker' | 'render-worker' = 'engine-worker',
   renderPipelineCapacity: 2 | 3 | 4 = 2,
+  syncCanvas?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['syncCanvas'],
 ) {
   const { callbacks, raf } = makeRaf();
   vi.stubGlobal('requestAnimationFrame', raf);
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   const result = await createWorkerExecutionApp({
     canvas: makeCanvas(),
+    ...(syncCanvas === undefined ? {} : { syncCanvas }),
     appOptions: {
       execution: {
         bootstrap: 'https://example.test/game.js',
@@ -215,7 +230,59 @@ describe('Worker frame admission watchdog', () => {
     probes.now = 0;
     probes.visible = true;
     probes.platformListeners.clear();
+    probes.display = {
+      width: 800,
+      height: 600,
+      pixelRatio: 1,
+      drawingWidth: 800,
+      drawingHeight: 600,
+      safeArea: { x: 0, y: 0, width: 800, height: 600 },
+    };
     probes.sessionDispose.mockResolvedValue(ok(undefined));
+  });
+
+  it('uses native display notifications for subsequent admissions and retires them with the host', async () => {
+    const syncCanvas = vi.fn((_canvas: HTMLCanvasElement, display: DisplayFacts | undefined) => {
+      if (display === undefined) throw new Error('missing native display');
+      return { width: display.width, height: display.height };
+    });
+    const { app, callbacks, frame } = await createRunningApp('engine-worker', 2, syncCanvas);
+    expect(syncCanvas.mock.calls[0]?.[1]).toBe(probes.display);
+    expect(probes.displayReads).toHaveBeenCalledOnce();
+    listener()(completeMessage(frame));
+    callbacks.at(-1)?.(16);
+    const second = frames().at(-1);
+    if (second === undefined) throw new Error('missing second admission');
+    expect(syncCanvas.mock.calls.at(-1)?.[1]).toBe(probes.display);
+    const resized = { ...probes.display, width: 1200, height: 700 };
+    for (const listener of probes.platformListeners)
+      listener({ kind: 'display', display: resized });
+    listener()(completeMessage(second));
+    callbacks.at(-1)?.(32);
+    expect(syncCanvas.mock.calls.at(-1)?.[1]).toBe(resized);
+    expect(frames().at(-1)).toMatchObject({ canvasWidth: 1200, canvasHeight: 700 });
+    expect(probes.displayReads).toHaveBeenCalledOnce();
+    const third = frames().at(-1);
+    if (third === undefined) throw new Error('missing third admission');
+    listener()(completeMessage(third));
+    probes.display = { ...probes.display, width: 640, height: 480 };
+    listener()({ kind: 'surface-request', worldIdentity: frame.worldIdentity, requestId: 1 });
+    expect(probes.sessionPost).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'surface-result',
+        result: expect.objectContaining({ ok: true }),
+      }),
+      expect.any(Array),
+    );
+    app.pause().unwrap();
+    app.resume().unwrap();
+    callbacks.at(-1)?.(48);
+    expect(frames().at(-1)).toMatchObject({ canvasWidth: 640, canvasHeight: 480 });
+    expect(syncCanvas.mock.calls.at(-1)?.[1]).toBe(probes.display);
+    expect(syncCanvas.mock.calls.at(-1)?.[0]).not.toBe(syncCanvas.mock.calls[0]?.[0]);
+    expect(probes.displayReads).toHaveBeenCalledTimes(2);
+    await app.dispose();
+    expect(probes.platformListeners.size).toBe(0);
   });
 
   it('discards the hidden interval before admitting the resumed Worker frame', async () => {

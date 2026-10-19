@@ -11,11 +11,11 @@ import { packEnvelopeIssue } from './pack-envelope.js';
 import { jsonOf, readPackage } from './package-read.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
 
-export interface PackReaderOptions {
+interface PackReaderOptions {
   readonly fetcher?: PackageFetcher;
 }
 
-export type VerifiedPack = PackV2<unknown>;
+type VerifiedPack = PackV2<unknown>;
 
 function invalid(guid: string, reason: string): Result<never, AssetLoadError> {
   return err({

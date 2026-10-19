@@ -1,4 +1,4 @@
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, Query, World } from '@forgeax/engine-ecs';
 import {
   projectHierarchy,
   type SceneHierarchyDiagnostic,
@@ -37,6 +37,78 @@ interface ResolutionState {
   readonly source: VisibilitySource;
 }
 
+interface CapturedVisibility {
+  readonly intents: ReadonlyMap<EntityHandle, VisibilityState>;
+  readonly intentCount: number;
+  readonly hasAnyHiddenIntent: boolean;
+}
+
+interface VisibilityProjection {
+  readonly rows: Query;
+  readonly changes: Query;
+  structure: number;
+  captured: CapturedVisibility | undefined;
+}
+
+const projections = new WeakMap<World, VisibilityProjection>();
+
+function captureVisibility(world: World): CapturedVisibility {
+  let projection = projections.get(world);
+  if (projection === undefined) {
+    projection = {
+      rows: world.query({ read: [Visibility] }).unwrap(),
+      changes: world.query({ changed: [Visibility] }).unwrap(),
+      structure: -1,
+      captured: undefined,
+    };
+    projections.set(world, projection);
+  }
+  let changed = false;
+  for (const span of projection.changes.spans().unwrap()) changed ||= span.length > 0;
+  const structure = world.getStructureEpoch();
+  const previous = projection.captured;
+  if (previous !== undefined && !changed && projection.structure === structure) return previous;
+  const spans = projection.rows.spans().unwrap();
+  let count = 0;
+  let validCount = 0;
+  let same = previous !== undefined;
+  for (const span of spans) {
+    const states = span.get(Visibility).state;
+    count += span.length;
+    for (let index = 0; index < span.length; index++) {
+      const entity = span.entities[index] as EntityHandle;
+      const intent = visibilityStateFromU32(states[index] ?? 0);
+      if (intent !== undefined) validCount++;
+      if (previous?.intents.get(entity) !== intent) same = false;
+    }
+  }
+  // FX structural migrations do not usually change visibility. Verify the
+  // current scalar facts before retaining the detached intent publication.
+  if (
+    same &&
+    previous !== undefined &&
+    count === previous.intentCount &&
+    validCount === previous.intents.size
+  ) {
+    projection.structure = structure;
+    return previous;
+  }
+  const intents = new Map<EntityHandle, VisibilityState>();
+  let hasAnyHiddenIntent = false;
+  for (const span of spans) {
+    const states = span.get(Visibility).state;
+    for (let index = 0; index < span.length; index++) {
+      const rawState = states[index] ?? 0;
+      const intent = visibilityStateFromU32(rawState);
+      if (intent !== undefined) intents.set(span.entities[index] as EntityHandle, intent);
+      hasAnyHiddenIntent ||= rawState === VisibilityStateValue.hidden;
+    }
+  }
+  projection.structure = structure;
+  projection.captured = { intents, intentCount: count, hasAnyHiddenIntent };
+  return projection.captured;
+}
+
 /**
  * Resolve author intent against the scene-owned valid parent projection.
  * Diagnostics are preserved for callers to repair hierarchy input before retry.
@@ -45,54 +117,11 @@ export function resolveVisibility(
   world: World,
   hierarchy: SceneHierarchySnapshot = projectHierarchy(world),
 ): VisibilitySnapshot {
-  // Visibility is an opt-in component. Query only the owning archetypes
-  // instead of walking every Entity row with an optional column; the latter
-  // made a World with no visibility intents pay a full-scene scan on each
-  // extraction. QueryRow.entity is sourced from the essential Entity column,
-  // so the required Visibility read retains the same handle and intent
-  // semantics while keeping the hot path sparse.
-  const query = world.query({ read: [Visibility] });
-  const visitVisibilityRows = (visit: (entity: EntityHandle, rawState: number) => void): void => {
-    if (!query.ok) return;
-    // Dense component spans keep the per-frame summary on typed-array reads
-    // instead of allocating a QueryRow facade for every visibility-bearing
-    // entity. Keep the row path as a defensive fallback if a future storage
-    // mode cannot expose spans.
-    const spans = query.value.spans();
-    if (spans.ok) {
-      for (const span of spans.value) {
-        const states = span.get(Visibility).state;
-        for (let index = 0; index < span.length; index += 1) {
-          visit(span.entities[index] as EntityHandle, states[index] ?? 0);
-        }
-      }
-      return;
-    }
-    for (const row of query.value) {
-      visit(row.entity, row.get(Visibility).state);
-    }
-  };
-  let intentCount = 0;
-  let hasAnyHiddenIntent = false;
-  visitVisibilityRows((_entity, rawState) => {
-    intentCount += 1;
-    if (rawState === VisibilityStateValue.hidden) {
-      hasAnyHiddenIntent = true;
-    }
-  });
-
+  const captured = captureVisibility(world);
+  const { intentCount, hasAnyHiddenIntent, intents } = captured;
   let resolveEntity: ((entity: EntityHandle) => ResolutionState | undefined) | undefined;
-  let hasIntent: ((entity: EntityHandle) => boolean) | undefined;
   const ensureResolver = (): void => {
     if (resolveEntity !== undefined) return;
-    const intentByEntity = new Map<EntityHandle, VisibilityState>();
-    visitVisibilityRows((entity, rawState) => {
-      const intent = visibilityStateFromU32(rawState);
-      if (intent !== undefined) {
-        intentByEntity.set(entity, intent);
-      }
-    });
-    hasIntent = (entity: EntityHandle): boolean => intentByEntity.has(entity);
     const resolved = new Map<EntityHandle, ResolutionState>();
     const resolving = new Set<EntityHandle>();
     resolveEntity = (entity: EntityHandle): ResolutionState | undefined => {
@@ -100,7 +129,7 @@ export function resolveVisibility(
       if (existing !== undefined) return existing;
       if (resolving.has(entity)) return undefined;
 
-      const intent = intentByEntity.get(entity) ?? 'inherited';
+      const intent = intents.get(entity) ?? 'inherited';
       resolving.add(entity);
 
       let result: ResolutionState;
@@ -129,7 +158,7 @@ export function resolveVisibility(
     hasAnyHiddenIntent,
     get(entity: EntityHandle): VisibilityResolution | undefined {
       ensureResolver();
-      return hasIntent?.(entity) ? resolveEntity?.(entity) : undefined;
+      return intents.has(entity) ? resolveEntity?.(entity) : undefined;
     },
     effective(entity: EntityHandle): 'hidden' | 'visible' {
       ensureResolver();

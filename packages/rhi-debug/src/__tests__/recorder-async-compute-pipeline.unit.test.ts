@@ -1,5 +1,5 @@
 import { type ComputePipelineDescriptor, ok } from '@forgeax/engine-rhi';
-import { rhi } from '@forgeax/engine-rhi-null';
+import { createShaderModule, rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { wrap } from '../recorder';
 
@@ -21,9 +21,12 @@ it('retains actual compute completion and records only its call-time descriptor'
     });
   Object.assign(real, { createComputePipelineAsync: native });
   const adapter = (await rhi.requestAdapter()).unwrap(),
-    debug = wrap({
-      requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
-    }),
+    debug = wrap(
+      {
+        requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+      },
+      createShaderModule,
+    ),
     device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap(),
     create = device.createComputePipelineAsync;
   if (create === undefined) throw Error('recorder dropped capability');
@@ -55,9 +58,12 @@ it('preserves an immediate completed compute recipe through capture', async () =
   const pipeline = real.createComputePipeline(desc).unwrap();
   Object.assign(real, { createComputePipelineAsync: () => ok(pipeline) });
   const adapter = (await rhi.requestAdapter()).unwrap();
-  const debug = wrap({
-    requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
-  });
+  const debug = wrap(
+    {
+      requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+    },
+    createShaderModule,
+  );
   const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
   const ready = device.createComputePipelineAsync?.(desc);
   if (ready === undefined || !('ok' in ready)) throw Error('recorder delayed completed compute');

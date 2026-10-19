@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 // Exercise independent Preview projects on both real browser RHI paths.
 import { createServer } from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
@@ -27,7 +28,7 @@ mkdirSync(output, { recursive: true });
 
 async function freePort() {
   const server = createServer();
-  await new Promise((ready) => server.listen(0, '127.0.0.1', ready));
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   await new Promise((ready) => server.close(ready));
   if (address === null || typeof address === 'string') throw new Error('dynamic port unavailable');

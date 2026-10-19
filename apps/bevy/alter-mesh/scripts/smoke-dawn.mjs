@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
@@ -124,7 +125,7 @@ for (let i = 3; i < SMOKE_MIN_FRAMES; i++) {
   await drawSmokeFrame(renderer, world);
 }
 mkdirSync(resolve(here, '..', 'artifacts'), { recursive: true });
-writeFileSync(resolve(here, '..', 'artifacts', 'alter-mesh-ref.png'), writeReferencePng(afterMutation, WIDTH, HEIGHT));
+writeFileSync(resolve(here, '..', 'artifacts', 'alter-mesh-ref.png'), encodePng(WIDTH, HEIGHT, afterMutation));
 
 function diff(a, b) {
   let sum = 0;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { unpackMeshBin } from '../loaders/mesh-bin';
+import { unpackMeshBin } from '../mesh-bin';
 
 describe('mesh-bin v4 morph validation', () => {
   it('rejects trailing bytes instead of silently accepting a malformed artifact', () => {

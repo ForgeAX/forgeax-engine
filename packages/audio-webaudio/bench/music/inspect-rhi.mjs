@@ -1,10 +1,11 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { create, globals } from '@forgeax/engine/dawn-node';
 import { buildFrameModel, decodeTape, openReplay, replayDeviceRequest, summarizeFrame } from '@forgeax/engine/rhi-debug';
 import * as webgpu from '@forgeax/engine/rhi-webgpu';
-import { writeReferencePng } from '../../../../apps/shared/png-codec.mjs';
+
 
 const [tapePath, outputDirectory] = process.argv.slice(2);
 if (!tapePath || !outputDirectory) throw new Error('usage: node inspect-rhi.mjs <capture.rhitape> <output-directory>');
@@ -55,7 +56,7 @@ try {
     const rgba = Buffer.from(readbackBytes);
     if (readback.format.startsWith('bgra'))
       for (let index = 0; index < rgba.length; index += 4) [rgba[index], rgba[index + 2]] = [rgba[index + 2], rgba[index]];
-    await writeFile(resolve(output, `work-${work.workIndex}-fresh-replay.png`), writeReferencePng(rgba, readback.width, readback.height));
+    await writeFile(resolve(output, `work-${work.workIndex}-fresh-replay.png`), encodePng(readback.width, readback.height, rgba));
   }
   await rawDevice.queue.onSubmittedWorkDone();
   report = {

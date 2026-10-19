@@ -21,7 +21,7 @@
   "types": "./dist/index.d.ts",
   "files": ["dist", "assets/canonical-kit", "README.md", "LICENSE"],
   "scripts": {
-    "build": "node scripts/build-canonical-kit.mjs && tsup",
+    "build": "node scripts/build-canonical-kit.mjs && tsup && node scripts/build-texture-view.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run"
   },

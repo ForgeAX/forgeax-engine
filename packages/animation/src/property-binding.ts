@@ -409,10 +409,9 @@ export function reportPropertyFailure(
   failure: unknown,
 ): void {
   if (!(failure instanceof AnimationBindingError)) throw failure;
-  emitAnimationDiagnostic(world, {
-    code: 'animation-property-invalid',
-    hint: failure.hint,
-    detail: {
+  emitAnimationDiagnostic(
+    world,
+    {
       player,
       clip,
       channel: channelIndex,
@@ -422,5 +421,6 @@ export function reportPropertyFailure(
       reason: 'property-invalid',
       cause: failure.code,
     },
-  });
+    failure.hint,
+  );
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import process from 'node:process';
 // AC-12 (feat-20260608-create-app-param-surface-trim M3 / TASK-024): assert
 // that the literal string `'/shaders/manifest.json'` (single- or double-
 // quoted) does not re-appear anywhere under `apps/`. The manifest URL is
@@ -23,9 +24,7 @@
 // Comment-stripped: a line such as `// fetch '/shaders/manifest.json'`
 // inside a `.ts` file is allowed; only code-position occurrences trigger
 // the gate. This mirrors `check-no-array-stride-option.mjs`.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import process from 'node:process';
+import { grepSourceFiles } from './source-files.mjs';
 
 const ROOTS = ['apps'];
 
@@ -36,70 +35,24 @@ const SELF_EXEMPT = new Set(['scripts/grep/check-no-shader-manifest-url-literal.
 // The stub legitimately holds the URL literal that the runtime plugin emits;
 // it is consumed only under the vitest alias and never reaches production
 // bundles, so it is exempt from the AC-12 surface that targets demo source.
-const SKIP_DIRS = new Set([
-  'node_modules',
-  'dist',
-  '.next',
-  '.cache',
-  'test-output',
-  '__test-stubs__',
-]);
-
-const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
-
 // Two regex variants: single- and double-quoted forms.
 const RE_SINGLE = /'\/shaders\/manifest\.json'/;
 const RE_DOUBLE = /"\/shaders\/manifest\.json"/;
 
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
-}
-
 const hits = [];
 
-function walk(dir) {
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
+for (const { path: p, code: stripped } of grepSourceFiles(ROOTS, {
+  exempt: SELF_EXEMPT,
+  skipDirs: new Set(['__test-stubs__']),
+})) {
+  const matchSingle = stripped.match(RE_SINGLE);
+  const matchDouble = stripped.match(RE_DOUBLE);
+  if (matchSingle || matchDouble) {
+    hits.push({
+      path: p,
+      snippet: (matchSingle ?? matchDouble)[0],
+    });
   }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    let st;
-    try {
-      st = statSync(p);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) {
-      walk(p);
-      continue;
-    }
-    const ext = p.slice(p.lastIndexOf('.'));
-    if (!CODE_EXTS.has(ext)) continue;
-    if (SELF_EXEMPT.has(p)) continue;
-    let text;
-    try {
-      text = readFileSync(p, 'utf8');
-    } catch {
-      continue;
-    }
-    const stripped = stripComments(text);
-    const matchSingle = stripped.match(RE_SINGLE);
-    const matchDouble = stripped.match(RE_DOUBLE);
-    if (matchSingle || matchDouble) {
-      hits.push({
-        path: p,
-        snippet: (matchSingle ?? matchDouble)[0],
-      });
-    }
-  }
-}
-
-for (const root of ROOTS) {
-  walk(root);
 }
 
 if (hits.length > 0) {

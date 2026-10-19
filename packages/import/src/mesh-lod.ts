@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, isFiniteBounds3, ok, type Result } from '@forgeax/engine-types';
 
 export interface MeshLodMetaEntry {
   readonly sourceKey: string;
@@ -179,14 +179,7 @@ export function validateMeshLodContract(
 }
 
 function validBounds(bounds: MeshLodBounds): boolean {
-  const [minX, minY, minZ] = bounds.min;
-  const [maxX, maxY, maxZ] = bounds.max;
-  return (
-    [minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite) &&
-    minX <= maxX &&
-    minY <= maxY &&
-    minZ <= maxZ
-  );
+  return isFiniteBounds3([...bounds.min, ...bounds.max]);
 }
 
 function encloses(root: MeshLodBounds, child: MeshLodBounds): boolean {

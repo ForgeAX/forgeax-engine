@@ -17,7 +17,7 @@ it('bounds production sky and RGB AP against 512-step transport across altitude,
     .join('\n');
   const outputTransform = ['acesInput', 'acesOutput', 'tonemapAcesFilmic']
     .map((name) => {
-      const body = new RegExp(`fn ${name}\\([\\s\\S]*?\n}`).exec(source('tonemap'))?.[0];
+      const body = new RegExp(`fn ${name}\\([\\s\\S]*?\n}`).exec(source('tone-mapping'))?.[0];
       if (body === undefined) throw new Error(`Missing production output function ${name}`);
       return body;
     })

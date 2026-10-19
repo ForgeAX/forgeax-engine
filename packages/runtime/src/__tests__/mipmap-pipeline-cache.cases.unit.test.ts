@@ -59,10 +59,10 @@ import {
   HANDLE_TRIANGLE,
   INLINE_PACK_LOADERS,
   LoaderRegistry,
+  type MipmapShaderModuleFactory,
   materialLoader,
   meshLoader,
   mipmapCacheSize,
-  numMipLevels,
   PACK_ARTIFACT_LOADERS,
   resolveAssetHandle,
   sceneLoader,
@@ -81,7 +81,7 @@ import {
   PROCEDURAL_FLOATS_PER_VERTEX,
 } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { ok, ok as rhiOk } from '@forgeax/engine-rhi';
+import { ok, type RhiDevice, ok as rhiOk, type ShaderModule } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type {
@@ -91,7 +91,7 @@ import type {
   MaterialPass,
   SamplerAsset,
 } from '@forgeax/engine-types';
-import { AssetError, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
+import { AssetError, numMipLevels, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { deriveBuiltin } from '../../../pack/src/builtin';
 import { DeviceScope } from '../../../render/src/device/device-scope';
@@ -402,7 +402,7 @@ type __MergedKeep =
 
 {
   // --- from mipmap-pipeline-cache.test.ts ---
-  // Minimal in-memory device stub matching the MipmapDevice surface required
+  // Minimal in-memory device stub matching the RhiDevice surface required
   // by the cache tests. The implementation consumes only:
   //   - device.createSampler(desc?)
   //   - device.createBindGroupLayout(desc)
@@ -413,7 +413,7 @@ type __MergedKeep =
   // so the cache tests can assert reference equality without booting a real GPU.
 
   let nextResourceId = 0;
-  function makeStubDevice(): MipmapDevice {
+  function makeStubDevice(): RhiDevice {
     return {
       createSampler: (_desc?: unknown) => ({
         ok: true as const,
@@ -437,11 +437,11 @@ type __MergedKeep =
             format: desc.fragment?.targets?.[0]?.format,
           } as unknown as never,
         }) as { ok: true; value: never },
-    } as unknown as MipmapDevice;
+    } as unknown as RhiDevice;
   }
 
   const stubShaderFactory: MipmapShaderModuleFactory = async (_device, _desc) =>
-    ok({ tag: `shader-${nextResourceId++}` } as unknown);
+    ok({ tag: `shader-${nextResourceId++}` } as unknown as ShaderModule);
 
   describe('T-M3-01 (c) MipmapPipelineCache keyed by texture format', () => {
     it('two getOrCreate calls with same format return the same pipeline (cache hit)', async () => {

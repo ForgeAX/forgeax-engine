@@ -220,6 +220,8 @@ it.each([
       bitmap.close();
       return ctx.getImageData(0, 0, 128, 128).data;
     };
+    // Sample inside each color region. Vitest may scale its iframe screenshot;
+    // resampling boundary pixels is not an exact texture-color readback.
     const sample = (data: Uint8ClampedArray, x: number, y: number) => [
       ...data.slice((y * 128 + x) * 4, (y * 128 + x) * 4 + 3),
     ];
@@ -235,8 +237,8 @@ it.each([
     expect(uploads).toEqual([1]);
     observe('initial-png-readback');
     const first = await pixels('initial');
-    color(sample(first, 64, 48), [255, 0, 0]);
-    color(sample(first, 64, 80), [0, 0, 255]);
+    color(sample(first, 64, 56), [255, 0, 0]);
+    color(sample(first, 64, 72), [0, 0, 255]);
     observe('dirty-upload-and-readback');
     paint('#00ff00', '#808080');
     await draw(2);
@@ -256,8 +258,8 @@ it.each([
     ).toHaveLength(1);
     expect(uploads).toEqual([2]);
     const updated = await pixels('updated');
-    color(sample(updated, 64, 48), [0, 255, 0]);
-    color(sample(updated, 64, 80), [128, 128, 128]);
+    color(sample(updated, 64, 56), [0, 255, 0]);
+    color(sample(updated, 64, 72), [128, 128, 128]);
     observe('resize-and-readback');
     canvas.width = 96;
     canvas.height = 48;
@@ -266,9 +268,21 @@ it.each([
     await draw(3);
     expect(uploads).toEqual([3]);
     expect(destroyed).toEqual([1]);
+    const resizeCapture = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
+    await draw();
+    (await recorder.frameBoundary()).unwrap();
+    await save(`${kind}-resized.rhitape`, (await resizeCapture).unwrap().bytes);
     const resized = await pixels('resized');
-    color(sample(resized, 64, 48), [255, 255, 0]);
-    color(sample(resized, 64, 80), [0, 255, 255]);
+    await save(
+      `${kind}-resize-samples.json`,
+      new TextEncoder().encode(
+        JSON.stringify({ top: sample(resized, 64, 56), bottom: sample(resized, 64, 72) }),
+      ),
+    );
+
+    color(sample(resized, 64, 56), [255, 255, 0]);
+    color(sample(resized, 64, 72), [0, 255, 255]);
     observe('recovery-and-readback');
     lose?.();
     await expect.poll(() => renderer.state()).toBe('device-lost');
@@ -376,8 +390,8 @@ it.each([
         `${kind}-replay.png`,
         new Uint8Array(await (await replayCanvas.convertToBlob()).arrayBuffer()),
       );
-      color(sample(screen, 64, 48), sample(resized, 64, 48));
-      color(sample(screen, 64, 80), sample(resized, 64, 80));
+      color(sample(screen, 64, 56), sample(resized, 64, 56));
+      color(sample(screen, 64, 72), sample(resized, 64, 72));
 
       await save(
         `${kind}-inspection.json`,
@@ -433,7 +447,7 @@ it.each([
       observe('falsifier-readback');
       const pixels = (await control.inspectWork(last.workIndex, ['pixels'])).unwrap().attachment;
       if (pixels === undefined) throw new Error('Missing control pixels');
-      const center = [...pixels.bytes.slice((48 * 128 + 64) * 4, (48 * 128 + 64) * 4 + 3)];
+      const center = [...pixels.bytes.slice((56 * 128 + 64) * 4, (56 * 128 + 64) * 4 + 3)];
       if (pixels.format?.startsWith('bgra')) center.reverse();
       expect(
         center.every((value, channel) => Math.abs(value - ([255, 255, 0][channel] ?? NaN)) <= 3),
@@ -494,3 +508,134 @@ it.each([
   }
   observe('case-complete');
 }, 180_000);
+
+it('minifies a Canvas checker in linear light and falsifies a base-level-only view', async () => {
+  const source = new OffscreenCanvas(1024, 1024);
+  const paint = source.getContext('2d');
+  if (paint === null) throw new Error('Canvas 2D context unavailable');
+  const checker = paint.createImageData(1024, 1024);
+  for (let y = 0; y < 1024; y++) {
+    for (let x = 0; x < 1024; x++) {
+      const offset = (y * 1024 + x) * 4;
+      const value = (x + y) % 2 === 0 ? 0 : 255;
+      checker.data.set([value, value, value, 255], offset);
+    }
+  }
+  paint.putImageData(checker, 0, 0);
+  const capture = async (baseOnly: boolean) => {
+    const display = document.createElement('canvas');
+    display.width = display.height = 128;
+    display.style.width = display.style.height = '128px';
+    document.body.append(display);
+    const texture = new CanvasTexture(source);
+    const errors: unknown[] = [];
+    const host = renderValue(
+      await constructRuntimeRendererHost(
+        display,
+        {
+          rhi: webgpu.rhi,
+          rhiInstrumentation: {
+            deviceLost(device) {
+              const textures = new Set<object>();
+              const create = device.createTexture.bind(device);
+              const view = device.createTextureView.bind(device);
+              device.createTexture = (descriptor) => {
+                const result = create(descriptor);
+                if (result.ok && descriptor.label === 'dynamic-texture') {
+                  expect(descriptor.mipLevelCount).toBe(11);
+                  textures.add(result.value);
+                }
+                return result;
+              };
+              // Negative control keeps upload and mip generation, but prevents the
+              // material from sampling them. Internal single-level views stay intact.
+              device.createTextureView = (value, descriptor) =>
+                view(
+                  value,
+                  baseOnly && textures.has(value) && descriptor?.baseMipLevel === undefined
+                    ? { ...descriptor, mipLevelCount: 1 }
+                    : descriptor,
+                );
+              const raw = webgpu._internal_getRawDevice(device);
+              raw?.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
+              return new Promise(() => {});
+            },
+          },
+        },
+        { shaderManifestUrl: '/shaders/manifest.json' },
+      ),
+    );
+    const world = new World();
+    const owner = await createWorldContext(world, [scenePlugin()]);
+    const { renderer } = host;
+    renderer.subscribe((event) => {
+      if (event.kind === 'error') errors.push(event.error);
+    });
+    try {
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 3] } },
+          {
+            component: Camera,
+            data: {
+              fov: Math.PI / 3,
+              aspect: 1,
+              near: 0.1,
+              far: 10,
+              antialias: 0,
+              bloom: 0,
+              tonemap: 0,
+            },
+          },
+        )
+        .unwrap();
+      const material = world.allocSharedRef(
+        'MaterialAsset',
+        Materials.unlit([1, 1, 1, 1], {
+          baseColorTexture: world.allocSharedRef('CanvasTextureSource', texture.source),
+        }),
+      );
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0.013, 0.007, 0] } },
+          { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+          { component: MeshRenderer, data: { materials: [material] } },
+        )
+        .unwrap();
+      const lease = renderValue(renderer.attach(world));
+      for (let i = 0; i < 3; i++) {
+        world.update(1 / 60).unwrap();
+        const receipt = renderValue(
+          renderer.draw({
+            leases: [lease],
+            camera: { lease },
+            environment: { lease },
+            geometryLane: 'direct',
+          }),
+        );
+        renderValue(await receipt.completed);
+      }
+      const shot = await page.elementLocator(display).screenshot({ base64: true });
+      const bytes = Uint8Array.from(atob(typeof shot === 'string' ? shot : shot.base64), (c) =>
+        c.charCodeAt(0),
+      );
+      await save(`minification-${baseOnly ? 'base-only' : 'mipmapped'}.png`, bytes);
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const readback = new OffscreenCanvas(128, 128).getContext('2d');
+      if (readback === null) throw new Error('Readback context unavailable');
+      readback.drawImage(bitmap, 0, 0, 128, 128);
+      bitmap.close();
+      const data = readback.getImageData(56, 56, 16, 16).data;
+      const values = Array.from({ length: 16 * 16 }, (_, i) => data[i * 4] ?? 0);
+      expect(errors).toEqual([]);
+      return Math.max(...values.map((value) => Math.abs(value - 188)));
+    } finally {
+      texture.dispose();
+      renderValue(await renderer.dispose());
+      await owner.fiber.dispose();
+      display.remove();
+    }
+  };
+  expect(await capture(false)).toBeLessThanOrEqual(3);
+  expect(await capture(true)).toBeGreaterThan(20);
+}, 120_000);

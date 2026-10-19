@@ -41,6 +41,38 @@ describe('portable convex geometry input', () => {
     expect(Object.isFrozen(prepared.shapes)).toBe(true);
   });
 
+  it('copies a compound into disjoint views of one shape-owned point buffer', () => {
+    const backing = new Float32Array(40);
+    const first = backing.subarray(4, 16);
+    const second = backing.subarray(20, 32);
+    first.set([0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 3]);
+    second.set([4, 0, 0, 6, 0, 0, 4, 1, 0, 4, 0, 3]);
+    const source = { ...shape(), pieces: [first, second, first] };
+    const prepared = normalizeConvexCompoundShapeInput(source).unwrap();
+    if (prepared.kind !== 'convex-compound') throw new Error('missing compound');
+    const [a, b, c] = prepared.pieces;
+    if (a === undefined || b === undefined || c === undefined) throw new Error('missing pieces');
+    expect(a.buffer).not.toBe(backing.buffer);
+    expect(b.buffer).toBe(a.buffer);
+    expect(c.buffer).toBe(a.buffer);
+    expect(a.byteOffset).toBe(0);
+    expect(b.byteOffset).toBe(a.byteLength);
+    expect(c.byteOffset).toBe(a.byteLength + b.byteLength);
+    expect(a.buffer.byteLength).toBe(a.byteLength + b.byteLength + c.byteLength);
+    expect(prepared.pieces).toEqual([first, second, first]);
+    backing.fill(99);
+    expect(a[0]).toBe(0);
+    expect(b[0]).toBe(4);
+    expect(c[0]).toBe(0);
+    a[0] = 8;
+    expect(c[0]).toBe(0);
+    const restored = normalizeConvexCompoundShapeInput(prepared).unwrap();
+    if (restored.kind !== 'convex-compound') throw new Error('missing restored compound');
+    expect(restored.pieces).toEqual(prepared.pieces);
+    expect(restored.pieces[0]?.buffer).not.toBe(a.buffer);
+    expect(Object.isFrozen(prepared.pieces)).toBe(true);
+  });
+
   it.each([
     new Float32Array([]),
     new Float32Array(11),

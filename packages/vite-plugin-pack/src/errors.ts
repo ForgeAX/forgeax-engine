@@ -22,7 +22,7 @@ export type PluginPackFailureCode =
   | 'cleanup-failed'
   | 'stale-generation';
 
-export interface PluginPackFailureDetail {
+interface PluginPackFailureDetail {
   readonly stage: PluginPackFailureStage;
   readonly subject?: string;
 }

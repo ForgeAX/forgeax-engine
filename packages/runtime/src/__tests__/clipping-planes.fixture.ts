@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   ClippingPlanes,
@@ -13,7 +14,6 @@ import {
 import {
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   type ReplayReadbackResult,
@@ -188,7 +188,7 @@ export async function verifyClippingPlanes(
     const offset = (y * 64 + x) * (read.format === 'rgba16float' ? 8 : 4);
     if (read.format?.startsWith('depth') || read.format === 'r32float')
       return data.getFloat32(offset, true);
-    if (read.format === 'rgba16float') return halfToFloat(data.getUint16(offset, true));
+    if (read.format === 'rgba16float') return halfFloat.f16ToF32(data.getUint16(offset, true));
     return (read.bytes[offset] ?? Number.NaN) / 255;
   };
   try {
@@ -350,8 +350,10 @@ export async function verifyClippingPlanes(
         let liveReplayDifference = 0;
         for (let y = 0; y < 64; y++)
           for (let x = 0; x < 64 * 4; x++) {
-            const a = halfToFloat(liveData.getUint16(y * live.metadata.bytesPerRow + x * 2, true));
-            const b = halfToFloat(replayData.getUint16(y * 64 * 8 + x * 2, true));
+            const a = halfFloat.f16ToF32(
+              liveData.getUint16(y * live.metadata.bytesPerRow + x * 2, true),
+            );
+            const b = halfFloat.f16ToF32(replayData.getUint16(y * 64 * 8 + x * 2, true));
             liveReplayDifference = Math.max(liveReplayDifference, Math.abs(a - b));
           }
         expect(liveReplayDifference).toBeLessThanOrEqual(0.005);

@@ -1,10 +1,13 @@
 import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
 import type {
+  BindGroup,
   BindGroupLayout,
+  Buffer,
   RenderPipeline,
   RhiDevice,
   Sampler,
   ShaderModule,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
@@ -64,6 +67,14 @@ export function addStandardToneLutPass(
 ): Result<void, RenderGraphError> {
   // Unscoped test/backends may retain this graph's objects only.
   const localPrograms: ToneLutProgram[] = [];
+  let retainedBinding:
+    | {
+        program: ToneLutProgram;
+        input: TextureView;
+        params: Buffer;
+        group: BindGroup;
+      }
+    | undefined;
   const added = graph.addRasterPass('standard-tone-lut-output', {
     accesses: [
       { resource: input.view, usage: 'sampled-read' },
@@ -176,17 +187,29 @@ export function addStandardToneLutPass(
       if (!written.ok) throw written.error;
       const inputView = resources.textureView(input.view);
       if (!inputView.ok) throw inputView.error;
-      const bindings = device.createBindGroup({
-        layout: program.inputLayout,
-        entries: [
-          { binding: 0, resource: { kind: 'textureView', value: inputView.value } },
-          { binding: 1, resource: { kind: 'sampler', value: program.sampler } },
-          { binding: 2, resource: { kind: 'buffer', value: { buffer: paramsBuffer } } },
-        ],
-      });
-      if (!bindings.ok) throw bindings.error;
+      if (
+        retainedBinding?.program !== program ||
+        retainedBinding.input !== inputView.value ||
+        retainedBinding.params !== paramsBuffer
+      ) {
+        const bindings = device.createBindGroup({
+          layout: program.inputLayout,
+          entries: [
+            { binding: 0, resource: { kind: 'textureView', value: inputView.value } },
+            { binding: 1, resource: { kind: 'sampler', value: program.sampler } },
+            { binding: 2, resource: { kind: 'buffer', value: { buffer: paramsBuffer } } },
+          ],
+        });
+        if (!bindings.ok) throw bindings.error;
+        retainedBinding = {
+          program,
+          input: inputView.value,
+          params: paramsBuffer,
+          group: bindings.value,
+        };
+      }
       pass.setPipeline(program.pipeline);
-      pass.setBindGroup(1, bindings.value);
+      pass.setBindGroup(1, retainedBinding.group);
       pass.setBindGroup(2, lut.bindGroup);
       pass.draw(3, 1, 0, 0);
     },

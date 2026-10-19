@@ -10,7 +10,7 @@ import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
 import { rayReferenceFailure } from './scene';
 
 /** One raster frame's G-buffer, response and the matching world radiance. */
-export interface RayReflectionCompositeInputs {
+interface RayReflectionCompositeInputs {
   /** Raw 80-byte transport accumulation; the field signal binds `reconstructed` only. */
   readonly accumulation?: Buffer;
   /** 16-byte signal: reconstructed transport or the field lane's radiance-cache signal. */

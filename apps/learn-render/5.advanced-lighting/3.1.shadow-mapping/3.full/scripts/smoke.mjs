@@ -319,7 +319,7 @@ if (!shadowPresent) {
 world.spawn(
   {
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [0.2, -0.98, 0],
       color: [1, 1, 1], intensity: 1,
       ...shadowFields,

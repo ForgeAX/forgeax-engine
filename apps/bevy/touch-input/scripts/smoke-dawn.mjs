@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { runSmokeAppFrames, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -150,7 +151,7 @@ const tight = new Uint8Array(width * height * 4);
 for (let y = 0; y < height; y += 1) tight.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
 const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(appRoot, 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngOut), { recursive: true });
-writeFileSync(pngOut, writeReferencePng(tight, width, height));
+writeFileSync(pngOut, encodePng(width, height, tight));
 let visiblePixels = 0;
 for (let i = 0; i < tight.length; i += 4) if ((tight[i] ?? 0) + (tight[i + 1] ?? 0) + (tight[i + 2] ?? 0) > 30) visiblePixels += 1;
 console.log(`[smoke] frames=${frames} visiblePixels=${visiblePixels} pressed=${state.justPressedTouches} released=${state.justReleasedTouches} canceled=${state.canceledTouches} justPressedActive=${state.justPressedActiveTouches} activeFrames=${state.activeContactFrames} lastActive=(${state.lastActiveX},${state.lastActiveY}) errors=${errors.length} png=${pngOut}`);

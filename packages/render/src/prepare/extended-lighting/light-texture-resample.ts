@@ -7,7 +7,15 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { LIGHT_TEXTURE_RESAMPLE_WGSL } from '@forgeax/engine-shader';
-import { type AssetError, err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
+import {
+  type AssetError,
+  err,
+  mipDimension,
+  ok,
+  type Result,
+  type TextureAsset,
+  textureCompressionFeature,
+} from '@forgeax/engine-types';
 import { writePackedTextureLevels } from '../../device/gpu-residency';
 import {
   GPU_TEXTURE_USAGE_COPY_DST,
@@ -104,15 +112,6 @@ function resampleState(
   }
 }
 
-function compressionFeature(
-  format: GPUTextureFormat,
-): 'texture-compression-bc' | 'texture-compression-etc2' | 'texture-compression-astc' | undefined {
-  if (format.startsWith('bc')) return 'texture-compression-bc';
-  if (format.startsWith('astc')) return 'texture-compression-astc';
-  if (format.startsWith('etc2') || format.startsWith('eac')) return 'texture-compression-etc2';
-  return undefined;
-}
-
 /** Single-channel block formats decode to (r, 0, 0, 1); the slice splats them to grey. */
 function isSingleChannel(format: GPUTextureFormat): boolean {
   return format.startsWith('bc4-') || format.startsWith('eac-r11');
@@ -159,7 +158,7 @@ export function resampleLightTextureSlice(input: {
   const renderData = deriveRenderDataTexture(asset);
   if (!renderData.ok) return err(sourceDescriptorError(renderData.error));
   const format = renderData.value.format;
-  const feature = compressionFeature(format);
+  const feature = textureCompressionFeature(format);
   const featureReady = feature === undefined || device.features.has(feature);
   if (!device.caps.compute || !featureReady || input.factory === undefined) {
     return err(
@@ -273,15 +272,15 @@ export function resampleLightTextureSlice(input: {
     pass.end();
     let offset = 0;
     for (let mip = 0; mip < COOKIE_MIP_LEVEL_COUNT; mip += 1) {
-      const size = COOKIE_SLICE_SIZE >> mip;
+      const size = mipDimension(COOKIE_SLICE_SIZE, mip);
       encoder.copyBufferToTexture(
         {
-          buffer: packed as never,
+          buffer: packed,
           offset,
           bytesPerRow: packedRowBytes(size),
           rowsPerImage: size,
         },
-        { texture: input.target as never, mipLevel: mip, origin: { x: 0, y: 0, z: input.slice } },
+        { texture: input.target, mipLevel: mip, origin: { x: 0, y: 0, z: input.slice } },
         { width: size, height: size, depthOrArrayLayers: 1 },
       );
       offset += packedRowBytes(size) * size;

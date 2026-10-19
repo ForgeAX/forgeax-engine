@@ -12,6 +12,8 @@
 // by meshFromInterleaved / PROCEDURAL_FLOATS_PER_VERTEX.
 
 export type { VertexAttributePackDetail } from '@forgeax/engine-types';
+export { type UnpackedMeshBin, unpackMeshBin } from './assets/mesh-bin';
+export { MeshBinAssetError } from './assets/mesh-bin-error';
 export { decodeMeshBinary, normalizeMeshPayload } from './assets/mesh-binary';
 export { meshAssetContribution, meshAssetDecoder, meshAssetKind } from './assets/mesh-decoder';
 export {
@@ -88,6 +90,11 @@ export {
   prepareMeshData,
 } from './mesh-data.js';
 export * from './mesh-distance-field-product';
+export {
+  applyMeshMaterialSlotTopology,
+  meshMaterialSlotsFromTopology,
+  meshMaterialSlotsToTopology,
+} from './mesh-material-slots';
 export { createPlaneGeometry } from './plane';
 export {
   createRevolutionGeometry,

@@ -223,6 +223,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
     worldN.spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [-0.3, -1, -0.5],
@@ -305,6 +306,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
     world1.spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [-0.3, -1, -0.5],

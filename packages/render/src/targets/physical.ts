@@ -8,7 +8,12 @@ import {
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
 import type { RenderResult } from '../render-contract';
-import { type RenderTargetDescriptor, renderTargetLayerCount } from './contracts';
+import {
+  RENDER_TARGET_DEPTH_ATTACHMENT,
+  type RenderTargetDescriptor,
+  renderTargetLayerCount,
+  renderTargetMipCount,
+} from './contracts';
 
 /**
  * Renderer-private physical storage for one logical target generation.
@@ -35,12 +40,6 @@ export interface RenderTargetPhysical {
   readonly resolveTexture?: Texture;
   readonly resolveView: TextureView;
   readonly resolveLayerViews: readonly TextureView[];
-}
-
-function mipCount(descriptor: RenderTargetDescriptor): number {
-  return descriptor.mipLevels === 1
-    ? 1
-    : Math.floor(Math.log2(Math.max(descriptor.width, descriptor.height))) + 1;
 }
 
 export function createRenderTargetPhysical(
@@ -79,7 +78,7 @@ export function createRenderTargetPhysical(
     label: `render-target.${generation}`,
     size: { width: descriptor.width, height: descriptor.height, depthOrArrayLayers: layers },
     format: descriptor.format,
-    mipLevelCount: mipCount(descriptor),
+    mipLevelCount: renderTargetMipCount(descriptor),
     // WebGPU forbids multisampled array textures. The layered texture is
     // always the single-sample resolve destination; MSAA capture uses one
     // depth=1 color texture per layer below.
@@ -95,13 +94,13 @@ export function createRenderTargetPhysical(
   const view = device.createTextureView(texture, {
     dimension: descriptor.shape,
     baseMipLevel: 0,
-    mipLevelCount: mipCount(descriptor),
+    mipLevelCount: renderTargetMipCount(descriptor),
     baseArrayLayer: 0,
     arrayLayerCount: arrayLayers,
   });
   if (!view.ok) return failed(view.error);
   const mipViews: TextureView[] = [];
-  for (let mip = 0; mip < mipCount(descriptor); mip += 1) {
+  for (let mip = 0; mip < renderTargetMipCount(descriptor); mip += 1) {
     const mipView = device.createTextureView(texture, {
       dimension: descriptor.shape,
       baseMipLevel: mip,
@@ -135,7 +134,7 @@ export function createRenderTargetPhysical(
     mipLevelCount: 1,
     sampleCount: descriptor.sampleCount,
     dimension: '2d',
-    format: 'depth32float-stencil8',
+    format: RENDER_TARGET_DEPTH_ATTACHMENT.format,
     usage:
       GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | (sampledDepth ? GPU_TEXTURE_USAGE_TEXTURE_BINDING : 0),
     viewFormats: undefined,

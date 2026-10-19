@@ -574,10 +574,10 @@ describe('game-3d starter', () => {
     expect(Math.abs((rampPosition?.[0] ?? 0) - (playerPosition?.[0] ?? 0))).toBeLessThan(3);
     expect(components.find((entry) => entry.Name?.value === 'Player Body')?.Skin).toBeDefined();
     expect(scene.skinGuids).toHaveLength(1);
-    expect(components.find((entry) => entry.DirectionalLight)?.DirectionalLight).toMatchObject({
-      castShadow: true,
-      cascadeCount: 3,
-    });
+    const sun = components.find((entry) => entry.DirectionalLight)?.DirectionalLight;
+    expect(sun).toMatchObject({ castShadow: true });
+    // The game opts into shadows while the engine owns the cascade defaults.
+    expect(sun).not.toHaveProperty('cascadeCount');
     expect(components.some((entry) => entry.Skylight !== undefined)).toBe(true);
     expect(components.some((entry) => entry.PointLight !== undefined)).toBe(true);
     expect(components.some((entry) => entry.Camera !== undefined)).toBe(true);

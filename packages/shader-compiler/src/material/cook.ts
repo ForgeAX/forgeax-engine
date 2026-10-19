@@ -20,9 +20,13 @@ import {
   deriveMaterialDynamicInputLayout,
   err,
   inferMaterialParameterKind,
+  MATERIAL_NUMERIC_LAYOUT,
+  MATERIAL_TEXTURE_LAYOUT,
   type MaterialError,
   type MaterialParameterProjection,
+  type MaterialTable,
   ok,
+  resolveMaterialAsset,
   selectMaterialStaticContract,
   standardPhysicalTextureFields,
   validateMaterialOutputs,
@@ -30,14 +34,9 @@ import {
 import { compareMaterialBindings } from '../compare-param-schema.js';
 import { type CompileResult, compileShader } from '../compile.js';
 import { ShaderError } from '../errors.js';
-import {
-  compareDerivedMaterialInterface,
-  validateSceneIndexStorage,
-  validateSingleLayerMediumSceneIndexStorage,
-} from '../reflection.js';
+import { compareDerivedMaterialInterface, validateSceneIndexStorage } from '../reflection.js';
 import { composeSurfaceSource, digestMaterialSourceClosure } from './compose.js';
 import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
-import { type MaterialTable, resolveMaterialAsset } from './resolve.js';
 import { validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
 import type { MaterialSourceCatalog } from './source-catalog.js';
@@ -162,35 +161,24 @@ function mapCookErrorToAuthoredSource(
 function wgslType(parameter: ParamSchemaEntry): string {
   switch (parameter.type) {
     case 'f32':
-      return 'f32';
     case 'i32':
-      return 'i32';
     case 'u32':
-      return 'u32';
     case 'vec2':
-      return 'vec2<f32>';
     case 'vec3':
-      return 'vec3<f32>';
     case 'vec4':
     case 'color':
-      return 'vec4<f32>';
+      return MATERIAL_NUMERIC_LAYOUT[parameter.type].wgslType;
     case 'texture2d':
-      return 'texture_2d<f32>';
     case 'texture2d_array':
-      return 'texture_2d_array<f32>';
     case 'texture3d':
-      return 'texture_3d<f32>';
     case 'texture_cube':
-      return 'texture_cube<f32>';
     case 'texture_depth_2d':
-      return 'texture_depth_2d';
     case 'texture_cube_array':
-      return 'texture_cube_array<f32>';
     case 'texture_external':
-      return 'texture_external';
+      return MATERIAL_TEXTURE_LAYOUT[parameter.type].wgslType;
     case 'sampler':
     case 'sampler_comparison':
-      return 'sampler';
+      return parameter.type;
     case 'storage_buffer':
       return 'array<u32>';
   }
@@ -300,7 +288,7 @@ export function generateParameterModule(
       if (resource.kind === 'sampler') {
         declarations.set(
           resource.binding,
-          `@group(1) @binding(${resource.binding}) var ${resource.name} : sampler;`,
+          `@group(1) @binding(${resource.binding}) var ${resource.name} : ${parameter.type === 'sampler_comparison' ? wgslType(parameter) : 'sampler'};`,
         );
       } else if (resource.kind === 'texture') {
         declarations.set(
@@ -878,9 +866,9 @@ export async function cookMaterialAsset(
       if (!composedSource.ok) return composedSource;
       imports = collectSourceClosure(composedSource.value, request.sources, generatedModule);
       if (!imports.ok) return imports;
-      sourceClosure = [sourceRecord.value.path, ...Object.keys(imports.value).sort()];
+      sourceClosure = [sourceRecord.value.moduleId, ...Object.keys(imports.value).sort()];
       sourceClosureDigest = digestMaterialSourceClosure({
-        [sourceRecord.value.path]: source,
+        [sourceRecord.value.moduleId]: source,
         ...imports.value,
       });
     }
@@ -1203,7 +1191,8 @@ export async function cookMaterialAsset(
     if (sceneSurfaceTemplate && hasSceneIndexEntry && mediumSurface) {
       try {
         const sceneReflection = sceneCompiled ?? compiled.value;
-        const storageFailure = validateSingleLayerMediumSceneIndexStorage(
+        const storageFailure = validateSceneIndexStorage(
+          undefined,
           {
             boundGlobals: sceneReflection.reflection.boundGlobals,
             bindings: sceneReflection.bindings,
@@ -1409,7 +1398,7 @@ export async function cookMaterialAsset(
         compileImports === imports.value && effectiveClosureImports === imports.value
           ? sourceClosureDigest
           : digestMaterialSourceClosure({
-              [sourceRecord.value.path]: source,
+              [sourceRecord.value.moduleId]: source,
               ...(compileImports === imports.value ? effectiveClosureImports : compileImports),
             }),
       compile: compiled.value,

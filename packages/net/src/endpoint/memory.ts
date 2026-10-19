@@ -6,7 +6,7 @@ import type { Result } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
 import type { EndpointEvent, NetEndpoint, NetEndpointConnector, PeerId } from './endpoint';
 import type { EndpointError as EndpointErrorType } from './errors';
-import { ENDPOINT_ERROR_HINTS, ENDPOINT_EXPECTED, EndpointError } from './errors';
+import { EndpointError } from './errors';
 
 interface InternalState {
   delayNext: boolean;
@@ -39,8 +39,6 @@ class MemoryEndpoint implements NetEndpoint {
       return err(
         new EndpointError({
           code: 'already-closed',
-          expected: ENDPOINT_EXPECTED['already-closed'],
-          hint: ENDPOINT_ERROR_HINTS['already-closed'],
           detail: { cause: 'endpoint is closed' },
         }),
       );
@@ -49,8 +47,6 @@ class MemoryEndpoint implements NetEndpoint {
       return err(
         new EndpointError({
           code: 'peer-not-found',
-          expected: ENDPOINT_EXPECTED['peer-not-found'],
-          hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
           detail: { peerId },
         }),
       );
@@ -59,8 +55,6 @@ class MemoryEndpoint implements NetEndpoint {
       return err(
         new EndpointError({
           code: 'connection-closed',
-          expected: ENDPOINT_EXPECTED['connection-closed'],
-          hint: ENDPOINT_ERROR_HINTS['connection-closed'],
           detail: { peerId },
         }),
       );
@@ -104,8 +98,6 @@ class MemoryEndpoint implements NetEndpoint {
       return err(
         new EndpointError({
           code: 'peer-not-found',
-          expected: ENDPOINT_EXPECTED['peer-not-found'],
-          hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
           detail: { peerId },
         }),
       );
@@ -113,8 +105,6 @@ class MemoryEndpoint implements NetEndpoint {
       return err(
         new EndpointError({
           code: 'connection-closed',
-          expected: ENDPOINT_EXPECTED['connection-closed'],
-          hint: ENDPOINT_ERROR_HINTS['connection-closed'],
           detail: { peerId },
         }),
       );
@@ -134,8 +124,6 @@ class MemoryEndpoint implements NetEndpoint {
       return err(
         new EndpointError({
           code: 'already-closed',
-          expected: ENDPOINT_EXPECTED['already-closed'],
-          hint: ENDPOINT_ERROR_HINTS['already-closed'],
           detail: { cause: 'endpoint is already closed' },
         }),
       );
@@ -204,8 +192,6 @@ export function createMemoryEndpointConnector(
           err(
             new EndpointError({
               code: 'connection-failed',
-              expected: ENDPOINT_EXPECTED['connection-failed'],
-              hint: ENDPOINT_ERROR_HINTS['connection-failed'],
               detail: { address: 'memory', cause: 'connect aborted' },
             }),
           ),

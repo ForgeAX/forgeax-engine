@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import { chromium } from 'playwright';
-import { halfToFloat } from '../../../packages/rhi-debug/dist/index.mjs';
 
 // The scene installs only the public profile; all GI work belongs to Renderer.
 const out = resolve(process.argv[2] ?? 'artifacts/sponza-renderer-diffuse');
@@ -107,7 +107,7 @@ try {
     let energy = 0;
     for (let offset = 0; offset < bytes.length; offset += 8)
       for (const channel of [0, 2, 4]) {
-        const value = halfToFloat(bytes.readUInt16LE(offset + channel));
+        const value = halfFloat.f16ToF32(bytes.readUInt16LE(offset + channel));
         assert(Number.isFinite(value) && value >= 0, 'HDR must be finite and nonnegative');
         energy += value;
       }

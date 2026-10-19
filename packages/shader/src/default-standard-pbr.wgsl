@@ -2,6 +2,9 @@
 enable primitive_index;
 #endif
 #define_import_path forgeax_material::standard
+#ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+#import forgeax_material::fragment_output::{applyFragmentOutput}
+#endif
 #ifdef MATERIAL_TEXTURE_COORDINATES_AVAILABLE
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #endif
@@ -900,6 +903,9 @@ struct StandardPbrOutput {
 // (fogHeightOpacity.z == 0), where translucent fog is the identity unless the
 // surface transmits, so the fog chain is compiled out of that entry.
 struct StandardForwardLit {
+#ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+  fragmentOutput : vec4<f32>,
+#endif
   color : vec3<f32>,
   alpha : f32,
 #ifdef TRANSMISSION_AVAILABLE
@@ -913,7 +919,11 @@ struct StandardForwardLit {
 
 fn standardForwardOutput(lit : StandardForwardLit, color : vec3<f32>) -> StandardPbrOutput {
   var output : StandardPbrOutput;
+#ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+  output.color = applyFragmentOutput(vec4<f32>(color, lit.alpha), lit.fragmentOutput);
+#else
   output.color = vec4<f32>(color, lit.alpha);
+#endif
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   output.reflectionFallback = lit.reflectionFallback;
 #endif
@@ -1553,6 +1563,9 @@ fn standardForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit {
   reflectionFallback = reflectionFallback + clearcoatEnvironment * clearcoatFactor;
 #endif
   var lit : StandardForwardLit;
+#ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+  lit.fragmentOutput = material.fragmentOutput;
+#endif
   lit.color = color;
   lit.alpha = alpha;
 #ifdef TRANSMISSION_AVAILABLE

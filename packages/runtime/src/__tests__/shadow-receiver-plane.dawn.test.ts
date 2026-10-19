@@ -54,13 +54,14 @@ const NORMAL_BIAS = process.env.TERRAIN_NEAR_NORMAL_BIAS === '0' ? 0 : 0.05;
 // depth bias by the PCF5 kernel radius detached most of that shadow (59 vs 100
 // PCF1 pixels); per-tap receiver-plane depth keeps PCF5 at PCF1's coverage.
 it.each([
-  { receiver: 'mesh', renderPath: 'deferred' },
-  { receiver: 'mesh', renderPath: 'forward' },
-  { receiver: 'terrain', renderPath: 'deferred' },
-  { receiver: 'terrain', renderPath: 'forward' },
-] as const)('keeps wide-PCF $receiver $renderPath near-caster shadows in coarse cascades', {
+  { receiver: 'mesh', renderPath: 'deferred', cascades: 4 },
+  { receiver: 'mesh', renderPath: 'deferred', cascades: 3 },
+  { receiver: 'mesh', renderPath: 'forward', cascades: 4 },
+  { receiver: 'terrain', renderPath: 'deferred', cascades: 4 },
+  { receiver: 'terrain', renderPath: 'forward', cascades: 4 },
+] as const)('keeps PCF $receiver $renderPath near-caster coverage with $cascades cascades', {
   timeout: 900_000,
-}, async ({ receiver, renderPath }) => {
+}, async ({ receiver, renderPath, cascades }) => {
   const artifactDir = process.env.TERRAIN_NEAR_ARTIFACT_DIR;
   const recorder = artifactDir === undefined ? undefined : attachRecorder(webgpu).unwrap();
   const target = offscreenCanvas(SIZE);
@@ -218,7 +219,7 @@ it.each([
           intensity: 3,
           castShadow: true,
           mapSize: 1024,
-          cascadeCount: 4,
+          cascadeCount: cascades,
           shadowDistance: 40,
           normalBias: NORMAL_BIAS,
         },
@@ -248,7 +249,7 @@ it.each([
           const tape = (await capture).unwrap();
           mkdirSync(artifactDir, { recursive: true });
           writeFileSync(
-            resolve(artifactDir, `${receiver}-${renderPath}-${label}.rhitape`),
+            resolve(artifactDir, `${receiver}-${renderPath}-${cascades}-${label}.rhitape`),
             tape.bytes,
           );
           const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
@@ -292,7 +293,7 @@ it.each([
             })),
           }));
           writeFileSync(
-            resolve(artifactDir, `${receiver}-${renderPath}-${label}-work.json`),
+            resolve(artifactDir, `${receiver}-${renderPath}-${cascades}-${label}-work.json`),
             JSON.stringify(work),
           );
         }
@@ -307,7 +308,7 @@ it.each([
     const unshadowed = await sample(false, 'off');
     let max = 0;
     for (const value of unshadowed) max = Math.max(max, value);
-    for (const filter of ['pcf1', 'pcf5'] as const) {
+    for (const filter of ['pcf1', 'pcf5', 'pcfVogel'] as const) {
       world.set(light, DirectionalLight, {
         shadowFilter: DirectionalShadowFilterValue[filter],
       });
@@ -333,7 +334,7 @@ it.each([
   if (artifactDir !== undefined) {
     mkdirSync(artifactDir, { recursive: true });
     writeFileSync(
-      resolve(artifactDir, `${receiver}-${renderPath}-coverage.json`),
+      resolve(artifactDir, `${receiver}-${renderPath}-${cascades}-coverage.json`),
       JSON.stringify(
         {
           receiver,
@@ -354,4 +355,5 @@ it.each([
   for (const row of rows) expect(row.lit, JSON.stringify(rows)).toBeGreaterThan(0.75 * SIZE * SIZE);
   expect(dark('pcf1'), JSON.stringify(rows)).toBeGreaterThan(50);
   expect(dark('pcf5'), JSON.stringify(rows)).toBeGreaterThanOrEqual(0.85 * dark('pcf1'));
+  expect(dark('pcfVogel'), JSON.stringify(rows)).toBeGreaterThanOrEqual(0.85 * dark('pcf1'));
 });

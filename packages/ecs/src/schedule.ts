@@ -178,6 +178,8 @@ export interface Schedule {
   sortedOrder: string[];
   /** Direct predecessor names derived while the DAG is built. */
   predecessors: Map<string, Set<string>>;
+  /** Reverse set membership derived with the schedule graph. */
+  systemToSets: Map<string, string[]>;
 }
 
 /** Create a fresh Schedule. */
@@ -190,6 +192,7 @@ export function createSchedule(token: ScheduleToken): Schedule {
     dirty: true,
     sortedOrder: [],
     predecessors: new Map(),
+    systemToSets: new Map(),
   };
 }
 
@@ -511,7 +514,17 @@ export function buildSchedule(schedule: Schedule): string[] {
   }
 
   // Set membership contributes only run conditions and optional chaining.
-  for (const [, setRecord] of schedule.sets) {
+  const systemToSets = new Map<string, string[]>();
+  for (const [setName, setRecord] of schedule.sets) {
+    for (const member of setRecord.members) {
+      if (!systems.has(member)) continue;
+      let sets = systemToSets.get(member);
+      if (sets === undefined) {
+        sets = [];
+        systemToSets.set(member, sets);
+      }
+      sets.push(setName);
+    }
     if (setRecord.chained) {
       const members = [...setRecord.members];
       for (let i = 0; i < members.length - 1; i++) {
@@ -574,6 +587,7 @@ export function buildSchedule(schedule: Schedule): string[] {
 
   schedule.sortedOrder = sorted;
   schedule.predecessors = predecessors;
+  schedule.systemToSets = systemToSets;
   schedule.dirty = false;
   return sorted;
 }
@@ -712,22 +726,7 @@ function runScheduleBody(
   }
   const selected = selectedNames ? new Set(selectedNames) : undefined;
 
-  // Build reverse map: system name → set names it belongs to (D-5).
-  // Rebuilt each frame so removeSystem / replaceSystem membership changes
-  // take effect on the next frame.
-  const systemToSets = new Map<string, string[]>();
-  for (const [setName, setRecord] of schedule.sets) {
-    for (const memberName of setRecord.members) {
-      if (schedule.systems.has(memberName)) {
-        let list = systemToSets.get(memberName);
-        if (!list) {
-          list = [];
-          systemToSets.set(memberName, list);
-        }
-        list.push(setName);
-      }
-    }
-  }
+  const systemToSets = schedule.systemToSets;
 
   // Per-frame set runIf cache (D-5). Discarded at frame end — no cross-frame state.
   const setRunIfCache = new Map<string, boolean>();

@@ -1,4 +1,4 @@
-export interface NamedNode {
+interface NamedNode {
   readonly name?: string;
   readonly children?: readonly number[];
 }

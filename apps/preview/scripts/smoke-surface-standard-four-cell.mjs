@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 // Capture the four imported Standard Surface cells through the real Preview
 // Pack/Catalog/cook/loadByGuid and ForgeaX WebGL2 renderer path.
 import { createServer as createNetServer } from 'node:net';
@@ -14,10 +15,7 @@ const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 
 async function findAvailablePort() {
   const probe = createNetServer();
-  await new Promise((resolvePromise, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolvePromise);
-  });
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
   const address = probe.address();
   await new Promise((resolvePromise) => probe.close(resolvePromise));
   if (address === null || typeof address === 'string') throw new Error('surface-standard: dynamic port unavailable');

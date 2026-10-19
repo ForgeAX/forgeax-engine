@@ -2,6 +2,12 @@
 
 > Pure-interface RHI; zero impl. spec-aligned with `@webgpu/types`; wgpu-superset op-set capability-gated; opaque handles; math-free.
 
+Backend-independent validation error factories live beside `RhiError`: command
+and render-bundle completion, open passes, limits, WGSL diagnostics and queue
+submission/write bounds. Backends retain their detection, native diagnostic
+payloads and Result-versus-throw channel; availability and native failures remain
+backend-owned.
+
 ## Charter propositions (顶部命题 / AI users read AGENTS.md §RHI first)
 
 | Proposition | This package's contract |
@@ -459,3 +465,22 @@ LSP hover on any `code` in this `switch` shows the JSDoc anchor + W3C / MDN spec
 ## Upgrade path
 
 `@webgpu/types ^0.1.70`: caret range tracks v0.1.x patches automatically; v0.2.x triggers a major-upgrade marker (`.github/dependabot.yml` auto-PR + monthly manual review per S-4). `ExplicitUndefined<>` mapped type stays until upstream spec migrates to `?: T | undefined` (L-P4 widening contract).
+
+### Texel copy resources
+
+`TexelCopyTextureInfo` is the texture-subresource descriptor for queue writes and
+all encoder copy directions. `TexelCopyBufferInfo` supplies the buffer and byte
+layout. Both derive WebGPU's descriptor fields while replacing native resources
+with opaque RHI handles. Native conversion belongs to the backend; graph,
+readback, replay and mipmap callers pass the resources they already own directly.
+
+`textureReadbackLayout(width, height, block)` projects an already admitted texture slice
+into a command-encoder buffer copy: complete block rows, a 256-byte aligned
+`bytesPerRow`, and the full staging byte length. Recorder budgets and allocation
+use this same layout; format/aspect admission and mapped-buffer lifetime stay
+with their existing callers. Queue texture uploads do not use this alignment.
+
+`textureCopyOrigin` normalizes WebGPU sequence/dictionary origins for texture
+uploads, native copy descriptors and recorder observations. It preserves nonzero
+coordinates and supplies zero for omitted axes; backend validation still owns
+coordinate bounds and texture format restrictions.

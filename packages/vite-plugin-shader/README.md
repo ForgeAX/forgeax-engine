@@ -237,3 +237,11 @@ Git revision only when the virtual bundler module loads, retaining explicit
 source/GitHub revision precedence and the missing-repository result. The
 revision regression checks100 unselected instances and the selected load;
 this avoids unused startup work and makes no GPU/frame speed claim.
+
+Conditional source projection and active import discovery use ShaderCompiler
+`projectShaderConditionals`; Vite only selects the author axes to flatten and
+walks the resulting import closure.
+
+The Rollup diagnostic projection derives shared fields from `ShaderError`. Compiler
+admission constructs that error directly; Vite retains the same error code,
+source position, typed detail and hints when forwarding it to bundler consumers.

@@ -16,7 +16,7 @@ export default defineFeature<FeatureDefinition>({
   catalog: 'Screen-space ambient occlusion',
   kind: 'visual',
   summary:
-    'StandardProfile.ssao on the deferred render path computes half-resolution SSAO/GTAO from depth and normals and darkens ambient light only.',
+    'StandardProfile.ssao on the deferred render path defaults to full-resolution GTAO from depth and normals; resolutionScale reduces cost and algorithm selects explicit SSAO. AO darkens ambient light by default.',
   expect:
     'ON: dark contact shadows pool where the cubes meet the floor and in the inner corner of the stacked blocks. OFF: the same scene is flatly lit by the skylight with no contact darkening.',
   appOptions: {

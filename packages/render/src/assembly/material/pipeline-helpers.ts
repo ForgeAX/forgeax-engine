@@ -91,7 +91,7 @@ export function resolveMaterialPipelineGroup2Contract(
   }
 }
 
-export interface MaterialPipelineBindGroupState {
+interface MaterialPipelineBindGroupState {
   readonly meshBindGroupLayout: BindGroupLayout;
   readonly pbrSkinMeshBindGroupLayout: BindGroupLayout | null;
   readonly hdrpSkinMeshBindGroupLayout: BindGroupLayout | null;

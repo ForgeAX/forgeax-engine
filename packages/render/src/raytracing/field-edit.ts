@@ -23,7 +23,7 @@ interface FieldEditEntry {
 export type FieldEditState = Map<string, FieldEditEntry>;
 
 /** One projected identity entering a prepared field or changing its materials. */
-export interface FieldEditSource {
+interface FieldEditSource {
   readonly id: string;
   readonly source: SceneFieldSource;
   /** Projected instance; its `instanceId` is a projection position, not a field row. */

@@ -142,7 +142,7 @@ world.spawn(
 // intensity (M0 SSOT lock; matches spike-report-m0.md baseline conditions).
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.5, -1, -0.3],
     color: [1, 1, 1],
     intensity: 1,

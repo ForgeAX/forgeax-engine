@@ -38,6 +38,7 @@
     }
   },
   "dependencies": {
+    "@forgeax/engine": "workspace:*",
     "@forgeax/engine-app": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
@@ -48,6 +49,7 @@
     "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-rhi-webgpu": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",

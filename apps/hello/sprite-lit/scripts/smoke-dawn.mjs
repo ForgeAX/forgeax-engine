@@ -278,7 +278,7 @@ async function buildWorld({ includePoint, includeSpot }) {
   expectOk(
     world.spawn({
       component: DirectionalLight,
-      data: {
+      data: { castShadow: true,
         direction: [0.0, -1.0, -0.3],
         color: [1.0, 0.95, 0.85],
         intensity: 1.0,
@@ -304,7 +304,7 @@ async function buildWorld({ includePoint, includeSpot }) {
         { component: Transform, data: { pos: [2.0, 1.0, 1.5], quat: [0, 0, 0, 1]} },
         {
           component: SpotLight,
-          data: {
+          data: { castShadow: true,
             direction: [-0.8, -0.4, -0.4],
             color: [0.3, 1.0, 1.0],
             intensity: 4.0,

@@ -6,6 +6,11 @@ describe('VFX reflection failures', () => {
     ['explicit empty struct', 'struct VfxParameters {}', 'vfx-reflection-empty-struct'],
     ['unknown type', 'struct VfxParameters { value: mat3x3<f32>, }', 'vfx-reflection-unknown-type'],
     [
+      'prototype name',
+      'struct VfxParameters { value: constructor, }',
+      'vfx-reflection-unknown-type',
+    ],
+    [
       'invalid dimension',
       'struct VfxParameters { value: array<f32, 2>, }',
       'vfx-reflection-invalid-dimension',

@@ -24,7 +24,9 @@ function countedSource(): string {
 
 async function program(): Promise<string> {
   const catalog: Record<string, string> = {};
-  for (const file of readdirSync(root).filter((file) => file.endsWith('.wgsl'))) {
+  for (const file of readdirSync(root, { recursive: true }).filter(
+    (file) => file.endsWith('.wgsl') && !file.split(/[\\/]/).includes('__tests__'),
+  )) {
     if (file === 'unlit.wgsl') continue;
     const text = source(file);
     const name = text.match(/^#define_import_path (\S+)/m)?.[1];

@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { halfFloat } from '@forgeax/engine-math';
 import { Materials, MeshRenderer, type StandardDiffuseGi } from '@forgeax/engine-render';
 import {
   attachRecorder,
@@ -85,13 +86,13 @@ const screenProbe = (environment: Rgb = [0, 0, 0]): StandardDiffuseGi => {
 };
 
 /** 4x4 blocks of 8x8 pixels: per-block mean of `a - b`. */
-const blocks = (a: Float64Array, b: FieldImage) =>
+const blocks = (a: ArrayLike<number>, b?: ArrayLike<number>) =>
   Array.from({ length: 16 }, (_, k) => {
     let sum = 0;
     for (let y = 0; y < 8; y++)
       for (let x = 0; x < 8; x++) {
         const i = ((k >> 2) * 8 + y) * SIZE + (k & 3) * 8 + x;
-        sum += (a[i] ?? NaN) - (b.red[i] ?? NaN);
+        sum += (a[i] ?? NaN) - (b === undefined ? 0 : (b[i] ?? NaN));
       }
     return sum / 64;
   });
@@ -142,7 +143,17 @@ it('serves Lite reflections from the directional radiance cache under field gath
     h.setGi(gi);
     await h.settle(gi.gather === 'exact' ? 8 : 16);
     const { sum, last } = await average(frames);
-    return { blocks: blocks(sum, direct), last };
+    return { blocks: blocks(sum, direct.red), last };
+  };
+  const directionalBlocks = async () => {
+    const signal = await h.read('reflection-denoised');
+    expect(signal.length).toBe(SIZE * SIZE * 4);
+    return blocks(
+      Float64Array.from({ length: SIZE * SIZE }, (_, i) => {
+        expect(signal[i * 4 + 3]).toBe(1);
+        return signal[i * 4] ?? NaN;
+      }),
+    );
   };
   try {
     h.setSun(0);
@@ -154,8 +165,8 @@ it('serves Lite reflections from the directional radiance cache under field gath
     const dark = await h.image();
 
     // Furnace: a uniform environment L over the metal's open hemisphere. The rough
-    // lane reads the cosine lobe of the cache times the renderer's multiscatter
-    // response once; IBL is off, so nothing else may add a second copy. The exact
+    // lane combines directional single scattering with multiple scattering from
+    // cosine-weighted GI once; IBL is off, so nothing may add a second copy. The exact
     // lane under the same furnace is the reference, and no lane may exceed L.
     const L = 0.5;
     h.setGi({ ...irradianceFieldGi({ environment: [L, L, L], radiosity: false }) });
@@ -191,11 +202,13 @@ it('serves Lite reflections from the directional radiance cache under field gath
       h.world.set(h.wall, MeshRenderer, { materials: [material] }).unwrap();
       const reference = await reflected(exact(), dark, 48);
       const cache = await reflected(field(), dark, 2);
+      const fieldDirectional = await directionalBlocks();
       // Same field history as the field lane: a gather switch keeps the prepared
       // field, so start the Screen Probe lane from a fresh one.
       h.setGi(undefined);
       await h.draw();
       const probes = await reflected(screenProbe(), dark, 2);
+      const screenProbeDirectional = await directionalBlocks();
       const error = relative(cache.blocks, reference.blocks);
       comparison[name] = {
         tolerance,
@@ -206,6 +219,8 @@ it('serves Lite reflections from the directional radiance cache under field gath
         exact: reference.blocks,
         field: cache.blocks,
         screenProbe: probes.blocks,
+        fieldDirectional,
+        screenProbeDirectional,
       };
     }
     for (const lane of Object.values(comparison) as {
@@ -214,18 +229,21 @@ it('serves Lite reflections from the directional radiance cache under field gath
       exact: number[];
       field: number[];
       screenProbe: number[];
+      fieldDirectional: number[];
+      screenProbeDirectional: number[];
     }[]) {
       expect(mean(lane.exact)).toBeGreaterThan(0.05);
       expect(lane.meanRelativeBlockError).toBeLessThan(lane.tolerance);
-      // Screen Probes own only diffuse: their reflections are the same field lane.
-      expect(relative(lane.screenProbe, lane.field)).toBeLessThan(0.02);
+      // Directional reflections share the field lane. Broad multiple scattering
+      // follows each gather's diffuse irradiance, so total metal radiance can differ.
+      expect(relative(lane.screenProbeDirectional, lane.fieldDirectional)).toBeLessThan(0.02);
     }
     expect(h.renderer.inspect().perFramePassNames).toEqual(
       expect.arrayContaining(REFLECTION_PASSES),
     );
 
     // RHI capture of the rough-metal field frame: exact replay of the composite and
-    // a missing-composite falsifier that must fall back to the unreflected frame.
+    // removing both indirect lobes must fall back to the unreflected frame.
     h.world.set(h.wall, MeshRenderer, { materials: [rough] }).unwrap();
     h.setGi(irradianceFieldGi({ radiosity: false }));
     await h.settle(16);
@@ -246,13 +264,21 @@ it('serves Lite reflections from the directional radiance cache under field gath
       ),
     );
     assert(composite, 'frame contains the field reflection composite');
+    const diffuseComposite = model.works.find((work) =>
+      work.pipeline.shaders.some(
+        (shader) =>
+          shader.stage === 'fragment' &&
+          shader.entryPoint === 'fs_ray_diffuse_reconstructed_reflections',
+      ),
+    );
+    assert(diffuseComposite, 'frame contains the broad multiple-scattering composite');
     expect(
       model.works.flatMap((work) =>
         work.pipeline.shaders.filter((s) => s.stage === 'compute').map((s) => s.entryPoint),
       ),
     ).toEqual(expect.arrayContaining(['generateFieldReflections', 'traceReflections']));
-    const sceneHandle = composite.attachments?.colorViewHandleIds?.[0];
-    assert(sceneHandle);
+    const [sceneHandle, fallbackHandle] = composite.attachments?.colorViewHandleIds ?? [];
+    assert(sceneHandle && fallbackHandle);
     const replayOf = async (frameTape: typeof tape) => {
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const device = (
@@ -278,12 +304,38 @@ it('serves Lite reflections from the directional radiance cache under field gath
       ).unwrap();
       assert(inspected.attachment);
       expect(inspected.attachment.bytes).toEqual(captured.bytes);
+      const reads = (
+        await exactReplay.replay.readAtWorks([
+          { resourceId: sceneHandle, workIndex: diffuseComposite.workIndex },
+          { resourceId: fallbackHandle, workIndex: composite.workIndex },
+        ])
+      ).unwrap();
+      const broad = reads[0]?.unwrap();
+      const directional = reads[1]?.unwrap();
+      assert(broad && directional);
+      const channel = (bytes: Uint8Array, i: number) =>
+        halfFloat.f16ToF32(
+          new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(i * 8, true),
+        );
+      let multiMean = 0;
+      for (let i = 0; i < SIZE * SIZE; i++) {
+        multiMean += channel(broad.bytes, i) / (SIZE * SIZE);
+        expect(
+          Math.abs(
+            channel(captured.bytes, i) - channel(broad.bytes, i) - channel(directional.bytes, i),
+          ),
+        ).toBeLessThan(0.002);
+      }
+      expect(multiMean).toBeGreaterThan(0.01);
+      result.multipleScattering = { mean: multiMean, ssrFallbackContainsOnlyDirectional: true };
     } finally {
       await exactReplay.dispose();
     }
     const omitted = {
       ...tape,
-      events: tape.events.filter((_, index) => index !== composite.eventIndex),
+      events: tape.events.filter(
+        (_, index) => index !== composite.eventIndex && index !== diffuseComposite.eventIndex,
+      ),
     };
     const omittedModel = buildFrameModel(omitted);
     const falsifier = await replayOf(omitted);

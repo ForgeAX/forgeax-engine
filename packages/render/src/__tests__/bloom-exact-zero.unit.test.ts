@@ -107,7 +107,7 @@ describe('Standard Bloom exact-zero topology', () => {
   it.each([
     ['off', 'aces-filmic', 1, false],
     ['on', 'aces-filmic', 0, false],
-    ['on', 'none', 1, false],
+    ['on', 'none', 1, true],
     ['on', 'aces-filmic', 1, true],
   ] as const)('uses one effective admission for %s/%s/%s', (bloom, tonemap, intensity, expected) => {
     expect(standardBloomAdmitted({ bloom, tonemap, bloomIntensity: intensity })).toBe(expected);
@@ -126,8 +126,8 @@ describe('Standard Bloom exact-zero topology', () => {
       passCount: 0,
       levelCount: 0,
       levelDimensions: [],
-      downsamplePassCount: 0,
-      upsamplePassCount: 0,
+      horizontalPassCount: 0,
+      verticalPassCount: 0,
     });
     expect({
       targetCount: bloomResources.length,
@@ -181,9 +181,9 @@ describe('Standard Bloom exact-zero topology', () => {
       const info = inspect('on');
       expect(inspectStandardBloomGraph(info)).toEqual({
         status: 'valid',
-        targetCount: 10,
-        targetBytes: 3_069_440,
-        passCount: 10,
+        targetCount: 11,
+        targetBytes: 3_071_360,
+        passCount: 11,
         levelCount: 5,
         levelDimensions: [
           { width: 320, height: 180 },
@@ -192,11 +192,11 @@ describe('Standard Bloom exact-zero topology', () => {
           { width: 40, height: 23 },
           { width: 20, height: 12 },
         ],
-        downsamplePassCount: 5,
-        upsamplePassCount: 4,
+        horizontalPassCount: 5,
+        verticalPassCount: 5,
       });
       expect(
-        info.resources.find((resource) => resource.label === 'bloom-downsample-0'),
+        info.resources.find((resource) => resource.label === 'bloom-horizontal-0'),
       ).toMatchObject({
         descriptor: {
           kind: 'texture',
@@ -212,15 +212,16 @@ describe('Standard Bloom exact-zero topology', () => {
       expect(
         info.passes.map((pass) => pass.name).filter((name) => name.startsWith('bloom-')),
       ).toEqual([
-        'bloom-downsample-0',
-        'bloom-downsample-1',
-        'bloom-downsample-2',
-        'bloom-downsample-3',
-        'bloom-downsample-4',
-        'bloom-upsample-3',
-        'bloom-upsample-2',
-        'bloom-upsample-1',
-        'bloom-upsample-0',
+        'bloom-horizontal-0',
+        'bloom-vertical-0',
+        'bloom-horizontal-1',
+        'bloom-vertical-1',
+        'bloom-horizontal-2',
+        'bloom-vertical-2',
+        'bloom-horizontal-3',
+        'bloom-vertical-3',
+        'bloom-horizontal-4',
+        'bloom-vertical-4',
         'bloom-composite',
       ]);
     }
@@ -231,7 +232,7 @@ describe('Standard Bloom exact-zero topology', () => {
     const drifted = {
       ...info,
       resources: info.resources.map((resource) =>
-        resource.label === 'bloom-downsample-0'
+        resource.label === 'bloom-horizontal-0'
           ? {
               ...resource,
               descriptor:
@@ -249,8 +250,8 @@ describe('Standard Bloom exact-zero topology', () => {
       passCount: 0,
       levelCount: 0,
       levelDimensions: [],
-      downsamplePassCount: 0,
-      upsamplePassCount: 0,
+      horizontalPassCount: 0,
+      verticalPassCount: 0,
     });
   });
 
@@ -258,7 +259,7 @@ describe('Standard Bloom exact-zero topology', () => {
     const info = inspect('on');
     const drifted = {
       ...info,
-      resources: info.resources.filter((resource) => resource.label !== 'bloom-downsample-0'),
+      resources: info.resources.filter((resource) => resource.label !== 'bloom-horizontal-0'),
     };
     expect(inspectStandardBloomGraph(drifted)).toEqual({
       status: 'invalid',
@@ -267,8 +268,8 @@ describe('Standard Bloom exact-zero topology', () => {
       passCount: 0,
       levelCount: 0,
       levelDimensions: [],
-      downsamplePassCount: 0,
-      upsamplePassCount: 0,
+      horizontalPassCount: 0,
+      verticalPassCount: 0,
     });
   });
 
@@ -276,7 +277,7 @@ describe('Standard Bloom exact-zero topology', () => {
     const info = inspect('on');
     const drifted = {
       ...info,
-      passes: info.passes.filter((pass) => pass.name !== 'bloom-downsample-1'),
+      passes: info.passes.filter((pass) => pass.name !== 'bloom-horizontal-1'),
     };
     expect(inspectStandardBloomGraph(drifted)).toEqual({
       status: 'invalid',
@@ -285,14 +286,14 @@ describe('Standard Bloom exact-zero topology', () => {
       passCount: 0,
       levelCount: 0,
       levelDimensions: [],
-      downsamplePassCount: 0,
-      upsamplePassCount: 0,
+      horizontalPassCount: 0,
+      verticalPassCount: 0,
     });
   });
 
   it('rejects forged odd-scale extents instead of reporting inferred sizes or cost', () => {
     const info = inspect('on');
-    const forgedLabels = new Set(['bloom-downsample-0', 'bloom-downsample-1', 'bloom-upsample-0']);
+    const forgedLabels = new Set(['bloom-horizontal-0', 'bloom-horizontal-1', 'bloom-vertical-0']);
     const forged = {
       ...info,
       resources: info.resources.map((resource) =>
@@ -318,8 +319,8 @@ describe('Standard Bloom exact-zero topology', () => {
       passCount: 0,
       levelCount: 0,
       levelDimensions: [],
-      downsamplePassCount: 0,
-      upsamplePassCount: 0,
+      horizontalPassCount: 0,
+      verticalPassCount: 0,
     });
   });
 });

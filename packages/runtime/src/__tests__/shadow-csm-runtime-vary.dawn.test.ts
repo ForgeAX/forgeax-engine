@@ -150,15 +150,12 @@ function buildScene(initialCascadeCount: number, initialMapSize: number): SceneE
     .spawn(
       {
         component: DirectionalLight,
-        data: {
-          direction: [0, -1, 0],
-          color: [1, 1, 1],
-          intensity: 1,
-        },
+        data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
       },
       {
         component: DirectionalLight,
         data: {
+          castShadow: true,
           direction: [0, -1, 0],
           mapSize: initialMapSize,
           shadowDistance: 50,

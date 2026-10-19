@@ -1,5 +1,6 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
+import { getAdmittedParamSchemaInterface, type ParamSchemaEntry } from '@forgeax/engine-types';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
@@ -47,6 +48,26 @@ function sameSchemaValue(left: unknown, right: unknown): boolean {
 /** Native clones lose realm-local schema admission; the selected program remains its owner. */
 export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
   const materials = new Map<MaterialSnapshot, MaterialSnapshot>();
+  let observedSchema: readonly ParamSchemaEntry[] | undefined;
+  let canonicalSchema: readonly ParamSchemaEntry[] | undefined;
+  let schemaEqual = false;
+  const matchesSchema = (
+    material: MaterialSnapshot,
+    canonical: readonly ParamSchemaEntry[],
+  ): boolean => {
+    const schema = material.materialParamSchema;
+    if (schema === undefined) return false;
+    if (material.immutableValues !== true) return sameSchemaValue(schema, canonical);
+    if (observedSchema === schema && canonicalSchema === canonical) return schemaEqual;
+    const equal = sameSchemaValue(schema, canonical);
+    // Only producer-owned values and an admitted immutable program can recur safely.
+    if (getAdmittedParamSchemaInterface(canonical) !== undefined) {
+      observedSchema = schema;
+      canonicalSchema = canonical;
+      schemaEqual = equal;
+    }
+    return equal;
+  };
   const rebind = (material: MaterialSnapshot): MaterialSnapshot => {
     const known = materials.get(material);
     if (known !== undefined) return known;
@@ -61,7 +82,7 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
       schema !== undefined &&
       shader?.ok === true &&
       schema !== shader.value.paramSchema &&
-      sameSchemaValue(schema, shader.value.paramSchema)
+      matchesSchema(material, shader.value.paramSchema)
         ? { ...material, materialParamSchema: shader.value.paramSchema }
         : material;
     materials.set(material, rebound);
@@ -125,7 +146,7 @@ export function installPublicationPrograms(
     }
     if (!previous.ok) {
       shaders ??= new ShaderRegistry({ manifestUrl: undefined });
-      shaders.installMaterialArtifact(row.key, row.shader);
+      shaders.installMaterialArtifact(row.key, row.shader, assets.shaderRegistry);
     }
     if (row.artifact !== undefined) {
       const existing = assets.getMaterialArtifact(row.key);

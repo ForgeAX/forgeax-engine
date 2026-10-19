@@ -1,11 +1,11 @@
-export type TaaHistoryResetReason =
+type TaaHistoryResetReason =
   | 'first-frame'
   | 'camera-cut'
   | 'resize'
   | 'recover'
   | 'device-generation';
 
-export interface TaaHistoryInspection {
+interface TaaHistoryInspection {
   readonly token: number;
   readonly deviceGeneration: number;
   readonly content: 'uninitialized' | 'active';
@@ -18,7 +18,7 @@ export interface TaaHistoryInspection {
   readonly resetReason: TaaHistoryResetReason | undefined;
 }
 
-export interface TaaHistoryReceipt {
+interface TaaHistoryReceipt {
   readonly deviceGeneration: number;
   readonly completed: boolean;
 }

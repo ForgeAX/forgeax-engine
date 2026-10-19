@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-clear-color headless dawn smoke — proves Bevy window/clear_color
 // behavior: blue-ish clearColor → Space rising-edge toggle → purple.
@@ -7,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '100', 10);
 const WIDTH = 160;
@@ -216,7 +217,7 @@ if (errors.length === 0) {
 // --- write reference PNG ---
 const outputDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'smoke');
 mkdirSync(outputDir, { recursive: true });
-writeFileSync(resolve(outputDir, 'purple-center.png'), writeReferencePng(purplePixels, WIDTH, HEIGHT));
+writeFileSync(resolve(outputDir, 'purple-center.png'), encodePng(WIDTH, HEIGHT, purplePixels));
 
 console.log(`[smoke] RESULT: ${passes}/${passes + fails} pass`);
 if (fails === 0) console.log('[smoke] PASS');

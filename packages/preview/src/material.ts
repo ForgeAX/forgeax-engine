@@ -14,8 +14,10 @@ import {
   type PreviewDomainResult,
   type PreviewDomainRunner,
   previewRuntimeUnavailable,
+  REQUIRED_PREVIEW_EVIDENCE,
   validateDomainValue,
 } from './host.js';
+import { isNonemptyString, isStringArray, parsePreviewRequest } from './request-schema.js';
 
 export interface MaterialBinding {
   readonly guid: string;
@@ -40,26 +42,27 @@ export interface MaterialPreviewReport {
 
 const materialPreviewArgsSchema: ToolSchema<MaterialPreviewRequest> = {
   parse(value) {
-    if (value === null || typeof value !== 'object')
-      return { ok: false, error: 'expected a material preview request object' };
-    const request = value as Partial<MaterialPreviewRequest>;
-    if (request.subject?.kind !== 'MaterialAsset' || typeof request.subject.guid !== 'string')
-      return { ok: false, error: 'expected a MaterialAsset subject' };
-    if (
-      request.snapshot === undefined ||
-      !Number.isSafeInteger(request.snapshot.revision) ||
-      typeof request.snapshot.digest !== 'string'
-    )
-      return { ok: false, error: 'expected a revisioned snapshot' };
+    const envelope = parsePreviewRequest(value, 'MaterialAsset');
+    if (!envelope.ok) return envelope;
+    const request = envelope.value;
     const binding = request.binding;
     if (
-      binding === undefined ||
-      binding.guid !== request.subject.guid ||
-      binding.programDigest.length === 0 ||
+      !isNonemptyString(binding.programDigest) ||
+      !isStringArray(binding.bindings) ||
       binding.bindings.length === 0
     )
       return { ok: false, error: 'expected a bound MaterialAsset program and bindings' };
-    return { ok: true, value: request as MaterialPreviewRequest };
+    return {
+      ok: true,
+      value: {
+        ...request,
+        binding: {
+          guid: request.subject.guid,
+          programDigest: binding.programDigest,
+          bindings: binding.bindings,
+        },
+      },
+    };
   },
   describe:
     '{"type":"object","required":["subject","snapshot","binding"],"properties":{"subject":{"type":"object","required":["kind","guid"],"properties":{"kind":{"const":"MaterialAsset"},"guid":{"type":"string"}}},"snapshot":{"type":"object","required":["revision","digest"]},"binding":{"type":"object","required":["guid","programDigest","bindings"]}}}',
@@ -77,12 +80,12 @@ export const materialPreviewDescriptor = {
   realm: 'engine' as const,
   argsSchema: materialPreviewArgsSchema,
   resultSchema: materialPreviewResultSchema,
-  evidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+  evidence: REQUIRED_PREVIEW_EVIDENCE,
   preview: {
     realm: 'engine' as const,
     subject: { kind: 'MaterialAsset', guid: '<request>' },
     snapshot: { revision: 0, digest: '<request>' },
-    requiredEvidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+    requiredEvidence: REQUIRED_PREVIEW_EVIDENCE,
   } satisfies ToolPreviewContract,
 };
 

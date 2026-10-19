@@ -17,13 +17,7 @@ import { ImporterRegistry } from '@forgeax/engine-import';
 import type { ImportContext, ImportedAsset, ImportSubAsset } from '@forgeax/engine-types';
 import { FontError } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  type BakeAtlas,
-  bakeFont,
-  type MsdfGenerator,
-  realGeneratorFactory,
-  runCliFont,
-} from '../cli-font.js';
+import { type BakeAtlas, bakeFont, type MsdfGenerator, realGeneratorFactory } from '../cli-font.js';
 import { fontImporter, fontOutputSourceKeys, sourceKeyForFontOutput } from '../font-importer.js';
 
 let tmpRoot: string;
@@ -325,33 +319,6 @@ describe('font package root surface', () => {
 
   describe('plugin-discoverable.test.ts', () => {
     describe('plugin-discoverable (forgeax asset import)', () => {
-      describe('bake subcommand routing (a)', () => {
-        it('--help on root exits 0 and prints usage', async () => {
-          const code = await runCliFont(['--help']);
-          expect(code).toBe(0);
-        });
-
-        it('bake --help exits 0 and prints bake usage', async () => {
-          const code = await runCliFont(['bake', '--help']);
-          expect(code).toBe(0);
-        });
-
-        it('bake with two positionals routes to the real bake (exits 1 on a missing source)', async () => {
-          const code = await runCliFont(['bake', 'font.ttf', 'out/']);
-          expect(code).toBe(1);
-        });
-
-        it('unknown subcommand exits 1', async () => {
-          const code = await runCliFont(['unknown-cmd']);
-          expect(code).toBe(1);
-        });
-
-        it('no subcommand with empty argv exits 0 (prints help)', async () => {
-          const code = await runCliFont([]);
-          expect(code).toBe(0);
-        });
-      });
-
       describe('unified command ownership (b)', () => {
         it('does not publish a standalone bin', async () => {
           const pkgPath = join(PKG_DIR, 'package.json');

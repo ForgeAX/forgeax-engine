@@ -35,6 +35,7 @@
 // test can stay deterministic and inside vitest's 30s budget per
 // plan-strategy section 4 risk R7.
 
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { World } from '@forgeax/engine-ecs';
 import {
   type GltfDoc,
@@ -91,14 +92,8 @@ function makeMockShaderRegistry(): ShaderRegistry {
   return sr;
 }
 
-interface SubAssetEntry {
-  readonly guid: string;
-  readonly kind: string;
-  readonly sourceIndex: number;
-}
-
 function findGuid(kind: 'mesh' | 'material' | 'scene'): AssetGuid {
-  const entries = metaJson.subAssets as readonly SubAssetEntry[];
+  const entries = metaJson.subAssets as readonly ImportSubAsset[];
   const entry = entries.find((s) => s.kind === kind);
   if (entry === undefined) throw new Error(`box.gltf.meta.json missing subAsset kind=${kind}`);
   const parsed = AssetGuid.parse(entry.guid);

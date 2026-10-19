@@ -93,6 +93,7 @@
     "@forgeax/engine-skinning": "workspace:*",
     "@forgeax/engine-state": "workspace:*",
     "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-three": "workspace:*",
     "@forgeax/engine-tool-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-ui": "workspace:*",

@@ -41,6 +41,8 @@ export interface BrowserFrameCompleted {
   readonly deviceGeneration: number;
   /** World/session identity owned by the active App execution. */
   readonly worldIdentity?: string;
+  /** Output mapping of this completed receipt, independent of later canvas resizes. */
+  readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
   readonly presentation: import('@forgeax/engine-render').FramePresentation;
   readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
 }

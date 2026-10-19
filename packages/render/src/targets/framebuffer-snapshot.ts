@@ -45,7 +45,7 @@ interface SnapshotRecord {
   completed?: Promise<RenderResult<void, RenderError>>;
 }
 
-export interface FramebufferSnapshotQueueOptions {
+interface FramebufferSnapshotQueueOptions {
   readonly owner: RenderTargetOwner;
   readonly currentGeneration: () => number;
   /** Physical the next write lands in: the staged candidate, else the active texture. */
@@ -57,7 +57,7 @@ export interface FramebufferSnapshotQueueOptions {
   readonly markWritten: (target: RenderTarget, physical: RenderTargetPhysical) => void;
 }
 
-export interface FramebufferSnapshotQueue {
+interface FramebufferSnapshotQueue {
   request(
     target: RenderTarget,
     request: FramebufferSnapshotRequest,
@@ -262,12 +262,12 @@ export function createFramebufferSnapshotQueue(
         }
         encoder.copyTextureToTexture(
           {
-            texture: source.texture as never,
+            texture: source.texture,
             mipLevel: 0,
             origin: { x: record.region.x, y: record.region.y, z: 0 },
           },
           {
-            texture: physical.texture as never,
+            texture: physical.texture,
             mipLevel: 0,
             origin: { x: record.destination.x, y: record.destination.y, z: 0 },
           },

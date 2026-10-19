@@ -57,7 +57,7 @@ export function prepareRendererDiffuseReconstruction(
         camera.far,
         camera.fov,
         camera.aspect,
-        camera.eye?.frustumShift ?? 0,
+        ...(camera.projectionOffset ?? [0, 0]),
         camera.orthoLeft,
         camera.orthoRight,
         camera.orthoTop,

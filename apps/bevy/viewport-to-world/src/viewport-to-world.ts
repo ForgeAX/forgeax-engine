@@ -44,7 +44,7 @@ export function buildViewportToWorldWorld(world: World): ViewportToWorldScene {
 
   world.spawn({
     component: DirectionalLight,
-    data: { direction: [-0.5, -1, -0.35], color: [1, 1, 1], intensity: 2.5 },
+    data: { castShadow: true, direction: [-0.5, -1, -0.35], color: [1, 1, 1], intensity: 2.5 },
   });
 
   const eye: [number, number, number] = [0, 6, 10];

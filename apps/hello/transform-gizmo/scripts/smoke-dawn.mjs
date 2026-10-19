@@ -106,7 +106,7 @@ const { constructRuntimeRendererHost } = await import(
 );
 const { createGizmoScene } = await import('../src/scene.ts');
 const { Transform } = await import('@forgeax/engine-scene');
-const { writeReferencePng } = await import('../../../shared/png-codec.mjs');
+const { encodePng } = await import('@forgeax/engine-image/png');
 const { mkdirSync, writeFileSync } = await import('node:fs');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifest = readFileSync(resolve(here, '../dist/shaders/manifest.json'), 'utf8');
@@ -199,7 +199,7 @@ try {
     );
     evidence.push({ mode, changedPixels: changed, axisColorPixels: color });
     if (outDir)
-      writeFileSync(resolve(outDir, `dawn-${mode}.png`), writeReferencePng(image, WIDTH, HEIGHT));
+      writeFileSync(resolve(outDir, `dawn-${mode}.png`), encodePng(WIDTH, HEIGHT, image));
   }
   scene.gizmo.configure({ mode: 'translate' });
   scene.sync();

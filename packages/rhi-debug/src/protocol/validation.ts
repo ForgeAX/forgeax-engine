@@ -1,6 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError } from '../errors';
-import { EVENT_SEMANTICS, eventKinds } from './event-semantics';
+import { createdHandles, eventKinds, handleAccess, retiredHandles } from './event-semantics';
 import { type ResourceKind, TAPE_FORMAT_VERSION, type TapeStructure } from './types';
 
 type TapeValidation = ReturnType<typeof createRhiDebugError<'tape-invalid'>>;
@@ -66,8 +66,8 @@ export function validateTape<T extends TapeStructure>(tape: T): Result<T, TapeVa
           cause: `unknown event kind at ${eventIndex}`,
         }),
       );
-    const semantics = EVENT_SEMANTICS[event.kind];
-    for (const created of semantics.created(event)) {
+
+    for (const created of createdHandles(event)) {
       if (declared.has(created))
         return err(
           createRhiDebugError('tape-invalid', {
@@ -77,7 +77,7 @@ export function validateTape<T extends TapeStructure>(tape: T): Result<T, TapeVa
         );
       declared.add(created);
     }
-    for (const read of semantics.read(event)) {
+    for (const read of handleAccess(event).read) {
       if (!declared.has(read))
         return err(
           createRhiDebugError('tape-invalid', {
@@ -86,7 +86,7 @@ export function validateTape<T extends TapeStructure>(tape: T): Result<T, TapeVa
           }),
         );
     }
-    for (const destroyed of semantics.destroyed(event)) {
+    for (const destroyed of retiredHandles(event)) {
       if (!declared.has(destroyed))
         return err(
           createRhiDebugError('tape-invalid', {

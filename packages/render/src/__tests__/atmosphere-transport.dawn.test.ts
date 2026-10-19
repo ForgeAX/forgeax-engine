@@ -16,7 +16,7 @@ it('measures RGB versus scalar extinction using the physical GPU transport and f
     .join('\n');
   const outputTransform = ['acesInput', 'acesOutput', 'tonemapAcesFilmic']
     .map((name) => {
-      const body = new RegExp(`fn ${name}\\([\\s\\S]*?\n}`).exec(source('tonemap'))?.[0];
+      const body = new RegExp(`fn ${name}\\([\\s\\S]*?\n}`).exec(source('tone-mapping'))?.[0];
       if (body === undefined) throw new Error(`Missing production output function ${name}`);
       return body;
     })

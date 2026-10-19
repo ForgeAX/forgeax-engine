@@ -1,30 +1,10 @@
-#!/usr/bin/env node
-
-// @forgeax/engine-font/src/cli-font — `forgeax asset import` plugin
-// bin. Discovered by the base bin via the kubectl 4th-path
-// unified `forgeax asset import` producer.
-//
-// `bake <ttf> <out>` reads a TrueType font and produces an MSDF atlas PNG +
-// a glyph-metrics sidecar JSON (importer: 'font'). The real bake calls
-// @zappar/msdf-generator (feat-20260531-world-space-msdf-text-rendering M5 /
-// w28 -- replaces the M1 placeholder).
-//
-// Error model (FontErrorCode, structured to stderr, exit code 1):
-//   - non-TTF magic (not 0x00010000 / 'true' / 'OTTO') -> 'unsupported-font-format'
-//     (AC-15 / plan-strategy D-11). The check runs BEFORE the generator so a
-//     bad format never reaches the wasm path.
-//   - @zappar/msdf-generator throws (wasm / Worker unavailable, internal error)
-//     -> 'bake-failed' (charter P3: explicit failure, never a silent exit-0
-//     no-atlas). In a plain Node CI without a Web Worker the generator throws
-//     'Worker is not defined' and the bake reports 'bake-failed' (exit 1) --
-//     the best-effort real run requires a Worker + wasm host.
+// Node-only font producer used by DevKit’s unified asset command and build integrations.
 
 import { Buffer } from 'node:buffer';
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
-import { deflateSync } from 'node:zlib';
+import { encodePng } from '@forgeax/engine-image/png';
 import { type FontAsset, FontError } from '@forgeax/engine-types';
 import { atlasFontData, type BakeAtlas, type MsdfGenerator } from './atlas-font-data.js';
 import { NodeWorkerAdapter } from './node-worker-adapter.js';
@@ -69,76 +49,6 @@ function isSupportedFontMagic(bytes: Uint8Array): boolean {
   const isTrue = b0 === 0x74 && b1 === 0x72 && b2 === 0x75 && b3 === 0x65;
   const isOtto = b0 === 0x4f && b1 === 0x54 && b2 === 0x54 && b3 === 0x4f;
   return isTrueType || isTrue || isOtto;
-}
-
-/** CRC-32 (PNG / zlib polynomial) over a byte slice. */
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) {
-    crc ^= bytes[i] ?? 0;
-    for (let k = 0; k < 8; k++) {
-      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type: string, data: Uint8Array): Uint8Array {
-  const typeBytes = new Uint8Array([
-    type.charCodeAt(0),
-    type.charCodeAt(1),
-    type.charCodeAt(2),
-    type.charCodeAt(3),
-  ]);
-  const body = new Uint8Array(typeBytes.length + data.length);
-  body.set(typeBytes, 0);
-  body.set(data, typeBytes.length);
-  const out = new Uint8Array(4 + body.length + 4);
-  const dv = new DataView(out.buffer);
-  dv.setUint32(0, data.length);
-  out.set(body, 4);
-  dv.setUint32(4 + body.length, crc32(body));
-  return out;
-}
-
-/**
- * Encode an RGBA pixel buffer into a PNG (zlib deflate, no external deps).
- * The atlas texture from @zappar is RGBA8; this writes a standard 8-bit
- * RGBA PNG so any consumer (engine image importer / browser) can decode it.
- */
-export function encodePng(width: number, height: number, rgba: Uint8Array): Uint8Array {
-  // Filter byte 0 (None) prefixes each scanline.
-  const stride = width * 4;
-  const raw = new Uint8Array((stride + 1) * height);
-  for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 0;
-    raw.set(rgba.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
-  }
-  const idat = deflateSync(raw);
-  const ihdr = new Uint8Array(13);
-  const dv = new DataView(ihdr.buffer);
-  dv.setUint32(0, width);
-  dv.setUint32(4, height);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // color type RGBA
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
-  const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const chunks = [
-    signature,
-    pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', new Uint8Array(idat)),
-    pngChunk('IEND', new Uint8Array(0)),
-  ];
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.length;
-  }
-  return out;
 }
 
 /** Map a @zappar atlas into the FontAsset glyph-metrics sidecar shape. */
@@ -218,8 +128,8 @@ export async function bakeFont(
 }
 
 /**
- * Real @zappar/msdf-generator factory. Dynamically imported so a non-bake
- * subcommand (or a test that injects a mock) never pays the wasm load cost,
+ * Real @zappar/msdf-generator factory. Dynamically imported so callers using
+ * an injected generator never pay the wasm load cost,
  * and so the package builds without the browser globals the generator needs.
  */
 export async function realGeneratorFactory(): Promise<MsdfGenerator> {
@@ -280,91 +190,4 @@ export async function realGeneratorFactory(): Promise<MsdfGenerator> {
       await msdf.dispose();
     },
   };
-}
-
-function bakeHelpBody(): string {
-  return [
-    'forgeax asset import bake — bake MSDF font atlas from TTF',
-    '',
-    'Usage:',
-    '  forgeax asset import bake <ttf> <out>',
-    '',
-    'Reads a TrueType font file and produces:',
-    `  <out>/<basename>.atlas.png   — ${DEFAULT_TEXTURE_SIZE}x${DEFAULT_TEXTURE_SIZE} MSDF atlas`,
-    '  <out>/<basename>.meta.json   — glyph metrics sidecar (importer: font)',
-    '',
-  ].join('\n');
-}
-
-function helpBody(): string {
-  return [
-    'forgeax asset import — MSDF font atlas baking',
-    '',
-    'Usage:',
-    '  forgeax asset import bake <ttf> <out>',
-    '',
-  ].join('\n');
-}
-
-export async function runCliFont(argv: string[]): Promise<number> {
-  const [sub, ...rest] = argv;
-  if (sub === undefined || sub === '--help' || sub === '-h') {
-    process.stdout.write(`${helpBody()}\n`);
-    return 0;
-  }
-  if (sub !== 'bake') {
-    process.stderr.write(`unknown subcommand: ${sub}\n`);
-    return 1;
-  }
-  return runBake(rest);
-}
-
-async function runBake(rest: string[]): Promise<number> {
-  if (rest[0] === '--help' || rest[0] === '-h') {
-    process.stdout.write(`${bakeHelpBody()}\n`);
-    return 0;
-  }
-  let positionals: string[];
-  try {
-    const parsed = parseArgs({ args: rest, allowPositionals: true, strict: true });
-    positionals = [...parsed.positionals];
-  } catch {
-    process.stderr.write('error parsing CLI args\n');
-    return 1;
-  }
-  const ttfPath = positionals[0];
-  const outDir = positionals[1];
-  if (ttfPath === undefined || outDir === undefined) {
-    process.stderr.write('usage: forgeax asset import bake <ttf> <out>\n');
-    return 1;
-  }
-  try {
-    const result = await bakeFont(ttfPath, outDir, realGeneratorFactory);
-    process.stdout.write(`baked ${result.atlasPath} + ${result.sidecarPath}\n`);
-    return 0;
-  } catch (e) {
-    if (e instanceof FontError) {
-      process.stderr.write(
-        `${JSON.stringify({ code: e.code, expected: e.expected, hint: e.hint, detail: e.detail })}\n`,
-      );
-      return 1;
-    }
-    process.stderr.write(`bake failed: ${e instanceof Error ? e.message : String(e)}\n`);
-    return 1;
-  }
-}
-
-const isBinEntry = await (async (): Promise<boolean> => {
-  const argv1 = process.argv[1];
-  if (typeof argv1 !== 'string') return false;
-  const argv1Real = await realpath(argv1).catch(() => argv1);
-  const selfReal = await realpath(fileURLToPath(import.meta.url)).catch(() =>
-    fileURLToPath(import.meta.url),
-  );
-  return argv1Real === selfReal;
-})();
-
-if (isBinEntry) {
-  const exitCode = await runCliFont(process.argv.slice(2));
-  process.exit(exitCode);
 }

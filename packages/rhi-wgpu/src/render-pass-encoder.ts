@@ -1,19 +1,19 @@
 // Render pass and immutable bundle adapters over native wgpu/WASM handles.
 // Shared draw, binding and debug commands use one forwarding surface.
-// Bundle execution and queries report unavailable operations explicitly.
+// Native failures retain the RHI structured error boundary.
 
 /// <reference types="@webgpu/types" />
 
 import {
   type BindGroup,
   type Buffer,
+  commandEncoderFinished,
   err,
   ok,
   type RenderBundle,
   type RenderPipeline,
   type Result,
   type RhiError,
-  RhiError as RhiErrorClass,
   type RhiRenderBundleEncoder,
   type RhiRenderCommands,
   type RhiRenderPassEncoder,
@@ -21,74 +21,58 @@ import {
 import { unwrapBuffer } from './buffer';
 import { webgpuRuntimeError } from './errors';
 
-/**
- * Minimal shape of a raw render-pass-encoder handle the shim consumes.
- * Methods optional so the M2 baseline accepts both navigator.gpu and wgpu
- * wasm handles interchangeably.
- */
-export interface RawRenderPassLike {
-  setPipeline?(pipeline: unknown): void;
-  // bug-20260610: u64 args accepted as number | bigint; the wasm-bindgen
-  // class signature requires bigint, the navigator.gpu spec signature accepts
-  // number. The shim coerces to BigInt at the call site.
-  setVertexBuffer?(
-    slot: number,
-    buffer: unknown,
-    offset?: number | bigint,
-    size?: number | bigint,
-  ): void;
-  setIndexBuffer?(
-    buffer: unknown,
-    format: string,
-    offset?: number | bigint,
-    size?: number | bigint,
-  ): void;
-  setBindGroup?(...args: unknown[]): void;
-  draw?(
+/** Required draw/binding commands shared by a WASM render pass and bundle. */
+export interface RawRenderCommandsLike {
+  setPipeline(pipeline: unknown): void;
+  // Native u64 arguments are bigint; the RHI facade accepts numbers.
+  setVertexBuffer(slot: number, buffer: unknown, offset: bigint, size?: bigint): void;
+  setIndexBuffer(buffer: unknown, format: string, offset?: bigint, size?: bigint): void;
+  setBindGroup(...args: unknown[]): void;
+  draw(
     vertexCount: number,
-    instanceCount?: number,
-    firstVertex?: number,
-    firstInstance?: number,
+    instanceCount: number | undefined,
+    firstVertex: number,
+    firstInstance: number,
   ): void;
-  drawIndexed?(
+  drawIndexed(
     indexCount: number,
-    instanceCount?: number,
-    firstIndex?: number,
-    baseVertex?: number,
-    firstInstance?: number,
+    instanceCount: number | undefined,
+    firstIndex: number,
+    baseVertex: number,
+    firstInstance: number,
   ): void;
   // bug-20260610: u64 indirectOffset coerces to BigInt for the wasm class
   // signature.
-  drawIndirect?(indirectBuffer: unknown, indirectOffset: number | bigint): void;
-  drawIndexedIndirect?(indirectBuffer: unknown, indirectOffset: number | bigint): void;
-  end?(): void;
-  setViewport?(
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    minDepth: number,
-    maxDepth: number,
-  ): void;
-  setScissorRect?(x: number, y: number, w: number, h: number): void;
-  setBlendConstant?(color: unknown): void;
-  setStencilReference?(reference: number): void;
-  pushDebugGroup?(label: string): void;
-  popDebugGroup?(): void;
-  insertDebugMarker?(label: string): void;
-  executeBundles?(bundles: Iterable<unknown>): void;
-  beginOcclusionQuery?(queryIndex: number): void;
-  endOcclusionQuery?(): void;
+  drawIndirect(indirectBuffer: unknown, indirectOffset: bigint): void;
+  drawIndexedIndirect(indirectBuffer: unknown, indirectOffset: bigint): void;
+  pushDebugGroup(label: string): void;
+  popDebugGroup(): void;
+  insertDebugMarker(label: string): void;
 }
 
-export class RhiWgpuRenderCommands implements RhiRenderCommands {
-  protected readonly raw: RawRenderPassLike;
-  constructor(raw: RawRenderPassLike) {
+/** Pass-only state and submission commands are not part of render bundles. */
+export interface RawRenderPassLike extends RawRenderCommandsLike {
+  end(): void;
+  setViewport(x: number, y: number, w: number, h: number, minDepth: number, maxDepth: number): void;
+  setScissorRect(x: number, y: number, w: number, h: number): void;
+  setBlendConstant(color: unknown): void;
+  setStencilReference(reference: number): void;
+  executeBundles(bundles: Iterable<unknown>): void;
+  beginOcclusionQuery(queryIndex: number): void;
+  endOcclusionQuery(): void;
+}
+
+export interface RawRenderBundleLike extends RawRenderCommandsLike {
+  finish(desc?: unknown): unknown;
+}
+
+class RhiWgpuRenderCommands implements RhiRenderCommands {
+  protected readonly raw: RawRenderCommandsLike;
+  constructor(raw: RawRenderCommandsLike) {
     this.raw = raw;
   }
 
   setPipeline(pipeline: RenderPipeline): void {
-    if (this.raw.setPipeline === undefined) return;
     this.raw.setPipeline.call(this.raw, pipeline);
   }
 
@@ -98,7 +82,6 @@ export class RhiWgpuRenderCommands implements RhiRenderCommands {
     offset?: number | undefined,
     size?: number | undefined,
   ): void {
-    if (this.raw.setVertexBuffer === undefined) return;
     // Resolve forgeax Buffer brand → raw GPUBuffer (M4 w25 integration; the
     // wrapped Buffer is rejected by dawn-node validation with
     // "object is not of the correct interface type").
@@ -120,7 +103,6 @@ export class RhiWgpuRenderCommands implements RhiRenderCommands {
     offset?: number | undefined,
     size?: number | undefined,
   ): void {
-    if (this.raw.setIndexBuffer === undefined) return;
     // bug-20260610: u64 → BigInt coerce (see setVertexBuffer above).
     this.raw.setIndexBuffer.call(
       this.raw,
@@ -138,7 +120,6 @@ export class RhiWgpuRenderCommands implements RhiRenderCommands {
     dynamicOffsetsDataStart?: number | undefined,
     dynamicOffsetsDataLength?: number | undefined,
   ): void {
-    if (this.raw.setBindGroup === undefined) return;
     if (dynamicOffsetsDataLength !== undefined) {
       this.raw.setBindGroup.call(
         this.raw,
@@ -161,8 +142,7 @@ export class RhiWgpuRenderCommands implements RhiRenderCommands {
     firstVertex?: number | undefined,
     firstInstance?: number | undefined,
   ): void {
-    if (this.raw.draw === undefined) return;
-    this.raw.draw.call(this.raw, vertexCount, instanceCount, firstVertex, firstInstance);
+    this.raw.draw.call(this.raw, vertexCount, instanceCount, firstVertex ?? 0, firstInstance ?? 0);
   }
 
   drawIndexed(
@@ -172,25 +152,22 @@ export class RhiWgpuRenderCommands implements RhiRenderCommands {
     baseVertex?: number | undefined,
     firstInstance?: number | undefined,
   ): void {
-    if (this.raw.drawIndexed === undefined) return;
     this.raw.drawIndexed.call(
       this.raw,
       indexCount,
       instanceCount,
-      firstIndex,
-      baseVertex,
-      firstInstance,
+      firstIndex ?? 0,
+      baseVertex ?? 0,
+      firstInstance ?? 0,
     );
   }
 
   drawIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
-    if (this.raw.drawIndirect === undefined) return;
     // bug-20260610: u64 → BigInt coerce.
     this.raw.drawIndirect.call(this.raw, unwrapBuffer(indirectBuffer), BigInt(indirectOffset));
   }
 
   drawIndexedIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
-    if (this.raw.drawIndexedIndirect === undefined) return;
     // bug-20260610: u64 → BigInt coerce.
     this.raw.drawIndexedIndirect.call(
       this.raw,
@@ -200,17 +177,14 @@ export class RhiWgpuRenderCommands implements RhiRenderCommands {
   }
 
   pushDebugGroup(groupLabel: string): void {
-    if (this.raw.pushDebugGroup === undefined) return;
     this.raw.pushDebugGroup.call(this.raw, groupLabel);
   }
 
   popDebugGroup(): void {
-    if (this.raw.popDebugGroup === undefined) return;
     this.raw.popDebugGroup.call(this.raw);
   }
 
   insertDebugMarker(markerLabel: string): void {
-    if (this.raw.insertDebugMarker === undefined) return;
     this.raw.insertDebugMarker.call(this.raw, markerLabel);
   }
 }
@@ -222,8 +196,14 @@ export function colorForWasm(color: GPUColor): GPUColorDict {
 }
 
 class RhiWgpuRenderPassEncoderImpl extends RhiWgpuRenderCommands implements RhiRenderPassEncoder {
+  protected declare readonly raw: RawRenderPassLike;
+
+  // biome-ignore lint/complexity/noUselessConstructor: narrow the inherited constructor to the pass-only contract
+  constructor(raw: RawRenderPassLike) {
+    super(raw);
+  }
+
   end(): void {
-    if (this.raw.end === undefined) return;
     this.raw.end.call(this.raw);
   }
 
@@ -235,31 +215,22 @@ class RhiWgpuRenderPassEncoderImpl extends RhiWgpuRenderCommands implements RhiR
     minDepth: number,
     maxDepth: number,
   ): void {
-    if (this.raw.setViewport === undefined) return;
     this.raw.setViewport.call(this.raw, x, y, w, h, minDepth, maxDepth);
   }
 
   setScissorRect(x: number, y: number, w: number, h: number): void {
-    if (this.raw.setScissorRect === undefined) return;
     this.raw.setScissorRect.call(this.raw, x, y, w, h);
   }
 
   setBlendConstant(color: GPUColor): void {
-    if (this.raw.setBlendConstant === undefined) return;
     this.raw.setBlendConstant.call(this.raw, colorForWasm(color));
   }
 
   setStencilReference(reference: number): void {
-    if (this.raw.setStencilReference === undefined) return;
     this.raw.setStencilReference.call(this.raw, reference);
   }
 
   executeBundles(bundles: Iterable<RenderBundle>): Result<void, RhiError> {
-    if (this.raw.executeBundles === undefined) {
-      return webgpuRuntimeError(
-        new Error('executeBundles unavailable on the loaded WASM artifact'),
-      );
-    }
     try {
       this.raw.executeBundles.call(this.raw, Array.from(bundles));
       return ok(undefined);
@@ -269,11 +240,6 @@ class RhiWgpuRenderPassEncoderImpl extends RhiWgpuRenderCommands implements RhiR
   }
 
   beginOcclusionQuery(queryIndex: number): Result<void, RhiError> {
-    if (this.raw.beginOcclusionQuery === undefined) {
-      return webgpuRuntimeError(
-        new Error('beginOcclusionQuery unavailable on the loaded WASM artifact'),
-      );
-    }
     try {
       this.raw.beginOcclusionQuery.call(this.raw, queryIndex);
       return ok(undefined);
@@ -283,11 +249,6 @@ class RhiWgpuRenderPassEncoderImpl extends RhiWgpuRenderCommands implements RhiR
   }
 
   endOcclusionQuery(): Result<void, RhiError> {
-    if (this.raw.endOcclusionQuery === undefined) {
-      return webgpuRuntimeError(
-        new Error('endOcclusionQuery unavailable on the loaded WASM artifact'),
-      );
-    }
     try {
       this.raw.endOcclusionQuery.call(this.raw);
       return ok(undefined);
@@ -297,21 +258,12 @@ class RhiWgpuRenderPassEncoderImpl extends RhiWgpuRenderCommands implements RhiR
   }
 }
 
-export function makeRhiRenderBundleEncoder(
-  raw: RawRenderPassLike & { finish(desc?: unknown): unknown },
-): RhiRenderBundleEncoder {
+export function makeRhiRenderBundleEncoder(raw: RawRenderBundleLike): RhiRenderBundleEncoder {
   const commands = new RhiWgpuRenderCommands(raw);
   let finished = false;
   return Object.assign(commands, {
     finish(desc?: import('@forgeax/engine-rhi').RenderBundleDescriptor) {
-      if (finished)
-        return err(
-          new RhiErrorClass({
-            code: 'command-encoder-finished',
-            expected: 'an unfinished bundle encoder',
-            hint: 'create a new render bundle encoder',
-          }),
-        );
+      if (finished) return err(commandEncoderFinished('render bundle'));
       finished = true;
       try {
         return ok(raw.finish(desc) as RenderBundle);

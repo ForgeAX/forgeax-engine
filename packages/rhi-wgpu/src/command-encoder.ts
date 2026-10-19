@@ -1,12 +1,4 @@
-// packages/rhi-wgpu/src/command-encoder.ts — RhiCommandEncoder + RhiComputePassEncoder (w18).
-//
-// Wraps a raw GPUCommandEncoder / RhiWgpuCommandEncoder handle into the
-// forgeax RhiCommandEncoder surface. M2 baseline routes each method through
-// try/catch into structured Result returns (charter proposition 4); M3 / M4
-// dawn-node integration (w24) wires the real wgpu render-pass + compute-pass
-// plumbing.
-//
-// Anchors: plan-strategy §6 M2 + AC-08 surface gate; charter proposition 5.
+// Command and compute recording over the pinned WASM command surface.
 
 /// <reference types="@webgpu/types" />
 
@@ -14,6 +6,8 @@ import {
   type Buffer,
   type CommandBuffer,
   type ComputePassDescriptor,
+  commandEncoderFinished,
+  err,
   ok,
   type QuerySet,
   RAY_QUERY_BACKEND_UNSUPPORTED,
@@ -24,9 +18,12 @@ import {
   type RhiError,
   type RhiRenderPassEncoder,
   rayQueryUnsupported,
+  type TexelCopyBufferInfo,
+  type TexelCopyTextureInfo,
+  textureCopyOrigin,
 } from '@forgeax/engine-rhi';
 import { unwrapBuffer } from './buffer';
-import { commandEncoderFinished, featureNotEnabledError, webgpuRuntimeError } from './errors';
+import { webgpuRuntimeError } from './errors';
 import { aspectToU8, normalizeExtent } from './queue';
 import {
   colorForWasm,
@@ -34,67 +31,61 @@ import {
   type RawRenderPassLike,
 } from './render-pass-encoder';
 
-/**
- * Minimal shape of a raw command-encoder handle the shim consumes. Methods
- * optional so the M2 baseline accepts both navigator.gpu and wgpu wasm
- * handles interchangeably.
- */
+/** Required command surface of the pinned wgpu WASM artifact. */
 export interface RawCommandEncoderLike {
-  beginRenderPass?(desc: unknown): RawRenderPassLike;
-  beginComputePass?(desc?: unknown): unknown;
-  // bug-20260610: u64 args accepted as number | bigint; the wasm-bindgen
-  // class signature requires bigint, the navigator.gpu spec signature accepts
-  // number. The shim coerces to BigInt at the call site.
+  beginRenderPass(desc: unknown): RawRenderPassLike;
+  beginComputePass(desc?: unknown): RawComputePassLike;
+  // Native u64 arguments are bigint; the RHI facade accepts numbers.
   // bug-20260610 Gap 12: copy* signatures match the wgpu-wasm flat-args form
   // (handles by reference + flat numeric args). The earlier JsValue desc
   // form caused `try_from_js_value` to consume `__wbg_ptr`, breaking
   // any caller that reused the same handle next. See queue.ts writeTexture.
-  copyBufferToBuffer?(...args: unknown[]): void;
-  copyBufferToTexture?(...args: unknown[]): void;
-  copyTextureToBuffer?(...args: unknown[]): void;
-  copyTextureToTexture?(...args: unknown[]): void;
-  clearBuffer?(buffer: unknown, offset?: number | bigint, size?: number | bigint): void;
-  resolveQuerySet?(
+  copyBufferToBuffer(...args: unknown[]): void;
+  copyBufferToTexture(...args: unknown[]): void;
+  copyTextureToBuffer(...args: unknown[]): void;
+  copyTextureToTexture(...args: unknown[]): void;
+  clearBuffer(buffer: unknown, offset?: bigint, size?: bigint): void;
+  resolveQuerySet(
     querySet: unknown,
     firstQuery: number,
     queryCount: number,
     destination: unknown,
     destinationOffset: number,
   ): void;
-  pushDebugGroup?(label: string): void;
-  popDebugGroup?(): void;
-  insertDebugMarker?(label: string): void;
-  finish?(): unknown;
+  pushDebugGroup(label: string): void;
+  popDebugGroup(): void;
+  insertDebugMarker(label: string): void;
+  finish(): unknown;
 }
 
-interface RawComputePassLike {
-  setPipeline?(pipeline: unknown): void;
-  setBindGroup?(index: number, bindGroup: unknown, dynamicOffsets?: readonly number[]): void;
-  dispatchWorkgroups?(x: number, y?: number, z?: number): void;
-  dispatchWorkgroupsIndirect?(buffer: unknown, offset: number | bigint): void;
-  end?(): void;
+export interface RawComputePassLike {
+  setPipeline(pipeline: unknown): void;
+  setBindGroup(index: number, bindGroup: unknown, dynamicOffsets?: readonly number[]): void;
+  dispatchWorkgroups(x: number, y?: number, z?: number): void;
+  dispatchWorkgroupsIndirect(buffer: unknown, offset: bigint): void;
+  end(): void;
 }
 
 function makeRhiComputePassEncoder(raw: RawComputePassLike): RhiComputePassEncoder {
   return {
     setPipeline(pipeline) {
-      raw.setPipeline?.call(raw, pipeline);
+      raw.setPipeline.call(raw, pipeline);
     },
     setBindGroup(index, bindGroup, dynamicOffsets) {
-      raw.setBindGroup?.call(raw, index, bindGroup, dynamicOffsets);
+      raw.setBindGroup.call(raw, index, bindGroup, dynamicOffsets);
     },
     dispatchWorkgroups(x, y, z) {
-      raw.dispatchWorkgroups?.call(raw, x, y, z);
+      raw.dispatchWorkgroups.call(raw, x, y, z);
     },
     dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
-      raw.dispatchWorkgroupsIndirect?.call(
+      raw.dispatchWorkgroupsIndirect.call(
         raw,
         unwrapBuffer(indirectBuffer),
         BigInt(indirectOffset),
       );
     },
     end() {
-      raw.end?.call(raw);
+      raw.end.call(raw);
     },
   };
 }
@@ -113,12 +104,6 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
   }
 
   beginRenderPass(desc: RenderPassDescriptor): RhiRenderPassEncoder {
-    if (this.raw.beginRenderPass === undefined) {
-      // M2 baseline — surface a stub encoder that no-ops; the actual error
-      // surfaces at encoder.finish() when the underlying raw handle is
-      // missing a beginRenderPass implementation.
-      return makeRhiRenderPassEncoder({});
-    }
     const raw = this.raw.beginRenderPass.call(this.raw, {
       ...desc,
       colorAttachments: Array.from(desc.colorAttachments ?? [], (attachment) =>
@@ -134,23 +119,16 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
   }
 
   beginComputePass(desc?: ComputePassDescriptor | undefined): RhiComputePassEncoder {
-    if (this.raw.beginComputePass === undefined) {
-      throw featureNotEnabledError('compute');
-    }
-    const raw = this.raw.beginComputePass.call(this.raw, desc) as RawComputePassLike;
+    const raw = this.raw.beginComputePass.call(this.raw, desc);
     return makeRhiComputePassEncoder(raw);
   }
 
   encodeEmptyComputePass(desc: ComputePassDescriptor): void {
-    if (this.raw.beginComputePass === undefined) {
-      throw featureNotEnabledError('compute');
-    }
-    const raw = this.raw.beginComputePass.call(this.raw, desc) as RawComputePassLike;
-    raw.end?.call(raw);
+    const raw = this.raw.beginComputePass.call(this.raw, desc);
+    raw.end.call(raw);
   }
 
   copyBufferToBuffer(...args: unknown[]): void {
-    if (this.raw.copyBufferToBuffer === undefined) return;
     // Resolve forgeax Buffer brand back to the raw GPUBuffer for the raw call
     // (charter proposition 5 consistent abstraction across the boundary; the
     // M4 w24 integration test exercises this path end-to-end on dawn-node).
@@ -173,15 +151,18 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
     this.raw.copyBufferToBuffer.call(this.raw, ...unwrapped);
   }
 
-  copyBufferToTexture(source: unknown, destination: unknown, size: unknown): void {
-    if (this.raw.copyBufferToTexture === undefined) return;
+  copyBufferToTexture(
+    source: TexelCopyBufferInfo,
+    destination: TexelCopyTextureInfo,
+    size: GPUExtent3DStrict,
+  ): void {
     // bug-20260610 Gap 12: flatten the spec descriptors to the wgpu-wasm
     // 13-arg form. Texture / buffer handles must be passed by reference
     // (not pulled out of a JsValue with try_from_js_value, which consumes
     // __wbg_ptr).
-    const src = source as GPUTexelCopyBufferInfo;
-    const dst = destination as GPUTexelCopyTextureInfo;
-    const dstOrigin = (dst.origin ?? { x: 0, y: 0, z: 0 }) as GPUOrigin3DDict;
+    const src = source;
+    const dst = destination;
+    const dstOrigin = textureCopyOrigin(dst.origin);
     const ext = normalizeExtent(size as GPUExtent3DStrict);
     this.raw.copyBufferToTexture.call(
       this.raw,
@@ -191,9 +172,9 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
       src.rowsPerImage,
       dst.texture,
       dst.mipLevel ?? 0,
-      dstOrigin.x ?? 0,
-      dstOrigin.y ?? 0,
-      dstOrigin.z ?? 0,
+      dstOrigin.x,
+      dstOrigin.y,
+      dstOrigin.z,
       aspectToU8(dst.aspect),
       ext.width,
       ext.height,
@@ -201,20 +182,23 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
     );
   }
 
-  copyTextureToBuffer(source: unknown, destination: unknown, size: unknown): void {
-    if (this.raw.copyTextureToBuffer === undefined) return;
+  copyTextureToBuffer(
+    source: TexelCopyTextureInfo,
+    destination: TexelCopyBufferInfo,
+    size: GPUExtent3DStrict,
+  ): void {
     // bug-20260610 Gap 12: flatten to the wgpu-wasm 13-arg form.
-    const src = source as GPUTexelCopyTextureInfo;
-    const dst = destination as GPUTexelCopyBufferInfo;
-    const srcOrigin = (src.origin ?? { x: 0, y: 0, z: 0 }) as GPUOrigin3DDict;
+    const src = source;
+    const dst = destination;
+    const srcOrigin = textureCopyOrigin(src.origin);
     const ext = normalizeExtent(size as GPUExtent3DStrict);
     this.raw.copyTextureToBuffer.call(
       this.raw,
       src.texture,
       src.mipLevel ?? 0,
-      srcOrigin.x ?? 0,
-      srcOrigin.y ?? 0,
-      srcOrigin.z ?? 0,
+      srcOrigin.x,
+      srcOrigin.y,
+      srcOrigin.z,
       aspectToU8(src.aspect),
       unwrapBuffer(dst.buffer as unknown as Buffer),
       BigInt(dst.offset ?? 0),
@@ -226,27 +210,30 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
     );
   }
 
-  copyTextureToTexture(source: unknown, destination: unknown, size: unknown): void {
-    if (this.raw.copyTextureToTexture === undefined) return;
+  copyTextureToTexture(
+    source: TexelCopyTextureInfo,
+    destination: TexelCopyTextureInfo,
+    size: GPUExtent3DStrict,
+  ): void {
     // bug-20260610 Gap 12: flatten to the wgpu-wasm 15-arg form.
-    const src = source as GPUTexelCopyTextureInfo;
-    const dst = destination as GPUTexelCopyTextureInfo;
-    const srcOrigin = (src.origin ?? { x: 0, y: 0, z: 0 }) as GPUOrigin3DDict;
-    const dstOrigin = (dst.origin ?? { x: 0, y: 0, z: 0 }) as GPUOrigin3DDict;
+    const src = source;
+    const dst = destination;
+    const srcOrigin = textureCopyOrigin(src.origin);
+    const dstOrigin = textureCopyOrigin(dst.origin);
     const ext = normalizeExtent(size as GPUExtent3DStrict);
     this.raw.copyTextureToTexture.call(
       this.raw,
       src.texture,
       src.mipLevel ?? 0,
-      srcOrigin.x ?? 0,
-      srcOrigin.y ?? 0,
-      srcOrigin.z ?? 0,
+      srcOrigin.x,
+      srcOrigin.y,
+      srcOrigin.z,
       aspectToU8(src.aspect),
       dst.texture,
       dst.mipLevel ?? 0,
-      dstOrigin.x ?? 0,
-      dstOrigin.y ?? 0,
-      dstOrigin.z ?? 0,
+      dstOrigin.x,
+      dstOrigin.y,
+      dstOrigin.z,
       aspectToU8(dst.aspect),
       ext.width,
       ext.height,
@@ -255,7 +242,6 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
   }
 
   clearBuffer(buffer: Buffer, offset?: number | undefined, size?: number | undefined): void {
-    if (this.raw.clearBuffer === undefined) return;
     // bug-20260610: u64 args coerce to BigInt for the wasm class signature.
     this.raw.clearBuffer.call(
       this.raw,
@@ -272,11 +258,6 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
     destination: Buffer,
     destinationOffset: number,
   ): Result<void, RhiError> {
-    if (this.raw.resolveQuerySet === undefined) {
-      return webgpuRuntimeError(
-        new Error('underlying encoder handle does not expose resolveQuerySet'),
-      );
-    }
     try {
       this.raw.resolveQuerySet.call(
         this.raw,
@@ -293,17 +274,14 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
   }
 
   pushDebugGroup(groupLabel: string): void {
-    if (this.raw.pushDebugGroup === undefined) return;
     this.raw.pushDebugGroup.call(this.raw, groupLabel);
   }
 
   popDebugGroup(): void {
-    if (this.raw.popDebugGroup === undefined) return;
     this.raw.popDebugGroup.call(this.raw);
   }
 
   insertDebugMarker(markerLabel: string): void {
-    if (this.raw.insertDebugMarker === undefined) return;
     this.raw.insertDebugMarker.call(this.raw, markerLabel);
   }
 
@@ -312,10 +290,7 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
   }
 
   finish(): Result<CommandBuffer, RhiError> {
-    if (this.finished) return commandEncoderFinished();
-    if (this.raw.finish === undefined) {
-      return webgpuRuntimeError(new Error('underlying encoder handle does not expose finish'));
-    }
+    if (this.finished) return err(commandEncoderFinished());
     try {
       const buf = this.raw.finish.call(this.raw);
       this.finished = true;

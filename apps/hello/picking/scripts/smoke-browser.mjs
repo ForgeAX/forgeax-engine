@@ -2,13 +2,13 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
 import { observeViteHttpReadiness } from '../../../../scripts/lib/vite-http-readiness.mjs';
 import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
+import { createOwnedProcessGroupStopper } from '../../../shared/scripts/rhi-debug-process.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
@@ -18,7 +18,9 @@ mkdirSync(ARTIFACT_DIR, { recursive: true });
 const viteProc = spawn('pnpm', ['-F', '@forgeax/hello-picking', 'dev'], {
   cwd: REPO_ROOT,
   stdio: ['ignore', 'pipe', 'pipe'],
+  detached: process.platform !== 'win32',
 });
+const stopVite = createOwnedProcessGroupStopper(viteProc);
 const viteReadiness = observeViteHttpReadiness(viteProc, {
   timeoutEnvName: 'FORGEAX_PICKING_SERVER_READINESS_TIMEOUT_MS',
 });
@@ -127,6 +129,5 @@ try {
   console.error(`[smoke-browser] FAIL - ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 } finally {
-  viteProc.kill('SIGTERM');
-  await sleep(300);
+  await stopVite();
 }

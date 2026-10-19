@@ -15,7 +15,6 @@ import {
   getOrCreateHdrpBuffers,
   type SsaoBindOptions,
 } from '../hdrp-buffers';
-import { getOrCreateIblCache } from '../ibl/IblPipelineCache';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import { buildBeginRenderPassDescriptor, standardTopologyBindGroupReady } from '../pipeline-spec';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
@@ -489,20 +488,30 @@ export function recordMainPass(
   // the actual occlusion factor instead of the 1x1 white fallback. The default
   // `hdrpClusterBindGroup` (built ahead of graph.execute) always carries the
   // fallback because the transient SSAO texture does not exist that early.
-  // Built per frame (the SSAO target is a graph transient, so no cross-frame
-  // cache); HDRP-only and SSAO-only, so URP and SSAO-off paths are untouched.
+  // Graph resource leases keep the resolved view stable until replacement.
+  // Reuse follows the physical mesh, lighting bundle and SSAO view identities.
   const hdrpBuffers = clusteredLighting
     ? getOrCreateHdrpBuffers(runtime, frameState.installedPipelineConfig?.clusterGrid)
     : null;
   let hdrpSsaoBindGroup: BindGroup | null = null;
   if (hdrpClusterBindGroup !== null && c.hdrpSsaoBlurredView !== undefined) {
     if (hdrpBuffers !== null) {
-      hdrpSsaoBindGroup = createHdrpUnifiedBindGroup(
-        runtime,
-        hdrpBuffers,
-        meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer,
-        { enabled: true, ssaoBlurredView: c.hdrpSsaoBlurredView },
+      const meshBuffer = meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer;
+      const ssaoView = c.hdrpSsaoBlurredView;
+      const cached = getOrCreateFromChainResult(
+        frameState.meshBindGroupCache,
+        [meshBuffer, hdrpBuffers, ssaoView],
+        'hdrp-unified',
+        () => {
+          const group = createHdrpUnifiedBindGroup(runtime, hdrpBuffers, meshBuffer, {
+            enabled: true,
+            ssaoBlurredView: ssaoView,
+          });
+          return group === null ? err(undefined) : ok(group);
+        },
+        bindGroupCounts,
       );
+      hdrpSsaoBindGroup = cached.ok ? cached.value : null;
     }
   }
   const meshGroup2: BindGroup | null = clusteredLighting
@@ -744,7 +753,9 @@ export function recordMainPass(
     const { skylightResources, activeViews } = prepareMaterialSkylight(c);
     if (materialDiagnosticsEnabled()) {
       const activeCache =
-        activeViews === undefined ? undefined : getOrCreateIblCache(runtime.deviceScope);
+        c.skylight === undefined
+          ? undefined
+          : store.getCubemapIbl(c.skylight.equirectHandle, c.world);
       const prefilterViewMipCount =
         activeCache?.prefilterFaceViewsByMip?.length ?? (activeViews === undefined ? 1 : 0);
       frameState.iblBindingInspection = {

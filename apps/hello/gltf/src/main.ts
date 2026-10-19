@@ -22,6 +22,7 @@
 // The fixture box.gltf embeds its single buffer as a data: URI so the
 // externalLoader never fires (it throws if invoked).
 
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { gltfDocToSceneAsset, type GltfMaterialIr, type GltfMeshIr, parseGltf } from '@forgeax/engine-gltf';
@@ -37,8 +38,6 @@ import boxGltfUrl from '../assets/box.gltf?url';
 // (committed alongside box.gltf via `forgeax asset import`),
 // raw URL for the .gltf source so the runtime can fetch + JSON.parse it.
 import metaJson from '../assets/box.gltf.meta.json' with { type: 'json' };
-
-type SubAssetEntry = { readonly guid: string; readonly kind: string; readonly sourceIndex: number };
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-gltf: missing <canvas id="app"> in index.html');
@@ -92,7 +91,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // Bridge IR -> POD so the GUIDs the importer minted resolve into the
   // runtime registry (charter P4: identical loadByGuid path as hello-room).
-  const subAssets = metaJson.subAssets as readonly SubAssetEntry[];
+  const subAssets = metaJson.subAssets as readonly ImportSubAsset[];
   const meshGuid = parseSubAssetGuid(subAssets, 'mesh');
   const materialGuid = parseSubAssetGuid(subAssets, 'material');
   const sceneGuid = parseSubAssetGuid(subAssets, 'scene');
@@ -161,7 +160,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 // === IR -> POD helpers ====================================================
 
 function parseSubAssetGuid(
-  subs: readonly SubAssetEntry[],
+  subs: readonly ImportSubAsset[],
   kind: 'mesh' | 'material' | 'scene',
 ): AssetGuid | null {
   const entry = subs.find((s) => s.kind === kind);

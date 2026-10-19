@@ -8,7 +8,7 @@ export interface TemplateDescriptor {
   readonly journeys: readonly string[];
 }
 
-export type TemplateDescriptorError = {
+type TemplateDescriptorError = {
   readonly code: 'template-invalid' | 'template-journey-missing';
   readonly expected: string;
   readonly hint: string;

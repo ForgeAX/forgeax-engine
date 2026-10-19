@@ -89,6 +89,9 @@
     },
     {
       "path": "../platform-browser"
+    },
+    {
+      "path": "../preview"
     }
   ]
 }

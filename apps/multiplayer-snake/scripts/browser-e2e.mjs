@@ -963,7 +963,7 @@ async function main() {
               const response = await fetch(`${location.origin}/__forgeax-debug/tape?runId=${runId}`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/x-forgeax-rhitape' },
-                body: result.value.bytes,
+                body: new Blob([result.value.bytes], { type: 'application/x-forgeax-rhitape' }),
               });
               const artifact = await response.json();
               if (!response.ok) return { error: artifact };

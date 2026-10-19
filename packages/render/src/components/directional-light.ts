@@ -25,8 +25,7 @@
 // feat-20260621-merge-directionallightshadow-into-directionallight M1:
 // DirectionalLightShadow's 9 shadow fields are merged into DirectionalLight
 // to collapse the dual-component spawn into a single component (D-6 primary
-// decision). castShadow defaults to true so zero-config spawns get shadows
-// by default; set castShadow=false to opt out. D-6 directional stays
+// decision). castShadow defaults to false; set castShadow=true to request shadows. D-6 directional stays
 // first-hit-wins -- no ECS cardinality cap. Renderer allocation policy stays
 // with the shadow atlas owner.
 
@@ -52,13 +51,13 @@ export {
  * applied after lighting by the camera output stage; no hidden light
  * multiplier is applied here.
  *
- * castShadow defaults to true — zero-config spawns cast cascaded shadow maps.
- * Set castShadow: false to opt out (shadow fields are still stored but their
+ * castShadow defaults to false. Set castShadow: true to request cascaded shadow
+ * maps (shadow fields are still stored when disabled but their
  * validation is skipped).
  *
  * Shadow fields (migrated from DirectionalLightShadow, feat-20260621 M1):
- *   cascadeCount   ∈ {1,2,3,4}  — number of cascades (default 4)
- *   splitLambda    ∈ [0,1]      — PSSM split weight (default 0.75)
+ *   cascadeCount   ∈ {1,2,3,4}  — number of cascades (default 3)
+ *   splitLambda    ∈ [0,1]      — PSSM split weight (default 0.5)
  *   cascadeBlend   ∈ [0,0.5]    — blend width between cascades (default 0.2)
  *   mapSize        >= 1         — shadow map resolution (default 2048)
  *   depthBias                    — normalized receiver depth floor (default 0.00001),
@@ -94,7 +93,7 @@ export {
  * castShadow, so geometry excluded from shadow maps still self-shadows.
  * Deferred-path only; forward-lit surfaces ignore it. Typical values: 0.1-0.5.
  *
- * @example Spawn a single directional light with default shadows:
+ * @example Spawn a single directional light without shadow maps:
  *   world.spawn({ component: DirectionalLight, data: {
  *     direction: [-0.5, -1, -0.3], // [x, y, z]
  *     color: [1, 1, 1], // [r, g, b]
@@ -111,8 +110,8 @@ export {
  *   world.spawn({ component: DirectionalLight, data: {
  *     direction: [0.2, -0.98, 0], // [x, y, z]
  *     color: [1, 1, 1], intensity: 1, // color is [r, g, b]
- *     cascadeCount: 4, splitLambda: 0.75, cascadeBlend: 0.2,
- *     mapSize: 1024, shadowDistance: 200,
+ *     cascadeCount: 3, splitLambda: 0.5, cascadeBlend: 0.2,
+ *     castShadow: true, mapSize: 1024, shadowDistance: 200,
  *     shadowFilter: DirectionalShadowFilterValue.pcssHigh,
  *     shadowAngularRadius: 0.00465, maxPenumbraTexels: 32,
  *   } });
@@ -136,11 +135,11 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   direction: { type: 'array<f32, 3>' },
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
   intensity: { type: 'f32', default: 1 },
-  // Shadow opt-out gate: defaults to true so zero-config spawns get shadows.
-  castShadow: { type: 'bool', default: true },
+  // Shadow opt-in gate; the game template enables its sun explicitly.
+  castShadow: { type: 'bool', default: false },
   // 9 shadow fields migrated from DirectionalLightShadow (feat-20260621 M1).
-  cascadeCount: { type: 'f32', default: 4 },
-  splitLambda: { type: 'f32', default: 0.75 },
+  cascadeCount: { type: 'f32', default: 3 },
+  splitLambda: { type: 'f32', default: 0.5 },
   cascadeBlend: { type: 'f32', default: 0.2 },
   mapSize: { type: 'f32', default: 2048 },
   depthBias: { type: 'f32', default: 0.00001 },

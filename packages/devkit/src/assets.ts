@@ -11,8 +11,8 @@ import {
   type PackAuthoringMaterializedAsset,
 } from '@forgeax/engine-pack/build';
 import { createAssetVerificationReport, scanEntries } from '@forgeax/engine-pack/cli-asset';
-import { AssetGuid, isValidAssetGuidString } from '@forgeax/engine-pack/guid';
-import { readCatalogRows } from '@forgeax/engine-types';
+import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { isValidAssetGuidString, readCatalogRows } from '@forgeax/engine-types';
 import { verifyDist } from './dist.js';
 import { commandError, readProjectFacts } from './project.js';
 import type {

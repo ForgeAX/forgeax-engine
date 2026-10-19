@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import {
   chmod,
   cp,
@@ -516,7 +517,7 @@ const registry = createServer(async (request, response) => {
   response.end(Buffer.from(await upstream.arrayBuffer()));
 });
 const registryPort = 40_000 + (Number.parseInt(engineCommit.slice(0, 8), 16) % 20_000);
-await new Promise((accept) => registry.listen(registryPort, '127.0.0.1', accept));
+await once(registry.listen(registryPort, '127.0.0.1'), 'listening');
 const address = registry.address();
 const port = typeof address === 'object' && address !== null ? address.port : 0;
 

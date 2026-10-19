@@ -1,6 +1,6 @@
 import type { Plugin } from '@forgeax/engine-plugin';
 
-export interface RemoteServerHandle {
+interface RemoteServerHandle {
   readonly port: number;
   close(): Promise<void>;
 }

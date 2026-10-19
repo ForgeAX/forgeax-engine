@@ -62,6 +62,7 @@ import {
 } from './event-resources.js';
 import { createVfxForceFieldPreparation, type PreparedVfxForceFields } from './force-fields.js';
 import { createVfxInstanceArena, type VfxArenaInstance } from './instance-arena.js';
+import { type ParticleMaterialSource, projectParticleMaterial } from './material-source.js';
 import {
   createTopologyResourcePlan,
   PARTICLE_INPUT_SHADER_IDENTIFIERS,
@@ -233,12 +234,7 @@ interface GpuParticleFeatureOptions {
   readonly sceneSdf?: { read(world: World): RenderFeatureSceneSdfDescriptor | undefined };
   readonly dataInterfaces?: Pick<VfxDataInterfaceRegistry, 'resolve'>;
   readonly texture?: { read(world: World, guid: string): TextureAsset | undefined };
-  readonly material?: {
-    read(world: World, guid: string): MaterialAsset | undefined;
-    projection?(world: World, material: MaterialAsset): MaterialRenderProjection | undefined;
-    /** The owner captures each GUID once during this synchronous World extraction. */
-    captureFrame?(world: World): boolean;
-  };
+  readonly material?: ParticleMaterialSource;
   readonly mesh?: { read(world: World, guid: string): MeshAsset | undefined };
   readonly playerConsumption?: {
     readonly isEnabled: (world: World, player: EntityHandle) => boolean;
@@ -927,7 +923,12 @@ export function gpuParticleRenderFeature(
                 ? undefined
                 : options.material?.read(world, renderer.material);
             if (material !== undefined) {
-              const projection = options.material?.projection?.(world, material);
+              const projection = projectParticleMaterial(
+                options.material,
+                world,
+                material,
+                context.materialContext,
+              );
               let asset = material;
               const cooked =
                 context.referenceAsset === undefined

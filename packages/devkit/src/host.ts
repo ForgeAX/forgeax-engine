@@ -1,6 +1,7 @@
 import { Console } from 'node:console';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -22,6 +23,7 @@ import {
   iesImporter,
 } from '@forgeax/engine-import';
 import { objImporter, stlImporter, svgImporter } from '@forgeax/engine-mesh-io';
+import { encodeCatalogWire } from '@forgeax/engine-pack';
 import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import type { PackError } from '@forgeax/engine-pack/errors';
 import {
@@ -83,9 +85,15 @@ import {
   readEngineBinding,
 } from './engine-binding.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
+import { filesystemPathRelative, isFilesystemPathWithin } from './filesystem-path.js';
 import { gameVfxSource } from './game-vfx-source.js';
 import type { BootstrapRoot } from './host/base-host.js';
 import { gameProjectionSource } from './host/game-projection-source.js';
+import { previewBatchEntrySource } from './host/preview-batch-entry-source.js';
+import {
+  previewVfxBoundsSource,
+  resourcePresentationSource,
+} from './host/resource-presentation-source.js';
 import { hostStartupDocument, hostStartupScript } from './host/startup-source.js';
 import {
   composeBoundHostAssembly,
@@ -140,6 +148,37 @@ export function devKitDdcRoots(projectRoot: string): {
     buildCacheRoot: resolve(projectRoot, '.forgeax', 'ddc', 'build-cache'),
     projectDdcRoot: resolve(projectRoot, '.forgeax', 'ddc', 'v2'),
   };
+}
+
+/** Bind cached images to the actual transitive Engine implementation, once per server. */
+async function previewProducerIdentity(): Promise<string> {
+  const visited = new Set<string>();
+  const identities: [string, string][] = [];
+  const visit = async (manifestPath: string): Promise<void> => {
+    const path = await realpath(manifestPath);
+    if (visited.has(path)) return;
+    visited.add(path);
+    const manifest = JSON.parse(await readFile(path, 'utf8')) as {
+      name: string;
+      dependencies?: Record<string, string>;
+    };
+    const resolver = createRequire(path);
+    identities.push([manifest.name, await enginePackageRuntimeIdentity(dirname(path))]);
+    await Promise.all(
+      Object.keys(manifest.dependencies ?? {})
+        .filter((name) => name.startsWith('@forgeax/engine-'))
+        .map((name) => visit(resolver.resolve(`${name}/package.json`))),
+    );
+  };
+  await Promise.all(
+    ['app', 'preview'].map((name) =>
+      visit(hostRequire.resolve(`@forgeax/engine-${name}/package.json`)),
+    ),
+  );
+  return createHash('sha256')
+    .update(JSON.stringify(identities.sort(([a], [b]) => a.localeCompare(b))))
+    .update(previewBatchEntrySource())
+    .digest('hex');
 }
 
 function isResourcePreviewIgnoredPath(path: string): boolean {
@@ -352,8 +391,7 @@ function engineWorkspaceImport(
   const target = packageExportTarget(packageInfo.manifest, subpath, conditions);
   if (target === undefined) return undefined;
   const absolute = resolve(packageInfo.root, target);
-  const inside = relative(packageInfo.root, absolute);
-  if (inside === '..' || inside.startsWith(`..${sep}`) || absolute === packageInfo.root) {
+  if (!isFilesystemPathWithin(packageInfo.root, absolute, false)) {
     return undefined;
   }
   return absolute;
@@ -821,18 +859,19 @@ function hostSource(
   const plugins =
     bootstrapRoot === 'resource-bootstrap'
       ? []
-      : [`webAudioPlugin()`, `audioPlugin()`, `skinningPlugin()`];
+      : [`webAudioPlugin(mainAudio)`, `audioPlugin()`, `skinningPlugin()`];
   const startupTimeout =
     facts.startupTimeoutMs === undefined
       ? '(import.meta.env.DEV ? 120_000 : 30_000)'
       : JSON.stringify(facts.startupTimeoutMs);
   return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
 import { inspectUi } from '@forgeax/engine/ui';
 import { Context, startNativePlugin } from '@forgeax/engine/plugin';
 import { ShaderRegistry } from '@forgeax/engine/shader';
+import { textureViewSource } from '@forgeax/engine/preview';
 import { createRuntimePackOptions${target === 'tauri' ? '' : ', serveRuntimePackDelivery'} } from './runtime-packs';
 import { createGameVfx } from './game-vfx';
 import { root as engineRoot, createPrograms as enginePrograms } from 'virtual:forgeax/plugin-programs/engine';
@@ -848,14 +887,14 @@ import { createBrowserFrontendPlatform, createFrontendPlatformPlugin } from '@fo
 import { createHostAssembly, canonicalHostJson } from '@forgeax/engine/host/protocol';
 import { HOST_ASSEMBLY_SERVICE, HOST_ASSEMBLY_CHANGED_TOPIC } from '@forgeax/engine/host/transport';
 import { audioPlugin } from '@forgeax/engine/audio';
-import { createHostAudioConsumer, webAudioPlugin } from '@forgeax/engine/audio-webaudio';
+import { createHostAudioConsumer, WebAudioEngine, webAudioPlugin } from '@forgeax/engine/audio-webaudio';
 import { physicsComponentsPlugin } from '@forgeax/engine/physics';
 import { skinningPlugin } from '@forgeax/engine/skinning';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { mat4 } from '@forgeax/engine/math';
-import { CAMERA_PROJECTION_ORTHOGRAPHIC, Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, Skylight, SkyboxBackground, TONEMAP_NONE, TONEMAP_REINHARD_EXTENDED, materialSampledTextureBudget } from '@forgeax/engine/render';
+import { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight, SkyboxBackground, TONEMAP_REINHARD_EXTENDED, materialSampledTextureBudget } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
-import { type SceneAsset } from '@forgeax/engine/types';
+import { numMipLevels, type SceneAsset } from '@forgeax/engine/types';
 import { ParticleEffectPlayer } from '@forgeax/engine/vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine/vfx-render';
 ${
@@ -1005,46 +1044,7 @@ ${
 const previewVfxHosts = new WeakMap();
 if (resource?.kind === 'vfx') ensureVfxRuntimeHost();
 
-function previewVfxBounds(payload) {
-  if (payload?.kind !== 'particle-effect' || payload.program?.emitters?.length === 0) return undefined;
-  let minX = Infinity;
-  let minY = Infinity;
-  let minZ = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  let maxZ = -Infinity;
-  for (const emitter of payload.program.emitters) {
-    const bounds = emitter.bounds;
-    if (bounds?.kind === 'sphere' && Array.isArray(bounds.center) && typeof bounds.radius === 'number') {
-      const [x, y, z] = bounds.center;
-      if (![x, y, z, bounds.radius].every((value) => typeof value === 'number' && Number.isFinite(value)) || bounds.radius < 0) return undefined;
-      minX = Math.min(minX, x - bounds.radius);
-      minY = Math.min(minY, y - bounds.radius);
-      minZ = Math.min(minZ, z - bounds.radius);
-      maxX = Math.max(maxX, x + bounds.radius);
-      maxY = Math.max(maxY, y + bounds.radius);
-      maxZ = Math.max(maxZ, z + bounds.radius);
-      continue;
-    }
-    if (bounds?.kind === 'aabb' && Array.isArray(bounds.min) && Array.isArray(bounds.max)) {
-      const [loX, loY, loZ] = bounds.min;
-      const [hiX, hiY, hiZ] = bounds.max;
-      if (![loX, loY, loZ, hiX, hiY, hiZ].every((value) => typeof value === 'number' && Number.isFinite(value))) return undefined;
-      minX = Math.min(minX, loX);
-      minY = Math.min(minY, loY);
-      minZ = Math.min(minZ, loZ);
-      maxX = Math.max(maxX, hiX);
-      maxY = Math.max(maxY, hiY);
-      maxZ = Math.max(maxZ, hiZ);
-      continue;
-    }
-    return undefined;
-  }
-  if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) return undefined;
-  const center = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
-  const radius = Math.max(1, Math.hypot(maxX - minX, maxY - minY, maxZ - minZ));
-  return { aabb: [minX, minY, minZ, maxX, maxY, maxZ], center, radius };
-}
+${previewVfxBoundsSource}
 
 const canvas = document.querySelector('#app');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('forgeax: missing canvas');
@@ -1158,13 +1158,7 @@ function textureMipCount(payload) {
   if (mips?.kind !== 'generate') return 1;
   const [width, height] = textureDimensions(payload);
   const depth = payload?.shape?.viewDimension === '3d' ? payload.shape.extent.depth : 1;
-  let largest = Math.max(width, height, Number.isSafeInteger(depth) && depth > 0 ? depth : 1);
-  let levels = 1;
-  while (largest > 1) {
-    largest = Math.max(1, largest >> 1);
-    levels += 1;
-  }
-  return levels;
+  return numMipLevels({ width, height }, Number.isSafeInteger(depth) && depth > 0 ? depth : 1);
 }
 
 function texturePayloadClass(payload) {
@@ -1321,287 +1315,7 @@ function exposeGameInspection(app) {
 }
 
 let preparedResourceOwner;
-async function prepareResourcePreview(app, resource, previewCanvas = canvas) {
-const resourceVfx = previewVfxHosts.get(app) ?? (resource?.kind === 'vfx' ? ensureVfxRuntimeHost() : undefined);
-let preparedResourceBinding;
-await prepareAssetRegistry(app.assets);
-const assets = app.assets;
-const ownedEntities = [];
-const ownedHandles = [];
-const allocOwned = (target, payload) => {
-  const handle = app.world.allocSharedRef(target, payload);
-  ownedHandles.push(handle);
-  return handle;
-};
-const internOwned = (target, payload) => {
-  const handle = app.world.internSharedRef(target, payload);
-  ownedHandles.push(handle);
-  return handle;
-};
-const spawnOwned = (...components) => {
-  const spawned = app.world.spawn(...components);
-  if (!spawned.ok) throw spawned.error;
-  ownedEntities.push(spawned.value);
-  return spawned.value;
-};
-let resourceVfxAttached = false;
-let canonicalEnvironment;
-let closed = false;
-let cleanupPromise;
-const cleanup = async () => {
-  if (cleanupPromise !== undefined) return cleanupPromise;
-  closed = true;
-  cleanupPromise = (async () => {
-    let failure;
-    previewCameraEntities.delete(app.world);
-    previewCameraTargets.delete(app.world);
-    for (let index = ownedEntities.length - 1; index >= 0; index -= 1) {
-      const dropped = app.world.despawn(ownedEntities[index]);
-      if (!dropped.ok && dropped.error?.code !== 'stale-entity' && failure === undefined) {
-        failure = dropped.error;
-      }
-    }
-    if (resourceVfxAttached) {
-      const detached = await resourceVfx.detachWorld({ world: app.world });
-      if (!detached.ok && failure === undefined) failure = detached.error;
-    }
-    for (const handle of ownedHandles.splice(0).reverse()) {
-      const released = app.world.sharedRefs.release(handle);
-      if (!released.ok && released.error?.code !== 'shared-ref-released' && failure === undefined) {
-        failure = released.error;
-      }
-    }
-    preparedResourceBinding = undefined;
-    if (failure !== undefined) throw failure;
-  })();
-  return cleanupPromise;
-};
-try {
-if (resource !== undefined) {
-  if (resource.kind !== 'texture') {
-    if (canonicalEnvironmentGuid === null) throw new Error('canonical preview environment is unavailable');
-    const environment = await assets.loadByGuid(assets.parseGuid(canonicalEnvironmentGuid));
-    if (!environment.ok) throw environment.error;
-    if (environment.value.kind !== 'equirect') {
-      throw new Error(\`canonical preview environment expected equirect, received \${environment.value.kind}\`);
-    }
-    if (environment.value.width <= 0 || environment.value.height <= 0 || environment.value.data.byteLength === 0) {
-      throw new Error('canonical preview environment must provide decoded equirect pixels');
-    }
-    canonicalEnvironment = allocOwned('EquirectAsset', environment.value);
-  }
-  if (resource.kind === 'vfx') {
-    const runtime = resourceVfx;
-    const attached = await runtime.attachWorld({ world: app.world, assets });
-    if (!attached.ok) throw attached.error;
-    resourceVfxAttached = attached.value.state === 'attached';
-  }
-  const loaded = await assets.loadByGuid(assets.parseGuid(resource.guid));
-  if (!loaded.ok) throw loaded.error;
-  const payload = loaded.value;
-  const assetBinding = captureEngineWorkspaceAssetBinding(assets, resource.guid, payload);
-  if (resource.kind === 'vfx' && payload.kind !== 'particle-effect') {
-    throw new Error(\`VFX preview expected ParticleEffectAsset, received \${payload.kind}\`);
-  }
-  const vfxBounds = resource.kind === 'vfx' ? previewVfxBounds(payload) : undefined;
-  if (resource.kind === 'vfx' && vfxBounds === undefined) {
-    throw new Error('VFX preview owner did not publish finite emitter bounds');
-  }
-  const meshMaterialHandles = resource.kind === 'mesh' && payload.kind === 'mesh'
-    ? await loadEngineWorkspaceMaterialSlots(
-        payload.materialSlots,
-        async (slot) => {
-          const material = await assets.loadByGuid(
-            assets.parseGuid(AssetGuid.format(slot.defaultMaterial)),
-          );
-          if (!material.ok) return material;
-          if (material.value.kind !== 'material') {
-            throw new Error('mesh material slot resolved to a non-material asset');
-          }
-          return material;
-        },
-        (material) => allocOwned('MaterialAsset', material),
-      )
-    : undefined;
-  const meshHandle = resource.kind === 'mesh' && payload.kind === 'mesh'
-    ? allocOwned('MeshAsset', payload)
-    : internOwned(
-        'MeshAsset',
-        createPrimitiveMesh(resource.kind === 'texture' ? 'quad' : 'sphere').unwrap(),
-      );
-  const textureHandle = resource.kind === 'texture' && payload.kind === 'texture'
-    ? allocOwned('TextureAsset', payload)
-    : undefined;
-  const checkerTextureHandle = resource.kind === 'texture'
-    ? allocOwned('TextureAsset', {
-        kind: 'texture',
-        shape: { viewDimension: '2d', extent: { width: 8, height: 8 } },
-        format: 'rgba8unorm',
-        data: new Uint8Array(8 * 8 * 4).map((_, index) => {
-          const pixel = Math.floor(index / 4);
-          const row = Math.floor(pixel / 8);
-          const column = pixel % 8;
-          const shade = (row + column) % 2 === 0 ? 52 : 104;
-          return index % 4 === 3 ? 255 : shade;
-        }),
-        colorSpace: 'linear',
-        mips: { kind: 'none' },
-      })
-    : undefined;
-  const checkerMaterialHandle = checkerTextureHandle === undefined
-    ? undefined
-    : allocOwned('MaterialAsset', Materials.unlit([1, 1, 1, 1], { baseColorTexture: checkerTextureHandle }));
-  // Texture residency is renderer-owned. The preview world publishes the
-  // TextureAsset through its normal MaterialAsset binding; the render system
-  // pulls the POD and calls its internal residency owner during extraction.
-  // Do not reach through Renderer with a second store API: that object is
-  // intentionally private to concrete assembly and is absent from the public
-  // Renderer contract.
-  const materialPayload = resource.kind === 'texture' && payload.kind === 'texture'
-    ? Materials.unlit([1, 1, 1, 1], {
-        baseColorTexture: textureHandle,
-        // Texture previews are composited over the checker plane below so
-        // alpha-bearing payloads remain visible. Opaque payloads keep the
-        // same color path; the blend state is harmless when alpha is one.
-        renderState: {
-          depthWriteEnabled: false,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        },
-      })
-    : resource.kind === 'material' && payload.kind === 'material'
-      ? payload
-      : undefined;
-  const materialHandle = materialPayload === undefined
-    ? undefined
-    : allocOwned('MaterialAsset', materialPayload);
-  const materialBindings = resource.kind === 'mesh'
-    ? meshMaterialHandles
-    : materialHandle === undefined
-      ? undefined
-      : [materialHandle];
-  const rawAabb = payload.kind === 'mesh' ? payload.aabb : undefined;
-  const aabb = rawAabb !== undefined && (Array.isArray(rawAabb) || ArrayBuffer.isView(rawAabb)) && rawAabb.length === 6
-    ? Array.from(rawAabb)
-    : resource.kind === 'mesh' && payload.kind === 'mesh'
-      ? (() => { throw new Error('mesh owner did not publish a finite AABB'); })()
-      : [-1, -1, -1, 1, 1, 1];
-  const meshFrame = resource.kind === 'mesh'
-    ? fitToolPreviewCameraToAabb(aabb, { aspect: 1, fov: Math.PI / 4 })
-    : undefined;
-  const textureExtent = resource.kind === 'texture' && payload.kind === 'texture'
-    ? textureDimensions(payload)
-    : [1, 1];
-  const textureWidth = textureExtent[0];
-  const textureHeight = textureExtent[1];
-  const textureAspect = textureWidth / textureHeight;
-  const textureScale = textureAspect >= 1
-    ? [textureAspect, 1, 1]
-    : [1, 1 / textureAspect, 1];
-  // Keep the orthographic view's world aspect equal to the drawing buffer.
-  // The quad is scaled to the authored texture aspect; independently scaling
-  // both camera axes would cancel that scale and stretch the image to the
-  // viewport. Expand the view height only when a wide texture needs room.
-  const viewportAspect = previewCanvas.width > 0 && previewCanvas.height > 0
-    ? previewCanvas.width / previewCanvas.height
-    : 1;
-  const textureCameraHeight =
-    1.2 * Math.max(textureScale[1], textureScale[0] / viewportAspect);
-  const textureCameraWidth = textureCameraHeight * viewportAspect;
-  const center = meshFrame?.center ?? vfxBounds?.center ?? [(aabb[0] + aabb[3]) / 2, (aabb[1] + aabb[4]) / 2, (aabb[2] + aabb[5]) / 2];
-  const radius = meshFrame?.radius ?? vfxBounds?.radius ?? Math.max(1, Math.hypot(aabb[3] - aabb[0], aabb[4] - aabb[1], aabb[5] - aabb[2]));
-  const texturePreview = resource.kind === 'texture';
-  if (resource.kind === 'vfx') {
-    const effect = allocOwned('ParticleEffectAsset', payload);
-    spawnOwned(
-      { component: Transform, data: { pos: center } },
-      { component: ParticleEffectPlayer, data: { effect, playing: true, seed: 0, timeScale: 1 } },
-    );
-  } else {
-    if (texturePreview && checkerTextureHandle !== undefined && checkerMaterialHandle !== undefined) {
-      // The WebGPU surface is opaque in the normal Engine path. A real
-      // checker mesh keeps the texture presentation honest without asking
-      // the browser compositor or a second rendering API to own pixels.
-      spawnOwned(
-        { component: Transform, data: { pos: [center[0], center[1], center[2] - 0.02], scale: textureScale } },
-        { component: MeshFilter, data: { assetHandle: meshHandle } },
-        { component: MeshRenderer, data: { materials: [checkerMaterialHandle] } },
-      );
-    }
-    const previewMeshEntity = spawnOwned(
-      { component: Transform, data: { pos: center, ...(texturePreview ? { scale: textureScale } : {}) } },
-      { component: MeshFilter, data: { assetHandle: meshHandle } },
-      { component: MeshRenderer, data: materialBindings === undefined ? {} : { materials: materialBindings } },
-    );
-    preparedResourceBinding = {
-      entityKey: previewMeshEntity,
-      worldIdentity: app.world.identity,
-      materialHandle,
-      textureHandle,
-    };
-  }
-  const cameraData = texturePreview
-    ? {
-        fov: 0,
-        aspect: viewportAspect,
-        near: 0.01,
-        far: 100,
-        projection: CAMERA_PROJECTION_ORTHOGRAPHIC,
-        left: -textureCameraWidth / 2,
-        right: textureCameraWidth / 2,
-        bottom: -textureCameraHeight / 2,
-        top: textureCameraHeight / 2,
-        tonemap: TONEMAP_NONE,
-        antialias: 0,
-        bloom: 0,
-        clearColor: [0, 0, 0, 1],
-      }
-    : {
-        fov: Math.PI / 4,
-        aspect: 1,
-        near: meshFrame?.near ?? 0.01,
-        far: meshFrame?.far ?? radius * 8,
-        tonemap: TONEMAP_REINHARD_EXTENDED,
-      };
-  const cameraPosition = texturePreview
-    ? [0, 0, 5]
-    : [center[0], center[1], center[2] + (meshFrame?.distance ?? radius * 2.5)];
-  const cameraEntity = spawnOwned({ component: Camera, data: cameraData }, { component: Transform, data: { pos: cameraPosition } });
-  previewCameraEntities.set(app.world, cameraEntity);
-  previewCameraTargets.set(app.world, center);
-  if (!texturePreview) {
-    spawnOwned({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.3], intensity: 2 } });
-    if (canonicalEnvironment === undefined) throw new Error('canonical preview environment was not loaded');
-    spawnOwned({ component: Skylight, data: { equirect: canonicalEnvironment } });
-    spawnOwned({ component: SkyboxBackground, data: { equirect: canonicalEnvironment } });
-  }
-  const textureBudget = resource.kind === 'material' && materialHandle !== undefined
-    ? materialSampledTextureBudget(app.world, assets, materialHandle)
-    : undefined;
-  const ownerFacts = await previewOwnerFacts(assets, resource, payload, textureBudget);
-  const publishedAsset = resource.kind === 'mesh' && payload.kind === 'mesh' && payload.aabb !== undefined
-    ? { ...payload, aabb: Array.from(payload.aabb) }
-    : payload;
-  return {
-    facts: {
-      kind: resource.kind,
-      guid: resource.guid,
-      asset: publishedAsset,
-      ...(ownerFacts === undefined ? {} : { ownerFacts }),
-    },
-    app,
-    binding: preparedResourceBinding,
-    assetBinding,
-    close: cleanup,
-  };
-}
-} catch (cause) {
-  await cleanup();
-  throw cause;
-}
-}
+${resourcePresentationSource}
 
 async function prepareProject(app) {
 await prepareAssetRegistry(app.assets);
@@ -1739,6 +1453,7 @@ const appBootstrapPlugin = {
     const gameVfx = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null
       ? createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources }) : undefined;
     let hostAudio: ReturnType<typeof createHostAudioConsumer> | undefined;
+    const mainAudio = workerExecution || bootstrapRoot === 'resource-bootstrap' ? undefined : new WebAudioEngine();
     ${
       appOptions.pipelineLibrary === undefined
         ? ''
@@ -1882,7 +1597,7 @@ const appBootstrapPlugin = {
           app, canvas, surface: engineWorkspaceSurface, transport: hostTransport,
           ...(workspaceMode ? { createPreviewApp: async ({ context, canvas: previewCanvas, asset, targetId }) => {
             const vfx = asset.kind === 'vfx' ? makeVfxRuntimeHost() : undefined;
-            ${previewRhiWindow && !rhiCaptureEnabled ? "const diagnostic = asset.kind === 'mesh' ? await previewRhiDiagnostic(context, previewCanvas, targetId) : undefined;" : ''}
+            ${previewRhiWindow && !rhiCaptureEnabled ? "const diagnostic = ['mesh', 'texture', 'equirect'].includes(asset.kind) ? await previewRhiDiagnostic(context, previewCanvas, targetId) : undefined;" : ''}
             const created = await createApp(previewCanvas, {
               context, assetCatalog: app.pluginContext.get('runtimePacks')?.catalog ?? assetCatalog, plugins: [physicsComponentsPlugin()],
               ${previewRhiWindow && !rhiCaptureEnabled ? '...diagnostic?.options,' : ''}
@@ -1904,7 +1619,7 @@ const appBootstrapPlugin = {
           },
           openResourcePreview: async ({ app: previewApp, asset, canvas: previewCanvas }) => {
             const owner = await prepareResourcePreview(previewApp, { kind: asset.kind, guid: asset.guid }, previewCanvas);
-            return { close: owner.close, assetBinding: owner.assetBinding };
+            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.texture === undefined ? {} : { texture: owner.texture }) };
           },
         });
         await fiber.await();
@@ -1960,6 +1675,7 @@ const appBootstrapPlugin = {
           assets,
           canvas,
           renderer: app.renderer,
+          ...(mainAudio === undefined ? {} : { audio: mainAudio }),
           drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
           ...(gameChannel === undefined ? {} : { port: gameChannel.port2, presentationPort: gameChannel.port1 }),
           uiRoot: uiRoot instanceof HTMLElement ? uiRoot : document.body,
@@ -2316,10 +2032,7 @@ function htmlSource(title: string, startupScreen = true): string {
 export async function materializeViteDevPort(port: number): Promise<number> {
   if (port !== 0) return port;
   const reservation = createNetServer();
-  await new Promise<void>((resolveListen, rejectListen) => {
-    reservation.once('error', rejectListen);
-    reservation.listen(0, '127.0.0.1', resolveListen);
-  });
+  await once(reservation.listen(0, '127.0.0.1'), 'listening');
   const address = reservation.address();
   const assigned = typeof address === 'object' && address !== null ? address.port : 0;
   await new Promise<void>((resolveClose, rejectClose) => {
@@ -2713,7 +2426,18 @@ export async function createViteConfig(
     };
     const builtinPack = await prepareBuiltinPack(inventory, generated);
     timing('builtin-pack');
-    const materialPackages = await discoverMaterialPackages(inventory);
+    const textureViewRoot =
+      canonicalKit !== undefined && (workspacePreview || bootstrapRoot === 'resource-bootstrap')
+        ? resolve(canonicalKit.root, '..', '..', 'dist', 'texture-view')
+        : undefined;
+    const materialPackages = [
+      ...(await discoverMaterialPackages(inventory)),
+      ...(textureViewRoot === undefined
+        ? []
+        : ['2d', '2d-array', '3d'].map((dimension) =>
+            resolve(textureViewRoot, `${dimension}.pack.json`),
+          )),
+    ];
     timing('material-packages');
     const roots = [
       ...projectRoots,
@@ -2792,6 +2516,15 @@ export async function createViteConfig(
       appOptions: cookerSession.appOptions,
     });
     await Promise.all([
+      ...(command === 'serve'
+        ? [
+            writeFile(
+              resolve(generated, 'preview-batch.html'),
+              '<!doctype html><html><body><canvas></canvas><script type="module" src="./preview-batch.ts"></script></body></html>',
+            ),
+            writeFile(resolve(generated, 'preview-batch.ts'), previewBatchEntrySource()),
+          ]
+        : []),
       ...(cookerSession.appOptions.pipelineLibrary === undefined
         ? []
         : [
@@ -2858,18 +2591,11 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
         (file) => resolve(realProjectRoot, file),
       ),
     );
-    const isGeneratedPath = (path: string): boolean => {
-      const relativePath = relative(generated, resolve(path));
-      return (
-        relativePath === '' ||
-        (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
-      );
-    };
     // Generated files already sit under Vite's root; re-adding them after its initial scan
     // makes Chokidar report setup as edits and can restart the live host during Catalog loads.
     const projectWatchPaths = [
       ...new Set([...roots, ...sourceInventory.sourceInputs.keys(), ...projectInputPaths]),
-    ].filter((path) => existsSync(path) && !isGeneratedPath(path));
+    ].filter((path) => existsSync(path) && !isFilesystemPathWithin(generated, path));
     const engineWorkspaceRoot = findEngineWorkspaceRoot();
     const runtimeBinding = createStandaloneRuntimeAssetBinding(facts.id);
     let sessionClosed = false;
@@ -2890,15 +2616,8 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
       // where this DevKit package or Vite's generated entry lives. Keep
       // project assets rooted in the authored project; external dependencies
       // retain their physical identity and the Pack fallback policy.
-      sourceIdentityFor: (sourcePath) => {
-        const authored = relative(facts.root, sourcePath);
-        return authored &&
-          authored !== '..' &&
-          !authored.startsWith(`..${sep}`) &&
-          !isAbsolute(authored)
-          ? authored
-          : sourcePath;
-      },
+      sourceIdentityFor: (sourcePath) =>
+        filesystemPathRelative(facts.root, sourcePath, false) ?? sourcePath,
       ...(producerReadiness === undefined ? {} : { producerReadiness }),
       ddc: devKitDdcRoots(facts.root),
       watch: false,
@@ -2909,7 +2628,36 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
     // Vite creates the replacement server before closing the old one during restart.
     const generatedServers = new Set<ViteDevServer>();
     let injectedWatchDependencies: string[] = [];
+    let previewProducer: Promise<string> | undefined;
     const plugins: Plugin[] = [
+      ...(command === 'serve'
+        ? [
+            {
+              name: 'forgeax:preview-inputs',
+              configureServer(server: ViteDevServer) {
+                server.middlewares.use('/__forgeax/preview-inputs', (_request, response) => {
+                  previewProducer ??= previewProducerIdentity();
+                  void previewProducer.then(
+                    (producer) => {
+                      response.setHeader('Content-Type', 'application/json');
+                      response.setHeader('Cache-Control', 'no-store');
+                      response.end(
+                        JSON.stringify({
+                          producer,
+                          catalog: encodeCatalogWire(pack.catalogSnapshot()),
+                        }),
+                      );
+                    },
+                    (cause) => {
+                      response.statusCode = 500;
+                      response.end(JSON.stringify({ error: String(cause) }));
+                    },
+                  );
+                });
+              },
+            },
+          ]
+        : []),
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(command === 'serve'
         ? [
@@ -3043,7 +2791,27 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
           if (sourcePath.startsWith(`${generated}${sep}`)) return [];
           // Sibling Play files cannot invalidate this immutable frontend.
           if (relative(facts.root, sourcePath).split(sep).includes('.forgeax')) return [];
-          const capturedRevision = sourceInventory.sourceInputs.get(sourcePath);
+          const definitions = new Set([
+            ...[...sourceInventory.assets.values()].flatMap((record) => [
+              record.sourcePath,
+              record.module,
+            ]),
+            ...cookerSession.watchFiles,
+            ...projectTools.flatMap((tool) => [
+              tool.moduleName,
+              ...(tool.executor ? [tool.executor] : []),
+            ]),
+          ]);
+          const underRoot = roots.some((root) => sourcePath.startsWith(`${root}${sep}`));
+          // A captured asset declaration is publication data, not frontend program identity.
+          const assetSource =
+            underRoot &&
+            !definitions.has(sourcePath) &&
+            (inventory.declarations.has(sourcePath) ||
+              !sourceInventory.sourceInputs.has(sourcePath));
+          const capturedRevision = assetSource
+            ? undefined
+            : sourceInventory.sourceInputs.get(sourcePath);
           if (capturedRevision !== undefined) {
             try {
               const currentRevision = `sha256:${createHash('sha256')
@@ -3056,21 +2824,10 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
               if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
             }
           }
-          if (options.host?.frontendModule)
+          if (options.host?.frontendModule && !assetSource)
             hostBindingError(
               'external frontend modules are immutable; supply a new revision/binding and replace the page',
             );
-          const definitions = new Set([
-            ...[...sourceInventory.assets.values()].flatMap((record) => [
-              record.sourcePath,
-              record.module,
-            ]),
-            ...cookerSession.watchFiles,
-            ...projectTools.flatMap((tool) => [
-              tool.moduleName,
-              ...(tool.executor ? [tool.executor] : []),
-            ]),
-          ]);
           const visited = new Set<import('vite').ModuleNode>();
           const belongsToPlugin = (module: import('vite').ModuleNode): boolean => {
             if (visited.has(module)) return false;
@@ -3081,12 +2838,11 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
           const projectInput = projectInputPaths.has(sourcePath);
           const sessionSource =
             projectInput ||
-            sourceInventory.sourceInputs.has(sourcePath) ||
+            (!assetSource && sourceInventory.sourceInputs.has(sourcePath)) ||
             definitions.has(sourcePath) ||
             [...(context.server.moduleGraph.getModulesByFile(context.file) ?? [])].some(
               belongsToPlugin,
             );
-          const underRoot = roots.some((root) => sourcePath.startsWith(`${root}${sep}`));
           if (!sessionSource && !underRoot) return;
           if (!sessionSource && underRoot) {
             void pack
@@ -3237,6 +2993,10 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
       publicDir: false,
       define: { 'import.meta.env.DEV': JSON.stringify(command === 'serve') },
       plugins,
+      worker: {
+        // Vite builds each nested Worker with a separate plugin graph and conditions.
+        plugins: () => [createEngineWorkspaceResolver(facts.root)],
+      },
       resolve: {
         ...(wechat
           ? { conditions: ['forgeax-native', 'module', 'browser', 'development|production'] }

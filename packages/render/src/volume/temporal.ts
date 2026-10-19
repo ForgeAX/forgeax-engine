@@ -25,7 +25,7 @@ export interface VolumeProjectorTuple {
   readonly revision: number;
 }
 
-export type VolumeTemporalResetReason =
+type VolumeTemporalResetReason =
   | 'camera-cut'
   | 'fog-revision'
   | 'light-revision'
@@ -35,7 +35,7 @@ export type VolumeTemporalResetReason =
   | 'reprojection-out-of-screen'
   | 'reprojection-depth-discontinuity';
 
-export type VolumeTemporalReset =
+type VolumeTemporalReset =
   | { readonly reset: false }
   | { readonly reset: true; readonly reason: VolumeTemporalResetReason };
 

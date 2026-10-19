@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -140,8 +141,8 @@ const snapDelta = lateState.snap.some((value, index) => Math.abs(value - earlySt
 const rotateDelta = lateState.rotate.some((value, index) => Math.abs(value - earlyState.rotate[index]) > 1e-4);
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'rotation-early.png'), writeReferencePng(early, width, height));
-writeFileSync(resolve(outDir, 'rotation-late.png'), writeReferencePng(late, width, height));
+writeFileSync(resolve(outDir, 'rotation-early.png'), encodePng(width, height, early));
+writeFileSync(resolve(outDir, 'rotation-late.png'), encodePng(width, height, late));
 console.log(`[smoke] frames=${frames} bright=${(bright / 255).toFixed(4)} motionMeanDelta=${motionMeanDelta.toFixed(5)} positionDelta=${positionDelta.toFixed(3)} snapChanged=${snapDelta} rotateChanged=${rotateDelta} errors=${errors.length}`);
 const failures = [];
 if (rendererBackend(renderer) !== 'webgpu') failures.push(`backend=${rendererBackend(renderer)}`);

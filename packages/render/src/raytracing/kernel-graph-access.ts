@@ -9,7 +9,7 @@ import type { Buffer, TextureView, Tlas } from '@forgeax/engine-rhi';
 import type { Binding } from './irradiance-field';
 
 export type KernelGraphHandle = GraphBuffer | GraphTextureView | GraphAccelerationStructure;
-export type KernelBindable = { readonly buffer: Buffer } | TextureView | Tlas;
+type KernelBindable = { readonly buffer: Buffer } | TextureView | Tlas;
 
 /**
  * The graph access a compute-kernel roster slot declares, derived from its

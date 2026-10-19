@@ -7,10 +7,7 @@ import type {
 } from '../scene/render-scene';
 import type { DirectionalShadowCache } from './frame-snapshot';
 
-export type DirectionalCascadeCadenceLights = Pick<
-  ExtractedLights,
-  'cascadeCount' | 'lightViewProj'
-> & {
+type DirectionalCascadeCadenceLights = Pick<ExtractedLights, 'cascadeCount' | 'lightViewProj'> & {
   readonly directionalCsmConfig?: Pick<DirectionalCsmConfig, 'staggerCascades'> | undefined;
 };
 

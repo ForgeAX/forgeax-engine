@@ -2,7 +2,7 @@ import { access, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export interface SdkPackage {
+interface SdkPackage {
   readonly role: 'runtime' | 'tool';
   readonly name: string;
   readonly version: string;
@@ -11,7 +11,7 @@ export interface SdkPackage {
   readonly byteCount: number;
 }
 
-export interface SdkTemplate {
+interface SdkTemplate {
   readonly id: string;
   readonly root: string;
 }
@@ -23,13 +23,13 @@ export interface SdkSkill {
   readonly byteCount: number;
 }
 
-export interface SdkSourceWasm {
+interface SdkSourceWasm {
   readonly package: string;
   readonly root: string;
   readonly files: readonly string[];
 }
 
-export interface SdkResource {
+interface SdkResource {
   readonly id: string;
   readonly package: string;
   readonly sourceRoot: string;
@@ -37,13 +37,13 @@ export interface SdkResource {
   readonly files: readonly string[];
 }
 
-export interface SdkTemplateResource {
+interface SdkTemplateResource {
   readonly id: string;
   readonly root: string;
   readonly files: readonly string[];
 }
 
-export interface SdkSource {
+interface SdkSource {
   readonly root: 'source/engine';
   readonly format: 'git-archive-public-snapshot';
   readonly excluded: readonly ['.gitmodules', 'forgeax-engine-assets'];

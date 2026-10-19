@@ -1,3 +1,4 @@
+import type { ImportSubAsset } from './import.js';
 // @forgeax/engine-types - producer-owned asset catalog contract.
 //
 // This is the shared POD boundary between an engine asset producer and any
@@ -705,19 +706,10 @@ export type ProducerContractResult<T> =
   | { readonly ok: false; readonly error: ProducerContractDiagnostic };
 
 /** Canonical producer output declaration used for topology matching and recovery. */
-export interface ImportedOutputDeclaration {
-  readonly guid: string;
-  readonly sourceKey?: string;
-  readonly sourceIndex: number;
-  readonly kind: string;
-  readonly name?: string;
+export interface ImportedOutputDeclaration extends ImportSubAsset {
   /** New kinds that may reuse this output's prior GUID. */
   readonly compatiblePreviousKinds?: readonly string[];
 }
-
-export type ProposedOutput = ImportedOutputDeclaration;
-
-export type ExistingOutput = ImportedOutputDeclaration;
 
 export interface KindChange {
   readonly guid: string;
@@ -735,8 +727,8 @@ export type TopologyConflictReason =
 export interface MatchConflict {
   readonly reason: TopologyConflictReason;
   readonly sourceKey?: string;
-  readonly previous: readonly ExistingOutput[];
-  readonly next: readonly ProposedOutput[];
+  readonly previous: readonly ImportedOutputDeclaration[];
+  readonly next: readonly ImportedOutputDeclaration[];
 }
 
 export interface TopologyPreserved {
@@ -747,8 +739,8 @@ export interface TopologyPreserved {
 
 export interface TopologyDiff {
   readonly preserved: readonly TopologyPreserved[];
-  readonly added: readonly ProposedOutput[];
-  readonly removed: readonly ExistingOutput[];
+  readonly added: readonly ImportedOutputDeclaration[];
+  readonly removed: readonly ImportedOutputDeclaration[];
   readonly changedKind: readonly KindChange[];
   readonly ambiguous: readonly MatchConflict[];
 }

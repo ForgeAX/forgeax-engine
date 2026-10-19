@@ -24,14 +24,17 @@ import {
   type Buffer,
   type CommandBuffer,
   type ExternalImageTextureDestination,
+  err,
   ok,
+  queueSubmitFailed,
   type Result,
   type RhiError,
   type RhiQueue,
-  type TextureWriteDestination,
+  type TexelCopyTextureInfo,
+  textureCopyOrigin,
 } from '@forgeax/engine-rhi';
 import { unwrapBuffer } from './buffer';
-import { queueSubmitFailed, webgpuRuntimeError } from './errors';
+import { webgpuRuntimeError } from './errors';
 import { driveNativeCompletion, type NativeCompletionDriver } from './internal/native-completion';
 
 // bug-20260622 R5 WS2: the wgpu-wasm submit() (rhi.rs) now returns Result and,
@@ -56,7 +59,7 @@ function classifySubmitError(cause: unknown): ReturnType<typeof webgpuRuntimeErr
     const code = message.slice(RHI_CODE_PREFIX.length, close);
     const detail = message.slice(close + 1).trim();
     if (code === 'queue-submit-failed') {
-      return queueSubmitFailed(detail);
+      return err(queueSubmitFailed(detail));
     }
   }
   return webgpuRuntimeError(cause);
@@ -71,19 +74,6 @@ export function aspectToU8(aspect: GPUTextureAspect | undefined): number {
   if (aspect === 'stencil-only') return 1;
   if (aspect === 'depth-only') return 2;
   return 0;
-}
-
-/** GPUOrigin2D / GPUOrigin3D accept either a sequence or a dictionary. */
-function originComponents(
-  origin: GPUOrigin2D | GPUOrigin3D | undefined,
-): readonly [number, number, number] {
-  if (origin === undefined) return [0, 0, 0];
-  if (Symbol.iterator in Object(origin)) {
-    const [x = 0, y = 0, z = 0] = origin as Iterable<number>;
-    return [x, y, z];
-  }
-  const dict = origin as GPUOrigin3DDict;
-  return [dict.x ?? 0, dict.y ?? 0, dict.z ?? 0];
 }
 
 /**
@@ -207,7 +197,7 @@ class RhiWgpuQueueImpl implements RhiQueue {
   }
 
   writeTexture(
-    destination: TextureWriteDestination,
+    destination: TexelCopyTextureInfo,
     data: ArrayBufferView | ArrayBuffer,
     dataLayout: GPUTexelCopyBufferLayout,
     size: GPUExtent3DStrict,
@@ -231,15 +221,15 @@ class RhiWgpuQueueImpl implements RhiQueue {
       // CONSUME the JS-side `__wbg_ptr` (zero it), so the very next call
       // that took the same texture saw a null pointer. Passing the texture
       // as a `&RhiWgpuTexture` borrows instead.
-      const origin = (destination.origin ?? { x: 0, y: 0, z: 0 }) as GPUOrigin3DDict;
+      const origin = textureCopyOrigin(destination.origin);
       const ext = normalizeExtent(size);
       this.raw.writeTexture.call(
         this.raw,
         destination.texture,
         destination.mipLevel ?? 0,
-        origin.x ?? 0,
-        origin.y ?? 0,
-        origin.z ?? 0,
+        origin.x,
+        origin.y,
+        origin.z,
         aspectToU8(destination.aspect),
         bytes,
         BigInt(dataLayout.offset ?? 0),
@@ -266,20 +256,20 @@ class RhiWgpuQueueImpl implements RhiQueue {
       );
     }
     try {
-      const sourceOrigin = originComponents(source.origin);
-      const origin = originComponents(destination.origin);
+      const sourceOrigin = textureCopyOrigin(source.origin);
+      const origin = textureCopyOrigin(destination.origin);
       const ext = normalizeExtent(copySize);
       this.raw.copyExternalImageToTexture.call(
         this.raw,
         source.source,
-        sourceOrigin[0],
-        sourceOrigin[1],
+        sourceOrigin.x,
+        sourceOrigin.y,
         source.flipY ?? false,
         destination.texture,
         destination.mipLevel ?? 0,
-        origin[0],
-        origin[1],
-        origin[2],
+        origin.x,
+        origin.y,
+        origin.z,
         aspectToU8(destination.aspect),
         destination.colorSpace === 'display-p3',
         destination.premultipliedAlpha ?? false,

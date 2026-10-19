@@ -1146,9 +1146,9 @@ describe('GPU-driven production PBR Dawn regression', () => {
           ],
           encode: ({ encoder, resources: graphResources }) =>
             encoder.copyTextureToBuffer(
-              { texture: graphResources.texture(target.texture).unwrap() as unknown as GPUTexture },
+              { texture: graphResources.texture(target.texture).unwrap() },
               {
-                buffer: graphResources.buffer(readback.resource).unwrap() as unknown as GPUBuffer,
+                buffer: graphResources.buffer(readback.resource).unwrap(),
                 bytesPerRow: 256,
                 rowsPerImage: 1,
               },
@@ -1165,9 +1165,9 @@ describe('GPU-driven production PBR Dawn regression', () => {
         ],
         encode: ({ encoder, resources }) =>
           encoder.copyTextureToBuffer(
-            { texture: resources.texture(opaqueOutput).unwrap() as unknown as GPUTexture },
+            { texture: resources.texture(opaqueOutput).unwrap() },
             {
-              buffer: resources.buffer(opaqueReadback).unwrap() as unknown as GPUBuffer,
+              buffer: resources.buffer(opaqueReadback).unwrap(),
               bytesPerRow: 256,
               rowsPerImage: 1,
             },
@@ -1183,9 +1183,9 @@ describe('GPU-driven production PBR Dawn regression', () => {
         ],
         encode: ({ encoder, resources }) =>
           encoder.copyTextureToBuffer(
-            { texture: resources.texture(discardedOutput).unwrap() as unknown as GPUTexture },
+            { texture: resources.texture(discardedOutput).unwrap() },
             {
-              buffer: resources.buffer(discardedReadback).unwrap() as unknown as GPUBuffer,
+              buffer: resources.buffer(discardedReadback).unwrap(),
               bytesPerRow: 256,
               rowsPerImage: 1,
             },

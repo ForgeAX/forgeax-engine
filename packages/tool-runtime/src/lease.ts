@@ -1,3 +1,5 @@
+import type { ToolCleanupReport } from './types.js';
+
 export type LeaseTerminationReason =
   | 'terminal'
   | 'cancel'
@@ -26,12 +28,11 @@ export function createLexicalLease(runId: string): LexicalLease {
   const cleanups: Array<{ readonly owner: string; readonly cleanup: () => void | Promise<void> }> =
     [];
   let state: LexicalLease['state'] = 'active';
-  let terminalId: string | undefined;
   let termination: Promise<LeaseTermination> | undefined;
 
   const terminate = (reason: LeaseTerminationReason): Promise<LeaseTermination> => {
     if (termination !== undefined) return termination;
-    terminalId = `${runId}:terminal:${crypto.randomUUID()}`;
+    const terminalId = `${runId}:terminal:${crypto.randomUUID()}`;
     state = 'terminating';
     termination = (async () => {
       const failures: LeaseCleanupFailure[] = [];
@@ -48,7 +49,7 @@ export function createLexicalLease(runId: string): LexicalLease {
         }
       }
       state = 'terminated';
-      return { terminalId: terminalId as string, reason, failures };
+      return { terminalId, reason, failures };
     })();
     return termination;
   };
@@ -64,4 +65,14 @@ export function createLexicalLease(runId: string): LexicalLease {
     },
     terminate,
   };
+}
+
+/** First cleanup failure, including a non-zero post-disposal resource census. */
+export function toolCleanupFailure(report: ToolCleanupReport): string | undefined {
+  const failure = report.failures[0];
+  if (failure !== undefined) return failure;
+  const live = Object.entries(report.census).filter(([, count]) => count !== 0);
+  return live.length === 0
+    ? undefined
+    : `live resources remain: ${live.map(([kind, count]) => `${kind}=${count}`).join(', ')}`;
 }

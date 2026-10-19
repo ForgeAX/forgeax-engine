@@ -317,7 +317,7 @@ export function validateEnumFieldValues<S extends ComponentSchema>(
  * - `range` — PointLight / SpotLight `range < 0` or `Number.isNaN(range)`.
  *   Use `Number.POSITIVE_INFINITY` for an unlimited range or a non-negative
  *   meter value.
- * - `innerOuter` — SpotLight `outerConeDeg <= innerConeDeg`. Inner cone is
+ * - `innerOuter` — SpotLight `outerConeDeg < innerConeDeg`. Inner cone is
  *   the saturated bright region; outer cone is the falloff edge.
  * - `outerNinety` — SpotLight `outerConeDeg > 90`. KHR_lights_punctual upper
  *   bound. A spot light cone wider than 90 degrees becomes a point light;
@@ -370,14 +370,14 @@ const SPAWN_LIGHT_INVALID_BOUNDS_POLICY = {
       `${componentName}.range = ${got} is invalid; use Number.POSITIVE_INFINITY for unlimited range, or a non-negative meter value`,
   },
   innerOuter: {
-    expected: 'outerConeDeg > innerConeDeg',
+    expected: 'finite 0 <= innerConeDeg <= outerConeDeg',
     hint: (componentName: string, got: number | readonly number[]) =>
-      `${componentName}.outerConeDeg <= innerConeDeg (got ${got}); inner cone is the saturated bright region, outer cone is the falloff edge; outerConeDeg > innerConeDeg required`,
+      `${componentName}.cone bounds are invalid (got ${got}); inner cone is the saturated bright region, outer cone is the falloff edge; finite 0 <= innerConeDeg <= outerConeDeg required; equality gives a hard cone`,
   },
   outerNinety: {
-    expected: 'outerConeDeg <= 90 (KHR_lights_punctual upper bound)',
+    expected: 'finite 0 < outerConeDeg <= 90 (cone half-angle)',
     hint: (componentName: string, got: number | readonly number[]) =>
-      `${componentName}.outerConeDeg = ${got} > 90; a spot light cone wider than 90 degrees becomes a point light; use PointLight instead`,
+      `${componentName}.outerConeDeg = ${got} is invalid; use a finite half-angle in (0, 90], or PointLight for a full sphere`,
   },
   direction: {
     expected: 'direction is a non-zero [x, y, z] vector',

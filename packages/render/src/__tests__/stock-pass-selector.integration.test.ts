@@ -49,7 +49,7 @@ it('the stock Renderer matches its fixed selectors without allocating entry tupl
       { component: Transform, data: {} },
       {
         component: DirectionalLight,
-        data: { direction: [0, -1, -1], color: [1, 1, 1], intensity: 1 },
+        data: { castShadow: true, direction: [0, -1, -1], color: [1, 1, 1], intensity: 1 },
       },
     )
     .unwrap();

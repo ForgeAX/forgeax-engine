@@ -204,7 +204,8 @@ Float32 views. Pack's `copyPackData` rejects accessors, functions, sparse arrays
 subclasses and shared mutable storage without executing caller hooks. It preserves
 view offsets and backing aliases while excluding unrelated backing bytes.
 
-The `runtime-pack-source/2` snapshot adds an explicit little-endian binary table:
+The `runtime-pack-source/2` snapshot uses Pack's `encodePackData` / `decodePackData`
+for its explicit little-endian binary table at snapshot and source-export boundaries:
 JSON paths identify typed views, and Base64 encodes each shared backing once.
 Recovery checks kinds, alignment, ranges and complete table usage before replaying
 the fixed dependency graph. Version 1 snapshots are rejected explicitly. Original
@@ -558,6 +559,11 @@ Meta/GUID through the same `ImporterRegistry`.
 
 ### Source-format LOD adapters
 
+FBX and glTF producers pass `MeshLodMetaEntry` values directly to
+`reconcileMeshLodMeta(previous, next)`. That owner preserves source-key/GUID
+identity, prior authored coverage and shared first-import defaults; both formats
+use `meshGuid` throughout this projection.
+
 Format adapters project producer facts into the same `MeshAsset.lods` and Pack
 closure. The adapter owns interpretation; the sidecar owns retained author
 facts and the importer only produces validated derived output.
@@ -906,3 +912,7 @@ mesh GUID and dependency closure. Scriptable Packs can invoke this kernel or
 > Source skinning/morphs and non-triangle topology are rejected. This produces
 > static mesh facts; native convex hull construction belongs to the physics
 > backend. It does not perform convex decomposition or invent another asset GUID.
+
+Binary16 output uses the Math codec, including rounded mantissa carry into the
+next exponent. Source parsing, LUT channel order, IES normalization and GUIDs
+remain owned by their existing producers.

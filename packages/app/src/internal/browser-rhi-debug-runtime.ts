@@ -10,7 +10,7 @@ import { attachRecorder, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
 import * as rhiWebgpu from '@forgeax/engine-rhi-webgpu';
 import { createRhiInstrumentation } from './rhi-capture';
 
-export interface BrowserRhiDebugRuntime {
+interface BrowserRhiDebugRuntime {
   readonly rhi: RhiInstance;
   readonly attachment: RecorderAttachment;
   readonly createReplayDevice: (

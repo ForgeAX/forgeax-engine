@@ -142,7 +142,7 @@ function spawnScene(world: World): number {
   world
     .spawn({
       component: DirectionalLight,
-      data: {
+      data: { castShadow: true,
         direction: [-0.4, -1, -0.3],
         color: [1, 1, 1],
         intensity: 1,

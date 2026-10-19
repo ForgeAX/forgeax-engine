@@ -35,7 +35,12 @@ export {
   snapshotCollider,
   validateAdditionalSolverIterations,
 } from './components.js';
-export type { PhysicsContactManifold, PhysicsContactSnapshot } from './contact-query.js';
+export type {
+  PhysicsContactManifold,
+  PhysicsContactNeighborsSnapshot,
+  PhysicsContactNormalFilter,
+  PhysicsContactSnapshot,
+} from './contact-query.js';
 export type {
   ConvexCompoundShapeInput,
   DerivedBodyTypeCandidateInput,

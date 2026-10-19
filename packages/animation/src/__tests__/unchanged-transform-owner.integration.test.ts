@@ -132,4 +132,54 @@ describe('animation owns only changed f32 Transform submissions', () => {
     advanceAnimationPlayer(world, 0.25);
     expect(targetWrites()).toHaveLength(2);
   });
+
+  it('keeps unauthored channels when the active clip switches between translation and rotation', () => {
+    const { world, player, target, clip, handle } = fixture();
+    advanceAnimationPlayer(world, 0.25);
+    const rotation = world.allocSharedRef('AnimationClip', {
+      ...clip,
+      channels: clip.channels.map((channel) => ({
+        ...channel,
+        property: 'rotation' as const,
+        sampler: {
+          ...channel.sampler,
+          output: new Float32Array([0, 1, 0, 0, 0, 1, 0, 0]),
+        },
+      })),
+    });
+    world.set(player, AnimationPlayer, { clips: [rotation] }).unwrap();
+    advanceAnimationPlayer(world, 0.25);
+    expect([...world.get(target, Transform).unwrap().pos]).toEqual(
+      [0.1, 0.2, 0.3].map(Math.fround),
+    );
+    expect([...world.get(target, Transform).unwrap().quat]).toEqual([0, 1, 0, 0]);
+    world.set(player, AnimationPlayer, { clips: [handle] }).unwrap();
+    world.set(target, Transform, { pos: [8, 9, 10] }).unwrap();
+    advanceAnimationPlayer(world, 0.25);
+    const pose = world.get(target, Transform).unwrap();
+    expect([...pose.pos]).toEqual([0.1, 0.2, 0.3].map(Math.fround));
+    expect([...pose.quat]).toEqual([0, 1, 0, 0]);
+  });
+
+  it('isolates an outer pose submission from a nested animation evaluation', () => {
+    const { world, player, target, clip, writes } = fixture();
+    const output = clip.channels[0]?.sampler.output;
+    if (!(output instanceof Float32Array)) throw Error('expected numeric animation output');
+    output.set([0, 0, 0, 10, 0, 0]);
+    advanceAnimationPlayer(world, 0);
+    const set = World.prototype.set;
+    let nested = false;
+    writes.mockImplementation((...args) => {
+      if (!nested && args[0] === target && args[1] === Transform) {
+        nested = true;
+        set.call(world, player, AnimationPlayer, { times: [0.75] });
+        advanceAnimationPlayer(world, 0);
+      }
+      return set.apply(world, args);
+    });
+    advanceAnimationPlayer(world, 0.25);
+    expect(nested).toBe(true);
+    expect([...world.get(target, Transform).unwrap().pos]).toEqual([2.5, 0, 0]);
+    expect(world.get(player, AnimationPlayer).unwrap().times[0]).toBe(0.75);
+  });
 });

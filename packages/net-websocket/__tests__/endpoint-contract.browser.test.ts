@@ -79,8 +79,6 @@ function commandResult(result: CommandResult, peerId: PeerId) {
         ok: false as const,
         error: new EndpointError({
           code: result.code as 'peer-not-found' | 'connection-closed' | 'already-closed',
-          expected: 'the remote WebSocket listener operation must succeed',
-          hint: 'inspect the listener lifecycle',
           detail: result.code === 'already-closed'
             ? { cause: 'listener closed' }
             : { peerId },

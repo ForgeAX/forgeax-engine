@@ -6,12 +6,15 @@ const nativeDirectory = process.argv[2];
 const saved = globalThis.WebAssembly;
 if (nativeDirectory) globalThis.WebAssembly = undefined;
 try {
-  const { ensureReady } = await import(
+  const { ensureReady, requestAdapter } = await import(
     new URL('../../../../packages/rhi-wgpu/dist/index.mjs', import.meta.url)
   );
   let module;
   let instantiations = 0;
   if (nativeDirectory) {
+    const missing = await requestAdapter();
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, 'rhi-not-available');
     await assert.rejects(ensureReady(), { code: 'rhi-not-available' });
     const failure = new Error('native host unavailable');
     await assert.rejects(

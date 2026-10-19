@@ -1,6 +1,7 @@
 import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import {
   Camera,
@@ -13,7 +14,6 @@ import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -259,7 +259,7 @@ export async function verifyRendererReflections(
         for (let x = 0; x < SIZE * 4; x++)
           sum[y * SIZE * 4 + x] =
             (sum[y * SIZE * 4 + x] ?? 0) +
-            halfToFloat(data.getUint16(y * result.metadata.bytesPerRow + x * 2, true));
+            halfFloat.f16ToF32(data.getUint16(y * result.metadata.bytesPerRow + x * 2, true));
     }
     assert(last);
     await save(`${name}.rgba16float`, last);
@@ -390,7 +390,7 @@ export async function verifyRendererReflections(
       );
       const row = fallback.bytes.byteLength / SIZE;
       fallbackCenter = [0, 1, 2].map((c) =>
-        halfToFloat(data.getUint16(CENTER * row + CENTER * 8 + c * 2, true)),
+        halfFloat.f16ToF32(data.getUint16(CENTER * row + CENTER * 8 + c * 2, true)),
       ) as never;
     } finally {
       await exact.dispose();

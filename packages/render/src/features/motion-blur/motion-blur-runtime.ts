@@ -12,20 +12,20 @@ import {
   motionBlurTemporalDemand,
 } from './motion-blur-params';
 
-export interface MotionBlurRuntimeCapabilities {
+interface MotionBlurRuntimeCapabilities {
   readonly compute: boolean;
   readonly storageBuffer: boolean;
   readonly storageTexture: boolean;
   readonly rgba16floatRenderable: boolean;
 }
 
-export interface MotionBlurFramePlan {
+interface MotionBlurFramePlan {
   readonly rawSampleDelta: number;
   readonly demanded: boolean;
   readonly featureInput: MotionBlurFeatureInput | undefined;
 }
 
-export interface MotionBlurDrawOptions {
+interface MotionBlurDrawOptions {
   readonly sampleTimeSeconds?: number;
   readonly temporalReset?: true;
 }

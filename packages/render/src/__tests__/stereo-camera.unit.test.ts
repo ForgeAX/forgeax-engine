@@ -135,6 +135,20 @@ describe('StereoCamera projection', () => {
     expect(right?.position[2]).toBeCloseTo(-0.1, 6);
   });
 
+  it('composes ordinary lens offsets with each stereo eye', () => {
+    const base = snapshot();
+    const offset = [0.3, -0.2] as const;
+    for (const side of ['left', 'right'] as const) {
+      const centered = cameraLensProjection(stereoEyeCamera(base, side));
+      const shifted = cameraLensProjection(
+        stereoEyeCamera({ ...base, projectionOffset: offset }, side),
+      );
+      expect((shifted[8] ?? 0) - (centered[8] ?? 0)).toBeCloseTo(-offset[0]);
+      expect((shifted[9] ?? 0) - (centered[9] ?? 0)).toBeCloseTo(-offset[1]);
+      for (const index of [0, 5, 10, 11, 14, 15]) expect(shifted[index]).toBe(centered[index]);
+    }
+  });
+
   it('has zero parallax at convergence and crossed parallax nearer than it', () => {
     const camera = snapshot({ world: identity(), position: vec3.create(0, 0, 0) });
     const [left, right] = stereoEyeCameras(camera);
@@ -201,8 +215,8 @@ describe('StereoCamera layout', () => {
     const eye = cameraForView([camera], 7, { width: 320, height: 360, eye: 'right' });
     expect(eye?.aspect).toBeCloseTo(320 / 360, 6);
     expect(eye?.eye?.side).toBe('right');
-    expect(eye?.eye?.frustumShift).toBeCloseTo(
-      stereoFrustumShift(camera.stereo as StereoCameraSnapshot, 'right', camera.fov, 320 / 360),
+    expect(eye?.projectionOffset?.[0]).toBeCloseTo(
+      -stereoFrustumShift(camera.stereo as StereoCameraSnapshot, 'right', camera.fov, 320 / 360),
       9,
     );
     expect(renderFeatureViewIdentity(eye)).toBe('camera:7:right');

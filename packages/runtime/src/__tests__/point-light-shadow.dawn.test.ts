@@ -684,11 +684,7 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       );
       worldBaseline.spawn({
         component: DirectionalLight,
-        data: {
-          direction: [0, -1, 0],
-          color: [1, 1, 1],
-          intensity: 0.5,
-        },
+        data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 0.5 },
       });
       worldBaseline.spawn(
         {
@@ -759,11 +755,7 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       );
       worldShadow.spawn({
         component: DirectionalLight,
-        data: {
-          direction: [0, -1, 0],
-          color: [1, 1, 1],
-          intensity: 0.5,
-        },
+        data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 0.5 },
       });
       worldShadow.spawn(
         {

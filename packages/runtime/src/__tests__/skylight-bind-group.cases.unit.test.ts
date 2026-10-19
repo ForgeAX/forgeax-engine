@@ -81,7 +81,11 @@ import {
 import type { BindGroupEntry, Buffer, Sampler, Texture, TextureView } from '@forgeax/engine-rhi';
 import { ok as rhiOk } from '@forgeax/engine-rhi';
 import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { TONEMAP_LUMINANCE_EPSILON } from '@forgeax/engine-shader';
+import {
+  DIRECT_DFG_LUT_SIZE,
+  directDfgLutBytes,
+  TONEMAP_LUMINANCE_EPSILON,
+} from '@forgeax/engine-shader';
 import type { SkinErrorCode } from '@forgeax/engine-skinning';
 import {
   Skin,
@@ -498,7 +502,7 @@ type __MergedKeep =
   // irradiance / prefilter + BRDF fallback data ───
 
   describe('t40 round-4 (c) fallback cube texture geometry + white-environment data', () => {
-    it('fallback cube texture is depthOrArrayLayers=6; irradiance+prefilter are white and BRDF is [1, 0]', () => {
+    it('fallback cube texture is depthOrArrayLayers=6; irradiance+prefilter are white and BRDF preserves the DFG sampling axes', () => {
       const device = makeMockDevice();
       const queue = makeMockQueue();
       createSkylightFallback(
@@ -516,36 +520,33 @@ type __MergedKeep =
         expect(desc.size.height).toBe(1);
       }
 
-      // Both cube maps upload six white faces in one call. The 1x1 BRDF fallback stores the
-      // split-sum approximation A=1 / B=0 as rg16float. The mock returns one
-      // shared texture object, so classify writes by payload bytes instead.
-      let whiteCount = 0;
-      let brdfApproxCount = 0;
-      expect(queue.writeTexture.mock.calls.length).toBeGreaterThan(0);
-      for (const call of queue.writeTexture.mock.calls) {
-        const dataArg = call[1] as ArrayBufferView | undefined;
-        if (dataArg === undefined) continue;
-        const bytes = new Uint8Array(dataArg.buffer, dataArg.byteOffset, dataArg.byteLength);
-        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const isWhiteHead =
-          dv.getUint16(0, true) === 0x3c00 &&
-          dv.getUint16(2, true) === 0x3c00 &&
-          dv.getUint16(4, true) === 0x3c00 &&
-          dv.getUint16(6, true) === 0x3c00;
-        const isBrdfApprox =
-          dv.getUint16(0, true) === 0x3c00 && dv.getUint16(2, true) === 0x0000 && !isWhiteHead;
-        if (isWhiteHead) {
-          expect(call[3]).toMatchObject({ depthOrArrayLayers: 6 });
-          expect(dv.getUint16(5 * 256, true)).toBe(0x3c00);
-          whiteCount += 1;
-        } else if (isBrdfApprox) {
-          brdfApproxCount += 1;
-        } else {
-          expect.fail('unexpected Skylight fallback texture payload');
-        }
+      const writes = queue.writeTexture.mock.calls;
+      const cubes = writes.filter((call) => call[3].depthOrArrayLayers === 6);
+      expect(cubes).toHaveLength(2);
+      for (const call of cubes) {
+        const bytes = call[1];
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        for (let layer = 0; layer < 6; layer++)
+          for (let channel = 0; channel < 4; channel++)
+            expect(view.getUint16(layer * 256 + channel * 2, true)).toBe(0x3c00);
       }
-      expect(whiteCount).toBe(2);
-      expect(brdfApproxCount).toBe(1);
+      const lut = writes.filter((call) => call[3].depthOrArrayLayers === 1);
+      expect(lut).toHaveLength(1);
+      expect(lut[0][3]).toEqual({
+        width: DIRECT_DFG_LUT_SIZE,
+        height: DIRECT_DFG_LUT_SIZE,
+        depthOrArrayLayers: 1,
+      });
+      const uploaded = lut[0][1];
+      const source = directDfgLutBytes();
+      for (let roughness = 0; roughness < DIRECT_DFG_LUT_SIZE; roughness++)
+        for (let nDotV = 0; nDotV < DIRECT_DFG_LUT_SIZE; nDotV++) {
+          const input = (nDotV * DIRECT_DFG_LUT_SIZE + roughness) * 4;
+          const output = roughness * 256 + nDotV * 4;
+          expect(Array.from(uploaded.subarray(output, output + 4))).toEqual(
+            Array.from(source.subarray(input, input + 4)),
+          );
+        }
     });
 
     it('createSkylightFallback allocates exactly one sampler (reused across the 3 texture slots)', () => {

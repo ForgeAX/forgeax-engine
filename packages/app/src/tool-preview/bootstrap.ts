@@ -13,7 +13,7 @@ import {
   type SnapshotRef,
   type ToolTiming,
 } from '@forgeax/engine-tool-runtime';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { createApp } from '../browser';
 import { createBrowserRhiDebugRuntime } from '../internal/browser-rhi-debug-runtime';
 import type { App, BundlerOptions, CreateAppOptions } from '../types';
@@ -32,9 +32,8 @@ export interface ToolPreviewResourceRequest {
   readonly size?: number;
 }
 
-export interface ToolPreviewResourceFacts {
-  readonly kind: ToolPreviewResourceKind;
-  readonly guid: string;
+export interface ToolPreviewResourceFacts
+  extends Pick<ToolPreviewResourceRequest, 'kind' | 'guid'> {
   readonly asset: unknown;
   readonly digest?: string;
   readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
@@ -100,26 +99,18 @@ export interface ToolPreviewCaptureResult {
   readonly resource?: ToolPreviewResourceFacts;
 }
 
-export interface ToolPreviewRunResult {
-  readonly trace: ToolPreviewTrace;
-  readonly captureId: string;
+export interface ToolPreviewRunResult
+  extends Pick<
+    ToolPreviewCaptureResult,
+    'trace' | 'captureId' | 'actionTrace' | 'tape' | 'profile' | 'capturePng' | 'resource'
+  > {
   readonly drawCalls: number;
   readonly committedDrawIndex: number;
   readonly nonBlackPixels: number;
-  readonly actionTrace: readonly ToolPreviewAction[];
-  readonly tape: {
-    readonly runId: string;
-    readonly jsonUri: string;
-    readonly blobUri: string;
-    readonly byteLength: number;
-  };
-  readonly profile: { readonly captureId: string; readonly uri: string };
-  readonly capturePng: { readonly uri: string; readonly width: number; readonly height: number };
-  readonly png: { readonly uri: string; readonly width: number; readonly height: number };
+  readonly png: ToolPreviewCaptureResult['capturePng'];
   readonly manifest: PreviewArtifactManifest;
   readonly artifacts: readonly ArtifactRef[];
   readonly operationTiming: ToolTiming;
-  readonly resource?: ToolPreviewResourceFacts;
 }
 
 function layoutCanvas(canvas: HTMLCanvasElement, recipe: ToolPreviewRecipe): void {
@@ -148,11 +139,7 @@ function removeOwnedCanvas(canvas: HTMLCanvasElement, owned: boolean): void {
 }
 
 function bytesToDataUri(bytes: Uint8Array, mediaType: string): string {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x2000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x2000));
-  }
-  return `data:${mediaType};base64,${btoa(binary)}`;
+  return `data:${mediaType};base64,${encodeBase64(bytes)}`;
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {

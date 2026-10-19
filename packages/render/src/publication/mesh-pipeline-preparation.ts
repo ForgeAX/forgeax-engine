@@ -16,7 +16,7 @@ export function captureMeshPipelinePreparation(input: {
   readonly mesh: MeshAsset;
   readonly assets: AssetRegistry;
   readonly capabilities: RhiCaps;
-  readonly limits?: Readonly<Record<string, number>>;
+  readonly limits?: Parameters<typeof renderMaterialContext>[1];
 }): Result<MeshPipelinePreparation, DynamicGeometryError> {
   const invalid = (actual: unknown) =>
     err(

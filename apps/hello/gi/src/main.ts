@@ -1,3 +1,5 @@
+import { encodeBase64 } from '@forgeax/engine/types';
+import { halfFloat } from '@forgeax/engine/math';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
@@ -267,12 +269,6 @@ async function step() {
   await settle();
   return receipt;
 }
-function encode(bytes: Uint8Array) {
-  let text = '';
-  for (let i = 0; i < bytes.length; i += 8192)
-    text += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  return btoa(text);
-}
 
 declare global {
   interface Window {
@@ -321,13 +317,13 @@ const api = {
         for (let x = 0; x < size; x++)
           for (let c = 0; c < 3; c++)
             sum[(y * size + x) * 3 + c]! +=
-              halfToFloat(view.getUint16(y * bytesPerRow + x * 8 + c * 2, true)) / frames;
+              halfFloat.f16ToF32(view.getUint16(y * bytesPerRow + x * 8 + c * 2, true)) / frames;
     }
     return {
       ok: true,
       width: size,
       height: size,
-      rgb: encode(new Uint8Array(sum.buffer)),
+      rgb: encodeBase64(new Uint8Array(sum.buffer)),
       timings,
       inspect: renderer.inspect().diffuseGi,
     };
@@ -360,12 +356,3 @@ const api = {
   },
 };
 window.__gi = api;
-
-function halfToFloat(h: number) {
-  const s = h & 0x8000 ? -1 : 1;
-  const e = (h >> 10) & 0x1f;
-  const f = h & 0x3ff;
-  if (e === 0) return s * 2 ** -14 * (f / 1024);
-  if (e === 31) return f ? Number.NaN : s * Number.POSITIVE_INFINITY;
-  return s * 2 ** (e - 15) * (1 + f / 1024);
-}

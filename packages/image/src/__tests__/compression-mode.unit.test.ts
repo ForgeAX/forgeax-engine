@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basisEncodeParamsFor, resolveEncodeMode } from '../ktx2-encode.js';
+import { basisEncodeParamsFor } from '../ktx2-encode.js';
 
 /**
  * compressionMode sidecar + 'auto' derivation unit tests (M3 w16).
@@ -24,36 +24,58 @@ import { basisEncodeParamsFor, resolveEncodeMode } from '../ktx2-encode.js';
  * to basis ahead of loader support (plan R-9).
  */
 
-describe('resolveEncodeMode -- four sidecar values (M3 w16)', () => {
+describe('sidecar encoder selection -- four sidecar values (M3 w16)', () => {
   it("explicit 'etc1s' resolves to etc1s", () => {
-    expect(resolveEncodeMode('etc1s', { colorSpace: 'srgb', isHdr: false })).toBe('etc1s');
-    expect(resolveEncodeMode('etc1s', { colorSpace: 'linear', isHdr: false })).toBe('etc1s');
+    expect(
+      basisEncodeParamsFor('etc1s', { colorSpace: 'srgb', isHdr: false, mipmap: false })?.mode,
+    ).toBe('etc1s');
+    expect(
+      basisEncodeParamsFor('etc1s', { colorSpace: 'linear', isHdr: false, mipmap: false })?.mode,
+    ).toBe('etc1s');
   });
 
   it("explicit 'uastc' resolves to uastc (LDR) or uastc-hdr for an HDR source", () => {
-    expect(resolveEncodeMode('uastc', { colorSpace: 'linear', isHdr: false })).toBe('uastc');
-    expect(resolveEncodeMode('uastc', { colorSpace: 'srgb', isHdr: false })).toBe('uastc');
-    expect(resolveEncodeMode('uastc', { colorSpace: 'linear', isHdr: true })).toBe('uastc-hdr');
+    expect(
+      basisEncodeParamsFor('uastc', { colorSpace: 'linear', isHdr: false, mipmap: false })?.mode,
+    ).toBe('uastc-ldr');
+    expect(
+      basisEncodeParamsFor('uastc', { colorSpace: 'srgb', isHdr: false, mipmap: false })?.mode,
+    ).toBe('uastc-ldr');
+    expect(
+      basisEncodeParamsFor('uastc', { colorSpace: 'linear', isHdr: true, mipmap: false })?.mode,
+    ).toBe('uastc-hdr');
   });
 
   it("explicit 'none' resolves to none", () => {
-    expect(resolveEncodeMode('none', { colorSpace: 'srgb', isHdr: false })).toBe('none');
-    expect(resolveEncodeMode('none', { colorSpace: 'linear', isHdr: true })).toBe('none');
+    expect(
+      basisEncodeParamsFor('none', { colorSpace: 'srgb', isHdr: false, mipmap: false })?.mode,
+    ).toBeUndefined();
+    expect(
+      basisEncodeParamsFor('none', { colorSpace: 'linear', isHdr: true, mipmap: false })?.mode,
+    ).toBeUndefined();
   });
 });
 
-describe("resolveEncodeMode -- 'auto' derivation (D-12, M3 w16)", () => {
+describe("sidecar encoder selection -- 'auto' derivation (D-12, M3 w16)", () => {
   it('srgb color source -> etc1s', () => {
-    expect(resolveEncodeMode('auto', { colorSpace: 'srgb', isHdr: false })).toBe('etc1s');
+    expect(
+      basisEncodeParamsFor('auto', { colorSpace: 'srgb', isHdr: false, mipmap: false })?.mode,
+    ).toBe('etc1s');
   });
 
   it('linear (data) source -> uastc', () => {
-    expect(resolveEncodeMode('auto', { colorSpace: 'linear', isHdr: false })).toBe('uastc');
+    expect(
+      basisEncodeParamsFor('auto', { colorSpace: 'linear', isHdr: false, mipmap: false })?.mode,
+    ).toBe('uastc-ldr');
   });
 
   it('HDR source -> uastc-hdr (regardless of colorSpace)', () => {
-    expect(resolveEncodeMode('auto', { colorSpace: 'linear', isHdr: true })).toBe('uastc-hdr');
-    expect(resolveEncodeMode('auto', { colorSpace: 'srgb', isHdr: true })).toBe('uastc-hdr');
+    expect(
+      basisEncodeParamsFor('auto', { colorSpace: 'linear', isHdr: true, mipmap: false })?.mode,
+    ).toBe('uastc-hdr');
+    expect(
+      basisEncodeParamsFor('auto', { colorSpace: 'srgb', isHdr: true, mipmap: false })?.mode,
+    ).toBe('uastc-hdr');
   });
 });
 

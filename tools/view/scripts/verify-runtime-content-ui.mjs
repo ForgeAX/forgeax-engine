@@ -19,7 +19,7 @@ try {
   await build({ absWorkingDir: root, entryPoints: ['test/fixtures/runtime-content-ui.ts'], outfile: resolve(temporary, 'ui.js'), bundle: true, format: 'esm', platform: 'browser', jsx: 'automatic' });
   const html = '<!doctype html><html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><link rel="stylesheet" href="/ui.css"><style>body{margin:0}#app{height:800px}</style><div id="app"></div><script type="module" src="/ui.js"></script></html>';
   server = createServer(async (request, response) => {
-    if (request.url === '/' || request.url === '/?defer-inspection=1') { response.setHeader('content-type', 'text/html'); response.end(html); return; }
+    if (request.url === '/' || request.url === '/?defer-inspection=1' || request.url === '/?thumbnail-revision=1') { response.setHeader('content-type', 'text/html'); response.end(html); return; }
     if (!['/ui.js', '/ui.css'].includes(request.url)) { response.writeHead(404).end(); return; }
     response.setHeader('content-type', request.url.endsWith('.css') ? 'text/css' : 'text/javascript');
     response.end(await readFile(resolve(temporary, request.url.slice(1))));
@@ -97,6 +97,22 @@ try {
   assert.deepEqual(errors, []);
   const coldCalls = await page.evaluate(() => globalThis.runtimeContentFixture.calls);
   assert.equal(coldCalls.filter(call => call.operation === 'runtime-pack.restore').length, 1);
+  // A Catalog update can be followed by a thumbnail notification while the new
+  // query is pending. Old ready images must not suppress that replacement read.
+  await page.goto(`http://127.0.0.1:${server.address().port}/?thumbnail-revision=1`);
+  await page.locator('.cb-source-name').filter({ hasText: /^content$/ }).click();
+  await page.locator('.cb-group-badge').click();
+  const image = page.locator('[data-cb-guid="image-guid"] img');
+  await image.waitFor();
+  const before = await image.getAttribute('src');
+  await page.evaluate(() => globalThis.runtimeContentFixture.reviseThumbnail());
+  await page.waitForFunction(() => !document.querySelector('[data-cb-guid="image-guid"] img'));
+  await page.evaluate(() => globalThis.runtimeContentFixture.notifyThumbnail());
+  await page.evaluate(() => globalThis.runtimeContentFixture.completeThumbnails());
+  await page.waitForFunction(before => {
+    const image = document.querySelector('[data-cb-guid="image-guid"] img');
+    return image && image.getAttribute('src') !== before;
+  }, before);
   console.log(JSON.stringify({ evidence: 'Chromium UI with explicit fixture responses; no Engine or renderer', passed: true, screenshots: output, calls: calls.map(call => call.operation), coldCalls: coldCalls.map(call => call.operation) }));
 } finally {
   await browser?.close();

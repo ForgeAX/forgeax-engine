@@ -37,6 +37,12 @@ observation and error behavior. Direct feature providers can opt into this frame
 snapshot contract with `material.captureFrame`; no author data is frozen or retained
 as immutable across frames.
 
+Particle context selection remembers validation for frozen primitive contexts and
+deeply frozen plain-data subtrees. Weak membership does not retain materials;
+a frozen parent with mutable children or a cycle still uses per-publication
+inspection. Mutable program metadata, render state and runtime values remain
+current, including enumerable accessors and non-cloneable values.
+
 An explicitly authored mesh source `{ source: 'player' }` instead reads the
 Player entity's `MeshFilter` through `resolveAssetHandle`. This preserves World
 shared-reference generations and the existing managed runtime-content projection.

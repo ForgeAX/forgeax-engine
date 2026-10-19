@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import type { CubeParserError } from '../errors.js';
 import { cubeParserError } from '../errors.js';
 
@@ -26,23 +27,6 @@ function parseTriple(tokens: readonly string[]): readonly [number, number, numbe
   const [red, green, blue] = values;
   if (red === undefined || green === undefined || blue === undefined) return undefined;
   return [red, green, blue];
-}
-
-function float32ToFloat16(value: number): number {
-  const input = new Float32Array([value]);
-  const bits = new Uint32Array(input.buffer).at(0) ?? 0;
-  const sign = (bits >>> 16) & 0x8000;
-  const exponent = (bits >>> 23) & 0xff;
-  const fraction = bits & 0x7fffff;
-  if (exponent === 0xff) return sign | (fraction === 0 ? 0x7c00 : 0x7e00);
-  const halfExponent = exponent - 127 + 15;
-  if (halfExponent >= 0x1f) return sign | 0x7c00;
-  if (halfExponent <= 0) {
-    if (halfExponent < -10) return sign;
-    const mantissa = (fraction | 0x800000) >>> (1 - halfExponent);
-    return sign | ((mantissa + 0x1000) >>> 13);
-  }
-  return sign | (halfExponent << 10) | ((fraction + 0x1000) >>> 13);
 }
 
 export function parseCubeLut(source: string, sourceKey = '<inline .cube>'): CubeLutResult {
@@ -176,9 +160,9 @@ export function cubeLutBytes(lut: CubeLut): Uint8Array {
   for (let index = 0; index < lut.size ** 3; index += 1) {
     const valueOffset = index * 3;
     const byteOffset = index * 8;
-    view.setUint16(byteOffset, float32ToFloat16(lut.values[valueOffset] ?? 0), true);
-    view.setUint16(byteOffset + 2, float32ToFloat16(lut.values[valueOffset + 1] ?? 0), true);
-    view.setUint16(byteOffset + 4, float32ToFloat16(lut.values[valueOffset + 2] ?? 0), true);
+    view.setUint16(byteOffset, halfFloat.f32ToF16(lut.values[valueOffset] ?? 0), true);
+    view.setUint16(byteOffset + 2, halfFloat.f32ToF16(lut.values[valueOffset + 1] ?? 0), true);
+    view.setUint16(byteOffset + 4, halfFloat.f32ToF16(lut.values[valueOffset + 2] ?? 0), true);
     view.setUint16(byteOffset + 6, 0x3c00, true);
   }
   return bytes;

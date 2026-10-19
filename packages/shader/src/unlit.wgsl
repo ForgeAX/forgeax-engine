@@ -1,4 +1,7 @@
 #define_import_path forgeax_material::unlit
+#ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+#import forgeax_material::fragment_output::{applyFragmentOutput}
+#endif
 #import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTextureLinear}
 #import forgeax_shadow::surface::{projectShadowPosition}
@@ -66,6 +69,9 @@ struct Material {
   clippingPlaneD : vec4<f32>,
   clippingPlaneE : vec4<f32>,
   clippingPlaneF : vec4<f32>,
+#endif
+#ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+  fragmentOutput : vec4<f32>,
 #endif
 
 };
@@ -249,7 +255,11 @@ fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 #ifdef COVERAGE_ONLY
   return vec4<f32>(1.0);
 #else
+  #ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
+  return applyFragmentOutput(color, material.fragmentOutput);
+  #else
   return color;
+  #endif
 #endif
 }
 

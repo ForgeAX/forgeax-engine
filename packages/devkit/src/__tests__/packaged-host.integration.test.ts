@@ -15,13 +15,13 @@ it('serves and builds an external game from the packaged DevKit closure, preserv
     // These are physical distribution packages, outside any source workspace.
     // Node-only prerequisites reuse the installed dependency graph; the game
     // and umbrella package have no links back to the contributor checkout.
-    for (const directory of ['devkit', 'engine', 'math', 'pack']) {
+    for (const directory of ['devkit', 'engine', 'math', 'pack', 'types']) {
       const source = join(packages, directory);
       const staged = join(scope, directory === 'engine' ? 'engine' : `engine-${directory}`);
       await mkdir(staged, { recursive: true });
       await cp(join(source, 'package.json'), join(staged, 'package.json'));
       await cp(join(source, 'dist'), join(staged, 'dist'), { recursive: true });
-      if (directory === 'devkit' || directory === 'pack') {
+      if (directory === 'devkit' || directory === 'pack' || directory === 'types') {
         // Resolve each installed prerequisite before linking it. Relative pnpm
         // links cannot be re-rooted through a node_modules junction on Windows.
         const dependencies = join(source, 'node_modules');
@@ -66,7 +66,7 @@ it('serves and builds an external game from the packaged DevKit closure, preserv
       join(game, 'main.js'),
       `
       import { vec3 } from '@forgeax/engine/math';
-      import { isValidAssetGuidString } from '@forgeax/engine-pack/guid';
+      import { isValidAssetGuidString } from '@forgeax/engine-types';
       globalThis.engineProbe = {
         dot: vec3.dot([1, 2, 3], [4, 5, 6]),
         guid: isValidAssetGuidString('4846fa5b-8f80-57c0-9cdc-e345102fdb6b'),

@@ -58,8 +58,8 @@ function spawnValidatedPointShadow(
         expect(defaults.mapSize).toBe(512);
         expect(defaults.depthBias).toBeCloseTo(0.08, 5);
         expect(defaults.normalBias).toBeCloseTo(0.6, 5);
-        expect(defaults.nearPlane).toBeCloseTo(0.1, 5);
-        expect(defaults.farPlane).toBeCloseTo(25, 5);
+        expect(defaults.nearPlane).toBeCloseTo(0.5, 5);
+        expect(defaults.farPlane).toBeCloseTo(500, 5);
         expect(defaults.pcfKernelSize).toBe(3); // u32-like, exact for small integers
 
         // All 6 fields are in the schema
@@ -83,8 +83,8 @@ function spawnValidatedPointShadow(
         expect(shadow.mapSize).toBe(512);
         expect(shadow.depthBias).toBeCloseTo(0.08, 5);
         expect(shadow.normalBias).toBeCloseTo(0.6, 5);
-        expect(shadow.nearPlane).toBeCloseTo(0.1, 5);
-        expect(shadow.farPlane).toBeCloseTo(25, 5);
+        expect(shadow.nearPlane).toBeCloseTo(0.5, 5);
+        expect(shadow.farPlane).toBeCloseTo(500, 5);
         expect(shadow.pcfKernelSize).toBe(3);
       });
 
@@ -104,8 +104,8 @@ function spawnValidatedPointShadow(
         // Omitted fields fall back to defaults
         expect(shadow.depthBias).toBeCloseTo(0.08, 5);
         expect(shadow.normalBias).toBeCloseTo(0.6, 5);
-        expect(shadow.nearPlane).toBeCloseTo(0.1, 5);
-        expect(shadow.farPlane).toBeCloseTo(25, 5);
+        expect(shadow.nearPlane).toBeCloseTo(0.5, 5);
+        expect(shadow.farPlane).toBeCloseTo(500, 5);
         expect(shadow.pcfKernelSize).toBe(3);
       });
 
@@ -191,7 +191,7 @@ function spawnValidatedPointShadow(
           const detail = (r.error as unknown as ShadowInvalidConfigError).detail;
           expect(detail.field).toBe('farPlane');
           expect(detail.actual).toBe(0.5);
-          expect(detail.bound).toEqual({ kind: 'lower-bound', operator: '>=', value: 1.0 });
+          expect(detail.bound).toEqual({ kind: 'lower-bound', operator: '>', value: 1.0 });
         }
       });
 

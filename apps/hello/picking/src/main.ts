@@ -38,7 +38,7 @@ const world = new World();
 // DirectionalLight has no asset deps; safe to spawn before the renderer is ready.
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.5, -1, -0.3],
     color: [1, 1, 1], intensity: 1,
   },

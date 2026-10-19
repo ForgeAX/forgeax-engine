@@ -1,4 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
+import { mat4 } from '@forgeax/engine-math';
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it } from 'vitest';
@@ -44,6 +45,7 @@ async function fixture(
     const source = {
       entityKey: index + 1,
       worldId: 0,
+      transform: { world: mat4.identity(mat4.create()) },
       material,
       materials: [material],
       gpuDrivenDraws: meshSubmeshes.map((_, drawItemIndex) => ({ drawItemIndex, materialSlot: 0 })),

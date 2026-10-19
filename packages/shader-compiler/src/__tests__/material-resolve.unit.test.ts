@@ -1,6 +1,6 @@
 import type { AssetGuid, MaterialAsset, MaterialPass } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { resolveMaterialAsset } from '../material/resolve.js';
+import { resolveMaterialAsset } from '../index.js';
 
 const guid = (value: string) => value as unknown as AssetGuid;
 
@@ -22,29 +22,21 @@ const root: MaterialAsset = {
 
 describe('MaterialAsset inheritance resolution', () => {
   it('walks root-first and inherits the root pass contract without compiling parents', () => {
-    let compileCount = 0;
-    const result = resolveMaterialAsset(
-      'leaf',
-      {
-        root,
-        mid: {
-          kind: 'material',
-          parent: guid('root'),
-          values: { baseColor: [0.5, 0.5, 0.5, 1], optionalTexture: null },
-        },
-        leaf: {
-          kind: 'material',
-          parent: guid('mid'),
-          values: { roughness: 0.25 },
-        },
+    const result = resolveMaterialAsset('leaf', {
+      root,
+      mid: {
+        kind: 'material',
+        parent: guid('root'),
+        values: { baseColor: [0.5, 0.5, 0.5, 1], optionalTexture: null },
       },
-      () => {
-        compileCount += 1;
+      leaf: {
+        kind: 'material',
+        parent: guid('mid'),
+        values: { roughness: 0.25 },
       },
-    );
+    });
 
     expect(result.ok).toBe(true);
-    expect(compileCount).toBe(0);
     if (result.ok) {
       expect(result.value.chain).toEqual(['root', 'mid', 'leaf']);
       expect(result.value.asset.values).toEqual({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 0.25 });

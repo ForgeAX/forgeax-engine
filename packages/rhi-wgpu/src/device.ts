@@ -72,7 +72,7 @@ import { makeRhiCommandEncoder, type RawCommandEncoderLike } from './command-enc
 import { descriptorInvalid, featureNotEnabled, webgpuRuntimeError } from './errors';
 import { probeR32FloatCapability } from './internal/r32float-capability';
 import { makeRhiQueue, normalizeExtent, type RawQueueLike } from './queue';
-import { makeRhiRenderBundleEncoder, type RawRenderPassLike } from './render-pass-encoder';
+import { makeRhiRenderBundleEncoder, type RawRenderBundleLike } from './render-pass-encoder';
 
 type RhiWgpuDeviceLost = Awaited<RhiDevice['lost']>;
 let nextWgpuDeviceGeneration = 1;
@@ -607,10 +607,10 @@ class RhiWgpuDeviceImpl implements RhiDevice {
   createRenderBundleEncoder(
     desc: RenderBundleEncoderDescriptor,
   ): Result<RhiRenderBundleEncoder, RhiError> {
-    const result = this.wrap<RawRenderPassLike & { finish(desc?: unknown): unknown }>(
-      this.raw.createRenderBundleEncoder,
-      { ...desc, colorFormats: Array.from(desc.colorFormats ?? []) },
-    );
+    const result = this.wrap<RawRenderBundleLike>(this.raw.createRenderBundleEncoder, {
+      ...desc,
+      colorFormats: Array.from(desc.colorFormats ?? []),
+    });
     return result.ok ? ok(makeRhiRenderBundleEncoder(result.value)) : result;
   }
 

@@ -14,6 +14,7 @@ import {
 import common from '../../../shader/src/common.wgsl?raw';
 import fxaa from '../../../shader/src/fxaa.wgsl?raw';
 import outputEncoding from '../../../shader/src/output-encoding.wgsl?raw';
+import toneMapping from '../../../shader/src/tone-mapping.wgsl?raw';
 import tonemap from '../../../shader/src/tonemap.wgsl?raw';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../render-pipeline';
 import { addTypedOutputTransformPass } from '../typed-render-graph-primitives';
@@ -35,7 +36,11 @@ async function open(kind: 'webgl' | 'webgpu') {
 async function shader(device: RhiDevice, source: string): Promise<ShaderModule> {
   const code = await composeShader(
     source,
-    { 'forgeax_view::common': common, 'forgeax_view::output_encoding': outputEncoding },
+    {
+      'forgeax_view::common': common,
+      'forgeax_view::output_encoding': outputEncoding,
+      'forgeax_view::tone_mapping': toneMapping,
+    },
     {
       STORAGE_BUFFER_AVAILABLE: false,
       EXTENDED_LIGHTING_AVAILABLE: false,

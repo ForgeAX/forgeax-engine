@@ -758,9 +758,9 @@ export async function runSsrGpuDispatch(
     ],
     encode: ({ encoder, resources: resolver }) => {
       encoder.copyTextureToBuffer(
-        { texture: resolver.texture(scene.texture).unwrap() as never },
+        { texture: resolver.texture(scene.texture).unwrap() },
         {
-          buffer: resolver.buffer(readback).unwrap() as never,
+          buffer: resolver.buffer(readback).unwrap(),
           bytesPerRow,
           rowsPerImage: SSR_GPU_PROBE_HEIGHT,
         },
@@ -790,9 +790,9 @@ export async function runSsrGpuDispatch(
     ],
     encode: ({ encoder, resources: resolver }) => {
       encoder.copyTextureToBuffer(
-        { texture: resolver.texture(resources.trace.texture).unwrap() as never },
+        { texture: resolver.texture(resources.trace.texture).unwrap() },
         {
-          buffer: resolver.buffer(traceReadback).unwrap() as never,
+          buffer: resolver.buffer(traceReadback).unwrap(),
           bytesPerRow,
           rowsPerImage: Math.max(1, Math.floor(SSR_GPU_PROBE_HEIGHT / 2)),
         },
@@ -824,9 +824,9 @@ export async function runSsrGpuDispatch(
     ],
     encode: ({ encoder, resources: resolver }) => {
       encoder.copyTextureToBuffer(
-        { texture: resolver.texture(pyramid.texture).unwrap() as never },
+        { texture: resolver.texture(pyramid.texture).unwrap() },
         {
-          buffer: resolver.buffer(pyramidReadback).unwrap() as never,
+          buffer: resolver.buffer(pyramidReadback).unwrap(),
           bytesPerRow,
           rowsPerImage: pyramid.plan.extent.height,
         },
@@ -863,9 +863,9 @@ export async function runSsrGpuDispatch(
       ],
       encode: ({ encoder, resources: resolver }) => {
         encoder.copyTextureToBuffer(
-          { texture: resolver.texture(outputSurface.texture).unwrap() as never },
+          { texture: resolver.texture(outputSurface.texture).unwrap() },
           {
-            buffer: resolver.buffer(surfaceReadback).unwrap() as never,
+            buffer: resolver.buffer(surfaceReadback).unwrap(),
             bytesPerRow,
             rowsPerImage: halfExtent.height,
           },

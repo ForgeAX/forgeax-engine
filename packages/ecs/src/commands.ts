@@ -320,6 +320,7 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
     const { index, kind, cause } = buffer._queueError;
     throw commandFailure(buffer, index, kind, cause);
   }
+  if (buffer._queue.length === 0) return;
 
   type Shadow = {
     readonly components: Set<number>;

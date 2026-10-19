@@ -1,3 +1,5 @@
+import { srgbChannelToLinear } from '@forgeax/engine/types';
+import { halfFloat } from '@forgeax/engine/math';
 import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { TextureFormat } from '@forgeax/engine-rhi';
@@ -256,19 +258,10 @@ function compactRows(bytes: Uint8Array, bytesPerRow: number, width: number, heig
   return compact;
 }
 
-function halfToFloat(bits: number): number {
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits >>> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  if (exponent === 0) return sign * (mantissa / 1024) * 2 ** -14;
-  if (exponent === 0x1f) return mantissa === 0 ? sign * Infinity : Number.NaN;
-  return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
-}
-
 function decodeHalfValues(bytes: Uint8Array): number[] {
   const values: number[] = [];
   for (let offset = 0; offset + 1 < bytes.byteLength; offset += 2) {
-    values.push(halfToFloat((bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8)));
+    values.push(halfFloat.f16ToF32((bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8)));
   }
   return values;
 }
@@ -305,9 +298,7 @@ function sampleRoi(values: readonly number[], width: number, roi: RgbaRoi): numb
 
 function decodeSrgb(value: number): number {
   const normalized = Math.min(1, Math.max(0, value));
-  return normalized <= 0.04045
-    ? normalized / 12.92
-    : ((normalized + 0.055) / 1.055) ** 2.4;
+  return srgbChannelToLinear(normalized);
 }
 
 function sha256Bytes(bytes: Uint8Array): Promise<string> {

@@ -1,13 +1,15 @@
+import { isValidAssetGuidString } from '@forgeax/engine-types';
+
 /** Shared admission for HTTP Pack envelopes, before any lookup or cache write. */
 export function packEnvelopeIssue(value: unknown): string | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'envelope';
   const asset = value as Record<string, unknown>;
-  if (typeof asset.guid !== 'string' || !isGuid(asset.guid)) return 'guid';
+  if (!isValidAssetGuidString(asset.guid)) return 'guid';
   if (typeof asset.kind !== 'string' || asset.kind.length === 0) return 'kind';
   if (asset.payload === undefined) return 'payload';
   if (asset.refs !== undefined) {
     if (!Array.isArray(asset.refs)) return 'refs';
-    const invalid = asset.refs.findIndex((ref) => typeof ref !== 'string' || !isGuid(ref));
+    const invalid = asset.refs.findIndex((ref) => !isValidAssetGuidString(ref));
     if (invalid !== -1) return `refs[${invalid}]`;
   }
   if (asset.artifacts !== undefined) {
@@ -41,8 +43,4 @@ export function packEnvelopeIssue(value: unknown): string | undefined {
     }
   }
   return undefined;
-}
-
-function isGuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }

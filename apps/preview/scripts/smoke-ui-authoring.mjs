@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -64,10 +65,7 @@ async function stopServer(timeoutMs = 5_000) {
 
 async function availablePort() {
   const probe = createServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolve);
-  });
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
   const address = probe.address();
   if (address === null || typeof address === 'string') throw new Error('preview smoke could not allocate a TCP port');
   await new Promise((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));

@@ -23,7 +23,7 @@ export interface DevSessionSnapshot {
   readonly diagnostics: readonly CatalogDiagnostic[];
 }
 
-export type DevSessionState =
+type DevSessionState =
   | { readonly status: 'starting' }
   | { readonly status: 'serving'; readonly snapshot: DevSessionSnapshot }
   | {
@@ -40,13 +40,13 @@ export type DevSessionState =
   | { readonly status: 'closing' }
   | { readonly status: 'closed' };
 
-export interface DevSessionContext {
+interface DevSessionContext {
   readonly generation: number;
   readonly signal: AbortSignal;
   readonly previous?: DevSessionSnapshot;
 }
 
-export interface DevSessionOptions<TState = undefined> {
+interface DevSessionOptions<TState = undefined> {
   readonly generation: number;
   readonly startup: (context: DevSessionContext) => Promise<DevSessionSnapshot>;
   readonly productionSession: ProductionSession<TState>;

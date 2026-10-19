@@ -17,7 +17,7 @@
  * Carries the observed length of each of the four parallel SoA columns so an
  * AI consumer can see which column desynced without parsing prose.
  */
-export interface AnimationPlayerSlotLengthMismatchDetail {
+interface AnimationPlayerSlotLengthMismatchDetail {
   readonly entity: number;
   readonly clips: number;
   readonly times: number;
@@ -56,17 +56,3 @@ export class AnimationPlayerSlotLengthMismatchError extends Error {
     this.detail = detail;
   }
 }
-
-// -- AnimationPlayerErrorCode / AnimationPlayerError closed unions ----------------
-
-/**
- * Closed union of AnimationPlayer-cluster error codes. AI users perform
- * exhaustive `switch (err.code)` without default; TS guards completeness.
- */
-export type AnimationPlayerErrorCode = 'animation-player-slot-length-mismatch';
-
-/**
- * Closed union of the AnimationPlayer-cluster structured error classes, each
- * carrying an `AnimationPlayerErrorCode` discriminant on `.code`.
- */
-export type AnimationPlayerError = AnimationPlayerSlotLengthMismatchError;

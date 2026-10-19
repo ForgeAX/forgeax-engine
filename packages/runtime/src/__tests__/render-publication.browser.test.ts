@@ -77,6 +77,7 @@ it('renders the same Standard scene through local World and transferred publicat
       {
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           shadowDistance: 35,

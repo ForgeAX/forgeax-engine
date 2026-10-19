@@ -32,8 +32,6 @@ export interface RevisionObserverOptions {
   ) => void | Promise<void>;
 }
 
-export type DevWatcherOptions = RevisionObserverOptions;
-
 export interface DevWatchClassification {
   readonly kind: 'sidecar' | 'source';
 }
@@ -44,8 +42,6 @@ export interface RevisionObserver {
   readonly reconcile: () => Promise<number>;
   readonly drain: () => Promise<void>;
   readonly revision: () => number;
-  /** Async compatibility alias used by the plugin lifecycle close fence. */
-  readonly stop: () => Promise<void>;
   readonly close: () => Promise<void>;
 }
 
@@ -470,21 +466,5 @@ export function createRevisionObserver(options: RevisionObserverOptions): Revisi
     ]);
   };
 
-  return { ready, reconcile, drain, revision: () => currentRevision, stop: close, close };
-}
-
-export function watchDevRoots(options: DevWatcherOptions): (() => void) & RevisionObserver {
-  const observer = createRevisionObserver(options);
-  const stop = (() => {
-    void observer.close();
-  }) as (() => void) & RevisionObserver;
-  Object.defineProperties(stop, {
-    ready: { enumerable: true, get: () => observer.ready },
-    reconcile: { enumerable: true, value: observer.reconcile },
-    drain: { enumerable: true, value: observer.drain },
-    revision: { enumerable: true, value: observer.revision },
-    stop: { enumerable: true, value: observer.stop },
-    close: { enumerable: true, value: observer.close },
-  });
-  return stop;
+  return { ready, reconcile, drain, revision: () => currentRevision, close };
 }

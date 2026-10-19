@@ -3,7 +3,7 @@ import { createRhiDebugError, type RhiDebugError } from '../errors';
 import type { DebugRhiInstance } from '../recorder';
 import type { ResourceRegistry } from './resource-registry';
 
-export interface SnapshotOptions {
+interface SnapshotOptions {
   readonly snapshotTimeoutMs: number;
   readonly byteBudget: number;
   readonly maxResourceBytes?: number;

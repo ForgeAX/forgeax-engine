@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -15,7 +16,7 @@ import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { attachRecorder, decodeTape, buildFrameModel, buildResourceLifecycle, openReplay, replayDeviceRequest, tapeDigest, readbackImage, toRgba8 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
 import { FIELD_DT, fieldCamera, populateFieldScene } from '../src/field-scene.ts';
 import { trajectory, distribution, gpuIntervals } from './field-oracle.mjs';
@@ -279,7 +280,7 @@ try{
     report.nativeOuter={available:false,reason:'ordinary renderer exposes measured pass intervals, not a native outer query'};
     // Pixel evidence is acquired after all 30+60 frames and timing samples.
     const live=await readLivePixels();
-    writeFileSync(resolve(output,'live.png'),writeReferencePng(live,512,512));
+    writeFileSync(resolve(output,'live.png'),encodePng(512, 512, live));
     writeFileSync(resolve(output,'live.rgba'),live);
     let visiblePixels=0;
     for(let pixel=0;pixel<512*512;pixel++)if(Math.max(live[pixel*4],live[pixel*4+1],live[pixel*4+2])/255>.05)visiblePixels++;
@@ -343,10 +344,10 @@ try{
       const raster=model.works.findLast(w=>w.kind.startsWith('draw'));assert(raster);
       const image=unwrap(await replay.inspectWork(raster.workIndex,['pixels'])).attachment;assert(image);
       const decoded=unwrap(readbackImage(image));const rgba=toRgba8(decoded);
-      writeFileSync(resolve(output,'fresh-replay.png'),writeReferencePng(rgba,decoded.width,decoded.height));
+      writeFileSync(resolve(output,'fresh-replay.png'),encodePng(decoded.width, decoded.height, rgba));
       writeFileSync(resolve(output,'fresh-replay.rgba'),rgba);
       const live=await readLivePixels();
-      writeFileSync(resolve(output,'live.png'),writeReferencePng(live,512,512));
+      writeFileSync(resolve(output,'live.png'),encodePng(512, 512, live));
       writeFileSync(resolve(output,'live.rgba'),live);
       const replayPixelError=rgba.reduce((max,n,i)=>Math.max(max,Math.abs(n-live[i])/255),0);
       report.pixels={width:decoded.width,height:decoded.height,format:image.format,resourceId:image.resourceId};

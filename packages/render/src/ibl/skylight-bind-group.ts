@@ -1,37 +1,12 @@
-import { STANDARD_PHYSICAL_BINDING_START } from '@forgeax/engine-shader';
-// skylight-bind-group.ts -- Skylight resources merged into @group(1) PBR
-// material BGL (binding 7..12) + fallback identity resource bundle. The
-// complete Standard material group appends transmission entries.
-//
-// Plan-strategy D-5 (round-4 REVISED): the round-2 stand-alone @group(4)
-// Skylight BindGroupLayout collided with WebGPU's default maxBindGroups=4
-// limit, blocking pbr-pl pipeline-layout creation in chrome-beta. Round-4
-// rewrites the contract: Skylight 6 entries are **appended** to the
-// existing PBR material BindGroupLayout at bindings 7..12; pipeline layout
-// stays at 4 slots `[view, material, mesh, instances]`; unlit pipeline is
-// untouched (it uses its own material BGL).
-//
-// Surface (M2 round-4 / t40 amend):
-//   - The matching BindGroupLayout entries are owned by
-//     `appendInjection(entries, 'ibl')` in `pbr-pipeline.ts`.
-//   - assembleMaterialWithSkylightEntries(materialEntries, skylightResources):
-//     given the existing material BindGroupEntry values + a skylight
-//     resource bundle (active or fallback), returns the merged material
-//     array with the engine-owned transmission pair at the end, suitable for
-//     `device.createBindGroup`. Charter P5 minimal
-//     surface: this helper does NOT allocate samplers/textures itself.
-//   - createSkylightFallback(device, queue): allocate a 1x1 white
-//     irradiance/prefilter cube pair + a 1x1 BRDF approximation + intensity=0 uniform
-//     buffer + a shared linear/clamp sampler. Returns the resource bundle
-//     so createRenderer can wire it into PipelineState.skylightFallback;
-//     no stand-alone bindGroup is created (that was the round-2 shape).
-//
-// All resources write into PipelineState.skylightFallback so the M4
-// recordFrame branch (Skylight present vs absent) selects active vs
-// fallback resources when assembling the PBR material BindGroup
-// (charter P4 consistent abstraction -- one BG layout, one assembly path).
-// The irradiance texture uses the canonical irradianceEOverPi payload semantic;
-// sampling applies the single E/pi normalization at the shader callsite.
+import {
+  DIRECT_DFG_LUT_SIZE,
+  directDfgLutBytes,
+  STANDARD_PHYSICAL_BINDING_START,
+} from '@forgeax/engine-shader';
+
+// Skylight resources share the Standard material bind group. Solid environments
+// use constant radiance cubes and the same GGX DFG data as Three.js r184;
+// absence is represented solely by zero intensity in the environment uniform.
 
 import type {
   BindGroupEntry,
@@ -55,7 +30,7 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 // Every 1x1 fallback upload pads its texel to this row stride per layer.
 export const FALLBACK_BYTES_PER_ROW = 256;
 
-export type TexelFallbackDescriptor = TextureDescriptor & {
+type TexelFallbackDescriptor = TextureDescriptor & {
   readonly size: { readonly width: 1; readonly height: 1; readonly depthOrArrayLayers: number };
 };
 
@@ -113,7 +88,7 @@ export function writeTexelFallback(
  * Mirrors RhiDevice for the methods touched by this module (charter P4
  * narrowest surface -- avoids dragging the full RhiDevice in for tests).
  */
-export interface SkylightDevice {
+interface SkylightDevice {
   createSampler(desc: SamplerDescriptor): Result<Sampler, RhiError>;
   createTexture(desc: TextureDescriptor): Result<Texture, RhiError>;
   createTextureView(tex: Texture, desc: TextureViewDescriptor): Result<TextureView, RhiError>;
@@ -129,7 +104,7 @@ export interface SkylightDevice {
  * Minimal queue subset used for fallback resource upload (zero-pixel
  * texture seed + intensity=0 uniform seed).
  */
-export interface SkylightQueue {
+interface SkylightQueue {
   writeTexture(
     destination: {
       texture: Texture;
@@ -385,26 +360,10 @@ export function assembleMaterialWithSkylightEntries(
 // ─── Fallback constructor (createRenderer wires this into pipelineState) ────
 
 /**
- * Allocate the fallback Skylight resource bundle: 1x1 WHITE rgba16float
- * irradiance/prefilter texture_cube pair + 1x1 rg16float BRDF approximation
- * `[1, 0]` + a 16-byte uniform buffer + a single
- * linear / clamp-to-edge sampler reused across all three texture slots.
- *
- * Two regimes share this bundle (the per-frame Skylight uniform selects):
- *   - No Skylight entity: render-system-record writes intensity=0, so
- *       ambient = whiteIrradiance * kD * albedo * color * 0 == 0
- *     -- physically black, no `if (hasSkylight)` shader branch (D-5 round-4).
- *   - Skylight with NO cubemap (downstream integration #4): record writes the
- *     user's intensity + color, so the WHITE irradiance gives an instant
- *     solid-color ambient and a neutral white specular reflection with no
- *     async precompute. The 1x1 BRDF approximation is intentionally roughness
- *     independent; a real cubemap swaps in the prefiltered IBL views and LUT.
- *
- * No stand-alone BindGroupLayout / BindGroup is created here -- those
- * roles moved into the PBR material BGL factory (D-5 round-4). The
- * caller (createRenderer) feeds the resource handles below through
- * `assembleMaterialWithSkylightEntries` when composing the per-frame
- * material BindGroup.
+ * Constant white irradiance (E/pi) and prefiltered radiance, with a GGX BRDF
+ * table. The per-frame uniform supplies solid Skylight tint/intensity, or zero
+ * when Skylight is absent. Image-based IBL replaces the views after its bake.
+ * The caller owns the returned resources and their existing retirement path.
  */
 export function createSkylightFallback(
   device: SkylightDevice,
@@ -425,13 +384,6 @@ export function createSkylightFallback(
   if (!samplerResult.ok) throw samplerResult.error;
   const sampler = samplerResult.value;
 
-  // A Skylight with no cubemap represents a flat white environment, so both
-  // irradiance and prefilter cubes are white (half-float 1.0 = 0x3c00); the
-  // specular input must not be black just because the prefilter bake is
-  // unavailable. The 1x1 rg16float BRDF approximates the split-sum `A=1, B=0`
-  // until a real IBL bake replaces it. This does NOT light scenes that lack a
-  // Skylight: the per-frame Skylight uniform writes intensity 0 when no
-  // Skylight entity exists (render-system-record).
   const createFallback = (descriptor: TexelFallbackDescriptor, texel: Uint16Array): Texture => {
     const texture = device.createTexture(descriptor);
     if (!texture.ok) throw texture.error;
@@ -448,10 +400,37 @@ export function createSkylightFallback(
     texelFallbackDescriptor('skylight-fallback-prefilter-cube', 'rgba16float', 'cube'),
     white,
   );
-  const brdfLutTexture = createFallback(
-    texelFallbackDescriptor('skylight-fallback-brdf-lut', 'rg16float'),
-    new Uint16Array([0x3c00, 0]),
+  const brdfSize = {
+    width: DIRECT_DFG_LUT_SIZE,
+    height: DIRECT_DFG_LUT_SIZE,
+    depthOrArrayLayers: 1,
+  };
+  const brdf = device.createTexture({
+    ...texelFallbackDescriptor('skylight-fallback-brdf-lut', 'rg16float'),
+    size: brdfSize,
+  });
+  if (!brdf.ok) throw brdf.error;
+  const brdfLutTexture = brdf.value;
+  const bytes = directDfgLutBytes();
+  const upload = new Uint8Array(FALLBACK_BYTES_PER_ROW * DIRECT_DFG_LUT_SIZE);
+  // Source DFG uses (roughness, NdotV); baked IBL and its shared shader use
+  // (NdotV, roughness). Transpose on upload to preserve that sampling contract.
+  for (let roughness = 0; roughness < DIRECT_DFG_LUT_SIZE; roughness++) {
+    for (let nDotV = 0; nDotV < DIRECT_DFG_LUT_SIZE; nDotV++) {
+      const source = (nDotV * DIRECT_DFG_LUT_SIZE + roughness) * 4;
+      upload.set(
+        bytes.subarray(source, source + 4),
+        roughness * FALLBACK_BYTES_PER_ROW + nDotV * 4,
+      );
+    }
+  }
+  const written = queue.writeTexture(
+    { texture: brdfLutTexture },
+    upload,
+    { offset: 0, bytesPerRow: FALLBACK_BYTES_PER_ROW, rowsPerImage: DIRECT_DFG_LUT_SIZE },
+    brdfSize,
   );
+  if (!written.ok) throw written.error;
 
   // Cube views over the depthOrArrayLayers=6 textures so the @group(1)
   // @binding(7,9) texture_cube bindings can sample them.
@@ -478,11 +457,11 @@ export function createSkylightFallback(
   if (!brdfLutViewResult.ok) throw brdfLutViewResult.error;
   const brdfLutView = brdfLutViewResult.value;
 
-  // The 64-byte Standard environment payload reserves two extra vec4 lanes
-  // for probe-mode diffuse color and rotation. Ordinary Skylight leaves them zero.
+  // The environment payload retains probe diffuse color/rotation and an
+  // independent constant diffuse-irradiance lane.
   const intensityBufResult = device.createBuffer({
     label: 'skylight-fallback-intensity',
-    size: 64,
+    size: 80,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
   });
   if (!intensityBufResult.ok) throw intensityBufResult.error;

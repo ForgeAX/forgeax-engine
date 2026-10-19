@@ -42,7 +42,7 @@ export type WorldTraversalInput =
   | 'traversalInstances'
   | 'faceNormals';
 
-export type WorldTraversalBinding = 'read' | 'uniform' | 'tlas';
+type WorldTraversalBinding = 'read' | 'uniform' | 'tlas';
 
 export const WORLD_TRAVERSAL_ROSTER: Record<
   WorldTraversal,

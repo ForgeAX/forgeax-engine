@@ -171,7 +171,7 @@ describe('classifyOitDraw', () => {
 describe('resolveTransparencyView', () => {
   const transparent = { blend: STRAIGHT_OVER } as const;
   const material = (handle: number) =>
-    ({ materialHandle: handle, passes: [], renderState: transparent }) as never;
+    ({ materialHandle: handle, transparent: true, passes: [], renderState: transparent }) as never;
   const rows = [0, 1, 2].map((index) => ({
     renderableIndex: index,
     source: { materials: [material(index + 1)], material: material(index + 1) },
@@ -222,6 +222,31 @@ describe('resolveTransparencyView', () => {
       expect(resolution.inspection.accumulatedDrawCount).toBe(0);
       expect(resolution.topology).toBeUndefined();
     }
+  });
+
+  it('classifies sparse ordered validation rows with reversed, repeated and missing dispatch', () => {
+    const sparse = [2, 7, 40].map((index) => ({
+      renderableIndex: index,
+      source: { materials: [material(index + 1)], material: material(index + 1) },
+    }));
+    const resolution = resolveTransparencyView({
+      requested: 'weighted-blended',
+      rgba16floatRenderable: true,
+      rows: sparse,
+      dispatch: [
+        entry(40, transparent),
+        entry(41, transparent),
+        entry(7, { blend: ADDITIVE }),
+        entry(7, transparent),
+        { ...entry(2, transparent), tags: { LightMode: 'ShadowCaster' } },
+        entry(0, transparent),
+        entry(2, transparent),
+      ],
+    });
+    expect(resolution.inspection.accumulatedDrawCount).toBe(3);
+    expect(resolution.inspection.sortedDrawCount).toBe(1);
+    expect(resolution.inspection.ineligible['blend-not-eligible']).toBe(1);
+    expect(resolution.topology).toEqual({ weightedBlended: true, residual: true });
   });
 });
 

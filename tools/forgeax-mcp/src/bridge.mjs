@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -264,7 +265,7 @@ export default {
       });
     });
     try {
-      await new Promise((done, reject) => { server.once('error', reject); server.listen(socketPath, done); });
+      await once(server.listen(socketPath), 'listening');
       await chmod(socketPath, 0o600);
       await mkdir(dirname(statePath), { recursive: true });
       const pending = `${statePath}.${id}.tmp`;

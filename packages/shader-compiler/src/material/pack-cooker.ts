@@ -16,6 +16,7 @@ import {
   type MaterialAsset,
   type MaterialPass,
   type MaterialTable,
+  resolveMaterialAsset,
   STANDARD_LAYER_PARAMETER_GROUPS,
   standardMaterialParameters,
   standardSurfaceParameters,
@@ -30,7 +31,6 @@ import {
 } from './pack-variant-reuse.js';
 import { cookedRecord, materialPrograms, rayMaterialProgram } from './publication.js';
 import { type CookedRayMaterial, cookRayMaterial } from './ray-material.js';
-import { resolveMaterialAsset } from './resolve.js';
 import { buildMaterialSourceCatalog } from './source-catalog.js';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from './variant-context.js';
 

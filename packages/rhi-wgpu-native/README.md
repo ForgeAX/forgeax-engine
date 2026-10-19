@@ -409,3 +409,10 @@ for the pinned wgpu issues. It neither implements a generic native TypeScript RH
 nor records native AS commands in `.rhitape`. Keep it outside default production
 and browser compilation; the portable shader requires no native WGSL extension.
 See [reproduction and layouts](../../scripts/raytracing/README.md).
+
+The TypeScript object model separates device/queue factories (`src/gpu.ts`),
+command recording (`src/encoder.ts`) and native device children (`src/objects.ts`).
+Both factories and encoders consume the same opaque objects; their shared resource
+owner keeps finalization, mapping, borrowed texture expiry and retained references.
+Its device dependency is type-only, so command recording has no runtime import
+cycle with device construction.

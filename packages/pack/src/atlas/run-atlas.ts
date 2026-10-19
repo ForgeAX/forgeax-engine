@@ -21,17 +21,10 @@
 //   - 'atlas-size-exceeded'  -> { name, width, height, maxAtlasSize }
 //   - 'atlas-region-mismatch'-> { name, regionsTotalPixels, atlasPixels }
 //
-// We compose the structured error envelope locally (3 expected literals
-// hard-coded) instead of reaching for `ImageErrorImpl` from
-// `@forgeax/engine-image` because that package already depends on
-// `@forgeax/engine-pack` (creating a circular dep would block both
-// builds). The hint copy comes from `IMAGE_ERROR_HINTS` in
-// `@forgeax/engine-types` so the AI-user copy stays single-sourced.
-
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, isAbsolute, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
-import { IMAGE_ERROR_HINTS } from '@forgeax/engine-types';
+import { IMAGE_ERROR_EXPECTED, IMAGE_ERROR_HINTS } from '@forgeax/engine-types';
 import {
   type AtlasImageInput,
   type AtlasRegion,
@@ -45,15 +38,8 @@ interface AssetCtx {
   readonly cwd?: string;
 }
 
-const ATLAS_EXPECTED = {
-  'atlas-empty-input': 'images.length >= 1',
-  'atlas-size-exceeded':
-    'image width x height <= maxAtlasSize^2 and each image fits in the atlas footprint',
-  'atlas-region-mismatch': 'sum(regions[i].w x regions[i].h) <= atlasWidth x atlasHeight',
-} as const;
-
 interface ErrorEnvelope {
-  readonly code: keyof typeof ATLAS_EXPECTED;
+  readonly code: Extract<keyof typeof IMAGE_ERROR_EXPECTED, `atlas-${string}`>;
   readonly expected: string;
   readonly hint: string;
   readonly detail: Record<string, unknown>;
@@ -210,7 +196,7 @@ function emitSizeExceeded(
 ): number {
   return emitError(ctx, {
     code: 'atlas-size-exceeded',
-    expected: ATLAS_EXPECTED['atlas-size-exceeded'],
+    expected: IMAGE_ERROR_EXPECTED['atlas-size-exceeded'],
     hint: IMAGE_ERROR_HINTS['atlas-size-exceeded'],
     detail,
   });
@@ -219,7 +205,7 @@ function emitSizeExceeded(
 function emitEmptyInput(ctx: AssetCtx, receivedCount: number): number {
   return emitError(ctx, {
     code: 'atlas-empty-input',
-    expected: ATLAS_EXPECTED['atlas-empty-input'],
+    expected: IMAGE_ERROR_EXPECTED['atlas-empty-input'],
     hint: IMAGE_ERROR_HINTS['atlas-empty-input'],
     detail: { receivedCount },
   });
@@ -276,7 +262,7 @@ function enforceRegionsFit(
     regions.find((r) => r.x + r.w > atlasWidth || r.y + r.h > atlasHeight) ?? regions[0];
   return emitError(ctx, {
     code: 'atlas-region-mismatch',
-    expected: ATLAS_EXPECTED['atlas-region-mismatch'],
+    expected: IMAGE_ERROR_EXPECTED['atlas-region-mismatch'],
     hint: IMAGE_ERROR_HINTS['atlas-region-mismatch'],
     detail: {
       name: offender?.name ?? fallbackName,

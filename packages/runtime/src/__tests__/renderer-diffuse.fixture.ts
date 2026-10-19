@@ -1,6 +1,7 @@
 import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { RhiError } from '@forgeax/engine-rhi';
@@ -8,7 +9,6 @@ import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -265,7 +265,7 @@ export async function verifyRendererDiffuse(
     );
     const offset = 16 * result.metadata.bytesPerRow + 16 * 8;
     const center = [0, 1, 2, 3].map((channel) =>
-      halfToFloat(data.getUint16(offset + channel * 2, true)),
+      halfFloat.f16ToF32(data.getUint16(offset + channel * 2, true)),
     );
     return { bytes: result.bytes, center };
   };

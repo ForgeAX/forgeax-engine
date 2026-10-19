@@ -1,12 +1,14 @@
 /// <reference types="@webgpu/types" />
 
-export interface TextureReadbackDescriptor {
+import { textureFormatBlock } from '@forgeax/engine-types';
+
+interface TextureReadbackDescriptor {
   readonly format: string;
   readonly dimension: string;
   readonly aspect?: GPUTextureAspect | undefined;
 }
 
-export type TextureReadbackPlan =
+type TextureReadbackPlan =
   | {
       readonly supported: true;
       readonly format: string;
@@ -20,25 +22,25 @@ export type TextureReadbackPlan =
       readonly reason: string;
     };
 
-const BYTES_PER_TEXEL: Readonly<Record<string, number>> = {
-  r8unorm: 1,
-  rg8unorm: 2,
-  rgba8unorm: 4,
-  'rgba8unorm-srgb': 4,
-  bgra8unorm: 4,
-  'bgra8unorm-srgb': 4,
-  r16float: 2,
-  rg16float: 4,
-  rgba16float: 8,
-  r32float: 4,
-  r32uint: 4,
-  rg32uint: 8,
-  rg32float: 8,
-  rgba32float: 16,
-  rgba32uint: 16,
-  rgb10a2unorm: 4,
-  rg11b10ufloat: 4,
-};
+const READBACK_COLOR_FORMATS = new Set<string>([
+  'r8unorm',
+  'rg8unorm',
+  'rgba8unorm',
+  'rgba8unorm-srgb',
+  'bgra8unorm',
+  'bgra8unorm-srgb',
+  'r16float',
+  'rg16float',
+  'rgba16float',
+  'r32float',
+  'r32uint',
+  'rg32uint',
+  'rg32float',
+  'rgba32float',
+  'rgba32uint',
+  'rgb10a2unorm',
+  'rg11b10ufloat',
+] satisfies GPUTextureFormat[]);
 
 const DEPTH_FORMATS = new Set([
   'depth16unorm',
@@ -64,16 +66,7 @@ export function getTextureReadbackPlan(descriptor: TextureReadbackDescriptor): T
       reason: 'compressed texture readback has no core decoder',
     };
   }
-  if (DEPTH_FORMATS.has(descriptor.format)) {
-    return {
-      supported: true,
-      format: descriptor.format,
-      bytesPerTexel: 4,
-      blockWidth: 1,
-      blockHeight: 1,
-    };
-  }
-  const bytesPerTexel = BYTES_PER_TEXEL[descriptor.format];
+  const bytesPerTexel = textureBytesPerTexel(descriptor.format);
   if (bytesPerTexel === undefined) {
     return {
       supported: false,
@@ -91,5 +84,9 @@ export function getTextureReadbackPlan(descriptor: TextureReadbackDescriptor): T
 }
 
 export function textureBytesPerTexel(format: string): number | undefined {
-  return BYTES_PER_TEXEL[format] ?? (DEPTH_FORMATS.has(format) ? 4 : undefined);
+  // Replay converts every depth/stencil plane to a four-byte sample.
+  if (DEPTH_FORMATS.has(format)) return 4;
+  return READBACK_COLOR_FORMATS.has(format)
+    ? textureFormatBlock(format as GPUTextureFormat).bytesPerBlock
+    : undefined;
 }

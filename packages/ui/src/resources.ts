@@ -1,3 +1,4 @@
+import { encodeBase64 } from '@forgeax/engine-types';
 import { type CssNode, generate, parse, walk } from 'css-tree/dist/csstree.esm';
 import { type DefaultTreeAdapterTypes, parseFragment, serialize } from 'parse5';
 import type { UiAsset } from './asset.js';
@@ -49,27 +50,6 @@ export function uiResourceMimeType(path: string): string | undefined {
   )[extension];
 }
 
-function base64(bytes: Uint8Array): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const chunks: string[] = [];
-  let chunk = '';
-  for (let index = 0; index < bytes.length; index += 3) {
-    const word =
-      ((bytes[index] ?? 0) << 16) | ((bytes[index + 1] ?? 0) << 8) | (bytes[index + 2] ?? 0);
-    chunk +=
-      alphabet.charAt((word >>> 18) & 63) +
-      alphabet.charAt((word >>> 12) & 63) +
-      (index + 1 < bytes.length ? alphabet.charAt((word >>> 6) & 63) : '=') +
-      (index + 2 < bytes.length ? alphabet.charAt(word & 63) : '=');
-    if (chunk.length >= 8192) {
-      chunks.push(chunk);
-      chunk = '';
-    }
-  }
-  chunks.push(chunk);
-  return chunks.join('');
-}
-
 export function uiResourceFailure(
   asset: UiAsset,
   reference: string,
@@ -118,7 +98,7 @@ export function createUiResourceResolver(asset: UiAsset, signal: AbortSignal) {
       url =
         'url' in resource
           ? resource.url
-          : `data:${resource.mediaType};base64,${base64(resource.bytes)}`;
+          : `data:${resource.mediaType};base64,${encodeBase64(resource.bytes)}`;
       urls.set(path, url);
     }
     const hash = reference.indexOf('#');

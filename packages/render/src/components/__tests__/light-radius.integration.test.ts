@@ -21,7 +21,12 @@ describe('PCSS angular radius storage boundary', () => {
       const context = await createWorldContext(world, [renderComponentsPlugin()]);
       try {
         for (const radius of [0.0001, 0.05]) {
-          const data = { direction: [0, -1, 0], shadowFilter, shadowAngularRadius: radius };
+          const data = {
+            castShadow: true,
+            direction: [0, -1, 0],
+            shadowFilter,
+            shadowAngularRadius: radius,
+          };
           expect(validateDirectionalLightData(data).ok).toBe(true);
           const entity = world.spawn({ component: DirectionalLight, data }).unwrap();
           const stored = world.get(entity, DirectionalLight).unwrap();
@@ -49,6 +54,7 @@ describe('PCSS angular radius storage boundary', () => {
     -Infinity,
   ])('rejects a radius outside the float32 endpoints: %s', (shadowAngularRadius) => {
     const result = validateDirectionalLightData({
+      castShadow: true,
       direction: [0, -1, 0],
       shadowFilter: DirectionalShadowFilterValue.pcssHigh,
       shadowAngularRadius,

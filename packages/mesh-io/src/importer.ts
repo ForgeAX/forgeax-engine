@@ -1,32 +1,37 @@
 import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
+  type AssetError,
   IMPORT_ERROR_HINTS,
   type ImportContext,
   ImportError,
   type ImportedAsset,
   type ImportResult,
   type MaterialTextureValue,
+  ok,
+  type Result,
 } from '@forgeax/engine-types';
 import type { ImportedMesh } from './geometry.js';
-import { materialSourceKey, parseObjPackage } from './obj-package';
-import { parseObj, parseStl, parseSvg } from './parse.js';
+import { type MeshSourcePackage, materialSourceKey, parseObjPackage } from './obj-package';
+import { parseStl, parseSvg } from './parse.js';
 
 export type MeshSourceFormat = 'obj' | 'stl' | 'svg';
 
+/** Parse one complete source closure for sidecar admission and import. */
 export async function parseMeshSource(
   format: MeshSourceFormat,
   bytes: Uint8Array,
+  read: (path: string) => Promise<Uint8Array>,
   curveSegments = 24,
-) {
-  switch (format) {
-    case 'obj':
-      return parseObj(new TextDecoder().decode(bytes));
-    case 'stl':
-      return parseStl(bytes);
-    case 'svg':
-      return parseSvg(new TextDecoder().decode(bytes), curveSegments);
-  }
+): Promise<Result<MeshSourcePackage, AssetError>> {
+  if (format === 'obj') return parseObjPackage(new TextDecoder().decode(bytes), read);
+  const parsed =
+    format === 'stl'
+      ? parseStl(bytes)
+      : await parseSvg(new TextDecoder().decode(bytes), curveSegments);
+  return parsed.ok
+    ? ok({ meshes: parsed.value, materials: [], textures: [], dependencies: [] })
+    : parsed;
 }
 
 export function meshSourceKey(mesh: ImportedMesh): string {
@@ -48,23 +53,18 @@ function createMeshImporter(format: MeshSourceFormat) {
             detail: { source: ctx.source, reason: String(source.error) },
           }),
         };
-      const obj =
-        format === 'obj'
-          ? await parseObjPackage(new TextDecoder().decode(source.value), async (path) => {
-              const result = await ctx.readSibling(path);
-              if (!result.ok) throw result.error;
-              return result.value;
-            })
-          : undefined;
-      const parsed =
-        obj ??
-        (await parseMeshSource(
-          format,
-          source.value,
-          typeof ctx.importSettings.curveSegments === 'number'
-            ? ctx.importSettings.curveSegments
-            : 24,
-        ));
+      const parsed = await parseMeshSource(
+        format,
+        source.value,
+        async (path) => {
+          const result = await ctx.readSibling(path);
+          if (!result.ok) throw result.error;
+          return result.value;
+        },
+        typeof ctx.importSettings.curveSegments === 'number'
+          ? ctx.importSettings.curveSegments
+          : 24,
+      );
       if (!parsed.ok)
         return {
           ok: false,
@@ -75,8 +75,7 @@ function createMeshImporter(format: MeshSourceFormat) {
             detail: { reason: JSON.stringify(parsed.error.detail) },
           }),
         };
-      const meshes =
-        obj?.ok === true ? obj.value.meshes : (parsed.value as readonly ImportedMesh[]);
+      const { meshes, materials, textures, dependencies } = parsed.value;
       try {
         const assets: ImportedAsset[] = [];
         const declarations = new Map(ctx.subAssets.map((row) => [row.sourceKey, row]));
@@ -90,63 +89,61 @@ function createMeshImporter(format: MeshSourceFormat) {
               detail: { reason: 'duplicate sourceKeys' },
             }),
           };
-        if (obj?.ok === true) {
-          for (const texture of obj.value.textures) {
+        for (const texture of textures) {
+          const declaration = declarations.get(texture.sourceKey);
+          if (declaration?.kind !== 'texture')
+            throw new Error(`missing texture declaration ${texture.sourceKey}`);
+          const decoded = await ctx.decodeImage(texture.bytes, texture.mimeType, {
+            ...ctx.importSettings,
+            colorSpace: texture.colorSpace,
+          });
+          if (!decoded.ok) throw decoded.error;
+          assets.push({
+            guid: declaration.guid,
+            kind: 'texture',
+            name: texture.path,
+            payload: decoded.value.texture,
+            refs: [],
+            artifacts: {
+              body: {
+                bytes: decoded.value.bytes,
+                mediaType: decoded.value.mediaType ?? texture.mimeType,
+                ...(decoded.value.assetCodec === undefined
+                  ? {}
+                  : { assetCodec: decoded.value.assetCodec }),
+              },
+            },
+          });
+        }
+        for (const material of materials) {
+          const declaration = declarations.get(material.sourceKey);
+          if (declaration?.kind !== 'material')
+            throw new Error(`missing material declaration ${material.sourceKey}`);
+          const values = { ...material.material.values },
+            refs = [];
+          for (const texture of material.textures) {
             const declaration = declarations.get(texture.sourceKey);
-            if (declaration?.kind !== 'texture')
-              throw new Error(`missing texture declaration ${texture.sourceKey}`);
-            const decoded = await ctx.decodeImage(texture.bytes, texture.mimeType, {
-              ...ctx.importSettings,
-              colorSpace: texture.colorSpace,
-            });
-            if (!decoded.ok) throw decoded.error;
-            assets.push({
-              guid: declaration.guid,
-              kind: 'texture',
-              name: texture.path,
-              payload: decoded.value.texture,
-              refs: [],
-              artifacts: {
-                body: {
-                  bytes: decoded.value.bytes,
-                  mediaType: decoded.value.mediaType ?? texture.mimeType,
-                  ...(decoded.value.assetCodec === undefined
-                    ? {}
-                    : { assetCodec: decoded.value.assetCodec }),
+            if (declaration?.kind !== 'texture') throw new Error('missing texture GUID');
+            values[texture.slot] = {
+              texture: refs.length as unknown as MaterialTextureValue['texture'],
+              coordinates: {
+                set: 0,
+                transform: {
+                  scale: [texture.scale[0], -texture.scale[1]],
+                  offset: [texture.offset[0], 1 - texture.offset[1]],
                 },
               },
-            });
+            };
+            refs.push({ guid: declaration.guid, sourceField: { fieldName: texture.slot } });
           }
-          for (const material of obj.value.materials) {
-            const declaration = declarations.get(material.sourceKey);
-            if (declaration?.kind !== 'material')
-              throw new Error(`missing material declaration ${material.sourceKey}`);
-            const values = { ...material.material.values },
-              refs = [];
-            for (const texture of material.textures) {
-              const declaration = declarations.get(texture.sourceKey);
-              if (declaration?.kind !== 'texture') throw new Error('missing texture GUID');
-              values[texture.slot] = {
-                texture: refs.length as unknown as MaterialTextureValue['texture'],
-                coordinates: {
-                  set: 0,
-                  transform: {
-                    scale: [texture.scale[0], -texture.scale[1]],
-                    offset: [texture.offset[0], 1 - texture.offset[1]],
-                  },
-                },
-              };
-              refs.push({ guid: declaration.guid, sourceField: { fieldName: texture.slot } });
-            }
-            assets.push({
-              guid: declaration.guid,
-              kind: 'material',
-              name: material.name,
-              payload: { ...material.material, values },
-              refs,
-              artifacts: {},
-            });
-          }
+          assets.push({
+            guid: declaration.guid,
+            kind: 'material',
+            name: material.name,
+            payload: { ...material.material, values },
+            refs,
+            artifacts: {},
+          });
         }
         const meshesByKey = new Map(meshes.map((mesh) => [meshSourceKey(mesh), mesh]));
         for (const declaration of ctx.subAssets.filter((row) => row.kind === 'mesh')) {
@@ -225,7 +222,7 @@ function createMeshImporter(format: MeshSourceFormat) {
               if (asset === undefined) throw new Error(`missing declared GUID ${row.guid}`);
               return asset;
             }),
-            sourceDependencies: obj?.ok === true ? obj.value.dependencies : [],
+            sourceDependencies: dependencies,
           },
         };
       } catch (cause) {

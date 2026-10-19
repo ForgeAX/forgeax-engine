@@ -63,7 +63,7 @@ export function observeFrameCompletionStages(
 
 export type RendererFrameStage = 'build' | 'execute' | 'finish' | 'submit';
 
-export interface RendererFrameStageFailure {
+interface RendererFrameStageFailure {
   readonly stage: RendererFrameStage;
 }
 
@@ -86,9 +86,9 @@ export interface RendererGenerationFence {
   readonly currentGeneration: () => number;
 }
 
-export type ContinuationKind = 'readback' | 'query' | 'mapAsync' | 'queue-completion';
+type ContinuationKind = 'readback' | 'query' | 'mapAsync' | 'queue-completion';
 
-export type ContinuationTerminationReason =
+type ContinuationTerminationReason =
   | {
       readonly code: 'device-lost' | 'disposed' | 'stale-generation';
       readonly detail?: unknown;
@@ -105,7 +105,7 @@ export interface ContinuationTerminator {
   guard(kind: ContinuationKind): boolean;
 }
 
-export type FrameCompletionResult<T, E> =
+type FrameCompletionResult<T, E> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: E };
 
@@ -183,11 +183,11 @@ export function executeRendererFrameTransaction<T>(
   return { ok: true, value: built.value };
 }
 
-export interface AutoExposureFrameTransactionOptions {
+interface AutoExposureFrameTransactionOptions {
   readonly failAt?: RendererFrameStage;
 }
 
-export type AutoExposureFrameTransactionResult =
+type AutoExposureFrameTransactionResult =
   | {
       readonly ok: true;
       readonly state: AutoExposureState;

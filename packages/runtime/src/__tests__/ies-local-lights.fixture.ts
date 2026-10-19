@@ -119,7 +119,16 @@ export async function verifyLocalIes(
   const light = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 2.5], quat: [0, 1, 0, 0] } },
-      { component, data: { intensity: kind === 'point' ? 30 : 5, range: 20 } },
+      {
+        component,
+        data: {
+          intensity: kind === 'point' ? 30 : 5,
+          range: 20,
+          // Keep the photometric/source-texture rotation fixture's one-meter
+          // aperture independent of the engine's ten-meter emitter default.
+          ...(kind === 'rect' ? { width: 1, height: 1 } : {}),
+        },
+      },
     )
     .unwrap();
   if (options.combined && kind === 'point') {
@@ -272,7 +281,7 @@ export async function verifyLocalIes(
     expect(region(rotated, 20, 44) / region(baseline, 20, 44)).toBeLessThan(0.005);
     expect(region(rotated, 84, 108) / region(baseline, 84, 108)).toBeGreaterThan(0.98);
     world.set(light, component, { iesProfile: polar }).unwrap();
-    const poleOn = await sample('polar-front');
+    const poleOn = await sample('polar-front', true);
     expect(difference(poleOn, baseline)).toBeLessThanOrEqual(0.003);
     if (kind === 'point') {
       world.set(light, Transform, { quat: [0, 0, 0, 1] }).unwrap();

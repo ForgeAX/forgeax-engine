@@ -6,6 +6,7 @@ import {
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack';
 import type { MaterialProgramAddress } from '@forgeax/engine-types';
+import { isRetainedMaterialAbi } from '../internal/retained-material-facts.js';
 
 export interface MaterialLoadRequest {
   readonly guid: string;
@@ -183,6 +184,7 @@ function snapshotMaterialRecord(record: CookedMaterialRecord): CookedMaterialRec
     const active = new WeakSet<object>();
     const dataOnly = (value: unknown): boolean => {
       if (value === null || typeof value !== 'object') return typeof value !== 'function';
+      if (isRetainedMaterialAbi(value)) return true;
       if (programBytes.has(value as Uint8Array)) return true;
       const prototype = Object.getPrototypeOf(value);
       const array = Array.isArray(value);
@@ -227,6 +229,10 @@ function snapshotMaterialRecord(record: CookedMaterialRecord): CookedMaterialRec
       ...metadata,
       programs: metadata.programs.map((program, index) => ({
         ...program,
+        selections: program.selections.map((selection, selectionIndex) => {
+          const abi = record.programs[index]?.selections[selectionIndex]?.abi;
+          return isRetainedMaterialAbi(abi) ? { ...selection, abi } : selection;
+        }),
         artifact: {
           ...program.artifact,
           bytes: (record.programs[index] as CookedMaterialRecord['programs'][number]).artifact

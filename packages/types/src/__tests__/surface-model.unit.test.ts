@@ -55,3 +55,35 @@ describe('Material Surface model contracts', () => {
     expect(isMaterialSurfaceDeclaration({ model: 'single-layer-medium' })).toBe(false);
   });
 });
+
+it('lays out every dynamic field type and rejects inherited object keys', () => {
+  const result = deriveMaterialDynamicInputLayout({
+    ...schema,
+    maxRecords: 1,
+    fields: [
+      { name: 'scalar', type: 'f32' },
+      { name: 'id', type: 'u32' },
+      { name: 'pair', type: 'vec2<f32>' },
+      { name: 'triple', type: 'vec3<f32>' },
+      { name: 'tail', type: 'f32' },
+      { name: 'quad', type: 'vec4<f32>' },
+    ],
+  }).unwrap();
+  expect(result.stride).toBe(48);
+  expect(result.fields.map(({ offset, size, alignment }) => [offset, size, alignment])).toEqual([
+    [0, 4, 4],
+    [4, 4, 4],
+    [8, 8, 8],
+    [16, 12, 16],
+    [28, 4, 4],
+    [32, 16, 16],
+  ]);
+  for (const type of ['constructor', '__proto__', 'toString', 'vec5<f32>', null, 3]) {
+    expect(
+      deriveMaterialDynamicInputLayout({
+        ...schema,
+        fields: [{ name: 'bad', type: type as never }],
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'invalid-field', field: 'fields[0].type' } });
+  }
+});

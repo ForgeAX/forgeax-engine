@@ -28,6 +28,8 @@ export const Transform = defineComponent(
     // Component order [x, y, z, w] is shared with glTF.
     quat: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 0, 1]) },
     scale: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
+    /** Dimensionless XY, XZ, YZ shear; local matrix is T * R * H * S. */
+    shear: { type: 'array<f32, 3>', default: new Float32Array([0, 0, 0]) },
   },
   { requires: [GlobalTransform] },
 );

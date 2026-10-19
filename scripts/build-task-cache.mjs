@@ -214,6 +214,16 @@ export function workspaceDependencyNames(
       if (knownNames.has(name)) names.add(name);
     }
   }
+  // Build tools may be development dependencies without entering the player's
+  // installed dependency graph. Only explicitly selected tools order builds;
+  // ordinary test dependencies can form valid cycles with their consumers.
+  for (const name of manifest.forgeax?.buildDependencies ?? []) {
+    if (!knownNames.has(name) || !Object.hasOwn(manifest.devDependencies ?? {}, name))
+      throw new Error(
+        `${manifest.name}: build dependency ${name} must name a workspace devDependency`,
+      );
+    names.add(name);
+  }
   return names;
 }
 
@@ -255,6 +265,9 @@ export function packageOutputFingerprint(root, directory, output) {
     ...output.files.map((file) => resolve(directory, 'dist', file.path)),
     ...walkFiles(resolve(directory, 'pkg')),
     ...walkFiles(resolve(directory, 'lib')),
+    // Material producers consume published WGSL directly; its changes can
+    // leave the package's JavaScript byte-identical while changing programs.
+    ...walkFiles(resolve(directory, 'src')).filter((path) => path.endsWith('.wgsl')),
   ]);
 }
 

@@ -31,15 +31,7 @@
  * | `'backend-not-registered'` | PhysicsWorld resource missing from World; use createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] }) or manual registration. |
  * | `'controller-requires-kinematic'` | moveAndSlide() called on a non-kinematic body. |
  */
-export type PhysicsErrorCode =
-  | 'wasm-load-failed'
-  | 'wasm-simd-unsupported'
-  | 'step-failed'
-  | 'invalid-body-config'
-  | 'body-not-found'
-  | 'collider-not-found'
-  | 'backend-not-registered'
-  | 'controller-requires-kinematic';
+export type PhysicsErrorCode = PhysicsErrorDetail['code'];
 
 /**
  * Per-code `PhysicsError` detail shapes -- discriminated payloads narrowed

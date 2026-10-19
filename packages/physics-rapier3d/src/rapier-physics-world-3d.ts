@@ -2,7 +2,7 @@ import { RuntimeMeshVertices, resolveAssetHandle } from '@forgeax/engine-assets-
 import { componentDefinition, Disabled, Entity, FixedTime } from '@forgeax/engine-ecs';
 import { validateMeshCollisionAttachment } from '@forgeax/engine-geometry';
 import type { MeshAsset, MeshCollision } from '@forgeax/engine-types';
-import type { ColliderDesc, Shape } from '../pkg/rapier.mjs';
+import type { ColliderDesc, Collider as RapierCollider, Shape } from '../pkg/rapier.mjs';
 // Three-phase pipeline (plan-strategy D-1):
 //   1. syncBackend: reconcile authored bodies and kinematic positions.
 //   2. stepSimulation: call rapierWorld.step(eventQueue).
@@ -48,6 +48,8 @@ import {
   type PairIsolationLease,
   PHYSICS_ERROR_HINTS,
   type PhysicsConstraintInput,
+  type PhysicsContactNeighborsSnapshot,
+  type PhysicsContactNormalFilter,
   type PhysicsContactObservation,
   type PhysicsContactSnapshot,
   PhysicsError,
@@ -71,7 +73,12 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
 import { rapierBodyTypeToString } from './body-type.js';
 import { applyKccTuning } from './character-controller-tuning.js';
-import { queryContactManifolds } from './contact-query.js';
+import {
+  currentContactOwner,
+  queryContactManifolds,
+  queryContactNeighbors,
+  readContactQuery,
+} from './contact-query.js';
 import {
   candidateNativeColliders,
   candidateShapeRecords,
@@ -89,6 +96,7 @@ import type {
 import { createDerivedCollider, stageDerivedColliders } from './derived-collider.js';
 import { validateConstraintInput } from './derived-constraint.js';
 import { createManagedJointData } from './managed-joint-data.js';
+import type { IsolatedPair, PhysicsEntityRecord } from './physics-entity-records.js';
 import {
   PHYSICS_DT_MAX,
   type PhysicsSyncDescriptor,
@@ -106,31 +114,6 @@ import type { Rapier3DModule } from './wasm-loader.js';
 interface Rapier3DKinematicControllerState {
   readonly entity: number;
   readonly offset: number;
-}
-
-/**
- * Per-entity physics record — tracks the Rapier body handle for
- * each ECS entity.
- */
-interface PhysicsEntityRecord {
-  bodyHandle: number;
-  readonly worldIdentity: World | undefined;
-  /** Policy changes must dirty native contact caches, even for sleeping bodies. */
-  pairPolicyDirty: boolean;
-  /** Authored additional mass used to restore automatic derived policy. */
-  additionalMass: number;
-  /** Additional mass currently applied to Rapier's automatic mass policy. */
-  automaticAdditionalMass: number;
-  /** Base collider density before an explicit derived mass override. */
-  authoredDensity: number | undefined;
-}
-
-interface IsolatedPair {
-  readonly input: PairIsolationInput;
-  readonly generation: number;
-  readonly bodyA: PhysicsEntityRecord;
-  readonly bodyB: PhysicsEntityRecord;
-  readonly leases: Set<object>;
 }
 
 function isolationKey(a: number, b: number): string {
@@ -318,9 +301,6 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       );
     const bodyA = this.entityMap.get(input.entityA),
       bodyB = this.entityMap.get(input.entityB);
-    const hooks =
-      this.rapierModule.ActiveHooks.FILTER_CONTACT_PAIRS |
-      this.rapierModule.ActiveHooks.FILTER_INTERSECTION_PAIRS;
     if (
       world.hasComponent(input.entityA as EntityHandle, Disabled) ||
       world.hasComponent(input.entityB as EntityHandle, Disabled)
@@ -338,8 +318,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         body === null ||
         !body.isEnabled() ||
         body.numColliders() === 0 ||
-        !this.bodyColliders(body).some((collider) => collider.isEnabled()) ||
-        this.bodyColliders(body).some((collider) => (collider.activeHooks() & hooks) !== hooks)
+        !this.bodyColliders(body).some((collider) => collider.isEnabled())
       )
         return refuse(
           'pair-isolation-body-unavailable',
@@ -436,11 +415,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         this.retireIsolatedPair(key, pair);
     }
     if (!refreshContacts) return;
-    for (const record of this.entityMap.values()) {
+    for (const [entity, record] of this.entityMap) {
       if (!record.pairPolicyDirty) continue;
       const body = this.raw.getRigidBody(record.bodyHandle);
       if (body === undefined || body === null) continue;
       for (const collider of this.bodyColliders(body)) {
+        this.syncIsolationCollider(collider, entity);
         if (collider.isEnabled()) {
           // Mark position dirty without changing geometry or authored groups.
           // Rapier reruns narrow-phase filters for this collider on the next step.
@@ -450,6 +430,23 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       body.wakeUp();
       record.pairPolicyDirty = false;
     }
+  }
+
+  private syncIsolationCollider(collider: RapierCollider, entity: number): void {
+    this.isolationColliderOwners.set(collider.handle, entity);
+    const record = this.entityMap.get(entity);
+    const mask =
+      this.rapierModule.ActiveHooks.FILTER_CONTACT_PAIRS |
+      this.rapierModule.ActiveHooks.FILTER_INTERSECTION_PAIRS;
+    let hooks = collider.activeHooks() & ~mask;
+    for (const pair of this.isolatedPairs.values()) {
+      if (pair.bodyA === record || pair.bodyB === record) {
+        hooks |= mask;
+        break;
+      }
+    }
+    // Rapier disables native contact recycling even when flagged hooks have no callback.
+    if (collider.activeHooks() !== hooks) collider.setActiveHooks(hooks);
   }
 
   private colliderPairIsolated(a: number, b: number): boolean {
@@ -924,49 +921,53 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     );
   }
 
+  private readonly currentContactOwner = (collider: RapierCollider) =>
+    currentContactOwner(collider, this.entityMap, this.worldIdentity, this.derivedColliderToShape);
+
   getCurrentContacts(
     entity: number,
     filterMask?: number,
   ): Result<PhysicsContactSnapshot, ManagedPhysicsFailure> {
-    if (!this.currentContactStepAvailable())
-      return err(
-        new ManagedPhysicsError('managed-physics-unavailable', {
-          reason: 'current contacts require a healthy completed physics step after all mutations',
-        }),
-      );
-    const body = this.bodyForEntity(entity);
-    if (!body) return err(new ManagedPhysicsError('managed-body-missing', { entity }));
-    try {
-      const manifolds = queryContactManifolds(
-        this.raw,
-        body,
-        (collider) => {
-          const parent = collider.parent();
-          if (parent === null || parent === undefined) return undefined;
-          const owner = parent.userData;
-          if (
-            typeof owner !== 'number' ||
-            this.entityMap.get(owner)?.bodyHandle !== parent?.handle ||
-            (this.worldIdentity &&
-              (!this.worldIdentity.hasComponent(owner as EntityHandle, Entity) ||
-                this.worldIdentity.hasComponent(owner as EntityHandle, Disabled)))
-          )
-            return undefined;
-          const shape = this.derivedColliderToShape.get(collider.handle);
-          return { entity: owner, body: parent, ...(shape ? { shape: shape.id } : {}) };
-        },
-        filterMask,
-      );
-      return ok({ fixedStep: this.fixedStep, deltaTime: this.contactDeltaTime, manifolds });
-    } catch (cause) {
-      return err(
-        cause instanceof ManagedPhysicsError
-          ? cause
-          : new ManagedPhysicsError('managed-physics-unavailable', {
-              reason: `current contact query failed: ${String(cause)}`,
-            }),
-      );
-    }
+    return readContactQuery(
+      this.currentContactStepAvailable(),
+      entity,
+      () => this.bodyForEntity(entity),
+      (body) => ({
+        fixedStep: this.fixedStep,
+        deltaTime: this.contactDeltaTime,
+        manifolds: queryContactManifolds(
+          this.raw,
+          body,
+          this.currentContactOwner,
+          entity,
+          filterMask,
+        ),
+      }),
+    );
+  }
+
+  getCurrentContactNeighbors(
+    entity: number,
+    filterMask?: number,
+    normalFilter?: PhysicsContactNormalFilter,
+  ): Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure> {
+    return readContactQuery(
+      this.currentContactStepAvailable(),
+      entity,
+      () => this.bodyForEntity(entity),
+      (body) => ({
+        fixedStep: this.fixedStep,
+        deltaTime: this.contactDeltaTime,
+        entities: queryContactNeighbors(
+          this.raw,
+          body,
+          this.currentContactOwner,
+          entity,
+          filterMask,
+          normalFilter,
+        ),
+      }),
+    );
   }
 
   wakeBody(entity: number): Result<void, ManagedPhysicsFailure> {
@@ -2034,7 +2035,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     previous?: DerivedShapeRecord,
   ): { readonly handle: number } {
     const collider = createDerivedCollider(this.rapierModule, this.raw, body, shape, previous);
-    this.isolationColliderOwners.set(collider.handle, body.userData);
+    this.syncIsolationCollider(collider, body.userData);
     this.derivedColliderToShape.set(collider.handle, { entity: body.userData, id: shape.id });
     return collider;
   }
@@ -3385,9 +3386,6 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       .setSolverGroups(collider.solverGroups)
       .setSensor(Boolean(collider.isSensor))
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS)
-      .setActiveHooks(
-        RAPIER.ActiveHooks.FILTER_CONTACT_PAIRS | RAPIER.ActiveHooks.FILTER_INTERSECTION_PAIRS,
-      )
       .setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL);
   }
 
@@ -3542,7 +3540,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
           ),
           body,
         );
-        this.isolationColliderOwners.set(collider.handle, entity);
+        this.syncIsolationCollider(collider, entity);
       } catch (cause) {
         if (previousMeshShape === undefined) this.authoredMeshShapes.delete(entity);
         else this.authoredMeshShapes.set(entity, previousMeshShape);
@@ -3835,7 +3833,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (prepared !== undefined) {
       try {
         const nativeCollider = this.raw.createCollider(prepared, body);
-        this.isolationColliderOwners.set(nativeCollider.handle, entity);
+        this.syncIsolationCollider(nativeCollider, entity);
       } catch (cause) {
         this.removeEntity(entity);
         throw cause;
@@ -3930,7 +3928,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.entityMap.set(entity, {
       bodyHandle,
       worldIdentity: this.worldIdentity,
-      pairPolicyDirty: false,
+      pairPolicyDirty: true,
       additionalMass: Math.max(0, additionalMass),
       // `ensureBody` registers before its authored collider is attached.
       // Rapier recomputes the body from that collider and clears the
@@ -3951,8 +3949,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.poseWritebackEntities.add(entity);
     const body = this.raw.getRigidBody(bodyHandle);
     if (body !== undefined && body !== null)
-      for (const collider of this.bodyColliders(body))
-        this.isolationColliderOwners.set(collider.handle, entity);
+      for (const collider of this.bodyColliders(body)) this.syncIsolationCollider(collider, entity);
   }
 
   /**

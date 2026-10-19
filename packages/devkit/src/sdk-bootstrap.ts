@@ -9,7 +9,7 @@ import type { CommandResult } from './types.js';
 const SDK_INIT_PATH = ['.forgeax', 'sdk-init.json'] as const;
 const SDK_INIT_SCHEMA_VERSION = '2.0.0' as const;
 
-export interface SdkInitState {
+interface SdkInitState {
   readonly schemaVersion: typeof SDK_INIT_SCHEMA_VERSION;
   readonly sdkVersion: string;
   readonly engineCommit: string;
@@ -20,13 +20,13 @@ export interface SdkInitState {
   readonly arch: string;
 }
 
-export interface SdkInitReport extends SdkInitState {
+interface SdkInitReport extends SdkInitState {
   readonly root: string;
   readonly store: 'offline' | 'registry';
   readonly onboarding: AgentOnboarding;
 }
 
-export interface AgentOnboarding {
+interface AgentOnboarding {
   readonly read: readonly string[];
   readonly templateSelection?: {
     readonly required: true;
@@ -168,7 +168,7 @@ async function toolRuntimeReady(sdk: SdkContext): Promise<boolean> {
   return true;
 }
 
-export async function readSdkInitState(sdk: SdkContext): Promise<SdkInitState | undefined> {
+async function readSdkInitState(sdk: SdkContext): Promise<SdkInitState | undefined> {
   try {
     const value = JSON.parse(await readFile(sdkInitPath(sdk), 'utf8')) as unknown;
     const digest = await toolInputsDigest(sdk);

@@ -108,7 +108,7 @@ describe('RecorderSession real RHI consumer', () => {
   });
 
   it('captures pre-frame views used only as MSAA resolve targets', async () => {
-    const recorder = wrap(rhi);
+    const recorder = wrap(rhi, createShaderModule);
     const device = (await (await recorder.requestAdapter()).unwrap().requestDevice()).unwrap();
     const createView = (label: string, sampleCount: number) => {
       const texture = device

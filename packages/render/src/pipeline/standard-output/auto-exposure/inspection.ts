@@ -1,10 +1,6 @@
 import type { CameraExposure } from '../../../components/camera';
 
-export type AutoExposureErrorCode =
-  | 'auto-exposure-invalid-parameter'
-  | 'auto-exposure-capability-unavailable'
-  | 'auto-exposure-stale-generation'
-  | 'auto-exposure-stage-failed';
+export type AutoExposureErrorCode = keyof AutoExposureErrorDetailByCode;
 
 export interface AutoExposureInvalidParameterDetail {
   readonly field: string;

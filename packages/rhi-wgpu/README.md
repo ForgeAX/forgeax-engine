@@ -1,6 +1,6 @@
 # @forgeax/engine-rhi-wgpu
 
-> `import { rhi, ensureReady, acquireCanvasContext } from '@forgeax/engine-rhi-wgpu'` + `await ensureReady()` + `const ctx = (await rhi.acquireCanvasContext(canvas)).unwrap()` -- non-browser rendering path via wgpu-wasm.
+> `import { rhi } from '@forgeax/engine-rhi-wgpu'` + `const adapter = (await rhi.requestAdapter()).unwrap()` — rendering through wgpu-wasm.
 
 ## Overview
 
@@ -18,11 +18,11 @@ AI engine users do NOT import this package directly -- `Engine.create({ canvas }
 | 2 | `navigator.gpu` present | `rhi-webgpu` (static import) | `canvas.getContext('webgpu')` |
 | 3 | `navigator.gpu` absent, or Channel 2 fails | `rhi-wgpu` (dynamic import) | wasm `createSurface(canvas)` |
 
-Channel 3 loads the `engine-wgpu-wasm` bundle lazily (via `ensureReady()`). The wasm bundle (~0.53 MB gzip) is only downloaded when neither Channel 1 nor 2 succeeds, keeping browser-only bundles lean.
+Channel 3 loads the `engine-wgpu-wasm` bundle lazily when `requestAdapter()` needs it. `ensureReady()` optionally prewarms the same module. The wasm bundle (~0.53 MB gzip) is only downloaded when neither Channel 1 nor 2 succeeds, keeping browser-only bundles lean.
 
 Native package builds select `forgeax-native` and call `ensureReady({ initFn })`,
 where `initFn` initializes the explicit native Host and returns its full binding
-namespace. The existing promise/module cache still owns concurrency, successful
+namespace. The existing Promise cache still owns concurrency, successful
 adoption and retry after failure. A missing native initializer rejects with
 `RhiError` code `rhi-not-available`; the native dependency graph contains neither
 the browser wgpu loader nor its WASM URL. Default browser builds retain the lazy
@@ -121,7 +121,7 @@ See `packages/wgpu-wasm/README.md` for the full wasm-bindgen method table.
 | Export | Kind | Description |
 |:--|:--|:--|
 | `rhi` | `RhiInstance` singleton | requestAdapter, acquireCanvasContext (the rhi-wgpu backend pack) |
-| `ensureReady()` | async function | Lazy-loads the wasm bundle; must be awaited before using `rhi` |
+| `ensureReady()` | async function | Optional WASM prewarming, or explicit native Host initialization |
 | `requestAdapter(opts?)` | async function | Adapter request with optional `compatibleSurface` |
 | `acquireCanvasContext(canvas)` | function | Canvas context acquisition via wasm Surface path |
 | `createShaderModule(device, desc)` | async function | Async shader module factory |
@@ -149,7 +149,7 @@ until the next wake. If a trap also prevents Rust ticket release, an
 settlement. The real WebGL regression includes this failure path, copy-only
 uploads, and earlier buffer-map ordering.
 
-- `acquireCanvasContext` must be called BEFORE `requestAdapter` when using Channel 3 (the wasm Surface is created first; the adapter is requested with `compatibleSurface` to ensure GL context compatibility)
+- Request the adapter with the compatible canvas before calling `rhi.acquireCanvasContext(canvas)`; the singleton retains the initialized instance for surface creation.
 - The wasm bundle is lazily loaded and only downloaded when needed
 - `adapter.features` reports supported features; `device.features` projects the
   actual enabled wgpu device features, using the same names. Feature-dependent
@@ -191,3 +191,12 @@ match this checkout; a stale artifact without the bundle methods is an error.
 
 wgpu 30 does not expose native bundle debug markers. The WASM encoder validates balanced
 debug groups, while RHI Debug retains their markers in captured commands.
+
+Texture uploads and every command-copy direction use RHI's `textureCopyOrigin`
+to resolve sequence or dictionary coordinates. Omitted axes default to zero;
+the WASM bridge only flattens that admitted origin into its native arguments.
+
+Command, compute-pass, render-pass and render-bundle adapters require the pinned
+WASM methods they forward. Pass-only operations are excluded from the bundle
+contract. Capability admission remains at the device/backend; command adapters
+never treat a missing native operation as a successful no-op.

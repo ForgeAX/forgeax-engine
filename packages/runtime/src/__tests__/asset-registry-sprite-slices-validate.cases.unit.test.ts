@@ -62,7 +62,6 @@ import {
   materialLoader,
   meshLoader,
   mipmapCacheSize,
-  numMipLevels,
   PACK_ARTIFACT_LOADERS,
   resolveAssetHandle,
   sceneLoader,
@@ -91,7 +90,7 @@ import type {
   MaterialPass,
   SamplerAsset,
 } from '@forgeax/engine-types';
-import { AssetError, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
+import { AssetError, numMipLevels, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { deriveBuiltin } from '../../../pack/src/builtin';
 import { DeviceScope } from '../../../render/src/device/device-scope';
@@ -422,7 +421,7 @@ type __MergedKeep =
       paramSchema: [
         { name: 'baseColor', type: 'color', default: [1.0, 1.0, 1.0, 1.0] },
         { name: 'texture', type: 'texture2d' },
-        { name: 'sampler', type: 'sampler', default: null },
+        { name: 'sampler', type: 'sampler' },
         { name: 'region', type: 'vec4', default: [0.0, 0.0, 1.0, 1.0] },
         { name: 'pivot', type: 'vec2', default: [0.5, 0.5] },
         { name: 'flipX', type: 'f32', default: 0.0 },

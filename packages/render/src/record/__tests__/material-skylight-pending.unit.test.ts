@@ -1,7 +1,7 @@
 import type { Buffer, Sampler, Texture, TextureView } from '@forgeax/engine-rhi';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../device/device-scope';
-import { getOrCreateIblCache } from '../../ibl/IblPipelineCache';
+import type { IblPrecomputeOutput } from '../../ibl/IblPipelineCache';
 import type { SkylightFallback } from '../../ibl/skylight-bind-group';
 import type { SkylightSnapshot } from '../../render-system-extract';
 import { resolveMaterialSkylight } from '../main-pass-material';
@@ -31,7 +31,7 @@ function fixture() {
     expect(buffer).toBe(fallback.intensityBuffer);
     expect(offset).toBe(0);
     expect(data).toBeInstanceOf(Float32Array);
-    expect(data.byteLength).toBe(32);
+    expect(data.byteLength).toBe(80);
     writes.push(data.slice());
     return { ok: true, value: undefined };
   });
@@ -39,7 +39,7 @@ function fixture() {
     device: { queue: { writeBuffer } },
     deviceScope: scope,
   } as unknown as Parameters<typeof resolveMaterialSkylight>[0];
-  const cache = getOrCreateIblCache(scope);
+  let cache: IblPrecomputeOutput | undefined;
   const image: SkylightSnapshot = {
     entityHandle: 1,
     equirectHandle: 123,
@@ -48,20 +48,49 @@ function fixture() {
     rotation: [0, 0, 0, 1],
   };
   const ready = () => {
-    cache.irradianceView = handle<TextureView>('ready-irr');
-    cache.prefilterView = handle<TextureView>('ready-pref');
-    cache.brdfLutView = handle<TextureView>('ready-brdf');
+    cache = {
+      irradianceView: handle<TextureView>('ready-irr'),
+      prefilterView: handle<TextureView>('ready-pref'),
+      brdfLutView: handle<TextureView>('ready-brdf'),
+    } as IblPrecomputeOutput;
   };
   const resolve = (
     sky: SkylightSnapshot | undefined,
     count = 1,
-    environment?: Parameters<typeof resolveMaterialSkylight>[4],
-  ) => resolveMaterialSkylight(runtime, { skylightFallback: fallback }, sky, count, environment);
-  const payload = () => Array.from(writes.at(-1) ?? []);
-  return { fallback, cache, image, ready, resolve, payload, writes };
+    environment?: Parameters<typeof resolveMaterialSkylight>[5],
+  ) =>
+    resolveMaterialSkylight(
+      runtime,
+      { skylightFallback: fallback },
+      sky,
+      count,
+      cache,
+      environment,
+    );
+  const payload = () => Array.from(writes.at(-1)?.slice(0, 8) ?? []);
+  return {
+    fallback,
+    get cache() {
+      return cache;
+    },
+    image,
+    ready,
+    resolve,
+    payload,
+    writes,
+  };
 }
 
 describe('material Skylight explicit-image availability', () => {
+  it('keeps constant irradiance while an image is pending and clears it on removal', () => {
+    const f = fixture();
+    f.resolve({ ...f.image, ambientIrradiance: [0.5, 1, 2] });
+    expect(f.payload()[0]).toBe(0);
+    expect(f.writes.at(-1)?.slice(16)).toEqual(new Float32Array([0.5, 1, 2, 0]));
+    f.resolve(undefined, 0);
+    expect(f.writes.at(-1)?.slice(16)).toEqual(new Float32Array(4));
+  });
+
   it('binds fallback views with zero intensity while an explicit image has no published IBL', () => {
     const f = fixture();
     const result = f.resolve(f.image);
@@ -70,18 +99,6 @@ describe('material Skylight explicit-image availability', () => {
     expect(result.skylightResources.prefilterView).toBe(f.fallback.prefilterView);
     expect(result.skylightResources.brdfLutView).toBe(f.fallback.brdfLutView);
     expect(f.payload()).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
-  });
-
-  it.each([
-    'irradianceView',
-    'prefilterView',
-    'brdfLutView',
-  ] as const)('keeps explicit-image intensity zero when the published bundle lacks %s', (missing) => {
-    const f = fixture();
-    f.ready();
-    delete f.cache[missing];
-    expect(f.resolve(f.image).activeViews).toBeUndefined();
-    expect(f.payload()[0]).toBe(0);
   });
 
   it('retains positive solid-color ambient without an authored image', () => {
@@ -95,9 +112,9 @@ describe('material Skylight explicit-image availability', () => {
     const f = fixture();
     f.ready();
     const result = f.resolve(f.image);
-    expect(result.skylightResources.irradianceView).toBe(f.cache.irradianceView);
-    expect(result.skylightResources.prefilterView).toBe(f.cache.prefilterView);
-    expect(result.skylightResources.brdfLutView).toBe(f.cache.brdfLutView);
+    expect(result.skylightResources.irradianceView).toBe(f.cache?.irradianceView);
+    expect(result.skylightResources.prefilterView).toBe(f.cache?.prefilterView);
+    expect(result.skylightResources.brdfLutView).toBe(f.cache?.brdfLutView);
     expect(f.payload()).toEqual([2, 0.25, 0.5, 0.75, 0, 0, 0, 1]);
   });
 

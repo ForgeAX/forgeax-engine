@@ -1,4 +1,5 @@
 import type { DecoderModule } from 'draco3d';
+import { accessorStorage, accessorVectorSize, COMPONENT_TYPE } from './accessor/layout.js';
 import type { DracoAttributeArray, GltfDracoDecodeCapability } from './draco-decode.js';
 
 /** Build-only adapter; WASM initializes on the first compressed primitive. */
@@ -14,12 +15,12 @@ export function createDracoDecoder(
       const buffer = new module.DecoderBuffer();
       const mesh = new module.Mesh();
       const types = {
-        5120: { Storage: Int8Array, type: module.DT_INT8 },
-        5121: { Storage: Uint8Array, type: module.DT_UINT8 },
-        5122: { Storage: Int16Array, type: module.DT_INT16 },
-        5123: { Storage: Uint16Array, type: module.DT_UINT16 },
-        5125: { Storage: Uint32Array, type: module.DT_UINT32 },
-        5126: { Storage: Float32Array, type: module.DT_FLOAT32 },
+        [COMPONENT_TYPE.I8]: module.DT_INT8,
+        [COMPONENT_TYPE.U8]: module.DT_UINT8,
+        [COMPONENT_TYPE.I16]: module.DT_INT16,
+        [COMPONENT_TYPE.U16]: module.DT_UINT16,
+        [COMPONENT_TYPE.U32]: module.DT_UINT32,
+        [COMPONENT_TYPE.F32]: module.DT_FLOAT32,
       };
       try {
         buffer.Init(
@@ -59,33 +60,32 @@ export function createDracoDecoder(
         const decoded: Record<string, DracoAttributeArray> = {};
         for (const [semantic, { id, accessor }] of Object.entries(attributes)) {
           const attribute = decoder.GetAttributeByUniqueId(mesh, id);
-          const components = ({ SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 } as Record<string, number>)[
-            accessor.type
-          ];
+          const components = accessorVectorSize(accessor.type);
           if (
             !attribute ||
             attribute.num_components() !== components ||
             accessor.count !== vertexCount
           )
             throw new Error(`${semantic} Draco attribute is missing or has a different shape`);
-          const storage = types[accessor.componentType as keyof typeof types];
-          if (storage === undefined)
+          const Storage = accessorStorage(accessor.componentType);
+          const type = types[accessor.componentType as keyof typeof types];
+          if (Storage === undefined || type === undefined)
             throw new Error(`${semantic} has an unsupported component type`);
           const count = vertexCount * attribute.num_components();
-          const length = count * storage.Storage.BYTES_PER_ELEMENT;
+          const length = count * Storage.BYTES_PER_ELEMENT;
           const pointer = module._malloc(length);
           try {
             if (
               (decoder.GetAttributeDataArrayForAllPoints(
                 mesh,
                 attribute,
-                storage.type,
+                type,
                 length,
                 pointer,
               ) as unknown) !== true
             )
               throw new Error(`${semantic} Draco attribute projection failed`);
-            decoded[semantic] = new storage.Storage(
+            decoded[semantic] = new Storage(
               module.HEAPU8.buffer as ArrayBuffer,
               pointer,
               count,

@@ -71,9 +71,9 @@ describe('Standard independent scalar maps', () => {
       ['alphaChannel', 1],
     ] as const) {
       expect(material.parameters?.some((entry) => entry.name === name)).toBe(true);
-      expect(STANDARD_MATERIAL_PARAM_SCHEMA.find((entry) => entry.name === name)?.default).toBe(
-        channel,
-      );
+      expect(STANDARD_MATERIAL_PARAM_SCHEMA.find((entry) => entry.name === name)).toMatchObject({
+        default: channel,
+      });
     }
   });
 

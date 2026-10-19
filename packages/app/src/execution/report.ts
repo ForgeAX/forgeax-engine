@@ -1,4 +1,5 @@
 import type { AudioState } from '@forgeax/engine-audio';
+import type { World } from '@forgeax/engine-ecs';
 import { EXECUTION_REPORT_SCHEMA_VERSION } from './schema';
 import type {
   ExecutionCapabilities,
@@ -39,9 +40,19 @@ export function executionAudioReport(state?: AudioState): ExecutionReport['audio
   };
 }
 
+export function executionWorldReport(world?: World['execution']): ExecutionReport['world'] {
+  return {
+    identity: world?.identity ?? null,
+    health: world?.health ?? 'healthy',
+    partialWrite: world?.fault?.partialWrite ?? false,
+    retryable: world?.fault?.retryable ?? true,
+  };
+}
+
 export function createExecutionReport(
   capabilities: ExecutionCapabilities,
   workers: ExecutionSelection,
+  world?: World['execution'],
 ): ExecutionReport {
   return {
     schemaVersion: EXECUTION_REPORT_SCHEMA_VERSION,
@@ -51,12 +62,7 @@ export function createExecutionReport(
       realm: workers.engine.enabled ? 'worker' : 'host',
       health: 'idle',
     },
-    world: {
-      identity: null,
-      health: 'healthy',
-      partialWrite: false,
-      retryable: true,
-    },
+    world: executionWorldReport(world),
     kernelDispatch: {
       eligible: false,
       usedShared: false,

@@ -1,6 +1,7 @@
+import { halfFloat } from '@forgeax/engine/math';
 // texel-decode.test.ts — host-side decode of uncompressed color formats to RGBA8.
 
-import { decodeToRgba8, halfToFloat } from '@forgeax/engine-rhi-debug';
+import { decodeToRgba8 } from '@forgeax/engine-rhi-debug';
 import { describe, expect, it } from 'vitest';
 
 /** Pack a Float32Array into a little-endian byte view. */
@@ -17,12 +18,12 @@ function u16Bytes(values: number[]): Uint8Array {
 
 describe('halfToFloat', () => {
   it('decodes canonical f16 bit patterns', () => {
-    expect(halfToFloat(0x0000)).toBe(0); // +0
-    expect(halfToFloat(0x3c00)).toBeCloseTo(1, 5); // 1.0
-    expect(halfToFloat(0x4000)).toBeCloseTo(2, 5); // 2.0
-    expect(halfToFloat(0x3800)).toBeCloseTo(0.5, 5); // 0.5
-    expect(halfToFloat(0xbc00)).toBeCloseTo(-1, 5); // -1.0
-    expect(halfToFloat(0x7c00)).toBe(Number.POSITIVE_INFINITY); // +Inf
+    expect(halfFloat.f16ToF32(0x0000)).toBe(0); // +0
+    expect(halfFloat.f16ToF32(0x3c00)).toBeCloseTo(1, 5); // 1.0
+    expect(halfFloat.f16ToF32(0x4000)).toBeCloseTo(2, 5); // 2.0
+    expect(halfFloat.f16ToF32(0x3800)).toBeCloseTo(0.5, 5); // 0.5
+    expect(halfFloat.f16ToF32(0xbc00)).toBeCloseTo(-1, 5); // -1.0
+    expect(halfFloat.f16ToF32(0x7c00)).toBe(Number.POSITIVE_INFINITY); // +Inf
   });
 });
 

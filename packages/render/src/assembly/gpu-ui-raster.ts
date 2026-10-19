@@ -29,7 +29,7 @@ const sampled = (binding: number, sampleType: 'uint' | 'float'): BindGroupLayout
 });
 
 /** Matches the pinned sparse-strip shader ABI, shared with real backend tests. */
-export const UI_GPU_PIPELINES = {
+const UI_GPU_PIPELINES = {
   strip: {
     stride: 24,
     formats: ['uint32', 'uint32', 'uint32', 'uint32', 'uint32', 'uint32'],

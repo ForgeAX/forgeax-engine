@@ -187,7 +187,7 @@ worldA
 worldA
   .spawn({
     component: DirectionalLight,
-    data: { direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.4 },
+    data: { castShadow: true, direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.4 },
   })
   .unwrap();
 

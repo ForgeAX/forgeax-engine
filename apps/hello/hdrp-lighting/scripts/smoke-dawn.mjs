@@ -246,7 +246,7 @@ for (let i = 0; i < 56; i++) {
     { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1]} },
     {
       component: SpotLight,
-      data: {
+      data: { castShadow: true,
         direction: [rng() - 0.5, -1, rng() - 0.5],
         color: [0.5 + 0.5 * rng(), 0.5 + 0.5 * rng(), 0.5 + 0.5 * rng()],
         intensity: 0.5 + 0.5 * rng(),

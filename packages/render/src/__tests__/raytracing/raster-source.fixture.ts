@@ -1,11 +1,6 @@
+import { halfFloat } from '@forgeax/engine-math';
 import type { Texture, TextureView } from '@forgeax/engine-rhi';
-import {
-  attachRecorder,
-  buildFrameModel,
-  decodeTape,
-  halfToFloat,
-  openReplay,
-} from '@forgeax/engine-rhi-debug';
+import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
 import { createRayDiffuseComposite } from '../../raytracing/diffuse-composite';
@@ -246,7 +241,7 @@ export async function verifyRasterRaySource(
     const decode = (bytes: Uint8Array) =>
       Array.from(
         new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2),
-        halfToFloat,
+        halfFloat.f16ToF32,
       );
     const unchanged = (bytes: Uint8Array) =>
       expect(decode(bytes)).toEqual(Array.from({ length: 8 }, () => baseline).flat());

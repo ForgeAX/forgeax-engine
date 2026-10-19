@@ -1045,16 +1045,16 @@ index a32b339..3f099ea 100644
 +    }
 +}
 diff --git a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
-index 123a8e3..31328b9 100644
+index 123a8e3..5b98351 100644
 --- a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
 +++ b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
-@@ -1,4 +1,4 @@
--use crate::bounding_volume::BoundingVolume;
+@@ -1,3 +1,5 @@
 +use crate::bounding_volume::Aabb;
++#[cfg(feature = "dim3")]
+ use crate::bounding_volume::BoundingVolume;
  use crate::math::{IVector, IVectorExt, Real, Vector, VectorExt};
  use crate::query::{NonlinearRigidMotion, QueryDispatcher, ShapeCastHit};
- use crate::shape::{Cuboid, Shape, Voxels};
-@@ -19,16 +19,42 @@ where
+@@ -19,16 +21,42 @@ where
  {
      use num_traits::Bounded;
  
@@ -1102,7 +1102,7 @@ index 123a8e3..31328b9 100644
  
      // Search for the smallest time of impact.
      //
-@@ -47,14 +73,20 @@ where
+@@ -47,41 +75,50 @@ where
      let mut hit = None;
      let mut smallest_t = end_time;
  
@@ -1123,31 +1123,67 @@ index 123a8e3..31328b9 100644
 +        // about the rotation centre bounds every intervening orientation.
 +        let sphere = g2.compute_local_bounding_sphere();
 +        let radius = sphere.radius() + (sphere.center - motion2.local_center).length();
-+        Aabb::from_half_extents(start_pos2_1 * motion2.local_center, Vector::splat(radius))
++        let sphere_bound = Aabb::from_half_extents(start_pos2_1 * motion2.local_center, Vector::splat(radius));
++        #[cfg(feature = "dim3")]
++        { temporal_rotation_bound(g2, &motion2, &start_pos2_1, start_time, end_time, radius, sphere_bound) }
++        #[cfg(feature = "dim2")]
++        { sphere_bound }
 +    } else {
 +        g2.compute_aabb(&start_pos2_1)
 +    };
  
      let mut check_voxels_in_range = |search_domain: [IVector; 2]| {
-         for vox in g1.voxels_in_range(search_domain[0], search_domain[1]) {
-@@ -63,7 +95,7 @@ where
-                 let center = g1.voxel_center(vox.grid_coords);
-                 let cuboid = Cuboid::new(g1.voxel_size() / 2.0);
-                 let vox_motion1 = motion1.prepend_translation(center);
+-        for vox in g1.voxels_in_range(search_domain[0], search_domain[1]) {
+-            if !vox.state.is_empty() {
+-                // PERF: could we check the canonical shape instead, and deduplicate accordingly?
+-                let center = g1.voxel_center(vox.grid_coords);
+-                let cuboid = Cuboid::new(g1.voxel_size() / 2.0);
+-                let vox_motion1 = motion1.prepend_translation(center);
 -                if let Some(new_hit) = dispatcher
-+                if let Some(mut new_hit) = dispatcher
-                     .cast_shapes_nonlinear(
-                         &vox_motion1,
-                         &cuboid,
-@@ -77,6 +109,7 @@ where
-                     .flatten()
-                 {
-                     if new_hit.time_of_impact < smallest_t {
-+                        new_hit.witness1 += center;
-                         smallest_t = new_hit.time_of_impact;
-                         hit = Some(new_hit);
-                     }
-@@ -101,17 +134,17 @@ where
+-                    .cast_shapes_nonlinear(
+-                        &vox_motion1,
+-                        &cuboid,
+-                        &motion2,
+-                        g2,
+-                        start_time,
+-                        end_time,
+-                        stop_at_penetration,
+-                    )
+-                    .ok()
+-                    .flatten()
+-                {
+-                    if new_hit.time_of_impact < smallest_t {
+-                        smallest_t = new_hit.time_of_impact;
+-                        hit = Some(new_hit);
+-                    }
++        let mut check_run = |min: IVector, max: IVector| {
++            let first = g1.voxel_center(min);
++            let last = g1.voxel_center(max);
++            let center = first.midpoint(last);
++            let half = (last - first + g1.voxel_size()) * 0.5;
++            let cuboid = Cuboid::new(half);
++            let vox_motion1 = motion1.prepend_translation(center);
++            if let Some(mut next) = dispatcher.cast_shapes_nonlinear(
++                &vox_motion1, &cuboid, &motion2, g2, start_time, end_time, stop_at_penetration,
++            ).ok().flatten() {
++                if next.time_of_impact < smallest_t {
++                    next.witness1 += center;
++                    smallest_t = next.time_of_impact;
++                    hit = Some(next);
+                 }
+             }
++        };
++        #[cfg(feature = "dim3")]
++        if g2.as_cuboid().is_some() {
++            g1.map_cuboids_intersecting_range(search_domain[0], search_domain[1], |min, max| check_run(min, max - IVector::ONE));
++            return;
++        }
++        for voxel in g1.voxels_in_range(search_domain[0], search_domain[1]) {
++            if !voxel.state.is_empty() { check_run(voxel.grid_coords, voxel.grid_coords); }
+         }
+     };
+ 
+@@ -101,17 +138,17 @@ where
          let ii = [0, 1, 2];
  
          let toi = ii.map(|i| {
@@ -1169,6 +1205,125 @@ index 123a8e3..31328b9 100644
                  if t < 0.0 {
                      (Real::max_value(), false)
                  } else {
+@@ -170,6 +207,47 @@ where
+     hit
+ }
+ 
++
++// The arclength of any point about the COM bounds its displacement from the
++// start orientation. Linear translation remains covered by the existing DDA.
++#[cfg(feature = "dim3")]
++fn temporal_rotation_bound(
++    shape: &dyn Shape, motion: &NonlinearRigidMotion, start_pose: &crate::math::Pose,
++    start: Real, end: Real, radius: Real, sphere_bound: Aabb,
++) -> Aabb {
++    // Custom shape callbacks retain their original observations and failure path.
++    let builtin = shape.as_ball().is_some() || shape.as_cuboid().is_some()
++        || shape.as_capsule().is_some() || shape.as_segment().is_some()
++        || shape.as_triangle().is_some();
++    #[cfg(feature = "dim3")]
++    let builtin = builtin || shape.as_convex_polyhedron().is_some();
++    let angular_speed_squared = motion.angvel.length_squared();
++    let angular_speed = angular_speed_squared.sqrt();
++    let duration = end - start;
++    if !builtin || !start.is_finite() || !end.is_finite() || duration <= 0.0
++        // A subnormal squared norm has no useful relative error bound.
++        || !angular_speed_squared.is_normal() || !angular_speed.is_finite() || !radius.is_finite() || radius < 0.0
++        || !sphere_bound.mins.is_finite() || !sphere_bound.maxs.is_finite() {
++        return sphere_bound;
++    }
++    let angle = angular_speed * duration;
++    if !angle.is_finite() || angle >= 1.0 { return sphere_bound; }
++    let start_bound = shape.compute_aabb(start_pose);
++    if !start_bound.mins.is_finite() || !start_bound.maxs.is_finite() { return sphere_bound; }
++    let time_scale = start.abs() + end.abs();
++    let spatial_scale = start_bound.mins.abs().max_element().max(start_bound.maxs.abs().max_element())
++        + radius + motion.linvel.abs().max_element() * time_scale + 1.0;
++    let roundoff = 32.0 * Real::EPSILON * (spatial_scale + radius * angular_speed * time_scale);
++    let margin = radius * angle + roundoff;
++    if !margin.is_finite() { return sphere_bound; }
++    let local_bound = start_bound.loosened(margin);
++    let mins = local_bound.mins.max(sphere_bound.mins);
++    let maxs = local_bound.maxs.min(sphere_bound.maxs);
++    if mins.is_finite() && maxs.is_finite() && (mins.cmple(maxs)).all() {
++        Aabb::new(mins, maxs)
++    } else { sphere_bound }
++}
++
+ /// Time Of Impact of any shape with a composite shape, under a rigid motion (translation + rotation).
+ pub fn cast_shapes_nonlinear_shape_voxels<D>(
+     dispatcher: &D,
+@@ -196,3 +274,70 @@ where
+     )
+     .map(|hit| hit.swapped())
+ }
++
++#[cfg(all(test, feature = "dim3"))]
++mod temporal_bound_tests {
++    use super::*;
++    use crate::math::{Pose, Rotation};
++
++    #[test]
++    fn temporal_bound_contains_off_center_rotating_vertices_and_translation() {
++        let shape = Cuboid::new(Vector::new(0.04, 0.8, 0.03));
++        for center in [Vector::ZERO, Vector::new(7.0, -3.0, 2.0)] {
++            for angular in [Vector::Y * 1.0e-6, Vector::Y * -2.0, Vector::new(3.0, -4.0, 5.0)] {
++                for start in [0.0, 0.125, -0.125] {
++                    for translation in [Vector::ZERO, Vector::new(100000.0, -200000.0, 300000.0)] {
++                        let motion = NonlinearRigidMotion::new(Pose::from_parts(translation, Rotation::from_rotation_x(0.37)), center, Vector::new(-3.0, 1.0, 2.0), angular);
++                        let pose = motion.position_at_time(start);
++                        let sphere = shape.compute_local_bounding_sphere();
++                        let radius = sphere.radius() + (sphere.center - center).length();
++                        let previous = Aabb::from_half_extents(pose * center, Vector::splat(radius));
++                        let bound = temporal_rotation_bound(&shape, &motion, &pose, start, start + 0.01, radius, previous);
++                        for step in 0..=128 {
++                            let t = start + 0.01 * step as Real / 128.0;
++                            let offset = motion.linvel * (t - start);
++                            let at = motion.position_at_time(t);
++                            for x in [-0.04, 0.04] { for y in [-0.8, 0.8] { for z in [-0.03, 0.03] {
++                                let point = at * Vector::new(x,y,z) - offset;
++                                assert!(point.cmpge(bound.mins).all() && point.cmple(bound.maxs).all(), "point={point:?} bound={bound:?} start={start} t={t}");
++                            } } }
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn temporal_bound_keeps_sphere_for_underflowing_angular_norm() {
++        let shape=Cuboid::new(Vector::new(0.04,0.8,0.03));
++        let radius=shape.compute_local_bounding_sphere().radius();
++        let old=Aabb::from_half_extents(Vector::ZERO,Vector::splat(radius));
++        for (speed,end) in [(1.0e-30,1.0e30),(1.0e-22,1.0e22)] {
++            let motion=NonlinearRigidMotion::new(Pose::IDENTITY,Vector::ZERO,Vector::ZERO,Vector::Y*speed);
++            let actual=temporal_rotation_bound(&shape,&motion,&Pose::IDENTITY,0.0,end,radius,old);
++            assert_eq!(actual.mins,old.mins);assert_eq!(actual.maxs,old.maxs);
++        }
++    }
++
++    #[test]
++    fn temporal_bound_retains_original_sphere_for_unknown_or_unbounded_inputs() {
++        let shape = Cuboid::new(Vector::ONE);
++        let old = Aabb::new(Vector::splat(-10.0), Vector::splat(10.0));
++        let mut motion = NonlinearRigidMotion::new(Pose::IDENTITY, Vector::ZERO, Vector::ZERO, Vector::Y);
++        for (start,end,radius) in [(0.0,0.0,1.0),(1.0,0.0,1.0),(Real::NAN,1.0,1.0),(0.0,Real::INFINITY,1.0),(0.0,0.01,Real::INFINITY),(0.0,0.01,-1.0),(0.0,1.0,1.0),(0.0,10.0,1.0)] {
++            let actual = temporal_rotation_bound(&shape,&motion,&Pose::IDENTITY,start,end,radius,old);
++            assert_eq!(actual.mins,old.mins);assert_eq!(actual.maxs,old.maxs);
++        }
++        motion.angvel = Vector::splat(Real::NAN);
++        let actual=temporal_rotation_bound(&shape,&motion,&Pose::IDENTITY,0.0,0.01,1.0,old);
++        assert_eq!(actual.mins,old.mins);assert_eq!(actual.maxs,old.maxs);
++        motion.angvel=Vector::Y;motion.linvel=Vector::splat(Real::MAX);
++        let actual=temporal_rotation_bound(&shape,&motion,&Pose::IDENTITY,100.0,100.01,1.0,old);
++        assert_eq!(actual.mins,old.mins);assert_eq!(actual.maxs,old.maxs);
++        motion.linvel=Vector::ZERO;
++        let cylinder=crate::shape::Cylinder::new(1.0,1.0);
++        let actual=temporal_rotation_bound(&cylinder,&motion,&Pose::IDENTITY,0.0,0.01,1.0,old);
++        assert_eq!(actual.mins,old.mins);assert_eq!(actual.maxs,old.maxs);
++    }
++}
 diff --git a/src/query/point/point_triangle.rs b/src/query/point/point_triangle.rs
 index 810e3e3..0d54399 100644
 --- a/src/query/point/point_triangle.rs
@@ -1398,7 +1553,7 @@ index b965e7e..99e4714 100644
 +    })
 +}
 diff --git a/src/shape/voxels/voxels.rs b/src/shape/voxels/voxels.rs
-index 892b9f5..c83fd99 100644
+index 892b9f5..b99daad 100644
 --- a/src/shape/voxels/voxels.rs
 +++ b/src/shape/voxels/voxels.rs
 @@ -589,8 +589,11 @@ impl Voxels {
@@ -1463,6 +1618,107 @@ index 892b9f5..c83fd99 100644
      /// Computes a voxel shape from a set of world-space points.
      ///
      /// This constructor converts continuous world-space coordinates into discrete grid coordinates
+@@ -938,6 +982,41 @@ impl Voxels {
+             })
+     }
+ 
++    /// Visits disjoint occupied cuboids intersecting the query range.
++    /// Scratch storage is bounded by one existing chunk and is never retained.
++    #[cfg(feature = "dim3")]
++    pub(crate) fn map_cuboids_intersecting_range(
++        &self, mins: IVector, maxs: IVector, mut visit: impl FnMut(IVector, IVector),
++    ) {
++        if mins.cmpge(maxs).any() { return; }
++        const N: usize = VoxelsChunk::VOXELS_PER_CHUNK_DIM;
++        let range_aabb = Aabb::new(self.voxel_center(mins), self.voxel_center(maxs));
++        let mut visited = [false; VoxelsChunk::VOXELS_PER_CHUNK];
++        for chunk_id in self.chunk_bvh.leaves(|node: &BvhNode| node.aabb().intersects(&range_aabb)) {
++            visited.fill(false);
++            let chunk = self.chunk_ref(chunk_id);
++            let [origin, end] = chunk.domain();
++            let limit = end;
++            let index = |p: IVector| {
++                let d = p - origin;
++                d.x as usize + d.y as usize * N + d.z as usize * N * N
++            };
++            for voxel in chunk.voxels() {
++                let min = voxel.grid_coords;
++                if visited[index(min)] { continue; }
++                let mut max = min + IVector::ONE;
++                let available = |p: IVector| !visited[index(p)] && !chunk.states[index(p)].is_empty();
++                while max.x < limit.x && available(IVector::new(max.x, min.y, min.z)) { max.x += 1; }
++                while max.y < limit.y && (min.x..max.x).all(|x| available(IVector::new(x, max.y, min.z))) { max.y += 1; }
++                while max.z < limit.z && (min.x..max.x).all(|x| (min.y..max.y).all(|y| available(IVector::new(x, y, max.z)))) { max.z += 1; }
++                for x in min.x..max.x { for y in min.y..max.y { for z in min.z..max.z {
++                    visited[index(IVector::new(x, y, z))] = true;
++                } } }
++                if min.cmplt(maxs).all() && max.cmpgt(mins).all() { visit(min, max); }
++            }
++        }
++    }
++
+     fn voxel_to_chunk_key(voxel_key: IVector) -> IVector {
+         fn div_floor(a: Int, b: usize) -> Int {
+             let sign = (a < 0) as Int;
+@@ -1026,3 +1105,58 @@ impl Voxels {
+         (ivect_to_vect(key) + Vector::splat(0.5)) * self.voxel_size
+     }
+ }
++
++#[cfg(all(test, feature = "dim3"))]
++mod occupied_cuboid_tests {
++    use super::*;
++    use std::collections::BTreeSet;
++
++    fn assert_partition(voxels: &Voxels, min: IVector, max: IVector) -> usize {
++        let expected: BTreeSet<_> = voxels.voxels_in_range(min, max)
++            .map(|v| v.grid_coords.to_array()).collect();
++        let mut actual = BTreeSet::new();
++        let mut count = 0;
++        voxels.map_cuboids_intersecting_range(min, max, |lo, hi| {
++            count += 1;
++            assert!((lo.cmplt(max)).all() && (hi.cmpgt(min)).all());
++            let lo = lo.max(min);
++            let hi = hi.min(max);
++            assert!((lo.cmplt(hi)).all());
++            for x in lo.x..hi.x { for y in lo.y..hi.y { for z in lo.z..hi.z {
++                assert!(actual.insert([x, y, z]), "query boxes must not overlap");
++            } } }
++        });
++        assert_eq!(actual, expected, "query boxes must preserve every occupied cell and hole");
++        count
++    }
++
++    #[test]
++    fn solid_chunk_is_one_query_cuboid() {
++        let min = IVector::ZERO;
++        let max = IVector::splat(VoxelsChunk::VOXELS_PER_CHUNK_DIM as Int);
++        let voxels = Voxels::from_regions(Vector::splat(0.1), &[[min, max]]);
++        assert_eq!(assert_partition(&voxels, min, max), 1);
++        assert_eq!(assert_partition(&voxels, IVector::ONE, max - IVector::ONE), 1);
++        assert_eq!(assert_partition(&voxels, min, min), 0);
++        assert_eq!(assert_partition(&voxels, IVector::ONE, IVector::ONE), 0);
++    }
++
++    #[test]
++    fn query_cuboids_preserve_sparse_holes_and_negative_chunk_boundaries() {
++        let mut regions = Vec::new();
++        for x in -10..11 { for y in -3..4 { for z in -9..10 {
++            if (x * 3 + y * 5 + z * 7) % 11 != 0 && (x != 0 || y == 0) {
++                let min = IVector::new(x, y, z);
++                regions.push([min, min + IVector::ONE]);
++            }
++        } } }
++        regions.push([IVector::new(-9, -2, -8), IVector::new(-2, 2, -3)]);
++        let voxels = Voxels::from_regions(Vector::new(0.1, 0.2, 0.3), &regions);
++        for [min, max] in [
++            [IVector::new(-12, -4, -12), IVector::new(12, 4, 12)],
++            [IVector::new(-7, -1, -7), IVector::new(9, 3, 9)],
++            [IVector::new(0, -1, -5), IVector::new(1, 2, 5)],
++            [IVector::new(30, 0, 0), IVector::new(31, 1, 1)],
++        ] { let _ = assert_partition(&voxels, min, max); }
++    }
++}
 diff --git a/src/shape/voxels/voxels_neighborhood.rs b/src/shape/voxels/voxels_neighborhood.rs
 index 659f8b0..edcda43 100644
 --- a/src/shape/voxels/voxels_neighborhood.rs
@@ -1577,4 +1833,399 @@ index 659f8b0..edcda43 100644
 +            }
 +        }
 +    }
++}
+diff --git a/crates/parry3d/tests/temporal_voxel_rotation.rs b/crates/parry3d/tests/temporal_voxel_rotation.rs
+new file mode 100644
+index 0000000..d728c97
+--- /dev/null
++++ b/crates/parry3d/tests/temporal_voxel_rotation.rs
+@@ -0,0 +1,41 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
++use parry3d::shape::{Cuboid, Shape, Voxels};
++
++fn compare_exhaustive(grid_motion: NonlinearRigidMotion, motion: NonlinearRigidMotion, shape: &dyn Shape, start: f32, end: f32) -> bool {
++    let voxels=Voxels::from_regions(Vector::splat(0.1), &[[IVector::new(-8,-2,0),IVector::new(9,3,1)]]);
++    let cube=Cuboid::new(Vector::splat(0.05));
++    let mut earliest=None::<f32>;
++    for voxel in voxels.voxels().filter(|voxel|!voxel.state.is_empty()) {
++        let center=voxels.voxel_center(voxel.grid_coords);
++        if let Some(hit)=cast_shapes_nonlinear(&grid_motion.prepend_translation(center),&cube,&motion,shape,start,end,true).unwrap() {
++            if hit.time_of_impact<earliest.unwrap_or(end) {earliest=Some(hit.time_of_impact);}
++        }
++    }
++    let actual=cast_shapes_nonlinear(&grid_motion,&voxels,&motion,shape,start,end,true).unwrap().map(|hit|hit.time_of_impact);
++    assert_eq!(actual.is_some(),earliest.is_some(),"actual={actual:?} reference={earliest:?} start={start} end={end} motion={motion:?}");
++    if let (Some(actual),Some(expected))=(actual,earliest) {assert!((actual-expected).abs()<=0.00003,"actual={actual} expected={expected}");}
++    actual.is_some()
++}
++
++#[test]
++fn temporal_voxel_bounds_match_all_occupied_cells_with_eccentric_motion() {
++    let shape=Cuboid::new(Vector::new(0.04,0.6,0.03));
++    let mut hits=0;let mut misses=0;
++    for grid_angle in [0.0,0.37] {for speed in [0.000001,-2.0,20.0,-20.0] {for start in [0.0,0.002,0.125] {for eccentric in [0.0,3.0] {
++        let rotation=Rotation::from_rotation_y(grid_angle);
++        let grid=NonlinearRigidMotion::constant_position(Pose::from_parts(Vector::new(-2.0,1.0,3.0),rotation));
++        let initial=Pose::from_parts(Vector::new(-2.0,1.0,3.0)+rotation*Vector::new(0.0,0.0,-0.3),rotation);
++        let motion=NonlinearRigidMotion::new(initial,Vector::new(eccentric,0.0,0.0),rotation*Vector::new(0.0,0.0,20.0),Vector::Y*speed);
++        if compare_exhaustive(grid,motion,&shape,start,start+1.0/60.0){hits+=1}else{misses+=1}
++    }}}}
++    assert!(hits>0&&misses>0,"test must include both actual hits and separated trajectories");
++}
++
++#[test]
++fn full_and_multiple_rotations_preserve_mid_arc_hits() {
++    let shape=Cuboid::new(Vector::new(0.04,0.8,0.04));
++    for turns in [1.0,-1.0,3.0,-3.0] {
++        assert!(compare_exhaustive(NonlinearRigidMotion::constant_position(Pose::IDENTITY),NonlinearRigidMotion::new(Pose::translation(0.0,0.0,-0.6),Vector::ZERO,Vector::ZERO,Vector::X*std::f32::consts::TAU*turns),&shape,0.0,1.0));
++    }
++}
+diff --git a/src/query/point/point_voxels.rs b/src/query/point/point_voxels.rs
+index 87a5b14..f837430 100644
+--- a/src/query/point/point_voxels.rs
++++ b/src/query/point/point_voxels.rs
+@@ -1,17 +1,21 @@
+ use crate::math::{Real, Vector};
+ use crate::query::{PointProjection, PointQuery};
+-use crate::shape::{Cuboid, FeatureId, Voxels, VoxelsChunkRef};
++use crate::shape::{FeatureId, Voxels, VoxelsChunkRef};
+ 
+ impl PointQuery for Voxels {
+     #[inline]
+     fn project_local_point(&self, pt: Vector, solid: bool) -> PointProjection {
+         self.chunk_bvh()
+-            .project_point(pt, Real::MAX, |chunk_id, _| {
+-                let chunk = self.chunk_ref(chunk_id);
+-                chunk
+-                    .project_local_point_and_get_vox_id(pt, solid)
+-                    .map(|(proj, _)| proj)
+-            })
++            .find_best(
++                Real::MAX,
++                |node, _| node.aabb().distance_to_local_point(pt, true),
++                |chunk_id, _| {
++                    let chunk = self.chunk_ref(chunk_id);
++                    chunk
++                        .project_local_point_and_get_vox_id(pt, solid)
++                        .map(|(proj, _)| (voxel_point_projection_cost(pt, &proj), proj))
++                },
++            )
+             .map(|res| res.1 .1)
+             .unwrap_or(PointProjection::new(false, Vector::splat(Real::MAX)))
+     }
+@@ -19,13 +23,22 @@ impl PointQuery for Voxels {
+     #[inline]
+     fn project_local_point_and_get_feature(&self, pt: Vector) -> (PointProjection, FeatureId) {
+         self.chunk_bvh()
+-            .project_point_and_get_feature(pt, Real::MAX, |chunk_id, _| {
+-                let chunk = self.chunk_ref(chunk_id);
+-                // TODO: we need a way to return both the voxel id, and the feature on the voxel.
+-                chunk
+-                    .project_local_point_and_get_vox_id(pt, false)
+-                    .map(|(proj, vox)| (proj, FeatureId::Face(vox)))
+-            })
++            .find_best(
++                Real::MAX,
++                |node, _| node.aabb().distance_to_local_point(pt, true),
++                |chunk_id, _| {
++                    let chunk = self.chunk_ref(chunk_id);
++                    // TODO: we need a way to return both the voxel id, and the feature on the voxel.
++                    chunk
++                        .project_local_point_and_get_vox_id(pt, false)
++                        .map(|(proj, vox)| {
++                            (
++                                voxel_point_projection_cost(pt, &proj),
++                                (proj, FeatureId::Face(vox)),
++                            )
++                        })
++                },
++            )
+             .map(|res| res.1 .1)
+             .unwrap_or((
+                 PointProjection::new(false, Vector::splat(Real::MAX)),
+@@ -43,14 +56,20 @@ impl<'a> VoxelsChunkRef<'a> {
+     ) -> Option<(PointProjection, u32)> {
+         // TODO: optimize this naive implementation that just iterates on all the voxels
+         //       from this chunk.
+-        let base_cuboid = Cuboid::new(self.parent.voxel_size() / 2.0);
+         let mut smallest_dist = Real::MAX;
+         let mut result = PointProjection::new(false, pt);
+         let mut result_vox_id = 0;
+ 
+         for vox in self.voxels() {
+-            let mut candidate = base_cuboid.project_local_point(pt - vox.center, solid);
+-            candidate.point += vox.center;
++            // Use the same rounded bounds as voxel ray queries. Subtracting the
++            // center before comparing half-extents can open an f32 seam.
++            let candidate = self
++                .parent
++                .voxel_aabb(vox.grid_coords)
++                .project_local_point(pt, solid);
++            if solid && candidate.is_inside {
++                return Some((candidate, vox.linear_id.flat_id() as u32));
++            }
+ 
+             let candidate_dist = (candidate.point - pt).length();
+             if candidate_dist < smallest_dist {
+@@ -63,3 +82,14 @@ impl<'a> VoxelsChunkRef<'a> {
+         (smallest_dist < Real::MAX).then_some((result, result_vox_id as u32))
+     }
+ }
++
++// A zero rounded norm outside the shape must not prune a genuinely inside
++// projection from another chunk. This changes search cost, not geometry.
++fn voxel_point_projection_cost(pt: Vector, projection: &PointProjection) -> Real {
++    let distance = projection.point.distance(pt);
++    if distance == 0.0 && !projection.is_inside {
++        Real::MIN_POSITIVE
++    } else {
++        distance
++    }
++}
+diff --git a/crates/parry3d/tests/voxel_point_seams.rs b/crates/parry3d/tests/voxel_point_seams.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/parry3d/tests/voxel_point_seams.rs
+@@ -0,0 +1,188 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::PointQuery;
++use parry3d::shape::Voxels;
++
++fn assert_reference(voxels: &Voxels, point: Vector) {
++    let expected_inside = voxels
++        .voxels()
++        .any(|v| voxels.voxel_aabb(v.grid_coords).contains_local_point(point));
++    let result = voxels.project_local_point(point, true);
++    assert_eq!(
++        result.is_inside, expected_inside,
++        "point={point:?}, result={result:?}"
++    );
++    assert_eq!(voxels.contains_local_point(point), expected_inside);
++    if expected_inside {
++        assert_eq!(result.point, point);
++    } else {
++        let distance = voxels
++            .voxels()
++            .map(|v| {
++                voxels
++                    .voxel_aabb(v.grid_coords)
++                    .distance_to_local_point(point, true)
++            })
++            .fold(f32::MAX, f32::min);
++        assert!(
++            (result.point.distance(point) - distance).abs()
++                <= 4.0 * f32::EPSILON * (1.0 + distance)
++        );
++    }
++}
++
++#[test]
++fn adjacent_tenth_cells_include_shared_faces_edges_and_corners() {
++    for base in [IVector::new(139, 139, 139), IVector::new(-141, -141, -141)] {
++        let cells: Vec<_> = (0..2)
++            .flat_map(|x| {
++                (0..2).flat_map(move |y| (0..2).map(move |z| base + IVector::new(x, y, z)))
++            })
++            .collect();
++        let voxels = Voxels::new(Vector::splat(0.1), &cells);
++        let center: f32 = if base.x > 0 { 14.0 } else { -14.0 };
++        for x in [center.next_down(), center, center.next_up()] {
++            for y in [center.next_down(), center, center.next_up()] {
++                for z in [center.next_down(), center, center.next_up()] {
++                    assert_reference(&voxels, Vector::new(x, y, z));
++                    assert!(voxels.contains_local_point(Vector::new(x, y, z)));
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn isolated_exterior_faces_and_empty_holes_use_existing_voxel_bounds() {
++    let cells = [
++        IVector::new(0, 139, 0),
++        IVector::new(0, 141, 0),
++        IVector::new(-33, -1, -33),
++    ];
++    let voxels = Voxels::new(Vector::new(0.1, 0.1, 0.2), &cells);
++    for v in voxels.voxels() {
++        let bounds = voxels.voxel_aabb(v.grid_coords);
++        for x in [
++            bounds.mins.x.next_down(),
++            bounds.mins.x,
++            bounds.maxs.x,
++            bounds.maxs.x.next_up(),
++        ] {
++            for y in [
++                bounds.mins.y.next_down(),
++                bounds.mins.y,
++                bounds.maxs.y,
++                bounds.maxs.y.next_up(),
++            ] {
++                for z in [
++                    bounds.mins.z.next_down(),
++                    bounds.mins.z,
++                    bounds.maxs.z,
++                    bounds.maxs.z.next_up(),
++                ] {
++                    assert_reference(&voxels, Vector::new(x, y, z));
++                }
++            }
++        }
++    }
++    assert!(!voxels.contains_local_point(Vector::new(0.05, 14.05, 0.1)));
++}
++
++#[test]
++fn transformed_queries_compare_after_the_actual_inverse_pose() {
++    let voxels = Voxels::from_regions(
++        Vector::splat(0.1),
++        &[[IVector::new(0, 139, 0), IVector::new(2, 141, 2)]],
++    );
++    for pose in [
++        Pose::translation(96.0, -6.063216e-8, 64.0),
++        Pose::from_parts(
++            Vector::new(-5.0, 3.0, -7.0),
++            Rotation::from_rotation_y(0.37),
++        ),
++    ] {
++        for local in [
++            Vector::new(0.05, 14.0, 0.05),
++            Vector::new(0.15, 14.05, 0.15),
++            Vector::new(0.4, 14.05, -0.1),
++        ] {
++            let world = pose.transform_point(local);
++            let actual_local = pose.inverse_transform_point(world);
++            let expected = voxels.voxels().any(|v| {
++                voxels
++                    .voxel_aabb(v.grid_coords)
++                    .contains_local_point(actual_local)
++            });
++            assert_eq!(voxels.contains_point(&pose, world), expected);
++            assert_eq!(voxels.project_point(&pose, world, true).is_inside, expected);
++        }
++    }
++}
++
++#[test]
++fn chunk_boundaries_and_nonsolid_projection_match_existing_voxel_aabbs() {
++    let cells = [
++        IVector::new(31, 139, 0),
++        IVector::new(32, 140, 0),
++        IVector::new(-33, -140, 0),
++        IVector::new(-32, -141, 0),
++    ];
++    let voxels = Voxels::new(Vector::splat(0.1), &cells);
++    for voxel in voxels.voxels() {
++        let bounds = voxels.voxel_aabb(voxel.grid_coords);
++        for point in [
++            bounds.mins,
++            bounds.maxs,
++            bounds.center(),
++            bounds.mins - Vector::splat(0.001),
++            bounds.maxs + Vector::splat(0.001),
++        ] {
++            assert_reference(&voxels, point);
++            let expected = voxels
++                .voxels()
++                .map(|v| {
++                    voxels
++                        .voxel_aabb(v.grid_coords)
++                        .project_local_point(point, false)
++                        .point
++                        .distance(point)
++                })
++                .fold(f32::MAX, f32::min);
++            let projected = voxels.project_local_point(point, false);
++            let featured = voxels.project_local_point_and_get_feature(point).0;
++            for result in [projected, featured] {
++                assert!(
++                    (result.point.distance(point) - expected).abs()
++                        <= 4.0 * f32::EPSILON * (1.0 + expected)
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn rounded_zero_distance_outside_does_not_hide_an_inside_chunk() {
++    let voxels = Voxels::new(
++        Vector::splat(0.1),
++        &[
++            IVector::new(-1, -1, -1),
++            IVector::new(0, -1, -1),
++            IVector::new(-1, 0, -1),
++            IVector::new(-1, -1, 0),
++        ],
++    );
++    for axis in 0..3 {
++        for near_zero in [-f32::from_bits(1), -1.0e-30, -1.0e-24] {
++            let mut point = Vector::splat(-0.05);
++            point[axis] = near_zero;
++            assert_reference(&voxels, point);
++            assert!(voxels.contains_local_point(point));
++            assert!(voxels.project_local_point(point, false).is_inside);
++            assert!(
++                voxels
++                    .project_local_point_and_get_feature(point)
++                    .0
++                    .is_inside
++            );
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/coalesced_voxel_ccd.rs b/crates/parry3d/tests/coalesced_voxel_ccd.rs
+new file mode 100644
+index 0000000..76580c7
+--- /dev/null
++++ b/crates/parry3d/tests/coalesced_voxel_ccd.rs
+@@ -0,0 +1,47 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
++use parry3d::shape::{Cuboid, Voxels};
++
++#[test]
++fn continuous_queries_match_the_occupied_solid() {
++    let voxels = Voxels::from_regions(Vector::splat(0.1), &[[IVector::ZERO, IVector::splat(8)]]);
++    let solid = Cuboid::new(Vector::splat(0.4));
++    let fast = Cuboid::new(Vector::new(0.09, 0.15, 0.05));
++    let mut cases = 0;
++    for shift in [Vector::ZERO, Vector::new(90.0, 14.0, 35.0)] {
++        let grid =
++            NonlinearRigidMotion::constant_position(Pose::from_parts(shift, Rotation::IDENTITY));
++        let whole = grid.prepend_translation(Vector::splat(0.4));
++        for origin_x in [-0.5, -0.06, 0.04, 0.4, 0.76, 0.86, 1.3] {
++            for velocity in [-20.0, -1.0, 1.0, 20.0] {
++                for angular in [0.0, 0.2, -2.0, 8.0] {
++                    for stop in [false, true] {
++                        let motion = NonlinearRigidMotion::new(
++                            Pose::from_parts(
++                                shift + Vector::new(origin_x, 0.4, 0.4),
++                                Rotation::from_rotation_y(0.37),
++                            ),
++                            Vector::new(0.01, -0.02, 0.0),
++                            Vector::X * velocity,
++                            Vector::Y * angular,
++                        );
++                        let query =
++                            |shape: &dyn parry3d::shape::Shape, grid: &NonlinearRigidMotion| {
++                                cast_shapes_nonlinear(grid, shape, &motion, &fast, 0.0, 0.1, stop)
++                                    .unwrap()
++                                    .map(|h| h.time_of_impact)
++                            };
++                        let expected = query(&solid, &whole);
++                        let actual = query(&voxels, &grid);
++                        assert_eq!(actual.is_some(), expected.is_some(), "shift={shift:?} x={origin_x} velocity={velocity} angular={angular} stop={stop} actual={actual:?} expected={expected:?}");
++                        if let (Some(a), Some(b)) = (actual, expected) {
++                            assert!((a-b).abs()<0.0001, "x={origin_x} velocity={velocity} angular={angular} stop={stop} actual={a} expected={b}");
++                        }
++                        cases += 1;
++                    }
++                }
++            }
++        }
++    }
++    assert_eq!(cases, 448);
 +}

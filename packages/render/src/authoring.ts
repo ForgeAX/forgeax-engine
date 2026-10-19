@@ -13,6 +13,10 @@ export {
   type FullscreenRenderFeatureOptions,
 } from './features/fullscreen';
 export { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from './materials';
+export {
+  createStandardForwardPipeline,
+  type StandardForwardOutput,
+} from './pipeline/standard-forward-output';
 // Typed graph composition for custom material outputs. Renderer owns execution.
 export {
   createRenderPipelineTarget,
@@ -23,6 +27,7 @@ export {
 export { setActiveCamera } from './systems/active-camera';
 export { TransparentSort } from './systems/transparent-sort-config';
 export {
+  addObservationCapturePass,
   addTypedOutputTransformPass,
   addTypedScenePass,
   type TypedScenePassOptions,

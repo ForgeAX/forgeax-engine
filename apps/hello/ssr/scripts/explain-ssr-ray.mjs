@@ -1,8 +1,9 @@
+import { halfFloat } from '@forgeax/engine/math';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
-import { decodeTape, buildFrameModel, halfToFloat } from '@forgeax/engine-rhi-debug';
+import { decodeTape, buildFrameModel } from '@forgeax/engine-rhi-debug';
 
 // Diagnostic reconstruction from exact selected-work input bytes. This mirrors
 // march decisions for explanation only; the finite-box oracle stays independent.
@@ -29,7 +30,7 @@ for (const name of ['depth', 'normal', 'camera', 'fallback']) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const stride = input.format?.endsWith('16float') ? 2 : input.format === 'rgba8unorm' ? 1 : 4;
   data[name] = Array.from({ length: bytes.length / stride }, (_, i) => stride === 2
-    ? halfToFloat(view.getUint16(i * 2, true)) : stride === 1 ? bytes[i] / 255 : view.getFloat32(i * 4, true));
+    ? halfFloat.f16ToF32(view.getUint16(i * 2, true)) : stride === 1 ? bytes[i] / 255 : view.getFloat32(i * 4, true));
 }
 const multiply = (m, v) => [0, 1, 2, 3].map(r => v.reduce((s, x, c) => s + m[c * 4 + r] * x, 0));
 const add = (a, b) => a.map((v, i) => v + b[i]);

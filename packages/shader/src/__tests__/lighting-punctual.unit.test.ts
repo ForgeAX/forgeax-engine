@@ -30,7 +30,7 @@ describe('direct punctual lighting shader contract', () => {
     expect(source).toContain('invRangeSquared');
     expect(source).toContain('cosInner');
     expect(source).toContain('cosOuter');
-    expect(source).toContain('smoothstep(cosOuter, cosInner');
+    expect(source).toContain('evalSpotCone(cosInner, cosOuter, dot(l, -lightDir))');
   });
 
   it('does not introduce a separate physical-light component or intensity profile', async () => {

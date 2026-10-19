@@ -1,6 +1,6 @@
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { CatalogSession } from '@forgeax/engine-assets-runtime/internal';
-import { createAcceptedPublicationStore, scriptablePackOutputSetDigest } from '@forgeax/engine-ddc';
+import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
 import { sourcePackageError } from '@forgeax/engine-import';
 import { validateProducerOutputs } from '@forgeax/engine-pack/build';
 import type {
@@ -10,6 +10,7 @@ import type {
   CatalogEntry,
   ImportedOutputDeclaration,
 } from '@forgeax/engine-types';
+import { assetPublicationOutputSetDigest } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 const GUID = '019e2cc6-0c86-79da-aa76-b0984c86d411';
@@ -25,7 +26,7 @@ function publication(generation: number): AssetPublicationEnvelope {
       refs: [DEPENDENCY_GUID],
     },
   ];
-  const outputSetDigest = scriptablePackOutputSetDigest(outputs);
+  const outputSetDigest = assetPublicationOutputSetDigest(outputs);
   return {
     schemaVersion: 'asset-publication/1',
     sourcePath: 'assets/fixture.pack.ts',

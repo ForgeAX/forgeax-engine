@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless Dawn smoke for Bevy depth_of_field.
 // The effect-off/on pair falsifies a depth-independent fullscreen blur.
@@ -7,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -179,8 +180,8 @@ framesObserved += remainder;
 const offPng = resolve(appRoot, 'artifacts', 'dof-off.png');
 const onPng = resolve(appRoot, 'artifacts', 'dof-on.png');
 mkdirSync(dirname(offPng), { recursive: true });
-writeFileSync(offPng, writeReferencePng(offPixels, width, height));
-writeFileSync(onPng, writeReferencePng(onPixels, width, height));
+writeFileSync(offPng, encodePng(width, height, offPixels));
+writeFileSync(onPng, encodePng(width, height, onPixels));
 const diff = compare(offPixels, onPixels);
 console.log(`[bevy-depth-of-field] backend=${rendererBackend(renderer)} sceneMeshes=${scene.meshCount}`);
 console.log(`[smoke] frames=${framesObserved} dofDiffMean=${diff.mean.toFixed(4)} changedPixels=${diff.changedPixels} visiblePixels=${diff.visiblePixels} passes=${passNames.join(',')}`);

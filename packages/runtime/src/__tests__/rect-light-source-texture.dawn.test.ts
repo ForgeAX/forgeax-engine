@@ -1,12 +1,12 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import { Camera, Materials, MeshFilter, MeshRenderer, RectAreaLight } from '@forgeax/engine-render';
 import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
   type FrameModel,
-  halfToFloat,
   openReplay,
   type ReplaySession,
   replayDeviceRequest,
@@ -119,7 +119,7 @@ function hdrMean(bytes: Uint8Array, bytesPerRow: number, x0: number, x1: number)
   for (let y = 24; y < 40; y++)
     for (let x = x0; x < x1; x++) {
       for (let c = 0; c < 3; c++)
-        sum[c] += halfToFloat(view.getUint16(y * bytesPerRow + x * 8 + c * 2, true));
+        sum[c] += halfFloat.f16ToF32(view.getUint16(y * bytesPerRow + x * 8 + c * 2, true));
       count++;
     }
   return sum.map((value) => value / count);
@@ -255,10 +255,10 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
       const replayView = new DataView(pixels.bytes.buffer, pixels.bytes.byteOffset);
       for (let y = 0; y < SIZE; y++)
         for (let x = 0; x < SIZE * 4; x++) {
-          const a = halfToFloat(
+          const a = halfFloat.f16ToF32(
             liveView.getUint16(y * frame.live.metadata.bytesPerRow + x * 2, true),
           );
-          const b = halfToFloat(replayView.getUint16(y * SIZE * 8 + x * 2, true));
+          const b = halfFloat.f16ToF32(replayView.getUint16(y * SIZE * 8 + x * 2, true));
           liveDifference = Math.max(liveDifference, Math.abs(a - b) / Math.max(1, Math.abs(a)));
         }
       return { replay, raw, metadata, left, right, liveDifference };

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DdcEntryStore, ddcOutputDigest } from '@forgeax/engine-ddc';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
 import {
@@ -79,8 +80,8 @@ describe('DevSession through a real Vite server', () => {
     const base = server.resolvedUrls?.local[0];
     if (!base) throw new Error('Vite did not expose its local URL');
     const catalogUrl = new URL(binding.catalogUrl, base).href;
-    const before = await (await fetch(catalogUrl)).json();
-    expect(before.entries).toHaveLength(2);
+    const before = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
+    expect(before).toHaveLength(2);
     expect(imported).not.toHaveBeenCalled();
     let hotDelta: (data: unknown) => void = () => {};
     let publishedDigest: string | undefined;
@@ -155,12 +156,12 @@ describe('DevSession through a real Vite server', () => {
       expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
       expect(loaded).toMatchObject({ ok: true, value: { guid: GUID, html: '<div>guide</div>' } });
       expect(imported).toHaveBeenCalledTimes(1);
-      const after = await (await fetch(catalogUrl)).json();
-      expect(after.entries.find((row: { guid: string }) => row.guid === GUID)).toMatchObject({
+      const after = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
+      expect(after.find((row) => row.guid === GUID)).toMatchObject({
         lifecycle: 'current',
         publication: { generation: expect.any(Number) },
       });
-      expect(after.entries.find((row: { guid: string }) => row.guid === unused)).toMatchObject({
+      expect(after.find((row) => row.guid === unused)).toMatchObject({
         lifecycle: 'missing',
       });
       expect(registry.snapshot().ready).toEqual([GUID]);
@@ -305,13 +306,14 @@ describe('DevSession through a real Vite server', () => {
       }),
     );
     await expect.poll(async () => (await fetch(catalogUrl)).status, { timeout: 5000 }).toBe(200);
-    const catalog = await (await fetch(catalogUrl)).json();
-    expect(catalog.entries).toHaveLength(2);
+    const catalog = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
+    expect(catalog).toHaveLength(2);
     const packageId = PackageId.parse(GUID);
     if (!packageId.ok) throw packageId.error;
     const expectedGuid = AssetGuid.format(AssetGuid.derive(packageId.value, 'effect/main'));
-    const target = catalog.entries.find((entry: { guid: string }) => entry.guid === expectedGuid);
+    const target = catalog.find((entry) => entry.guid === expectedGuid);
     expect(target).toBeDefined();
+    if (target === undefined) throw new Error('expected the current Catalog row');
     const importUrl = new URL(`${binding.importUrlBase}/${target.guid}`, catalogUrl);
     const imported = await fetch(importUrl, { method: 'POST' });
     expect(imported.status).toBe(200);
@@ -328,9 +330,9 @@ describe('DevSession through a real Vite server', () => {
       headers: { 'x-forgeax-import-mode': 'rebuild' },
     });
     expect(rebuilt.status).toBe(200);
-    const after = await (await fetch(catalogUrl)).json();
-    expect(after.entries.map((entry: { guid: string }) => entry.guid).sort()).toEqual(
-      catalog.entries.map((entry: { guid: string }) => entry.guid).sort(),
+    const after = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
+    expect(after.map((entry) => entry.guid).sort()).toEqual(
+      catalog.map((entry) => entry.guid).sort(),
     );
     expect(plugin.runtimeBinding()).toMatchObject({ status: 'ready', diagnostics: [] });
   }, 20_000);
@@ -405,12 +407,10 @@ describe('DevSession through a real Vite server', () => {
       ),
     );
     for (const response of responses) expect(response.status).toBe(200);
-    const catalog = await (await fetch(catalogUrl)).json();
-    expect(catalog.entries).toHaveLength(2);
-    expect(catalog.entries.every((row: { lifecycle: string }) => row.lifecycle === 'current')).toBe(
-      true,
-    );
-    for (const row of catalog.entries) {
+    const catalog = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
+    expect(catalog).toHaveLength(2);
+    expect(catalog.every((row) => row.lifecycle === 'current')).toBe(true);
+    for (const row of catalog) {
       const response = await fetch(new URL(row.packageUrl, catalogUrl));
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -492,7 +492,7 @@ describe('DevSession through a real Vite server', () => {
     const catalogUrl = new URL(binding.catalogUrl, baseUrl).href;
     const catalog = await fetch(catalogUrl);
     expect(catalog.status).toBe(200);
-    expect((await catalog.json()).entries).toHaveLength(1);
+    expect(decodeCatalogWire(await catalog.json()).unwrap()).toHaveLength(1);
 
     await mkdir(join(root, 'broken-assets'));
     await writeFile(join(root, 'broken-assets', 'broken.pack.json'), '{broken');
@@ -543,8 +543,11 @@ describe('DevSession through a real Vite server', () => {
     await server.listen();
     const catalogUrl = new URL(binding.catalogUrl, server.resolvedUrls?.local[0]).href;
     const acceptedCatalog = await (await fetch(catalogUrl)).json();
-    expect(acceptedCatalog.entries).toHaveLength(1);
-    const packageUrl = new URL(acceptedCatalog.entries[0].packageUrl, catalogUrl);
+    const acceptedEntries = decodeCatalogWire(acceptedCatalog).unwrap();
+    expect(acceptedEntries).toHaveLength(1);
+    const acceptedEntry = acceptedEntries[0];
+    if (acceptedEntry === undefined) throw new Error('expected the accepted Catalog row');
+    const packageUrl = new URL(acceptedEntry.packageUrl, catalogUrl);
     const acceptedBody = await (await fetch(packageUrl)).text();
     const send = vi.spyOn(server.ws, 'send');
     const second = vi.fn();

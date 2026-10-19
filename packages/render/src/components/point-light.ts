@@ -4,7 +4,7 @@
 // color collapsed from 3 per-axis scalar columns to one inline array<f32,3>).
 // `position` comes from the Transform component; PointLight requires a
 // companion Transform on the same entity (ECS query: `[Transform, PointLight]`).
-// `range` units are meters; defaults to `10.0`. Runtime finite-range
+// `range` units are meters; defaults to `Number.POSITIVE_INFINITY` (no cutoff). Runtime finite-range
 // attenuation is the Three r184 squared window; the KHR unsquared curve is an
 // import/reference boundary only. See `light-helpers.ts` for the host-side
 // range projection.
@@ -48,7 +48,7 @@ export function validatePointLightDecay(value: number): ResourceInvalidValueErro
  * `[Transform, PointLight]` ECS query.
  *
  * `color` is linear-space rgb in `[0, 1]` per channel; `intensity` is candela;
- * `range` is in meters and defaults to `10.0`
+ * `range` is in meters and defaults to `Number.POSITIVE_INFINITY` (no cutoff)
  * (KHR convention; `+Infinity` is the KHR no-truncation value, retained
  * for KHR_lights_punctual `range: 0` bridging via `light-helpers.ts`).
  * The runtime window is `clamp(1 - (d / range)^4, 0, 1)^2`; its no-cutoff
@@ -63,12 +63,12 @@ export function validatePointLightDecay(value: number): ResourceInvalidValueErro
  *     { component: PointLight, data: { intensity: 8, range: 25 } },
  *   );
  *
- * @example Minimal spawn -- defaults give neutral white at full strength, range 10m:
+ * @example Minimal spawn -- defaults give neutral white at full strength, no distance cutoff:
  *   world.spawn(
  *     { component: Transform, data: { pos: [0, 1, 0] } },
  *     { component: PointLight, data: {} },
  *   );
- *   // resolves to color=[1, 1, 1], intensity=1, range=10.0.
+ *   // resolves to color=[1, 1, 1], intensity=1, range=Infinity.
  */
 export const PointLight = defineComponent('PointLight', {
   // f64 preserves invalid author inputs until render validation (no u32 wrapping).
@@ -77,7 +77,7 @@ export const PointLight = defineComponent('PointLight', {
   // layer-3 fallback is all-zero, so the default MUST be explicit (D-5).
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
   intensity: { type: 'f32', default: 1 },
-  range: { type: 'f32', default: 10.0 },
+  range: { type: 'f32', default: Number.POSITIVE_INFINITY },
   /** Distance exponent; zero leaves only the finite-range window. */
   decay: { type: 'f64', default: 2 },
   // Transform rotates the full-sphere profile: polar +Z, azimuth +X toward +Y.

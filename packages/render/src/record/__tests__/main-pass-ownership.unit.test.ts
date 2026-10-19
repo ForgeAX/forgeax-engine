@@ -40,6 +40,43 @@ it('uses each validated GPU ownership lookup once across recording and preserves
   }
 });
 
+it('rebuilds compact source indices across sparse rows and nested recording', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const outer = cpuSetupFixture(device, module);
+  const inner = cpuSetupFixture(device, module);
+  outer.add({ entity: 1, claimed: [0, 2] });
+  outer.add({ entity: 2, claimed: [1] });
+  outer.add({ entity: 3, claimed: [] });
+  inner.add({ entity: 4, claimed: [1] });
+  const submitted = outer.c.onRenderableDraw;
+  let nested = false;
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  Object.assign(outer.c, {
+    onRenderableDraw: (...args: Parameters<NonNullable<typeof submitted>>) => {
+      submitted?.(...args);
+      if (nested) return;
+      nested = true;
+      inner.record(pass);
+    },
+  });
+  try {
+    outer.record(pass);
+    expect(outer.receipts).toEqual([
+      { entity: 1, submesh: 1 },
+      { entity: 2, submesh: 0 },
+      { entity: 2, submesh: 2 },
+      ...[0, 1, 2].map((submesh) => ({ entity: 3, submesh })),
+    ]);
+    expect(inner.receipts).toEqual([0, 2].map((submesh) => ({ entity: 4, submesh })));
+    expect([...outer.errors, ...inner.errors]).toEqual([]);
+  } finally {
+    pass.end();
+    outer.dispose();
+    inner.dispose();
+  }
+});
+
 it.each([
   'ordinal',
   'mixed',

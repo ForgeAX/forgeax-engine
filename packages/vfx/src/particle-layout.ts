@@ -1,3 +1,4 @@
+import { WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 import type { VfxReflectedField, VfxReflectedStruct, VfxValueType } from './effect-contract.js';
 
 /**
@@ -38,19 +39,19 @@ export interface VfxParticleCoreLayout {
 }
 
 const CORE_FIELDS: readonly VfxParticleCoreField[] = Object.freeze([
-  { name: 'position', type: 'vec3<f32>', offset: 0, size: 12, alignment: 16 },
-  { name: 'age', type: 'f32', offset: 12, size: 4, alignment: 4 },
-  { name: 'velocity', type: 'vec3<f32>', offset: 16, size: 12, alignment: 16 },
-  { name: 'lifetime', type: 'f32', offset: 28, size: 4, alignment: 4 },
-  { name: 'color', type: 'vec4<f32>', offset: 32, size: 16, alignment: 16 },
-  { name: 'sprite_size', type: 'vec2<f32>', offset: 48, size: 8, alignment: 8 },
-  { name: 'sprite_rotation', type: 'f32', offset: 56, size: 4, alignment: 4 },
-  { name: 'sub_image', type: 'f32', offset: 60, size: 4, alignment: 4 },
-  { name: 'mesh_orientation', type: 'vec4<f32>', offset: 64, size: 16, alignment: 16 },
-  { name: 'mesh_scale', type: 'vec3<f32>', offset: 80, size: 12, alignment: 16 },
-  { name: 'material_random', type: 'f32', offset: 92, size: 4, alignment: 4 },
-  { name: 'id', type: 'u32', offset: 96, size: 4, alignment: 4 },
-  { name: 'alive', type: 'u32', offset: 100, size: 4, alignment: 4 },
+  { name: 'position', type: 'vec3<f32>', offset: 0, ...WGSL_NUMERIC_LAYOUT['vec3<f32>'] },
+  { name: 'age', type: 'f32', offset: 12, ...WGSL_NUMERIC_LAYOUT.f32 },
+  { name: 'velocity', type: 'vec3<f32>', offset: 16, ...WGSL_NUMERIC_LAYOUT['vec3<f32>'] },
+  { name: 'lifetime', type: 'f32', offset: 28, ...WGSL_NUMERIC_LAYOUT.f32 },
+  { name: 'color', type: 'vec4<f32>', offset: 32, ...WGSL_NUMERIC_LAYOUT['vec4<f32>'] },
+  { name: 'sprite_size', type: 'vec2<f32>', offset: 48, ...WGSL_NUMERIC_LAYOUT['vec2<f32>'] },
+  { name: 'sprite_rotation', type: 'f32', offset: 56, ...WGSL_NUMERIC_LAYOUT.f32 },
+  { name: 'sub_image', type: 'f32', offset: 60, ...WGSL_NUMERIC_LAYOUT.f32 },
+  { name: 'mesh_orientation', type: 'vec4<f32>', offset: 64, ...WGSL_NUMERIC_LAYOUT['vec4<f32>'] },
+  { name: 'mesh_scale', type: 'vec3<f32>', offset: 80, ...WGSL_NUMERIC_LAYOUT['vec3<f32>'] },
+  { name: 'material_random', type: 'f32', offset: 92, ...WGSL_NUMERIC_LAYOUT.f32 },
+  { name: 'id', type: 'u32', offset: 96, ...WGSL_NUMERIC_LAYOUT.u32 },
+  { name: 'alive', type: 'u32', offset: 100, ...WGSL_NUMERIC_LAYOUT.u32 },
 ]);
 
 /** Program v3 core layout. The 112-byte stride includes WGSL's final 16-byte alignment. */
@@ -96,17 +97,6 @@ export interface VfxCustomLayout extends VfxReflectedStruct {
   readonly lanes: number;
 }
 
-const VALUE_LAYOUT: Readonly<
-  Record<VfxValueType, { readonly alignment: number; readonly size: number }>
-> = {
-  f32: { alignment: 4, size: 4 },
-  i32: { alignment: 4, size: 4 },
-  u32: { alignment: 4, size: 4 },
-  'vec2<f32>': { alignment: 8, size: 8 },
-  'vec3<f32>': { alignment: 16, size: 12 },
-  'vec4<f32>': { alignment: 16, size: 16 },
-};
-
 function alignUp(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
 }
@@ -120,7 +110,7 @@ export function deriveVfxCustomLayout(struct: VfxReflectedStruct, maxLanes = 4):
   let offset = 0;
   let alignment = 1;
   for (const field of struct.fields) {
-    const layout = VALUE_LAYOUT[field.type];
+    const layout = WGSL_NUMERIC_LAYOUT[field.type];
     offset = alignUp(offset, layout.alignment);
     fields.push({ ...field, offset, size: layout.size, alignment: layout.alignment });
     offset += layout.size;

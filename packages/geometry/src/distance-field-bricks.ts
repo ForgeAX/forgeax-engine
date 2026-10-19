@@ -1,4 +1,5 @@
 import type { FieldVec3, MeshDistanceField } from '@forgeax/engine-types';
+import { fnv1a32 } from '@forgeax/engine-types';
 
 /** Combined indirection and f32 payload budget, independent of virtual volume size. */
 export const MAX_DISTANCE_FIELD_BYTES = 32 * 1024 * 1024;
@@ -54,8 +55,7 @@ export class FieldBrickBuilder {
           if (source !== lane) values[lane] = values[source] ?? NaN;
         }
     const words = new Uint32Array(values.buffer, values.byteOffset, 64);
-    let hash = 2166136261;
-    for (const word of words) hash = Math.imul(hash ^ word, 16777619) >>> 0;
+    const hash = fnv1a32(words);
     const candidates = this.chains.get(hash);
     if (candidates)
       for (const offset of candidates) {

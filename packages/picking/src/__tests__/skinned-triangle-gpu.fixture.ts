@@ -1,11 +1,10 @@
-import { mat4 } from '@forgeax/engine-math';
+import { halfFloat, mat4 } from '@forgeax/engine-math';
 import type { Renderer } from '@forgeax/engine-render';
 import { Instances } from '@forgeax/engine-render';
 import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -35,7 +34,7 @@ export function renderValue<T>(
 function rgba(bytes: Uint8Array, pitch: number): number[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return Array.from({ length: SKIN_PICK_SIZE * SKIN_PICK_SIZE * 4 }, (_, i) =>
-    halfToFloat(
+    halfFloat.f16ToF32(
       view.getUint16(
         Math.floor(i / (SKIN_PICK_SIZE * 4)) * pitch +
           (Math.floor(i / 4) % SKIN_PICK_SIZE) * 8 +

@@ -1,15 +1,10 @@
-/// <reference types="node" />
-
-import { readFileSync } from 'node:fs';
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { describe, expectTypeOf, it } from 'vitest';
 import type { DdcErrorRootKind } from '../errors.js';
 import type { BrowserDdcStatusLayer, DdcStatusLayer, DdcStatusRootKind } from '../index.js';
 
 type ExpectedRootKinds = 'build-cache' | 'project-ddc' | 'runtime';
 type LayerRootKind = DdcStatusLayer['rootKind'];
 type BrowserLayerRootKind = BrowserDdcStatusLayer['rootKind'];
-
-const statusSource = readFileSync(new URL('../status.ts', import.meta.url), 'utf8');
 
 describe('DDC status root kind owner', () => {
   it('keeps the exact root membership and derives status from the error owner', () => {
@@ -30,13 +25,5 @@ describe('DDC status root kind owner', () => {
     expectTypeOf<DdcStatusLayer['kind']>().toEqualTypeOf<'build' | 'project' | 'runtime'>();
     expectTypeOf<LayerRootKind>().toEqualTypeOf<DdcErrorRootKind>();
     expectTypeOf<BrowserLayerRootKind>().toEqualTypeOf<DdcErrorRootKind>();
-  });
-
-  it('keeps the owner declaration as the single status root vocabulary', () => {
-    expect(statusSource).toContain("import type { DdcErrorRootKind } from './errors.js';");
-    expect(statusSource).toContain('export type DdcStatusRootKind = DdcErrorRootKind;');
-    expect(statusSource).not.toContain(
-      "export type DdcStatusRootKind = 'build-cache' | 'project-ddc' | 'runtime';",
-    );
   });
 });

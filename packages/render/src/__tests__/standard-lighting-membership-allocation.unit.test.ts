@@ -48,6 +48,17 @@ describe('Standard CPU membership allocation', () => {
     }
   });
 
+  it.each([
+    'point',
+    'spot',
+  ] as const)('keeps no-cutoff %s lights in every cluster beyond 1000 units', (kind) => {
+    const distant = { kind, shadowed: false, position: vec3.create(5000, 0, -4), range: Infinity };
+    const unlimited = prepareStandardLighting(makeFrame([distant])).unwrap();
+    const finite = prepareStandardLighting(makeFrame([{ ...distant, range: 10 }])).unwrap();
+    expect(unlimited.membershipEntryCount).toBe(unlimited.layout.clusterCount);
+    expect(finite.membershipEntryCount).toBeLessThan(unlimited.layout.clusterCount);
+  });
+
   it('allocates no index storage for zero local lights and keeps the layout capacity', () => {
     const result = prepareStandardLighting(makeFrame([]));
     expect(result.ok).toBe(true);

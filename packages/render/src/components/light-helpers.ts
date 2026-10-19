@@ -19,6 +19,10 @@ import { SpawnLightInvalidBoundsError } from '../errors/ecs-validation';
 import { ShadowInvalidConfigError } from '../errors/render';
 import { DirectionalLight } from './directional-light';
 import { DirectionalShadowFilterValue } from './directional-shadow-filter';
+import { PointLight } from './point-light';
+import { PointLightShadow } from './point-light-shadow';
+import { RectAreaLight } from './rect-area-light';
+import { SpotLight } from './spot-light';
 
 export type LightValidationError = SpawnLightInvalidBoundsError | ShadowInvalidConfigError;
 export type LightValidationResult = Result<void, LightValidationError>;
@@ -35,8 +39,8 @@ const PCSS_PENUMBRA_MAX = 64;
  *
  * Single-shot deg -> rad -> cos conversion executed once per spot light
  * entity per frame on the host; the GPU shader sees only `cosInner` /
- * `cosOuter` so its falloff path stays branch-free
- * (`smoothstep(cosOuter, cosInner, dot(L, -lightDir))`).
+ * `cosOuter`. The shader uses a hard step for equal cones and smoothstep
+ * for an authored penumbra.
  *
  * @param deg cone half-angle in degrees (component schema field
  *            `innerConeDeg` / `outerConeDeg`)
@@ -112,18 +116,22 @@ export function validateDirectionalLightData(
       ),
     );
   }
-  if (data.castShadow === false) return ok(undefined);
+  if (data.castShadow !== true) return ok(undefined);
 
   const mapSize =
     (data.mapSize as number | undefined) ?? (DirectionalLight.fields.mapSize.default as number);
   if (mapSize < 1) {
     return err(new ShadowInvalidConfigError('mapSize', mapSize, 1));
   }
-  const cascadeCount = (data.cascadeCount as number | undefined) ?? 4;
+  const cascadeCount =
+    (data.cascadeCount as number | undefined) ??
+    (DirectionalLight.fields.cascadeCount.default as number);
   if (cascadeCount < 1 || cascadeCount > 4 || !Number.isInteger(cascadeCount)) {
     return err(new ShadowInvalidConfigError('cascadeCount', cascadeCount, 1, 4));
   }
-  const splitLambda = (data.splitLambda as number | undefined) ?? 0.75;
+  const splitLambda =
+    (data.splitLambda as number | undefined) ??
+    (DirectionalLight.fields.splitLambda.default as number);
   if (splitLambda < 0 || splitLambda > 1) {
     return err(new ShadowInvalidConfigError('splitLambda', splitLambda, 0, 1));
   }
@@ -201,6 +209,28 @@ export function validateDirectionalLightData(
   return ok(undefined);
 }
 
+/** Three light.distance selects the shadow far plane; unlimited lights use camera.far. */
+export function resolvePunctualShadowFarPlane(
+  range: number,
+  nearPlane: number,
+  fallback: number,
+): Result<number, ShadowInvalidConfigError> {
+  if (!Number.isFinite(nearPlane) || nearPlane <= 0)
+    return err(new ShadowInvalidConfigError('nearPlane', nearPlane, 0, '>', 'a finite value > 0'));
+  const farPlane = Number.isFinite(range) && range > 0 ? range : fallback;
+  if (!Number.isFinite(farPlane) || farPlane <= nearPlane)
+    return err(
+      new ShadowInvalidConfigError(
+        'farPlane',
+        farPlane,
+        nearPlane,
+        '>',
+        'a finite far plane beyond nearPlane; reduce nearPlane for short-range lights',
+      ),
+    );
+  return ok(farPlane);
+}
+
 /** Validate spot-light payloads at the render owner boundary. */
 export function validateSpotLightData(
   data: Readonly<Record<string, unknown>>,
@@ -222,27 +252,30 @@ export function validateSpotLightData(
       ),
     );
   }
-  if (data.castShadow === false) return ok(undefined);
 
-  const range = (data.range as number | undefined) ?? 10;
+  const range = (data.range as number | undefined) ?? (SpotLight.fields.range.default as number);
   if (typeof range !== 'number' || Number.isNaN(range) || range < 0) {
     return err(new SpawnLightInvalidBoundsError('SpotLight', 'range', range));
   }
-  const innerConeDeg = (data.innerConeDeg as number | undefined) ?? 0;
-  const outerConeDeg = (data.outerConeDeg as number | undefined) ?? 45;
-  if (outerConeDeg > 90) {
+  const innerConeDeg =
+    (data.innerConeDeg as number | undefined) ?? (SpotLight.fields.innerConeDeg.default as number);
+  const outerConeDeg =
+    (data.outerConeDeg as number | undefined) ?? (SpotLight.fields.outerConeDeg.default as number);
+  if (!Number.isFinite(outerConeDeg) || outerConeDeg <= 0 || outerConeDeg > 90) {
     return err(new SpawnLightInvalidBoundsError('SpotLight', 'outerNinety', outerConeDeg));
   }
-  if (outerConeDeg <= innerConeDeg) {
+  if (!Number.isFinite(innerConeDeg) || innerConeDeg < 0 || outerConeDeg < innerConeDeg) {
     return err(new SpawnLightInvalidBoundsError('SpotLight', 'innerOuter', outerConeDeg));
   }
+  if (data.castShadow !== true) return ok(undefined);
   const mapSize = (data.mapSize as number | undefined) ?? 1024;
   if (mapSize < 1) return err(new ShadowInvalidConfigError('mapSize', mapSize, 1));
-  const nearPlane = data.nearPlane as number | undefined;
-  const farPlane = data.farPlane as number | undefined;
-  if (nearPlane !== undefined && farPlane !== undefined && farPlane <= nearPlane) {
-    return err(new ShadowInvalidConfigError('farPlane', farPlane, nearPlane));
-  }
+  const nearPlane =
+    (data.nearPlane as number | undefined) ?? (SpotLight.fields.nearPlane.default as number);
+  const farPlane =
+    (data.farPlane as number | undefined) ?? (SpotLight.fields.farPlane.default as number);
+  const projection = resolvePunctualShadowFarPlane(range, nearPlane, farPlane);
+  if (!projection.ok) return projection;
   const pcfKernelSize = (data.pcfKernelSize as number | undefined) ?? 3;
   if (pcfKernelSize < 1 || pcfKernelSize % 2 === 0) {
     return err(
@@ -266,7 +299,7 @@ export function validateSpotLightData(
 export function validatePointLightData(
   data: Readonly<Record<string, unknown>>,
 ): LightValidationResult {
-  const range = (data.range as number | undefined) ?? 10;
+  const range = (data.range as number | undefined) ?? (PointLight.fields.range.default as number);
   if (typeof range !== 'number' || Number.isNaN(range) || range < 0) {
     return err(new SpawnLightInvalidBoundsError('PointLight', 'range', range));
   }
@@ -279,11 +312,12 @@ export function validatePointLightShadowData(
 ): LightValidationResult {
   const mapSize = (data.mapSize as number | undefined) ?? 512;
   if (mapSize < 1) return err(new ShadowInvalidConfigError('mapSize', mapSize, 1));
-  const nearPlane = (data.nearPlane as number | undefined) ?? 0.1;
-  const farPlane = (data.farPlane as number | undefined) ?? 25;
-  if (farPlane <= nearPlane) {
-    return err(new ShadowInvalidConfigError('farPlane', farPlane, nearPlane));
-  }
+  const nearPlane =
+    (data.nearPlane as number | undefined) ?? (PointLightShadow.fields.nearPlane.default as number);
+  const farPlane =
+    (data.farPlane as number | undefined) ?? (PointLightShadow.fields.farPlane.default as number);
+  const projection = resolvePunctualShadowFarPlane(Infinity, nearPlane, farPlane);
+  if (!projection.ok) return projection;
   const pcfKernelSize = (data.pcfKernelSize as number | undefined) ?? 3;
   if (pcfKernelSize < 1 || pcfKernelSize % 2 === 0) {
     return err(
@@ -317,8 +351,14 @@ export function validateRectAreaLightData(
     return err(new SpawnLightInvalidBoundsError('RectAreaLight', 'color', Array.from(color)));
   }
   for (const field of ['width', 'height', 'range'] as const) {
-    const value = (data[field] as number | undefined) ?? (field === 'range' ? 10 : 1);
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    const value =
+      (data[field] as number | undefined) ?? (RectAreaLight.fields[field].default as number);
+    if (
+      typeof value !== 'number' ||
+      Number.isNaN(value) ||
+      value <= 0 ||
+      (field !== 'range' && !Number.isFinite(value))
+    ) {
       return err(new SpawnLightInvalidBoundsError('RectAreaLight', field, value));
     }
   }

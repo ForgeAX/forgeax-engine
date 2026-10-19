@@ -9,7 +9,7 @@ import {
 } from '@forgeax/engine-types';
 import { deriveFbxAnimatedBounds } from './animated-bounds';
 import { fbxErr } from './errors.js';
-import { parseFbxLodGroup } from './lod/parse-lod-group.js';
+import { type FbxLodGroupInput, parseFbxLodGroup } from './lod/parse-lod-group.js';
 import {
   type FbxRawAnimDoc,
   parseAnimationClips,
@@ -17,7 +17,7 @@ import {
 } from './parse-animation-clip.js';
 import { type FbxRawMaterial, parseMaterial } from './parse-material.js';
 import { type FbxRawDocument, type FbxRawMesh, parseMesh } from './parse-mesh.js';
-import { type FbxRawLodGroup, type FbxRawNodes, parseScene } from './parse-scene.js';
+import { type FbxRawNodes, parseScene } from './parse-scene.js';
 import { type FbxRawSkeletonDoc, parseSkeleton } from './parse-skeleton.js';
 import { type FbxRawSkinDoc, parseSkin } from './parse-skin.js';
 import { parseTextures } from './parse-texture.js';
@@ -122,7 +122,7 @@ export const fbxImporter: Importer = {
 
     const scene = parseScene(doc as unknown as FbxRawNodes);
     const rawLodGroups =
-      (doc as unknown as { lodGroups?: readonly FbxRawLodGroup[] }).lodGroups ?? [];
+      (doc as unknown as { lodGroups?: readonly FbxLodGroupInput[] }).lodGroups ?? [];
     const lodGroups = [];
     for (const rawGroup of rawLodGroups) {
       const parsed = parseFbxLodGroup(rawGroup);
@@ -141,8 +141,8 @@ export const fbxImporter: Importer = {
       (doc as unknown as { materials?: readonly FbxRawMaterial[] }).materials ?? [];
     const materials =
       materialDocs.length > 0
-        ? materialDocs.map((raw, i) => parseMaterial(raw, i))
-        : [parseMaterial({ kind: 'fallback' }, 0)];
+        ? materialDocs.map(parseMaterial)
+        : [parseMaterial({ kind: 'fallback' })];
 
     const authoredSkeleton = applyFbxImportSettingsBounds(parseSkeleton(doc), ctx.importSettings);
     const skin = parseSkin(doc);

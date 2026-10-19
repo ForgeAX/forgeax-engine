@@ -1,5 +1,6 @@
 import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { halfFloat } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import {
   Camera,
@@ -13,7 +14,7 @@ import {
   type StandardProbeClipmap,
 } from '@forgeax/engine-render';
 import { RhiError, type RhiInstance } from '@forgeax/engine-rhi';
-import { halfToFloat } from '@forgeax/engine-rhi-debug';
+
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { assert } from 'vitest';
@@ -327,7 +328,9 @@ export async function createIrradianceFieldHarness(options: {
     let sum = 0;
     for (let y = 0; y < height; y++)
       for (let x = 0; x < width; x++) {
-        const value = halfToFloat(data.getUint16(y * item.metadata.bytesPerRow + x * 8, true));
+        const value = halfFloat.f16ToF32(
+          data.getUint16(y * item.metadata.bytesPerRow + x * 8, true),
+        );
         red[y * width + x] = value;
         sum += value;
       }

@@ -172,8 +172,8 @@ export async function runStandardLutReadback(): Promise<StandardOutputGpuEvidenc
   pass.draw(3, 1, 0, 0);
   pass.end();
   encoder.copyTextureToBuffer(
-    { texture: output as unknown as GPUTexture },
-    { buffer: readback as unknown as GPUBuffer, bytesPerRow: 256, rowsPerImage: 1 },
+    { texture: output },
+    { buffer: readback, bytesPerRow: 256, rowsPerImage: 1 },
     { width: 1, height: 1, depthOrArrayLayers: 1 },
   );
   device.queue.submit([encoder.finish().unwrap()]).unwrap();

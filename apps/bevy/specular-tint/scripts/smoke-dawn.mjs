@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { runSmokeAppFrames, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -105,7 +106,7 @@ const mapped = new Uint8Array(readback.getMappedRange().slice(0)); readback.unma
 const tight = new Uint8Array(width * height * 4);
 for (let y = 0; y < height; y += 1) tight.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
 const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(appRoot, 'artifacts', 'smoke-frame.png');
-mkdirSync(dirname(pngOut), { recursive: true }); writeFileSync(pngOut, writeReferencePng(tight, width, height));
+mkdirSync(dirname(pngOut), { recursive: true }); writeFileSync(pngOut, encodePng(width, height, tight));
 const patchMean = (x0, x1, y0, y1) => { const sum = [0, 0, 0]; let count = 0; for (let y = y0; y < y1; y += 1) for (let x = x0; x < x1; x += 1) { const index = (y * width + x) * 4; sum[0] += tight[index] ?? 0; sum[1] += tight[index + 1] ?? 0; sum[2] += tight[index + 2] ?? 0; count += 1; } return sum.map((value) => value / count / 255); };
 const neutral = patchMean(25, 95, 45, 145); const solid = patchMean(125, 195, 45, 145); const mappedPatch = patchMean(225, 295, 45, 145);
 let maxLuma = 0; for (let i = 0; i < tight.length; i += 4) maxLuma = Math.max(maxLuma, ((tight[i] ?? 0) * 0.299 + (tight[i + 1] ?? 0) * 0.587 + (tight[i + 2] ?? 0) * 0.114) / 255);

@@ -10,7 +10,7 @@
 // Design locks (research §F-3 V8 elements-kinds + plan-strategy §K-3 SoA alignment):
 //   - all numeric storage is Float32Array (types.ts brand)
 //   - sideEffects: false (package.json) lets bundlers tree-shake at namespace granularity
-//   - zero runtime dependencies (AC-16 + T-037 jq guard)
+//   - shared scalar sRGB transfer functions come from @forgeax/engine-types
 //
 // Related: requirements §AC-09 single entry + top-level re-export;
 //          plan-strategy D-P9 no sub-path + §1.1 file layering.

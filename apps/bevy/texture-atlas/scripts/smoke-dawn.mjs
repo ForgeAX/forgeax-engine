@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -74,7 +75,7 @@ for (let i = 0; i < tight.length; i += 4) {
 }
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'texture-atlas.png'), writeReferencePng(tight, width, height));
+writeFileSync(resolve(outDir, 'texture-atlas.png'), encodePng(width, height, tight));
 console.log(`[smoke] frames=${frames} coloredPixels=${coloredPixels} colorBuckets=${colorBuckets.size} errors=${errors.length}`);
 if (rendererBackend(renderer) !== 'webgpu' || frames < 60 || coloredPixels < 1500 || colorBuckets.size < 4 || errors.length > 0) { console.error('[smoke] FAIL - atlas variants must be visible with multiple sprite colors and zero RHI errors'); process.exit(1); }
 console.log('[smoke] PASS - backend=webgpu, visible padded/unpadded atlas variants, errors=0');

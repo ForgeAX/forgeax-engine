@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';
@@ -138,10 +139,7 @@ export async function startSdkNpmArtifactRegistry(options) {
       response.end(cause instanceof Error ? cause.message : String(cause));
     }
   });
-  await new Promise((accept, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', accept);
-  });
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
   return {

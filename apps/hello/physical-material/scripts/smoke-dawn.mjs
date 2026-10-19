@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
+import { halfFloat } from '@forgeax/engine/math';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createAdditiveCoatMutantPublication } from '../evidence/additive-coat-mutant.mjs';
 // Physical-material Dawn witness. This drives the Engine-owned renderer path:
@@ -13,8 +16,8 @@ import { evaluateCaseRecords, evaluatePairedSentinels, referencePlan } from '../
 import { createLinearHdrRoiEvidence, fnv1a, objectCoverage, resolveCaseRoi } from '../evidence/evaluator-core.mjs';
 import { captureGpuErrors, captureWorldErrors, requireFrameMaterials, disposeRenderResources, runPairedStages, runRenderPhase } from '../evidence/phase-executor.mjs';
 import { describeMaterialCase } from '../evidence/material-case-builder.mjs';
-import { buildFrameModel, decodeTape, halfToFloat, readbackTexturePixels } from '@forgeax/engine-rhi-debug';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+import { buildFrameModel, decodeTape, readbackTexturePixels } from '@forgeax/engine-rhi-debug';
+
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { physicalMaterialChild, physicalMaterialRoots, withPhysicalMaterialModule } from '../src/material-contract.ts';
 
@@ -742,7 +745,7 @@ const directReceipt = await runRenderPhase({
   frameRequest,
   yieldFrame: yieldToFrameLoop,
   beforeDraw: async (frame) => {
-    if (recorder !== undefined && (frame === 0 || frame === 4)) {
+    if (recorder !== undefined && frameCapture === undefined && (frame === 0 || frame === 4)) {
       frameCapture = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
     }
@@ -804,10 +807,10 @@ if (captureDirectory !== undefined) {
   const view = new DataView(directPixels.buffer, directPixels.byteOffset, directPixels.byteLength);
   const preview = Uint8Array.from({ length: WIDTH * HEIGHT * 4 }, (_, index) => {
     if (index % 4 === 3) return 255;
-    const linear = Math.max(0, Math.min(1, halfToFloat(view.getUint16(index * 2, true))));
-    return Math.round((linear <= 0.0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - 0.055) * 255);
+    const linear = Math.max(0, Math.min(1, halfFloat.f16ToF32(view.getUint16(index * 2, true))));
+    return Math.round((linearChannelToSrgb(linear)) * 255);
   });
-  writeFileSync(resolve(captureDirectory, 'direct-linear-hdr-preview.png'), writeReferencePng(preview, WIDTH, HEIGHT));
+  writeFileSync(resolve(captureDirectory, 'direct-linear-hdr-preview.png'), encodePng(WIDTH, HEIGHT, preview));
   writeFileSync(resolve(captureDirectory, 'direct-linear-hdr.bin'), directPixels);
 }
 const directMaterialBindingReceipt = renderer.inspect().meshMaterialBindings.map((entry) => ({
@@ -1154,7 +1157,6 @@ if (hdrPod === undefined) {
   const iblReceipt = await runRenderPhase({
     phase: 'ibl',
     frameCount: FRAME_COUNT,
-    maxPendingFrames: 120,
     world,
     renderer,
     frameRequest,
@@ -1162,6 +1164,7 @@ if (hdrPod === undefined) {
     beforeDraw: async (frame) => {
       if (errors.length !== 0) throw new Error(`Runtime errors: ${errors.join(', ')}`);
       if (frame === FRAME_COUNT - 1) {
+        if (iblGraphCapture !== undefined) observationHost.device.destroyBuffer(iblGraphCapture.buffer);
         iblGraphCapture = prepareGraphTargetCapture(observationHost);
         if (iblGraphCapture === undefined) iblGraphCaptureError = 'graph-capture-prepare-failed';
       }

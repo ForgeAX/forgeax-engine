@@ -1,13 +1,15 @@
 import { evaluateMeshOracle, type MeshOracleInput } from '../evidence/oracle.js';
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
+import { isRecord } from '../request-schema.js';
 import {
   loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
+  type ResourceSubject,
   subjectFailure,
 } from './subject.js';
 
-export interface MeshSubjectInspection {
+interface MeshSubjectInspection {
   readonly subjectDigest: string;
   readonly vertexDigest: string;
   readonly indexDigest: string;
@@ -21,10 +23,6 @@ export interface MeshSubjectInspection {
 type InspectionResult =
   | { readonly ok: true; readonly value: MeshSubjectInspection }
   | ReturnType<typeof subjectFailure>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function digest(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -45,12 +43,7 @@ function observedAabb(
   return [minX, minY, minZ, maxX, maxY, maxZ];
 }
 
-export function inspectMeshSubject(input: {
-  readonly guid: string;
-  readonly asset: unknown;
-  readonly digest?: string;
-  readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
-}): InspectionResult {
+export function inspectMeshSubject(input: ResourceSubject): InspectionResult {
   if (!isRecord(input.asset) || input.asset.kind !== 'mesh') {
     return subjectFailure('resource-preview-kind-mismatch', 'a MeshAsset with kind mesh', {
       phase: 'subject',

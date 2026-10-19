@@ -1,3 +1,5 @@
+import { isRecord } from '../request-schema.js';
+
 export interface CanonicalKitReceipt {
   readonly schemaVersion: '1.0.0';
   readonly producer: 'packages/preview/scripts/build-canonical-kit.mjs';
@@ -63,10 +65,6 @@ function invalid(field: string): CanonicalKitReceiptValidation {
       detail: { field, phase: 'receipt' },
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 export function validateCanonicalKitReceipt(value: unknown): CanonicalKitReceiptValidation {

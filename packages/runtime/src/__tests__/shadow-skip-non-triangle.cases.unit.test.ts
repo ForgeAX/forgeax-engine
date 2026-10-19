@@ -634,7 +634,7 @@ type __MergedKeep =
       world.spawn(
         {
           component: C.DirectionalLight,
-          data: { direction: [0, -1, 0], mapSize: 512, cascadeCount: 1 },
+          data: { castShadow: true, direction: [0, -1, 0], mapSize: 512, cascadeCount: 1 },
         },
         { component: C.Transform, data: cameraTransform() },
       );
@@ -702,7 +702,7 @@ type __MergedKeep =
       world.spawn(
         {
           component: C.DirectionalLight,
-          data: { direction: [0, -1, 0], mapSize: 512, cascadeCount: 1 },
+          data: { castShadow: true, direction: [0, -1, 0], mapSize: 512, cascadeCount: 1 },
         },
         { component: C.Transform, data: cameraTransform() },
       );

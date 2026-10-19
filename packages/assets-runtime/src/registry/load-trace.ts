@@ -6,7 +6,7 @@
  * for the guarded lookup.
  */
 
-export interface AssetLoadTraceEvent {
+interface AssetLoadTraceEvent {
   readonly phase: string;
   readonly at: number;
   readonly guid?: string;

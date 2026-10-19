@@ -310,6 +310,7 @@ describe('bug-20260522 AC-01 per-entity material texture isolation (dawn)', () =
     world.spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [0, 0, -1],
@@ -524,6 +525,7 @@ describe('bug-20260522 AC-01 per-entity material texture isolation (dawn)', () =
     world.spawn({
       component: DirectionalLight,
       data: {
+        castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [0, 0, -1],

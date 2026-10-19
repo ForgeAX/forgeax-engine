@@ -228,7 +228,7 @@ export function buildProjectionWorld(world: World, options: ProjectionOptions = 
   world
     .spawn({
       component: DirectionalLight,
-      data: { direction: [0.45, -0.55, -0.7], color: [1, 0.98, 0.94], intensity: 2.2 },
+      data: { castShadow: true, direction: [0.45, -0.55, -0.7], color: [1, 0.98, 0.94], intensity: 2.2 },
     })
     .unwrap();
   const eye: [number, number, number] = [0, 0, 10];

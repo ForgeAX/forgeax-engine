@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -7,7 +8,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { DEFAULT_STANDARD_PROFILE, DirectionalLight, DirectionalShadowFilterValue, MeshRenderer } from '@forgeax/engine-render';
 import { Terrain } from '@forgeax/engine-terrain';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 
 const root = resolve(import.meta.dirname, '../../../..');
@@ -39,7 +40,7 @@ try {
     const capture=async name => {
       const pending=recorder.captureFrame();(await recorder.frameBoundary()).unwrap();await h.frame();(await recorder.frameBoundary()).unwrap();
       const tape=(await pending).unwrap();writeFileSync(resolve(dir,name+'.rhitape'),tape.bytes);
-      const pixels=await h.pixels();writeFileSync(resolve(dir,name+'.png'),writeReferencePng(pixels,960,540));
+      const pixels=await h.pixels();writeFileSync(resolve(dir,name+'.png'),encodePng(960, 540, pixels));
       const model=buildFrameModel(decodeTape(tape.bytes).unwrap());
       const terrain=model.works.filter(work=>work.pipeline.shaders.some(shader=>shader.source?.includes('fn terrainDecodeHeight')));
       assert(terrain.length>0,'actual curved terrain must draw');

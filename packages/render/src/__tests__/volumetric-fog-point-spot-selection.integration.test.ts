@@ -16,7 +16,7 @@ describe('VolumetricFog Point+Spot selection', () => {
     const spot = world
       .spawn(
         { component: Transform, data: { pos: [2.5, 5, 2.5] } },
-        { component: SpotLight, data: { direction: [-2.5, -5, -2.5] } },
+        { component: SpotLight, data: { castShadow: true, direction: [-2.5, -5, -2.5] } },
       )
       .unwrap();
 

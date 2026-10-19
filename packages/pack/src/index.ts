@@ -63,7 +63,6 @@ export {
 export { buildOfflineAssetEvidence, packageVerification } from './evidence/offline-evidence.js';
 export {
   AssetGuid,
-  isValidAssetGuidString,
   isValidPackSourceKey,
   PACK_SOURCE_KEY_RE,
   PackageId,

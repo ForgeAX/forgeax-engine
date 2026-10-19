@@ -15,7 +15,7 @@ import type { WebGPUOutcome, WebGPURendererInternals } from './webgpu-renderer-c
 
 export type { WebGPUOutcome, WebGPURendererInternals } from './webgpu-renderer-contract';
 
-export type WebGPURendererFactory = (
+type WebGPURendererFactory = (
   internals: WebGPURendererInternals,
 ) => Promise<RendererAssemblyImplementation>;
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 // The same authored foliage scene exercises one and four point lights on both browser backends.
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -15,7 +16,7 @@ mkdirSync(output, { recursive: true });
 
 const freePort = async () => {
   const socket = createServer();
-  await new Promise((ready) => socket.listen(0, '127.0.0.1', ready));
+  await once(socket.listen(0, '127.0.0.1'), 'listening');
   const address = socket.address();
   await new Promise((ready) => socket.close(ready));
   if (address === null || typeof address === 'string') throw new Error('port unavailable');

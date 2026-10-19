@@ -1,8 +1,9 @@
 import { RAY_QUERY_FEATURE } from '@forgeax/engine-rhi';
+import { stripWgslComments } from '@forgeax/engine-types';
 import type { Tape } from '../protocol/types';
 import type { RhiCapsRecorded } from '../types';
 
-const RECORDED_CAPABILITY_FEATURES = [
+export const RECORDED_CAPABILITY_FEATURES = [
   ['timestampQuery', 'timestamp-query'],
   ['textureCompressionBc', 'texture-compression-bc'],
   ['textureCompressionEtc2', 'texture-compression-etc2'],
@@ -17,27 +18,6 @@ const WGSL_FEATURES = new Map<string, GPUFeatureName>([
   ['subgroups', 'subgroups'],
   ['primitive_index', 'primitive-index'],
 ]);
-
-/** WGSL block comments nest. Commented directives must not impose device features. */
-function withoutComments(source: string): string {
-  let output = '';
-  let depth = 0;
-  for (let i = 0; i < source.length; i++) {
-    const pair = source.slice(i, i + 2);
-    if (pair === '/*') {
-      depth++;
-      i++;
-      output += ' ';
-    } else if (depth > 0 && pair === '*/') {
-      depth--;
-      i++;
-    } else if (depth === 0 && pair === '//') {
-      while (i < source.length && source[i] !== '\n' && source[i] !== '\r') i++;
-      output += ' ';
-    } else if (depth === 0) output += source[i];
-  }
-  return output;
-}
 
 /** Whether replaying the tape creates or builds acceleration structures. */
 export function usesAccelerationStructures(tape: Tape): boolean {
@@ -92,7 +72,7 @@ export function requiredReplayDescriptorFeatures(tape: Tape): ReadonlySet<GPUFea
       features.add('depth32float-stencil8');
     }
     if (event.kind === 'createShaderModule' && typeof event.wgslCode === 'string') {
-      for (const directive of withoutComments(event.wgslCode).matchAll(/\benable\s+([^;]+);/g)) {
+      for (const directive of stripWgslComments(event.wgslCode).matchAll(/\benable\s+([^;]+);/g)) {
         for (const extension of (directive[1] ?? '').split(',')) {
           const feature = WGSL_FEATURES.get(extension.trim());
           if (feature !== undefined) features.add(feature);

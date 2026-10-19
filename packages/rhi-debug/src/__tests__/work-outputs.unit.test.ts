@@ -19,6 +19,15 @@ describe('binding access', () => {
     expect(layoutEntryAccess(entry({ texture: {} }))).toBe('read');
   });
 
+  it('ignores commented bindings and retains declaration tokens around comments', () => {
+    const access = wgslBindingAccess([
+      '/* outer /* inner */ @group(1) @binding(0) var<storage, read_write> hidden: array<f32>; */',
+      '@group/* group */(1) @binding(1) var<storage, read> visible: array<f32>;',
+      '// @group(1) @binding(2) var<storage, read_write> hidden2: array<f32>;',
+    ]);
+    expect([...access]).toEqual([['1:1', 'read']]);
+  });
+
   it('derives access from WGSL declarations for auto layouts', () => {
     const access = wgslBindingAccess([
       `@group(0) @binding(0) var<uniform> u: vec4f;

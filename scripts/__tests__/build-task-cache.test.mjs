@@ -45,8 +45,12 @@ test('Rapier package fingerprints include the shared native producer without inv
   }
 });
 
-for (const payloadDirectory of ['pkg', 'lib'])
-  test(`downstream fingerprints include generated ${payloadDirectory} payload changes with unchanged dist`, () => {
+for (const [payloadDirectory, payloadName] of [
+  ['pkg', 'runtime.mjs'],
+  ['lib', 'runtime.mjs'],
+  ['src', 'material.wgsl'],
+])
+  test(`downstream fingerprints include published ${payloadDirectory}/${payloadName} changes with unchanged dist`, () => {
     const root = mkdtempSync(join(tmpdir(), 'forgeax-runtime-payload-'));
     const pkg = join(root, 'packages', 'backend');
     try {
@@ -54,9 +58,9 @@ for (const payloadDirectory of ['pkg', 'lib'])
       mkdirSync(join(pkg, payloadDirectory), { recursive: true });
       writeFileSync(
         join(pkg, 'dist', 'index.mjs'),
-        `export const load = () => import('../${payloadDirectory}/runtime.mjs');\n`,
+        `export const load = () => import('../${payloadDirectory}/${payloadName}');\n`,
       );
-      const payload = join(pkg, payloadDirectory, 'runtime.mjs');
+      const payload = join(pkg, payloadDirectory, payloadName);
       writeFileSync(payload, 'export const value = 1;\n');
       const output = inventory(join(pkg, 'dist'));
       const before = packageOutputFingerprint(root, pkg, output);

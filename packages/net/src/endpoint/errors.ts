@@ -53,8 +53,6 @@ export type EndpointErrorDetailFor<C extends EndpointErrorCode> = EndpointErrorD
 type EndpointErrorArgs<C extends EndpointErrorCode = EndpointErrorCode> = {
   [Code in C]: {
     code: Code;
-    expected: string;
-    hint: string;
     detail: EndpointErrorDetailFor<Code>;
   };
 }[C];
@@ -73,6 +71,7 @@ class EndpointErrorClass extends Error {
   readonly detail: EndpointErrorDetail;
 
   constructor(args: EndpointErrorArgs) {
+    const { expected, hint } = endpointErrorPolicy[args.code];
     let suffix = '';
     if (args.code === 'peer-not-found') {
       suffix = ` (peerId=${args.detail.peerId})`;
@@ -85,11 +84,11 @@ class EndpointErrorClass extends Error {
     } else if (args.code === 'connection-failed') {
       suffix = ` (address=${args.detail.address}, cause=${args.detail.cause})`;
     }
-    super(`[EndpointError ${args.code}] expected: ${args.expected}; hint: ${args.hint}${suffix}`);
+    super(`[EndpointError ${args.code}] expected: ${expected}; hint: ${hint}${suffix}`);
     this.name = 'EndpointError';
     this.code = args.code;
-    this.expected = args.expected;
-    this.hint = args.hint;
+    this.expected = expected;
+    this.hint = hint;
     this.detail = args.detail;
   }
 }
@@ -124,11 +123,11 @@ const endpointErrorPolicy = {
   },
   'send-failed': {
     expected: 'message bytes must be delivered to the target peer or the connection must fail',
-    hint: 'the memory connection is broken; the peer may have disconnected or the buffer is full',
+    hint: 'the connection is broken; the peer may have disconnected or the buffer is full',
   },
   'already-closed': {
     expected: 'the endpoint must be open for any operation',
-    hint: 'the endpoint is closed; create a new endpoint pair for further communication',
+    hint: 'the endpoint is closed; create a new endpoint for further communication',
   },
   'connection-failed': {
     expected:
@@ -136,16 +135,6 @@ const endpointErrorPolicy = {
     hint: 'the initial connection or bind failed; verify the address is reachable and the port is not in use, then retry',
   },
 } satisfies Record<EndpointErrorCode, EndpointErrorPolicy>;
-
-/** Expected-invariant table per error code. */
-export const ENDPOINT_EXPECTED: Readonly<Record<EndpointErrorCode, string>> = Object.fromEntries(
-  Object.entries(endpointErrorPolicy).map(([code, policy]) => [code, policy.expected]),
-) as Readonly<Record<EndpointErrorCode, string>>;
-
-/** Actionable hint table per error code. */
-export const ENDPOINT_ERROR_HINTS: Readonly<Record<EndpointErrorCode, string>> = Object.fromEntries(
-  Object.entries(endpointErrorPolicy).map(([code, policy]) => [code, policy.hint]),
-) as Readonly<Record<EndpointErrorCode, string>>;
 
 /** Type guard for narrowing unknown to EndpointError. */
 export function isEndpointError(err: unknown): err is EndpointError {

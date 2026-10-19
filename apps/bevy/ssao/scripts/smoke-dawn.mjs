@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-ssao headless Dawn smoke (receipt-bound structural + pixel falsifier).
 // The same occlusion-heavy scene is rendered with Standard SSAO disabled and
@@ -9,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
@@ -224,8 +225,8 @@ const artifactDir = resolve(here, '..', 'artifacts');
 mkdirSync(artifactDir, { recursive: true });
 const offPng = resolve(artifactDir, 'ssao-off.png');
 const onPng = resolve(artifactDir, 'ssao-on.png');
-writeFileSync(offPng, writeReferencePng(ssaoOffPixels, WIDTH, HEIGHT));
-writeFileSync(onPng, writeReferencePng(ssaoOnPixels, WIDTH, HEIGHT));
+writeFileSync(offPng, encodePng(WIDTH, HEIGHT, ssaoOffPixels));
+writeFileSync(onPng, encodePng(WIDTH, HEIGHT, ssaoOnPixels));
 
 console.log(`[smoke] frames observed=${off.framesObserved + on.framesObserved} ssaoDiffMean=${diff.mean.toFixed(4)} changedPixels=${diff.changedPixels} receiptFrames=${off.observed.frameId},${on.observed.frameId} off=${offPng} on=${onPng}`);
 

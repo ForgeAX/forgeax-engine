@@ -1,6 +1,6 @@
 import { type AssetLoadError, ok, type Result } from '@forgeax/engine-types';
 
-export interface ArtifactCacheSnapshot {
+interface ArtifactCacheSnapshot {
   readonly entries: number;
   readonly pending: number;
   readonly hits: number;

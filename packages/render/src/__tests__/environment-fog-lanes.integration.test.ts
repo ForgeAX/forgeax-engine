@@ -43,7 +43,7 @@ describe('Environment and Fog lane graph contract', () => {
     world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0, -2, 0], intensity: 2 },
+        data: { castShadow: true, direction: [0, -2, 0], intensity: 2 },
       })
       .unwrap();
 
@@ -144,7 +144,7 @@ describe('Environment and Fog lane graph contract', () => {
     world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0, -1, 0], intensity: 1 },
+        data: { castShadow: true, direction: [0, -1, 0], intensity: 1 },
       })
       .unwrap();
     const lifecycle = new EnvironmentLifecycle(DeviceScope.create(5, 'environment-render-path'));

@@ -1,4 +1,5 @@
 import type { Buffer, RhiCaps, Texture, TextureView, Tlas } from '@forgeax/engine-rhi';
+import { textureFormatBlock } from '@forgeax/engine-types';
 import { CompiledRenderGraphImpl } from './compiled-graph.js';
 import { err, ok, RenderGraphError, type Result } from './errors.js';
 import type { ResolvedColorTargetDescriptor } from './graph.js';
@@ -70,6 +71,49 @@ const TEXTURE_USAGE = {
 
 let nextGeneration = 1;
 
+// Inspection retains its admitted format set; implementation-dependent depth and
+// unmodeled compressed allocations still report an unknown byte size.
+const KNOWN_TEXTURE_BYTE_FORMATS = new Set<GPUTextureFormat>([
+  'r8unorm',
+  'r8snorm',
+  'r8uint',
+  'r8sint',
+  'rg8unorm',
+  'rg8snorm',
+  'rg8uint',
+  'rg8sint',
+  'r16unorm',
+  'r16snorm',
+  'r16uint',
+  'r16sint',
+  'r16float',
+  'rgba8unorm',
+  'rgba8unorm-srgb',
+  'rgba8snorm',
+  'rgba8uint',
+  'rgba8sint',
+  'r32float',
+  'r32uint',
+  'r32sint',
+  'depth32float',
+  'rg16float',
+  'rg16uint',
+  'rg16sint',
+  'rg16snorm',
+  'rg16unorm',
+  'rgba16float',
+  'rgba16uint',
+  'rgba16sint',
+  'rgba16snorm',
+  'rgba16unorm',
+  'rg32float',
+  'rg32uint',
+  'rg32sint',
+  'rgba32float',
+  'rgba32uint',
+  'rgba32sint',
+]);
+
 function textureByteSize(
   format: GPUTextureFormat,
   dimension: GPUTextureDimension,
@@ -77,48 +121,8 @@ function textureByteSize(
   mipLevelCount: number,
   sampleCount: number,
 ): number | undefined {
-  const bytesPerTexel =
-    format === 'r8unorm' || format === 'r8snorm' || format === 'r8uint' || format === 'r8sint'
-      ? 1
-      : format === 'rg8unorm' ||
-          format === 'rg8snorm' ||
-          format === 'rg8uint' ||
-          format === 'rg8sint' ||
-          format === 'r16unorm' ||
-          format === 'r16snorm' ||
-          format === 'r16uint' ||
-          format === 'r16sint' ||
-          format === 'r16float'
-        ? 2
-        : format === 'rgba8unorm' ||
-            format === 'rgba8unorm-srgb' ||
-            format === 'rgba8snorm' ||
-            format === 'rgba8uint' ||
-            format === 'rgba8sint' ||
-            format === 'r32float' ||
-            format === 'r32uint' ||
-            format === 'r32sint' ||
-            format === 'depth32float'
-          ? 4
-          : format === 'rg16float' ||
-              format === 'rg16uint' ||
-              format === 'rg16sint' ||
-              format === 'rg16snorm' ||
-              format === 'rg16unorm'
-            ? 4
-            : format === 'rgba16float' ||
-                format === 'rgba16uint' ||
-                format === 'rgba16sint' ||
-                format === 'rgba16snorm' ||
-                format === 'rgba16unorm' ||
-                format === 'rg32float' ||
-                format === 'rg32uint' ||
-                format === 'rg32sint'
-              ? 8
-              : format === 'rgba32float' || format === 'rgba32uint' || format === 'rgba32sint'
-                ? 16
-                : undefined;
-  if (bytesPerTexel === undefined) return undefined;
+  if (!KNOWN_TEXTURE_BYTE_FORMATS.has(format)) return undefined;
+  const bytesPerTexel = textureFormatBlock(format).bytesPerBlock;
   let bytes = 0;
   let width = extent.width;
   let height = extent.height;

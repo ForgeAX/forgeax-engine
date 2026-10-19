@@ -221,7 +221,7 @@ world.spawn(
 );
 world.spawn({
   component: DirectionalLight,
-  data: { direction: [-0.3, -0.5, -0.8], color: [1, 1, 1], intensity: 1.2 },
+  data: { castShadow: true, direction: [-0.3, -0.5, -0.8], color: [1, 1, 1], intensity: 1.2 },
 });
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 8]} },
@@ -233,8 +233,8 @@ world.spawn(
       bloom: BLOOM_ENABLED,
       bloomThreshold: 1.0,
       bloomIntensity: 1.0,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
     },
   },
 );

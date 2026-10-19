@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { halfToFloat } from '../../../packages/rhi-debug/dist/index.mjs';
+import { halfFloat } from '@forgeax/engine/math';
 
 const directory = resolve(process.argv[2] ?? 'artifacts/sponza-raster/controls-384');
 const names = ['baseline', 'light-off', 'shadows-off', 'restored', 'side'];
@@ -17,7 +17,7 @@ for (const name of names) {
     for (let x = 0; x < metadata.width; x++) {
       let pixel = 0;
       for (let c = 0; c < 3; c++) {
-        const v = halfToFloat(words[(y * metadata.bytesPerRow) / 2 + x * 4 + c]);
+        const v = halfFloat.f16ToF32(words[(y * metadata.bytesPerRow) / 2 + x * 4 + c]);
         assert(Number.isFinite(v) && v >= 0);
         pixel += v;
       }

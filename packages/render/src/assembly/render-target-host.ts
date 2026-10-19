@@ -1,4 +1,5 @@
 import type { Buffer, RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
+import { textureFormatBlock } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import {
   RenderTargetCapabilityMissingError,
@@ -8,7 +9,6 @@ import {
   RenderTargetStateInvalidError,
 } from '../errors/render';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
-import { resolveRenderTargetMipExtent } from '../record/frame-targets';
 import type { RenderResult } from '../render-contract';
 import {
   admitRenderTargetDescriptor,
@@ -24,6 +24,8 @@ import {
   type RenderTargetTextureSource,
   type RenderTargetTextureSourceOptions,
   renderTargetLayerCount,
+  renderTargetMipCount,
+  resolveRenderTargetMipExtent,
 } from '../targets/contracts';
 import {
   createFramebufferSnapshotQueue,
@@ -49,7 +51,7 @@ import {
   type RenderTargetReadbackReceipt,
 } from '../targets/readback';
 
-export interface RenderTargetHostOptions {
+interface RenderTargetHostOptions {
   readonly onError?: (error: RenderError) => void;
   readonly rendererId?: symbol;
   readonly initialGeneration?: number;
@@ -156,10 +158,6 @@ export interface RenderTargetHost {
 
 function opaqueTicket(): RenderTargetReadbackTicket {
   return Object.freeze({}) as RenderTargetReadbackTicket;
-}
-
-function bytesPerPixel(format: RenderTargetDescriptor['format']): number {
-  return format === 'rgba16float' ? 8 : 4;
 }
 
 export function createRenderTargetHost(options: RenderTargetHostOptions = {}): RenderTargetHost {
@@ -392,14 +390,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
           }),
         };
       }
-      const mipCount =
-        inspected.value.descriptor.mipLevels === 1
-          ? 1
-          : Math.floor(
-              Math.log2(
-                Math.max(inspected.value.descriptor.width, inspected.value.descriptor.height),
-              ),
-            ) + 1;
+      const mipCount = renderTargetMipCount(inspected.value.descriptor);
       if (request.mipLevel >= mipCount) {
         return {
           ok: false,
@@ -431,7 +422,10 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       const buffer = device?.createBuffer({
         label: `render-target-readback.${request.mipLevel}.${request.layer ?? 0}`,
         size:
-          Math.ceil((extent.width * bytesPerPixel(inspected.value.descriptor.format)) / 256) *
+          Math.ceil(
+            (extent.width * textureFormatBlock(inspected.value.descriptor.format).bytesPerBlock) /
+              256,
+          ) *
           256 *
           extent.height,
         usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ,
@@ -455,7 +449,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
         ...(request.layer === undefined ? {} : { layer: request.layer }),
         width: extent.width,
         height: extent.height,
-        bytesPerPixel: bytesPerPixel(inspected.value.descriptor.format),
+        bytesPerPixel: textureFormatBlock(inspected.value.descriptor.format).bytesPerBlock,
       });
       if (!internalTicket.ok) return internalTicket;
       const record = {

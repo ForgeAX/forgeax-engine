@@ -1,15 +1,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  blitMipmapsSync,
-  getOrCreateMipmapPipeline,
-  numMipLevels,
-} from '@forgeax/engine-assets-runtime';
+import { blitMipmapsSync, getOrCreateMipmapPipeline } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { TextureAsset } from '@forgeax/engine-types';
+import { numMipLevels } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
 

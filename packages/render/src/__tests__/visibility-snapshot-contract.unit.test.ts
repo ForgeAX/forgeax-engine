@@ -58,3 +58,51 @@ describe('visibility snapshot contract', () => {
     expect(snapshot.diagnostics).toBeDefined();
   });
 });
+
+it('captures lazy reads before later visibility edits and generation replacement', () => {
+  const world = new World();
+  const parent = world
+    .spawn({ component: Visibility, data: { state: VisibilityStateValue.hidden } })
+    .unwrap();
+  const child = world.spawn({ component: ChildOf, data: { parent } }).unwrap();
+  const before = resolveVisibility(world);
+  world.set(parent, Visibility, { state: VisibilityStateValue.visible }).unwrap();
+  const after = resolveVisibility(world);
+  expect(before.effective(child)).toBe('hidden');
+  expect(after.effective(child)).toBe('visible');
+  expect(after.hasAnyHiddenIntent).toBe(false);
+  world.despawn(parent).unwrap();
+  const replacement = world
+    .spawn({ component: Visibility, data: { state: VisibilityStateValue.inherited } })
+    .unwrap();
+  const next = resolveVisibility(world);
+  expect(next.get(parent)).toBeUndefined();
+  expect(next.get(replacement)?.intent).toBe('inherited');
+  expect(next.hasAnyIntent).toBe(true);
+  expect(next.hasAnyHiddenIntent).toBe(false);
+  expect(after.get(parent)?.effective).toBe('visible');
+});
+
+it('observes removal, inheritance changes and equal-count membership after unrelated migrations', () => {
+  const world = new World();
+  const hidden = world
+    .spawn({ component: Visibility, data: { state: VisibilityStateValue.hidden } })
+    .unwrap();
+  const visible = world
+    .spawn({ component: Visibility, data: { state: VisibilityStateValue.visible } })
+    .unwrap();
+  const child = world.spawn({ component: ChildOf, data: { parent: hidden } }).unwrap();
+  expect(resolveVisibility(world).effective(child)).toBe('hidden');
+  const unrelated = world.spawn().unwrap();
+  expect(resolveVisibility(world).effective(child)).toBe('hidden');
+  world.despawn(unrelated).unwrap();
+  world.set(child, ChildOf, { parent: visible }).unwrap();
+  expect(resolveVisibility(world).effective(child)).toBe('visible');
+  world.removeComponent(visible, Visibility).unwrap();
+  world
+    .addComponent(child, { component: Visibility, data: { state: VisibilityStateValue.hidden } })
+    .unwrap();
+  const changed = resolveVisibility(world);
+  expect(changed.get(visible)).toBeUndefined();
+  expect(changed.get(child)?.effective).toBe('hidden');
+});

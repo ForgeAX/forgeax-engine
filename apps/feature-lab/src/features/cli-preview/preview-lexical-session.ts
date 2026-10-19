@@ -1,17 +1,17 @@
 import {
-  createPreviewHost,
   PreviewCleanupError,
   type PreviewHostAdapter,
-  type PreviewResourceCensus,
+  withPreviewSession,
 } from '@forgeax/engine/preview';
+import type { ToolCleanupCensus } from '@forgeax/engine/tool-runtime';
 import { defineFeature } from '../../lab/feature';
 
-const ZERO: PreviewResourceCensus = { worlds: 0, renderers: 0, canvases: 0, leases: 0 };
+const ZERO: ToolCleanupCensus = { worlds: 0, renderers: 0, canvases: 0, leases: 0 };
 
 function adapter(leak: boolean, log: string[]): PreviewHostAdapter {
   return {
     open(request) {
-      let live: PreviewResourceCensus = { worlds: 1, renderers: 1, canvases: 1, leases: 1 };
+      let live: ToolCleanupCensus = { worlds: 1, renderers: 1, canvases: 1, leases: 1 };
       log.push(`open:${request.subject.guid}`);
       return {
         subject: request.subject,
@@ -47,13 +47,13 @@ export default defineFeature({
   catalog: 'Preview lexical session',
   kind: 'headless',
   summary:
-    'createPreviewHost(adapter).withSession opens one adapter session, hands the callback only POD bindings and bounded frame/capture actions, always disposes, and returns a cleanup census; a non-zero census throws PreviewCleanupError.',
+    'withPreviewSession(adapter, request, callback) opens one adapter session, hands the callback only POD bindings and bounded frame/capture actions, always disposes, and returns a cleanup census; a non-zero census throws PreviewCleanupError.',
   expect:
     'a clean session returns the callback value and a zero census after open/load/frame/capture/dispose; a throwing callback still disposes; a leaking adapter raises preview-cleanup-live-resources with renderers=1.',
   async run(checks) {
     const log: string[] = [];
-    const host = createPreviewHost(adapter(false, log));
-    const clean = await host.withSession(request, async (session) => {
+    const resources = adapter(false, log);
+    const clean = await withPreviewSession(resources, request, async (session) => {
       const binding = await session.loadAsset('mesh-001');
       await session.frame({ frame: 0, deltaSeconds: 0 });
       return { binding, capture: await session.capture() };
@@ -74,7 +74,7 @@ export default defineFeature({
     log.length = 0;
     await checks.run('throwing callback still disposes', async () => {
       try {
-        await host.withSession(request, () => {
+        await withPreviewSession(resources, request, () => {
           throw new Error('lab boom');
         });
         return false;
@@ -85,7 +85,7 @@ export default defineFeature({
 
     await checks.run('leak raises PreviewCleanupError', async () => {
       try {
-        await createPreviewHost(adapter(true, [])).withSession(request, () => 1);
+        await withPreviewSession(adapter(true, []), request, () => 1);
         return false;
       } catch (error) {
         return error instanceof PreviewCleanupError &&

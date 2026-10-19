@@ -2,6 +2,7 @@ import type { AssetStageErrorBase } from './asset-errors.js';
 import type { SourceOverrideErrorCode, SourceOverrideMap } from './asset-producer.js';
 import type { PackIndexEntry } from './catalog.js';
 import type { Asset, AssetCodec, AssetRef, ImageError, TextureAsset } from './index.js';
+import { isFiniteBounds3 } from './mesh-contracts.js';
 
 export type ImportStageContractError = AssetStageErrorBase<'import', 'import-failed'>;
 
@@ -260,6 +261,8 @@ export interface ImportSubAsset {
   /** Producer-owned semantic identity used to look up sourceOverrides. */
   readonly sourceKey?: string;
   readonly kind: string;
+  /** Current producer display metadata; never used as identity. */
+  readonly name?: string;
 }
 
 /**
@@ -285,23 +288,9 @@ export interface AnimatedSkinImportSettings {
  */
 export function parseConservativeAnimatedBounds(value: unknown): Float32Array | undefined {
   if (!Array.isArray(value) || value.length !== 6) return undefined;
-  const bounds = value.map((entry) => (typeof entry === 'number' ? entry : Number.NaN));
-  const [minX, minY, minZ, maxX, maxY, maxZ] = bounds;
-  if (
-    minX === undefined ||
-    minY === undefined ||
-    minZ === undefined ||
-    maxX === undefined ||
-    maxY === undefined ||
-    maxZ === undefined ||
-    ![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite) ||
-    minX > maxX ||
-    minY > maxY ||
-    minZ > maxZ
-  ) {
-    return undefined;
-  }
-  return new Float32Array(bounds);
+  if (!isFiniteBounds3(value)) return undefined;
+  const bounds = new Float32Array(value);
+  return isFiniteBounds3(bounds) ? bounds : undefined;
 }
 
 /** Read the source-indexed bounds row from the shared importSettings schema. */

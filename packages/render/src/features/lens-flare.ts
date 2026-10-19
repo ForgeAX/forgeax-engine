@@ -15,7 +15,7 @@ export const LENS_FLARE_BLUR_ID = 'forgeax.lens-flare.blur';
 export const LENS_FLARE_COMPOSITE_ID = 'forgeax.lens-flare.composite';
 export const LENS_FLARE_PARAMS_BYTES = 32 + LENS_FLARE_GHOST_COUNT * 16;
 /** Gather taps of the disc bokeh. */
-export const LENS_FLARE_BOKEH_TAPS = 64;
+const LENS_FLARE_BOKEH_TAPS = 64;
 /**
  * Screen extent the bokeh target covers. A gather only spreads a source by
  * the bokeh radius, at most 0.2 of the view at bokehSize 10, so content past

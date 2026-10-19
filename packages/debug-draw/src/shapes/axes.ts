@@ -11,7 +11,7 @@ import type { Mat4, Vec3Like } from '@forgeax/engine-math';
 import { arrowVertices } from './arrow';
 
 /** X=red, Y=green, Z=blue RGBA (Bevy's axes convention). */
-export const AXES_COLORS: readonly [
+const AXES_COLORS: readonly [
   readonly [number, number, number, number],
   readonly [number, number, number, number],
   readonly [number, number, number, number],

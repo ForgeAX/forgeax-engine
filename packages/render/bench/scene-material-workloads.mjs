@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 // Physical-GPU diagnostic. Run with the shared GPU EX lock.
 // Built packages, public Renderer receipts/timing/inspection; no parallel counters.
 import { execFileSync } from 'node:child_process';
@@ -12,7 +13,7 @@ import { constructRendererHost } from '@forgeax/engine-render/internal/construct
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { create, globals } from '@forgeax/engine-dawn-node';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+
 import { makeCanvas, rgba, spawnScene, timingFacts, trackDiagnosticErrors, value } from './scene-material-scaling.mjs';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -117,12 +118,12 @@ async function run(config) {
    }
    await writeFile(resolve(out,`${config.id}-${mode}-warmup-inspection.json`),JSON.stringify(renderer.inspect(),null,2));
    const picture=await frame(mode,true);pictures[mode]=rgba(picture.observation.observations.find(o=>o.domain==='final-display'));
-   await writeFile(resolve(out,`${config.id}-${mode}.png`),writeReferencePng(pictures[mode],512,512));
+   await writeFile(resolve(out,`${config.id}-${mode}.png`),encodePng(512, 512, pictures[mode]));
    await writeFile(resolve(out,`${config.id}-${mode}-inspection.json`),JSON.stringify(picture.inspection,null,2));
    for(const [index,readback] of (picture.observation.targetReadbacks ?? []).entries()) {
     const targetInfo=targets[index];const pixels=new Uint8Array(targetInfo.size*targetInfo.size*4);
     for(let y=0;y<targetInfo.size;y++)pixels.set(readback.bytes.subarray(y*readback.bytesPerRow,y*readback.bytesPerRow+targetInfo.size*4),y*targetInfo.size*4);
-    await writeFile(resolve(out,`${config.id}-${mode}-target-${index}.png`),writeReferencePng(pixels,targetInfo.size,targetInfo.size));
+    await writeFile(resolve(out,`${config.id}-${mode}-target-${index}.png`),encodePng(targetInfo.size, targetInfo.size, pixels));
     if(!pixels.some((channel,i)=>i%4!==3&&channel>32))throw new Error(`${config.id} target ${index} has no marker content`);
    }
   }

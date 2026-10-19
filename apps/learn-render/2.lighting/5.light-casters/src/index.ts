@@ -332,7 +332,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     },
     {
       component: SpotLight,
-      data: {
+      data: { castShadow: true,
         direction: [-0.6 / SPOT_DIR_LEN, -1 / SPOT_DIR_LEN, 0],
         color: [1, 1, 1],
         intensity: 40,
@@ -367,7 +367,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.2, -1, -0.3],
       color: [1, 1, 1],
       intensity: 0.5,
@@ -403,7 +403,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     },
     {
       component: SpotLight,
-      data: {
+      data: { castShadow: true,
         direction: [0, 0, -1],
         color: [1, 1, 1],
         intensity: 4,

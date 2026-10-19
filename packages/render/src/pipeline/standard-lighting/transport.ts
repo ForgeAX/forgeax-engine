@@ -18,8 +18,8 @@ export interface StandardClusterCapabilities {
   readonly membershipPipelineReady: boolean;
 }
 
-export type StandardClusterTransportKind = 'compute-storage' | 'cpu-storage' | 'cpu-texture';
-export type StandardClusterMembershipProducer = 'cpu' | 'gpu';
+type StandardClusterTransportKind = 'compute-storage' | 'cpu-storage' | 'cpu-texture';
+type StandardClusterMembershipProducer = 'cpu' | 'gpu';
 
 export interface StandardClusterTransport {
   readonly kind: StandardClusterTransportKind;

@@ -1,3 +1,4 @@
+import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import {
   compareDawnReadbacks,
   comparePngs,
@@ -14,7 +15,7 @@ import {
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-export function runInheritanceCases() {
+export async function runInheritanceCases() {
 const m10ArtifactRoot = resolve(
   process.env.FORGEAX_M3_ARTIFACT_DIR ?? resolve(repoRoot, '.forgeax-gauntlet', 'hello-m3-programmable-rendering'),
   'm10-render-feature-stage-fault-recovery',
@@ -657,9 +658,9 @@ console.log('[m3-programmable] multi-UV falsifier: PASS');
 
 let multiUvManifest;
 try {
-  multiUvManifest = JSON.parse(
+  multiUvManifest = await readShaderManifestPublication(JSON.parse(
     readFileSync(resolve(multiUvRoot, 'dist', 'shaders', 'manifest.json'), 'utf8'),
-  );
+  ));
 } catch (error) {
   console.error(`[m3-programmable] multi-UV variant: FAIL - manifest unreadable: ${error}`);
   failSmoke();
@@ -668,12 +669,14 @@ const multiUvShader = (multiUvManifest.materialShaders ?? []).find(
   (entry) => entry?.identifier === 'hello-multi-uv::multi-uv-demo',
 );
 const variants = multiUvShader?.variants ?? [];
+const canonicalVariant = variants.find((variant) => variant.definesKey === '');
 const falseVariant = variants.find((variant) => variant.defines?.M3_MULTI_UV_VARIANT === false);
 if (
   multiUvShader?.uvSetCount !== 2 ||
   variants.length < 4 ||
-  falseVariant === undefined ||
-  falseVariant.composedWgsl === multiUvShader.composedWgsl
+  typeof falseVariant?.composedWgsl !== 'string' ||
+  typeof canonicalVariant?.composedWgsl !== 'string' ||
+  falseVariant.composedWgsl === canonicalVariant.composedWgsl
 ) {
   console.error(
     `[m3-programmable] multi-UV variant: FAIL - uvSetCount=${multiUvShader?.uvSetCount ?? 'missing'} variants=${variants.length}`,

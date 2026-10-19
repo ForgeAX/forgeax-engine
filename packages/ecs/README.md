@@ -27,6 +27,11 @@ flowchart LR
   WORLD --> STRUCTURE["Structure epoch + typed evidence"]
 ```
 
+Scalar storage derives byte widths, column views and array element access from the
+native constructor table in `component.ts`. Managed families keep their own
+lifecycle flags while storing unsigned handles; fixed arrays and shared-memory
+columns retain the same numeric conversion and transient-view rules.
+
 ## The smallest useful journey
 
 ```ts
@@ -227,6 +232,13 @@ for components declared by the canonical ECS entry.
 Queries are the only public data-plane API. A row is the flexible path; a span
 is the packed numeric path and includes entity handles for owner-side identity.
 Raw `Table`, `Archetype`, `Column`, and `FieldView` values are package-private.
+Variable-array columns retain their count-column key from table creation and
+carry it through growth. Semantic reads, writes and release still observe the
+live sidecar column; they do not rebuild its string key for each element or
+retain a count, entity row or buffer view across structural changes.
+World repairs both entity and archetype row indexes after storage swap removal.
+Dense migration, sparse-tag changes and despawn share those repair operations;
+managed payload release remains with the originating mutation.
 
 Each Query keeps its own iteration and observation state. Descriptor compilation borrows the component definition's field roster and
 allocates diagnostic role lists only on conflicts; temporal sets are built only
@@ -330,6 +342,12 @@ public cache-invalidation primitive; the seam never returns tables, archetypes,
 columns, or mutable views. Ordinary gameplay code should continue to use
 `World.get` and queries.
 
+The internal array-view reader reuses fixed inline row windows while their
+column storage stays live. Growth replaces the storage; every access resolves
+the entity's current row, including after migration or swap removal. Public
+component reads keep fresh wrappers, and variable arrays resolve their current
+pool slot and logical length. Borrowed windows remain transient.
+
 When an owner needs one scalar or one array element without materializing a row,
 import the capability explicitly and keep the probe read-only. Entity fields
 are returned as their stored u32, so narrow a non-null value to the existing
@@ -380,6 +398,9 @@ world.addSystem(FixedUpdate, {
 `world.update(deltaSeconds)` advances the clock, runs zero or more fixed steps,
 runs one update step, and flushes each system's command buffer. Clock readers
 receive a stable read view; the scheduler owns writes.
+Reverse system-set membership is rebuilt with the schedule graph after
+registration, removal or replacement. Set conditions are still evaluated once
+per execution segment and never cached across frames.
 Catch-up step counts derive from the initial accumulated delta, so intermediate
 remainder rounding does not discard an exact final step (including `3 / 60`).
 An `Update` system ordered `after: [FixedUpdate]` observes the final
@@ -444,6 +465,10 @@ World unchanged. A system throw or an unknown post-write failure cannot prove
 that no row was mutated: the World becomes poisoned and must be rebuilt by the
 App execution owner. Shared-kernel partial writes follow the same fail-closed
 rule.
+
+Empty command queues check any recorded staging error before returning from
+preflight. They do not create a speculative structural shadow; the ordinary
+flush still owns commit and abort status.
 
 ```mermaid
 stateDiagram-v2

@@ -50,84 +50,88 @@ for (const pass of model.passes) {
 const lastWork = model.works.at(-1)?.workIndex;
 if (lastWork === undefined) throw new Error('tape has no work items');
 const backend = await bootstrapDawn('shadow-tape', tape);
-const opened = await openReplay(tape, { device: backend.freshDevice, createShaderModule: backend.rhiWebgpu.createShaderModule });
-if (!opened.ok) throw opened.error;
-const replay = opened.value;
-// Texels outside every scissor rect that differ; a partial static redraw
-// (loadOp 'load') must leave them exactly as retained.
-function changedOutside(before, after, width, rects) {
-  const rowBytes = width * 4;
-  const rows = rowBytes === 0 ? 0 : Math.floor(before.length / rowBytes);
-  let changed = 0;
-  for (let y = 0; y < rows; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (rects.some((rect) => x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)) continue;
-      const offset = y * rowBytes + x * 4;
-      for (let i = 0; i < 4; i += 1) {
-        if (before[offset + i] !== after[offset + i]) {
-          changed += 1;
-          break;
+try {
+  const opened = await openReplay(tape, { device: backend.freshDevice, createShaderModule: backend.rhiWebgpu.createShaderModule });
+  if (!opened.ok) throw opened.error;
+  const replay = opened.value;
+  // Texels outside every scissor rect that differ; a partial static redraw
+  // (loadOp 'load') must leave them exactly as retained.
+  function changedOutside(before, after, width, rects) {
+    const rowBytes = width * 4;
+    const rows = rowBytes === 0 ? 0 : Math.floor(before.length / rowBytes);
+    let changed = 0;
+    for (let y = 0; y < rows; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (rects.some((rect) => x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h)) continue;
+        const offset = y * rowBytes + x * 4;
+        for (let i = 0; i < 4; i += 1) {
+          if (before[offset + i] !== after[offset + i]) {
+            changed += 1;
+            break;
+          }
         }
       }
     }
+    return changed;
   }
-  return changed;
-}
-const digest = (bytes) => createHash('sha256').update(bytes).digest('hex').slice(0, 16);
-const layers = [];
-try {
-  for (const texture of [...staticTextures, ...finalTextures]) {
-    const layerCount = resources.get(texture)?.descriptor?.desc?.size?.depthOrArrayLayers ?? 1;
-    for (let arrayLayer = 0; arrayLayer < layerCount; arrayLayer += 1) {
-      const subresource = { arrayLayer, aspect: 'depth-only' };
-      const initial = await replay.readResource(texture, subresource);
-      if (!initial.ok) throw initial.error;
-      const after = await replay.readResourceAtWork(texture, lastWork, subresource);
-      if (!after.ok) throw after.error;
-      const passes = rasters.get(`${texture}:${arrayLayer}`) ?? [];
-      const partial =
-        staticTextures.has(texture) && passes.length > 0 && passes.every((pass) => pass.load === 'load');
-      const outsideChanged = partial
-        ? changedOutside(
-            initial.value.bytes,
-            after.value.bytes,
-            resources.get(texture)?.descriptor?.desc?.size?.width ?? 0,
-            passes.flatMap((pass) => pass.scissors),
-          )
-        : undefined;
-      layers.push({
-        texture,
-        layer: staticTextures.has(texture) ? 'static' : 'final',
-        arrayLayer,
-        rasterPasses: passes.length,
-        loadOps: passes.map((pass) => pass.load),
-        initialDigest: digest(initial.value.bytes),
-        afterDigest: digest(after.value.bytes),
-        partial,
-        dirtyRects: partial ? passes.reduce((sum, pass) => sum + pass.scissors.length, 0) : undefined,
-        outsideChanged,
-        unchanged: Buffer.compare(Buffer.from(initial.value.bytes), Buffer.from(after.value.bytes)) === 0,
-      });
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+  const layers = [];
+  try {
+    for (const texture of [...staticTextures, ...finalTextures]) {
+      const layerCount = resources.get(texture)?.descriptor?.desc?.size?.depthOrArrayLayers ?? 1;
+      for (let arrayLayer = 0; arrayLayer < layerCount; arrayLayer += 1) {
+        const subresource = { arrayLayer, aspect: 'depth-only' };
+        const initial = await replay.readResource(texture, subresource);
+        if (!initial.ok) throw initial.error;
+        const after = await replay.readResourceAtWork(texture, lastWork, subresource);
+        if (!after.ok) throw after.error;
+        const passes = rasters.get(`${texture}:${arrayLayer}`) ?? [];
+        const partial =
+          staticTextures.has(texture) && passes.length > 0 && passes.every((pass) => pass.load === 'load');
+        const outsideChanged = partial
+          ? changedOutside(
+              initial.value.bytes,
+              after.value.bytes,
+              resources.get(texture)?.descriptor?.desc?.size?.width ?? 0,
+              passes.flatMap((pass) => pass.scissors),
+            )
+          : undefined;
+        layers.push({
+          texture,
+          layer: staticTextures.has(texture) ? 'static' : 'final',
+          arrayLayer,
+          rasterPasses: passes.length,
+          loadOps: passes.map((pass) => pass.load),
+          initialDigest: digest(initial.value.bytes),
+          afterDigest: digest(after.value.bytes),
+          partial,
+          dirtyRects: partial ? passes.reduce((sum, pass) => sum + pass.scissors.length, 0) : undefined,
+          outsideChanged,
+          unchanged: Buffer.compare(Buffer.from(initial.value.bytes), Buffer.from(after.value.bytes)) === 0,
+        });
+      }
     }
+  } finally {
+    (await replay.dispose()).unwrap();
   }
+  console.table(layers);
+  const retainedStatic = layers.filter((entry) => entry.layer === 'static' && entry.rasterPasses === 0);
+  const broken = retainedStatic.filter((entry) => !entry.unchanged);
+  const partials = layers.filter((entry) => entry.layer === 'static' && entry.partial);
+  const partialBroken = partials.filter((entry) => entry.outsideChanged !== 0);
+  console.log(
+    JSON.stringify({
+      tape: tapePath,
+      works: model.works.length,
+      staticLayers: layers.filter((entry) => entry.layer === 'static').length,
+      staticRastered: layers.filter((entry) => entry.layer === 'static' && entry.rasterPasses > 0).length,
+      staticRetainedUnchanged: retainedStatic.length - broken.length,
+      staticRetainedChanged: broken.length,
+      staticPartial: partials.length,
+      staticPartialOutsideChanged: partialBroken.length,
+    }),
+  );
+  process.exitCode = broken.length === 0 && partialBroken.length === 0 ? 0 : 1;
 } finally {
-  await replay.dispose();
+  await backend.dispose();
 }
-console.table(layers);
-const retainedStatic = layers.filter((entry) => entry.layer === 'static' && entry.rasterPasses === 0);
-const broken = retainedStatic.filter((entry) => !entry.unchanged);
-const partials = layers.filter((entry) => entry.layer === 'static' && entry.partial);
-const partialBroken = partials.filter((entry) => entry.outsideChanged !== 0);
-console.log(
-  JSON.stringify({
-    tape: tapePath,
-    works: model.works.length,
-    staticLayers: layers.filter((entry) => entry.layer === 'static').length,
-    staticRastered: layers.filter((entry) => entry.layer === 'static' && entry.rasterPasses > 0).length,
-    staticRetainedUnchanged: retainedStatic.length - broken.length,
-    staticRetainedChanged: broken.length,
-    staticPartial: partials.length,
-    staticPartialOutsideChanged: partialBroken.length,
-  }),
-);
-process.exit(broken.length === 0 && partialBroken.length === 0 ? 0 : 1);

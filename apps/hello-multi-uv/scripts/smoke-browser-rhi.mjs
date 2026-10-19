@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 // M3 feature-host RHI gate: capture the live multi-UV scene and its single
 // fullscreen feature, then replay and inspect the tape on fresh Dawn.
 
 import { countResolveTargets } from '../../shared/scripts/rhi-debug-topology.mjs';
 import { chromium } from 'playwright';
+import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -40,23 +42,15 @@ const expectedFeatureIdentity = `hello-multi-uv::${expectedPost}`;
 mkdirSync(ARTIFACT_DIR, { recursive: true });
 
 async function findFreePort() {
-  return await new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address !== null ? address.port : undefined;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-        } else if (port === undefined) {
-          reject(new Error('could not resolve an ephemeral Vite port'));
-        } else {
-          resolvePort(String(port));
-        }
-      });
-    });
+  const server = createServer();
+  await once(server.listen(0, '127.0.0.1'), 'listening');
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : undefined;
+  await new Promise((resolveClose, reject) => {
+    server.close((error) => error ? reject(error) : resolveClose());
   });
+  if (port === undefined) throw new Error('could not resolve an ephemeral Vite port');
+  return String(port);
 }
 
 const requestedVitePort = process.env.FORGEAX_M3_RHI_PORT;
@@ -123,9 +117,8 @@ let browser;
 try {
   const baseUrl = await waitForVite(viteProc);
   browser = await chromium.launch({
-    headless: true,
-    channel: 'chrome',
-    args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--ignore-gpu-blocklist'],
+    ...browserLaunch,
+    headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
     chromiumSandbox: true,
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
@@ -243,7 +236,7 @@ try {
     const response = await fetch(`${location.origin}/__forgeax-debug/tape?runId=${runId}`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-forgeax-rhitape' },
-      body: capture.value.bytes,
+      body: new Blob([capture.value.bytes], { type: 'application/x-forgeax-rhitape' }),
     });
     const artifact = await response.json();
     if (!response.ok) throw new Error(`raw tape upload failed: ${JSON.stringify(artifact)}`);
@@ -363,39 +356,43 @@ try {
         },
         textureBindingCount: featureTextureBindingCount,
       };
-  const { freshDevice, rhiWebgpu } = await bootstrapDawn('m3-browser-rhi', parsedTape);
-  const replayResult = await openReplay(parsedTape, {
-    device: freshDevice,
-    createShaderModule: rhiWebgpu.createShaderModule,
-  });
-  if (!replayResult.ok) {
-    freshDevice.destroy?.();
-    throw new Error(`openReplay failed: ${replayResult.error.code}`);
-  }
-  const replay = replayResult.value;
-  const workIndexes = [...new Set([0, model.works.length - 1])];
+  const { freshDevice, rhiWebgpu, dispose } = await bootstrapDawn('m3-browser-rhi', parsedTape);
   const inspections = [];
   let finalInspection;
-  for (const workIndex of workIndexes) {
-    const inspected = await replay.inspectWork(workIndex, ['bindings', 'pixels']);
-    if (!inspected.ok) {
-      await replay.dispose();
-      freshDevice.destroy?.();
-      throw new Error(`inspect work ${workIndex} failed: ${inspected.error.code}`);
-    }
-    const value = inspected.value;
-    if (value.attachment === undefined) {
-      await replay.dispose();
-      freshDevice.destroy?.();
-      throw new Error(`inspect work ${workIndex} missing render-target evidence`);
-    }
-    finalInspection = value;
-    inspections.push({
-      workIndex: value.workIndex,
-      bindings: parsedTape.events.filter((event) => event.kind === 'setBindGroup').length,
-      hasWork: true,
-      hasRenderTarget: true,
+  let replay;
+  try {
+    const replayResult = await openReplay(parsedTape, {
+      device: freshDevice,
+      createShaderModule: rhiWebgpu.createShaderModule,
     });
+    if (!replayResult.ok) {
+      throw new Error(`openReplay failed: ${replayResult.error.code}`);
+    }
+    replay = replayResult.value;
+    const workIndexes = [...new Set([0, model.works.length - 1])];
+    for (const workIndex of workIndexes) {
+      const inspected = await replay.inspectWork(workIndex, ['bindings', 'pixels']);
+      if (!inspected.ok) {
+        throw new Error(`inspect work ${workIndex} failed: ${inspected.error.code}`);
+      }
+      const value = inspected.value;
+      if (value.attachment === undefined) {
+        throw new Error(`inspect work ${workIndex} missing render-target evidence`);
+      }
+      finalInspection = value;
+      inspections.push({
+        workIndex: value.workIndex,
+        bindings: parsedTape.events.filter((event) => event.kind === 'setBindGroup').length,
+        hasWork: true,
+        hasRenderTarget: true,
+      });
+    }
+  } finally {
+    try {
+      if (replay !== undefined) (await replay.dispose()).unwrap();
+    } finally {
+      await dispose();
+    }
   }
   const dawnPixels = finalInspection.attachment.bytes;
   let nonBlackPixelCount = 0;
@@ -419,8 +416,6 @@ try {
   };
   writeFileSync(resolve(ARTIFACT_DIR, 'dawn-readback.rgba'), dawnPixels);
   writeFileSync(resolve(ARTIFACT_DIR, 'dawn-readback.json'), `${JSON.stringify(dawnReadback, null, 2)}\n`);
-  await replay.dispose();
-  freshDevice.destroy?.();
   const result = {
     pipeline: captured.pipeline,
     featureIdentity: expectedFeatureIdentity,

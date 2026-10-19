@@ -6,6 +6,79 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+test('a clean package build waits for a declared development compiler', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-package-compiler-'));
+  try {
+    writeFileSync(join(root, 'package.json'), '{"private":true}');
+    writeFileSync(
+      join(root, 'pnpm-workspace.yaml'),
+      "packages:\n  - 'packages/*'\nverifyDepsBeforeRun: false\nshellEmulator: true\n",
+    );
+    for (const [name, manifest, source] of [
+      [
+        'compiler',
+        {},
+        "await new Promise(resolve => setTimeout(resolve, 100)); writeFileSync('dist/program', 'compiled');",
+      ],
+      [
+        'consumer',
+        {
+          devDependencies: { '@forgeax/compiler': 'workspace:*' },
+          forgeax: { buildDependencies: ['@forgeax/compiler'] },
+        },
+        "writeFileSync('dist/program', readFileSync('../compiler/dist/program'));",
+      ],
+    ]) {
+      const directory = join(root, 'packages', name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'package.json'),
+        JSON.stringify({
+          name: `@forgeax/${name}`,
+          scripts: { build: 'node build.mjs' },
+          ...manifest,
+        }),
+      );
+      writeFileSync(
+        join(directory, 'build.mjs'),
+        `import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'; mkdirSync('dist', {recursive:true}); ${source}\n`,
+      );
+    }
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('../build-packages.mjs', import.meta.url))],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          FORGEAX_REPO_ROOT: root,
+          FORGEAX_BUILD_NO_TASK_CACHE: '1',
+          FORGEAX_PACKAGE_BUILD_CONCURRENCY: '2',
+          FORGEAX_PACKAGE_BUILD_RUNNER: 'pnpm',
+        },
+        encoding: 'utf8',
+        timeout: 30000,
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(readFileSync(join(root, 'packages/consumer/dist/program'), 'utf8'), 'compiled');
+    const consumer = JSON.parse(readFileSync(join(root, 'packages/consumer/package.json'), 'utf8'));
+    assert.equal(consumer.dependencies, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('nightly package build keeps the pnpm launcher context', () => {
+  const workflow = readFileSync(
+    fileURLToPath(new URL('../../.github/workflows/nightly.yml', import.meta.url)),
+    'utf8',
+  );
+  const step = workflow.match(/ {6}- name: Build \(\.mjs[^\n]*\n(?:(?! {6}- name: ).*\n)*/)?.[0];
+  assert.ok(step, 'nightly package build step is present');
+  assert.match(step, /pnpm exec node scripts\/build-packages\.mjs/);
+});
+
 test('package build reuses the owning pnpm entry without a pnpm executable on PATH', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-package-launch-'));
   try {

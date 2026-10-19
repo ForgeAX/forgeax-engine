@@ -18,6 +18,7 @@ import ts from 'typescript';
 import { build } from 'vite';
 import { discoverPluginAssets, pluginAssetClosure } from '../build/plugin-assets.js';
 import { pluginProgramSource, pluginRuntimeProjection } from '../build/plugin-programs.js';
+import { isFilesystemPathWithin } from '../filesystem-path.js';
 import { commandError } from '../project.js';
 import { projectToolProjection } from '../tools/project-tools.js';
 import type { CommandResult, ProjectCommandOptions } from '../types.js';
@@ -210,8 +211,7 @@ export async function pluginMigrateCommand(
     await mkdir(dirname(output), { recursive: true });
     await mkdir(lock);
     locked = true;
-    const relation = relative(root, output);
-    if (!relation || (!relation.startsWith('..') && !isAbsolute(relation)))
+    if (isFilesystemPathWithin(root, output))
       invalid(output, 'output must be outside the original project');
     try {
       await lstat(output);

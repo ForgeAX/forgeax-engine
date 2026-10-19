@@ -12,8 +12,10 @@ import type {
   ShaderModule,
 } from '@forgeax/engine-rhi';
 import { ok as makeOk } from '@forgeax/engine-types';
+import { recordReplayCapabilities } from '../capabilities';
 import type { HandleId, RhiCallEvent } from '../types';
 import {
+  type CreateShaderModuleFn,
   type DebugRhiInstance,
   pushEvent,
   type RecorderInternal,
@@ -23,7 +25,10 @@ import {
 import { createDeviceProxy } from './device';
 import { createRecorderLifecycle } from './lifecycle';
 
-export function wrap(instance: RhiInstance): DebugRhiInstance {
+export function wrap(
+  instance: RhiInstance,
+  createShaderModule: CreateShaderModuleFn,
+): DebugRhiInstance {
   const s: RecorderInternal = {
     state: RecorderState.Idle,
     requestedFrames: 0,
@@ -52,7 +57,7 @@ export function wrap(instance: RhiInstance): DebugRhiInstance {
     deferredAccelerationStructureBuilds: [],
   };
 
-  const lifecycle = createRecorderLifecycle(s);
+  const lifecycle = createRecorderLifecycle(s, createShaderModule);
   const {
     arm,
     onFrameEnd,
@@ -168,15 +173,7 @@ export function wrap(instance: RhiInstance): DebugRhiInstance {
             // device-backed capability from the captured device.
             canvasFormat: 'bgra8unorm' as GPUTextureFormat,
             canvasColorSpace: 'srgb',
-            rgba16floatRenderable: caps.rgba16floatRenderable,
-            rg11b10ufloatRenderable: caps.rg11b10ufloatRenderable,
-            float32Filterable: caps.float32Filterable,
-            firstInstanceIndirect: caps.firstInstanceIndirect,
-            textureCompressionBc: caps.textureCompressionBc,
-            textureCompressionEtc2: caps.textureCompressionEtc2,
-            textureCompressionAstc: caps.textureCompressionAstc,
-            storageBuffer: caps.storageBuffer,
-            timestampQuery: caps.timestampQuery,
+            ...recordReplayCapabilities(caps),
           };
           return makeOk(proxied) as Result<RhiDevice, import('@forgeax/engine-rhi').RhiError>;
         },

@@ -61,7 +61,8 @@
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-state": "workspace:*",
     "@forgeax/engine-tool-runtime": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-preview": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-rhi-null": "workspace:*",

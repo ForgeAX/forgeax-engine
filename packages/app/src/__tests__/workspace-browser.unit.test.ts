@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, Update, World } from '@forgeax/engine-ecs';
-import { Camera, SceneInstance } from '@forgeax/engine-render';
+import { Camera, createBarrelDistortionMapping, SceneInstance } from '@forgeax/engine-render';
 import { ChildOf, Children, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -368,11 +368,23 @@ describe('workspace browser plugin lifecycle', () => {
             capturePixels,
             'pending GPU completion cannot qualify capture',
           ).not.toHaveBeenCalled();
+          publishBrowserFrameCompleted(canvas, {
+            frameId: 2,
+            deviceGeneration: 0,
+            presentation: 'ready',
+            barrelDistortion: createBarrelDistortionMapping(200, 150, { strength: 0 }).unwrap(),
+          });
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          expect(
+            capturePixels,
+            'old-size completion cannot qualify the resized canvas',
+          ).not.toHaveBeenCalled();
           publishBrowserFrameSubmitted(canvas, { frameId: 3, deviceGeneration: 0 });
           publishBrowserFrameCompleted(canvas, {
             frameId: 3,
             deviceGeneration: 0,
             presentation: 'ready',
+            barrelDistortion: createBarrelDistortionMapping(400, 300, { strength: 0 }).unwrap(),
           });
           expect(await capture).toMatchObject({
             ok: true,

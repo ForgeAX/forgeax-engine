@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { rendererBackend, runSmokeAppFrames, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
 // Dawn smoke for Bevy's shader/fullscreen_material reproduction.
@@ -8,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -192,7 +193,7 @@ const tight = new Uint8Array(width * height * 4);
 for (let y = 0; y < height; y += 1) tight.set(pixels.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
 const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(appRoot, 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngOut), { recursive: true });
-writeFileSync(pngOut, writeReferencePng(tight, width, height));
+writeFileSync(pngOut, encodePng(width, height, tight));
 
 let visiblePixels = 0;
 let channelSpreadPixels = 0;

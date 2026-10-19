@@ -3,6 +3,7 @@ import type { Result } from '@forgeax/engine-types';
 export { createPlatformClock } from './clock.js';
 export type { PlatformError, PlatformErrorCode } from './errors.js';
 export { platformError } from './errors.js';
+export { createPlatformLifecycle } from './lifecycle.js';
 export { releasePlatformResources } from './release.js';
 
 import type { PlatformError } from './errors.js';

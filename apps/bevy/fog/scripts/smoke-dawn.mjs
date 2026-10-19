@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { runFogLifecycle } from '../src/runner.mjs';
 import { evaluateFogCase } from '../src/oracle.mjs';
 import { sampleFogRois } from '../src/roi.mjs';
-import { encodePng } from './png.mjs';
+import { encodePng } from '@forgeax/engine-image/png';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -599,6 +599,12 @@ const trace = await runFogLifecycle({
     if (!pairScreenshots.has(phase) && ['disabled', 'uniform', 'height'].includes(phase)) {
       mkdirSync(pairEvidenceDir, { recursive: true });
       const path = resolve(pairEvidenceDir, `dawn-fog-${phase}.png`);
+      if (!Number.isInteger(sample.width) || !Number.isInteger(sample.height) || sample.width <= 0 || sample.height <= 0) {
+        throw new Error(`PNG dimensions must be positive integers: ${sample.width}x${sample.height}`);
+      }
+      if (sample.pixels.length !== sample.width * sample.height * 4) {
+        throw new Error(`PNG RGBA shape mismatch: ${sample.pixels.length} for ${sample.width}x${sample.height}`);
+      }
       const pngBytes = encodePng(sample.width, sample.height, sample.pixels);
       writeFileSync(path, pngBytes);
       pairScreenshots.set(phase, {

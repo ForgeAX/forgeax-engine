@@ -309,8 +309,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             const destination = resources.texture(texture.value).unwrap();
             const extent = resources.textureViewExtent(target.view).unwrap();
             encoder.copyTextureToTexture(
-              { texture: source as unknown as GPUTexture, aspect: 'all' },
-              { texture: destination as unknown as GPUTexture, aspect: 'all' },
+              { texture: source, aspect: 'all' },
+              { texture: destination, aspect: 'all' },
               { ...extent, depthOrArrayLayers: 1 },
             );
           },

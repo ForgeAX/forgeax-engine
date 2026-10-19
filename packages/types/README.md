@@ -1,5 +1,9 @@
 # @forgeax/engine-types
 
+`AssetError` and `ImageErrorImpl` construct the shared asset error envelopes.
+`imageError(detail, expected?)` preserves correlated code/detail types; consumers
+can state their own precondition while sharing the error identity and hints.
+
 `AssetEnvelope.refs` preserves reference-table presence: absent means a native
 payload, while a supplied table (including `[]`) belongs to indexed wire values.
 The Pack v2 wire envelope still requires its `refs` array. Catalog retains this
@@ -806,3 +810,83 @@ uses the same checks and field observations when only validity is needed. It
 retains no per-mip records: validation still takes O(mip count) work, with O(1)
 scratch output. Neither entry retains a payload cache or assumes immutable
 caller declarations.
+
+`createMeshMaterialSlotTable` derives first-use slot identity and unique names
+for source import and sidecar publication. Geometry projects these entries to
+runtime GUIDs and applies the accepted reimport mapping and author defaults.
+
+`isFiniteBounds3` admits the first six numeric min/max lanes only when every
+axis is finite and ordered, including zero-volume boxes. Mesh and animated-import
+entrypoints retain their own exact-array shape requirements. Animated bounds
+also validate the copied float32 payload so finite source numbers cannot overflow
+into infinite GPU culling bounds.
+
+Surface dynamic-input field types and byte footprints have one Types authority.
+The derived layout supplies CPU write widths and generated WGSL word loads;
+vec3 alignment remains 16 bytes with 12 bytes of values, and u32 stays an integer
+load. Page budgets, identities, atomic writes and GPU retirement keep their existing owners.
+
+`srgbChannelToLinear` and `linearChannelToSrgb` own the CPU IEC transfer curve.
+Material projection, cookie preparation and image display consume those functions;
+negative channels follow the linear segment unless a calling API explicitly preserves them.
+
+`MATERIAL_NUMERIC_LAYOUT` supplies numeric material byte size, alignment and WGSL
+type for ABI derivation, parameter modules, reflection checks and GPU Scene rows.
+The distinct color alias and vec3 payload/alignment rules remain explicit.
+
+`MATERIAL_TEXTURE_LAYOUT` supplies sampled-view dimensions, default sample types
+and WGSL declarations. Both layout tables are immutable. Explicit comparison
+samplers emit `sampler_comparison`; automatic texture samplers stay filtering samplers.
+
+Material layout identities hash their canonical UTF-8 JSON with `@noble/hashes`
+SHA-256. The synchronous browser/Worker-safe digest retains the `sha256-` prefix.
+
+`stripWgslComments` blanks nested WGSL comments while preserving token separation,
+UTF-16 offsets and CR/LF boundaries. Material inspection, compiler admission, VFX
+and replay use this compiler-free lexical operation. It does not validate WGSL.
+
+`encodeBase64(bytes)` encodes exactly the selected `Uint8Array` view with the
+standard alphabet and padding. It uses an available native byte codec, otherwise
+a bounded-chunk JavaScript encoder that needs no DOM globals. Pack retains its
+canonical blob validation and decoding; data-URI media types stay with callers.
+
+Texture mip geometry is shared by layout, upload, rendering and readback.
+`numMipLevels({ width, height }, depth?)` derives a full chain; only a 3D volume
+passes depth, never an array's layer count. `mipDimension(size, level)` derives
+one axis with unsigned arithmetic. Callers still own extent/level admission and
+packed versus generated policy.
+
+### Imported output declarations
+
+`ImportSubAsset` owns the GUID, source locator, optional semantic `sourceKey`, kind,
+and optional display `name` shared by persisted Meta and import consumers.
+`ImportedOutputDeclaration` adds topology compatibility policy to that same
+contract. Previous and proposed outputs use that type directly; their role is
+expressed by the containing field, not duplicate aliases.
+
+Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
+root membership, monotonicity and single-step rules in Pack production and Runtime
+replica admission. Shape validation and replica row/scope checks remain separate.
+
+`fnv1a32` hashes numeric words; `fnv1aUtf16` hashes JavaScript code units. These
+non-cryptographic helpers preserve existing cache identities. Byte streams, word
+streams, UTF-16, and protocol-specific code-point encodings remain distinct.
+
+Asset publication output-set digests, deterministic generations and complete receipt/locator tuples come from `createAssetPublication`. Both runtime Pack producers and DDC use this realm-neutral protocol construction; DDC alone owns staging and current/last-known-good lifecycle.
+
+Compiled `ParamSchemaEntry` defaults belong only to numeric UBO fields. Texture,
+sampler and storage entries declare bindings without a default payload. Admitted
+numeric arrays are copied and frozen; resource values stay with the material
+asset and resource binding owners. Admission rejects a resource `default` field
+with a diagnostic naming the parameter and binding type, including dynamically
+supplied schemas.
+
+`WGSL_NUMERIC_LAYOUT` owns the byte size and alignment of host-shareable 32-bit
+scalars and float vectors. Material parameters, dynamic records, GPU Scene and
+VFX layouts project those facts; each consumer retains its field vocabulary,
+member order, final struct padding and allocation limits.
+
+`isValidAssetGuidString` admits UUID dash-form strings for both producer and
+runtime boundaries. It accepts mixed case and any version bits; canonical
+lowercase and identity generation remain Pack policies. Pack derives its
+`AssetGuid` byte brand from this package.

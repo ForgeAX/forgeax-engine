@@ -51,7 +51,7 @@ import type {
 } from '@forgeax/engine-types';
 import { IMPORT_ERROR_HINTS, ImportError } from '@forgeax/engine-types';
 import type { CompressionMode, EncodedTexture } from './ktx2-encode.js';
-import { encodeTextureToKtx2, resolveEncodeMode } from './ktx2-encode.js';
+import { basisEncodeParamsFor, encodeTextureToKtx2 } from './ktx2-encode.js';
 import { importCubeSource } from './lut/cube-producer.js';
 import { parseImage } from './parse-image.js';
 import { importTextureSource } from './texture/importer.js';
@@ -564,14 +564,9 @@ async function cookLdrImage(
   const image = decoded.value;
   const compressionMode = compressionModeToken(settings.compressionMode);
   let encoded: EncodedTexture | null = null;
-  if (resolveEncodeMode(compressionMode, { colorSpace, isHdr: false }) !== 'none') {
-    const result = await encodeTextureToKtx2(
-      image.bytes,
-      image.width,
-      image.height,
-      compressionMode,
-      { colorSpace, isHdr: false, mipmap },
-    );
+  const params = basisEncodeParamsFor(compressionMode, { colorSpace, isHdr: false, mipmap });
+  if (params !== null) {
+    const result = await encodeTextureToKtx2(image.bytes, image.width, image.height, params);
     if (!result.ok) return result;
     encoded = result.value;
   }

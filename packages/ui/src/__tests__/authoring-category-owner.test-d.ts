@@ -1,7 +1,7 @@
 import { expect, expectTypeOf, test } from 'vitest';
 import { classifyUiAuthoring } from '../authoring/index.js';
 import {
-  pickClassification,
+  pickAuthoringCategory,
   UI_AUTHORING_PROFILE,
   type UiAuthoringCategory,
   type UiAuthoringProfile,
@@ -17,20 +17,9 @@ expectTypeOf(UI_AUTHORING_PROFILE.precedence).toEqualTypeOf<
 
 test('preserves precedence priority and native fallback', () => {
   expect(UI_AUTHORING_PROFILE.precedence).toEqual(['runtime-bound', 'normalizable', 'native']);
-  expect(
-    pickClassification(
-      { category: 'native', blocking: false },
-      { category: 'normalizable', blocking: true },
-      { category: 'runtime-bound', blocking: true },
-    ),
-  ).toEqual({ category: 'runtime-bound', blocking: true });
-  expect(
-    pickClassification(
-      { category: 'native', blocking: false },
-      { category: 'normalizable', blocking: true },
-    ),
-  ).toEqual({ category: 'normalizable', blocking: true });
-  expect(pickClassification()).toEqual({ category: 'native', blocking: false });
+  expect(pickAuthoringCategory('native', 'normalizable', 'runtime-bound')).toBe('runtime-bound');
+  expect(pickAuthoringCategory('native', 'normalizable')).toBe('normalizable');
+  expect(pickAuthoringCategory()).toBe('native');
 });
 
 test('keeps the package classification projection intact', () => {

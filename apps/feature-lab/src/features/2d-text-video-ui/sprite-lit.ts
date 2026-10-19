@@ -23,7 +23,12 @@ export default defineFeature({
     world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0, -1, -0.3], color: [1, 0.95, 0.85], intensity: 0.35 },
+        data: {
+          castShadow: true,
+          direction: [0, -1, -0.3],
+          color: [1, 0.95, 0.85],
+          intensity: 0.35,
+        },
       })
       .unwrap();
     const point = world
@@ -38,6 +43,7 @@ export default defineFeature({
         {
           component: SpotLight,
           data: {
+            castShadow: true,
             direction: [0, 0, -1],
             color: [0.3, 1, 1],
             intensity: 8,

@@ -7,7 +7,7 @@ import type { RenderFeature } from './types';
 
 export const LENS_EFFECTS_POST_PROCESS_ID = 'forgeax.lens-effects';
 
-export const LENS_EFFECTS_WGSL = /* wgsl */ `
+const LENS_EFFECTS_WGSL = /* wgsl */ `
 struct Params {
   vignette: vec4<f32>,
   grainIntensity: f32,

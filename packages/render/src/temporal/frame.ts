@@ -12,7 +12,7 @@ export type TemporalResetReason =
   | 'queue-submit-failed'
   | 'device-recovery';
 
-export interface TemporalFrameInput {
+interface TemporalFrameInput {
   readonly frameId: number;
   readonly currentViewProjection: Float32Array;
   readonly jitter: readonly [number, number];
@@ -35,7 +35,7 @@ export interface TemporalFrame {
   readonly deviceEpoch: number;
 }
 
-export interface TemporalSubmitResult {
+interface TemporalSubmitResult {
   readonly accepted: boolean;
   readonly reason?: 'queue-submit-failed';
   readonly resetReason?: Exclude<TemporalResetReason, 'none' | 'queue-submit-failed'>;

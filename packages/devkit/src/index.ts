@@ -5,6 +5,24 @@ export {
   startDevKitBackend,
   stopDevKitBackend,
 } from './backend-process.js';
+export type {
+  BrowserCapture,
+  BrowserCaptureCheckpointOptions,
+  BrowserCaptureOpenOptions,
+  BrowserCaptureRecord,
+  BrowserCaptureRequestReport,
+  BrowserCaptureRequestWitness,
+  BrowserCaptureRunReport,
+  BrowserCaptureRuntimeWitness,
+  BrowserCaptureSession,
+  BrowserCaptureTarget,
+  BrowserLaunchProfile,
+  CapturePixelWitness,
+} from './browser-capture.js';
+export {
+  captureBrowserExecutionSurface,
+  createBrowserCapture,
+} from './browser-capture.js';
 export { createNodePackProgramHost } from './build/pack-program-host.js';
 export { createNodePackProgramImports } from './build/pack-program-imports.js';
 export {
@@ -34,7 +52,6 @@ export {
   shaderCheckCommand,
   skillInstallCommand,
   skillVerifyCommand,
-  softwareCaptureCommand,
   testCommand,
 } from './commands.js';
 export { verifyDist, writeDistManifest } from './dist.js';
@@ -133,33 +150,6 @@ export {
   packageOutputError,
   writeSingleHtml,
 } from './single-html.js';
-export type {
-  BrowserCapture,
-  BrowserCaptureCheckpointOptions,
-  BrowserCaptureOpenOptions,
-  BrowserCaptureRecord,
-  BrowserCaptureRequestReport,
-  BrowserCaptureRequestWitness,
-  BrowserCaptureRunReport,
-  BrowserCaptureRuntimeWitness,
-  BrowserCaptureTarget,
-  BrowserLaunchProfile,
-  CapturePixelWitness,
-  SoftwareBrowser,
-  SoftwareBrowserOpenOptions,
-  SoftwareBrowserSession,
-  SoftwareCaptureCheckpointOptions,
-  SoftwareCaptureRecord,
-  SoftwareCaptureRequestReport,
-  SoftwareCaptureRequestWitness,
-  SoftwareCaptureRunReport,
-  SoftwareCaptureRuntimeWitness,
-} from './software-capture.js';
-export {
-  captureBrowserExecutionSurface,
-  createBrowserCapture,
-  createSoftwareBrowser,
-} from './software-capture.js';
 export { assetSourceImportCommand, type SourceTransferOptions } from './source-transfer.js';
 export * from './tools/index.js';
 export type {
@@ -181,7 +171,6 @@ export type {
   ProjectCommandOptions,
   ProjectFacts,
   ShaderCheckOptions,
-  SoftwareCaptureOptions,
 } from './types.js';
 export { resolveProjectPort } from './types.js';
 export { runUnifiedCli, type UnifiedCliResult } from './unified-cli.js';

@@ -1,11 +1,11 @@
-import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import { decodeMeshBinary, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import {
   MESH_BIN_HEADER_BYTES,
   type MeshBinHeader,
   writeMeshBinHeader,
 } from '@forgeax/engine-pack';
 import { describe, expect, it, vi } from 'vitest';
-import { unpackMeshBin } from '../loaders/mesh-bin';
+import { unpackMeshBin } from '../mesh-bin';
 
 function makeArtifact(
   options: {
@@ -66,6 +66,17 @@ function makeArtifact(
     return new Uint8Array([...bytes, ...new Uint8Array(options.trailingBytes)]);
   return bytes;
 }
+
+describe('mesh binary entrypoint admission', () => {
+  it.each([
+    { submeshes: { length: 1 }, materialSlots: [] },
+    { submeshes: [{ indexCount: 1 }], materialSlots: { length: 1 } },
+  ])('rejects malformed metadata tables without throwing', (json) => {
+    const artifact = makeArtifact({ json });
+    expect(unpackMeshBin(artifact, 'malformed').ok).toBe(false);
+    expect(decodeMeshBinary(artifact, [])).toBeUndefined();
+  });
+});
 
 describe('unpackMeshBin v4 happy path', () => {
   it('decodes independent mixed wire lanes from an unaligned input subview', () => {

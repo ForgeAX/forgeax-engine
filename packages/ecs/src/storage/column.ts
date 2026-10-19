@@ -17,7 +17,7 @@
 // elementBytes`; for fixed-capacity fields the schema-declared N is the
 // capacity.
 
-import { type ScalarFieldType, TYPE_METADATA } from '../component';
+import { type ScalarFieldType, TYPE_METADATA, type TypedArrayFor } from '../component';
 
 // ────────────────────────────────────────────────────────────────────────────
 // ManagedColumnReader — read-only view onto a managed-vocab column
@@ -67,24 +67,7 @@ export function arrayCountColumnName(fieldName: string): string {
 // ────────────────────────────────────────────────────────────────────────────
 
 /** TypedArray view types used by columns. */
-export type FieldView =
-  | Float32Array
-  | Float64Array
-  | Int32Array
-  | Uint32Array
-  | Int16Array
-  | Uint16Array
-  | Int8Array
-  | Uint8Array;
-
-type FieldViewConstructor = new (buffer: ArrayBufferLike) => FieldView;
-
-function createFieldView(
-  Ctor: NonNullable<(typeof TYPE_METADATA)[string]['viewCtor']>,
-  buffer: ArrayBufferLike,
-): FieldView {
-  return new (Ctor as FieldViewConstructor)(buffer);
-}
+export type FieldView = TypedArrayFor<ScalarFieldType>;
 
 function isSharedBuffer(buffer: ArrayBufferLike): buffer is SharedArrayBuffer {
   return typeof SharedArrayBuffer !== 'undefined' && buffer instanceof SharedArrayBuffer;
@@ -108,6 +91,8 @@ export interface Column {
    * Transient view contract section.
    */
   arity: number;
+  /** Variable-array sidecar key, derived once with this table's field layout. */
+  countField?: string;
 }
 
 /**
@@ -125,15 +110,12 @@ export function createColumn(
 ): Column {
   const meta = TYPE_METADATA[fieldType];
   if (!meta) throw new Error(`Missing TYPE_METADATA entry for scalar field type ${fieldType}`);
-  const bytesPerElement =
-    // biome-ignore lint/style/noNonNullAssertion: ScalarFieldType rows always carry a byteSize
-    meta.byteSize!;
+  const bytesPerElement = meta.byteSize;
   const buffer = shared
     ? new SharedArrayBuffer(bytesPerElement * capacity * arity)
     : new ArrayBuffer(bytesPerElement * capacity * arity);
-  // biome-ignore lint/style/noNonNullAssertion: ScalarFieldType rows always carry a viewCtor
-  const Ctor = meta.viewCtor!;
-  const view = createFieldView(Ctor, buffer);
+  const Ctor = meta.viewCtor;
+  const view = new Ctor(buffer);
   return { buffer, view, capacity, fieldType, arity };
 }
 
@@ -160,12 +142,9 @@ export const HAS_TRANSFER: boolean =
 export function growColumn(col: Column, newCapacity: number): Column {
   const meta = TYPE_METADATA[col.fieldType];
   if (!meta) throw new Error(`Missing TYPE_METADATA entry for scalar field type ${col.fieldType}`);
-  const bytesPerElement =
-    // biome-ignore lint/style/noNonNullAssertion: ScalarFieldType rows always carry a byteSize
-    meta.byteSize!;
+  const bytesPerElement = meta.byteSize;
   const newByteLength = bytesPerElement * newCapacity * col.arity;
-  // biome-ignore lint/style/noNonNullAssertion: ScalarFieldType rows always carry a viewCtor
-  const Ctor = meta.viewCtor!;
+  const Ctor = meta.viewCtor;
 
   let buffer: ArrayBuffer | SharedArrayBuffer;
   if (isSharedBuffer(col.buffer)) {
@@ -184,8 +163,8 @@ export function growColumn(col: Column, newCapacity: number): Column {
     new Uint8Array(buffer).set(new Uint8Array(col.buffer));
   }
 
-  const view = createFieldView(Ctor, buffer);
-  return { buffer, view, capacity: newCapacity, fieldType: col.fieldType, arity: col.arity };
+  const view = new Ctor(buffer);
+  return { ...col, buffer, view, capacity: newCapacity };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -163,7 +163,7 @@ function buildScene(world: World, host: GameHost): DemoScene {
   // A foreground wire creates a controlled silhouette/occlusion edge across
   // the middle and far cards without adding animation or VFX noise.
   spawnCube(world, white, [0.35, 0.1, 7.1], [0.07, 2.1, 0.07]);
-  world.spawn({ component: DirectionalLight, data: { direction: [-0.35, -0.8, -0.45], color: [1, 0.95, 0.9], intensity: 1.2 } }).unwrap();
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.35, -0.8, -0.45], color: [1, 0.95, 0.9], intensity: 1.2 } }).unwrap();
   world.spawn({ component: Skylight, data: { color: [0.12, 0.18, 0.3], intensity: 0.35 } }).unwrap();
 
   const canvas = host.canvas;

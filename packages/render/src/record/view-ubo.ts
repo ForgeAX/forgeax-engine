@@ -9,6 +9,7 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { normalizeClippingPlanes } from '@forgeax/engine-types';
+import { jitterCameraProjection } from '../camera-projection';
 import {
   DirectionalShadowFilterValue,
   type DirectionalShadowQuality,
@@ -224,15 +225,11 @@ export function writeViewUbo(
   const viewMatrix = computeViewMatrix(camera);
   const unjitteredViewProjection = mat4.create();
   mat4.multiply(unjitteredViewProjection, projMatrix, viewMatrix);
-  const jitteredProjection = mat4.create();
-  if (resolvedTemporal?.currentJitterUv !== undefined) {
-    const jitter = mat4.identity(mat4.create());
-    jitter[12] = resolvedTemporal.currentJitterUv[0] * 2;
-    jitter[13] = resolvedTemporal.currentJitterUv[1] * -2;
-    mat4.multiply(jitteredProjection, jitter, projMatrix);
-  } else {
-    for (let i = 0; i < 16; i += 1) jitteredProjection[i] = projMatrix[i] ?? 0;
-  }
+  const jitteredProjection = jitterCameraProjection(
+    mat4.create(),
+    projMatrix,
+    resolvedTemporal?.currentJitterUv,
+  );
   const mainProjection = mat4.create();
   mat4.multiply(mainProjection, jitteredProjection, viewMatrix);
 

@@ -34,6 +34,7 @@ describe('Three.js camera and directional shadow defaults', () => {
         component: DirectionalLight,
         data: {
           direction: [0.2, -1, 0.1],
+          castShadow: true,
           cascadeCount: 3,
           ...(shadowDistance === undefined ? {} : { shadowDistance }),
         },
@@ -41,6 +42,8 @@ describe('Three.js camera and directional shadow defaults', () => {
       .unwrap();
     world.update(0).unwrap();
     const light = world.get(sun, DirectionalLight).unwrap();
+    expect(DirectionalLight.fields.cascadeCount.default).toBe(3);
+    expect(light.splitLambda).toBe(0.5);
     expect(light.mapSize).toBe(2048);
     expect(light.shadowFilter).toBe(DirectionalShadowFilterValue.pcfVogel);
     const frame = extractFrame(world, prepareExtractContext(world));

@@ -920,7 +920,7 @@ each PNG digest, checkpoint, actual `GPUAdapterInfo`, canvas/UI witnesses, and c
 range. `backend auto` (the default) tries the normal browser adapter and uses the configured software
 lane when it cannot obtain hardware. `backend hardware` requires a non-software adapter;
 `backend software` requires the software lane. The report records the requested policy, observed
-backend, and fallback reason. The old `--software` spelling remains an alias for `backend software`.
+backend, and fallback reason.
 
 The witness screenshot temporarily hides every non-canvas element, so a visible HUD cannot
 disguise a black 3D frame; the written PNG remains the complete page compositor output.
@@ -1031,6 +1031,10 @@ closed for a pnpm workspace dependency that npm cannot consume, for an unbuilt l
 for a missing SDK package. Status derives its workspace digest from the actual built entry bytes and
 reports their newest modification time. engine unlink removes the sole override and returns to the
 normal registry/SDK resolution path.
+
+The selected Engine also supplies imports in Vite-built Workers, including nested
+game Workers. Each Worker receives its own resolver instance and export conditions;
+an installed npm Engine cannot replace a healthy explicit source binding there.
 
 `forgeax project doctor` accepts third-party workspace and `file:` directory dependencies in
 registry/SDK games as well as games with a healthy local Engine binding. It checks the project and
@@ -1508,7 +1512,7 @@ store remain unchanged; pnpm's SQLite runtime index is the sole digest exception
 
 ## Borrowed display carrier
 
-`SoftwareBrowserOpenOptions` projects the capture fields that opening actually
+`BrowserCaptureOpenOptions` projects the capture fields that opening actually
 accepts from `BrowserCaptureOptions`. `BrowserHostOptions` selects its backend,
 visibility and carrier fields from that opening contract; publishing remains
 preview-owned. Server/Host/launch options and checkpoint budgets retain their
@@ -1821,6 +1825,45 @@ port fallback must not silently reuse another target's address.
 Default readiness waits up
 to 120 seconds for renderer initialization; ordinary commands retain 30 seconds.
 
+### Progressive asset thumbnails
+
+`engine.assets.thumbnails({ projectId, guids })` reads at most 32 unique assets
+without waiting for rendering. Rows are `queued`, `cooking`, `ready`, `failed`, or
+`unsupported`; ready rows include a 128x128 PNG data URL. `thumbnailEpoch` on the
+existing workspace state topic announces progressive changes. View consumes this
+ordinary Engine capability and owns only its grid presentation.
+
+One project queue checks DDC entries with eight concurrent disk reads, then uses
+one lazy, sandboxed browser page and retained App/Renderer/AssetRegistry for the
+misses. It serves through the existing project Vite server, shares the normal
+resource presentation and SceneAsset preview owners, and releases each subject
+lease after a completed, ready FrameReceipt and renderer-owned pixel readback.
+It does not rebuild or navigate per image. Static assets need one ready frame;
+VFX samples 30 deterministic frames. The browser retires after 30 idle seconds,
+on project replacement, failure, or cancellation; each capture has a 90-second
+process deadline. Unrelated failures do not stop healthy assets.
+
+Verified immutable PNG entries live in `.forgeax/ddc/v2/thumbnails`. Their key
+contains the Preview preset, actual Engine producer byte identity, and only the
+subject's recursive current publication closure. A cache hit needs no browser.
+Corruption regenerates the exact entry under the DDC lock. Catalog refresh clears
+visible readiness before asynchronous key comparison, preserves unchanged ready
+entries, and fences late captures from superseded subjects or projects. The DDC
+remains disposable; source files and Catalog publications retain authority.
+Asset-only Pack edits publish through the existing Catalog update path even
+when View uses an immutable external frontend. Plugin/program edits retain
+the frontend replacement contract; restoring an asset source also republishes
+its original content instead of being mistaken for an unchanged startup input.
+
+The browser regression in `__tests__/workspace-thumbnails.test.ts` runs in the
+DevKit runtime-browser gate (`pnpm test:browser`). It checks real transparent
+pixels, progressive completion, one reused carrier and reopening without a
+carrier. `FORGEAX_THUMBNAIL_EXTRA=42` adds 42 distinct material publications for
+bulk measurements; the JSON and PNG evidence is written to
+`artifacts/preview-thumbnails`. Project startup/cook, image generation and hot
+reopening are reported separately. `FORGEAX_THUMBNAIL_BACKEND=software` selects
+the existing software browser launch profile for headless validation.
+
 Workspace capture is injected into `createEngineWorkspaceAppPreview`, so an
 active Engine camera draft rejects capture before the canvas hook runs. The
 requested target extent sets high-DPI CSS sizing. Native browser resize delivery
@@ -2036,3 +2079,13 @@ readiness awaits native asynchronous preparation. Inspect `pipelineLibrary` afte
 and gameplay to compare prepared work with newly encountered pipelines. See the
 [WebGPU library contract](../rhi-webgpu/README.md#device-pipeline-library) for invalidation,
 device compatibility, memory limits and driver-cache constraints.
+
+The carrier provider consumes Tool Runtime’s `CarrierExecutionRequest` and
+`CarrierStateMachine` directly. `createCarrierProviderService` adds the actual
+authenticated HTTP boundary; there is no second local provider state facade.
+
+Browser capture uses `BrowserCaptureOptions.backend` (`auto`, `software`, or
+`hardware`) throughout commands, sessions and reports. `backendRequested` records
+that choice while `backend` reports the observed adapter. Software rendering uses
+the same `browserCaptureCommand` / `createBrowserCapture` APIs and
+`browser-capture-*` failures; there is no separate software option or facade.

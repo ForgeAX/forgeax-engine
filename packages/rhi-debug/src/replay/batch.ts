@@ -1,4 +1,3 @@
-import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 import type { WorkEntry } from '../frame-model';
@@ -307,14 +306,14 @@ async function submitSegment(
   const closed = closeReplayPass(context, entry, begin, pass, work.eventIndex);
   if (!closed.ok) return closed;
   const encoder = context.table.get(begin.cmdHandleId);
-  if (encoder?.resource.kind !== 'encoder' || encoder.resource.role !== 'command')
+  if (encoder?.resource.kind !== 'command')
     return eventFailure(
       work.eventIndex,
       begin,
       'lookup',
       `encoder ${begin.cmdHandleId} is not open`,
     );
-  const command = encoder.resource.value as RhiCommandEncoder;
+  const command = encoder.resource.value;
   const groups = closeReplayDebugGroups(context, begin.cmdHandleId, work.eventIndex, command);
   if (!groups.ok) return groups;
   const finished = command.finish();

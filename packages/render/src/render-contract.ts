@@ -37,6 +37,7 @@ import type {
   Antialias,
   BloomEnabled,
   CameraExposure,
+  CameraProjection,
   Tonemap,
   Transparency,
 } from './components/camera.js';
@@ -204,15 +205,17 @@ export interface CameraSnapshot {
   readonly fov: number;
   readonly aspect: number;
   readonly autoAspect?: boolean;
+  /** Additive NDC lens offset; absent means centered. Independent of stereo eye identity. */
+  readonly projectionOffset?: readonly [number, number];
   readonly view?: import('./components/camera-view').CameraViewData;
   /** Validated StereoCamera facts on the source camera; expanded into two eye views. */
   readonly stereo?: import('./components/stereo-camera').StereoCameraSnapshot;
-  /** Present only on a derived eye view: its side and off-axis projection term. */
+  /** Present only on a derived eye view: its side; projectionOffset carries its lens shift. */
   readonly eye?: import('./components/stereo-camera').StereoEyeSnapshot;
   readonly near: number;
   readonly far: number;
   /** Camera projection variant used by view and shadow matrix builders. */
-  readonly projection: 'perspective' | 'orthographic';
+  readonly projection: CameraProjection;
   readonly orthoLeft: number;
   readonly orthoRight: number;
   readonly orthoBottom: number;
@@ -230,8 +233,8 @@ export interface CameraSnapshot {
   readonly bloom: BloomEnabled;
   readonly bloomThreshold: number;
   readonly bloomIntensity: number;
-  readonly bloomSoftKnee: number;
-  readonly bloomScatter: number;
+  readonly bloomSmoothWidth: number;
+  readonly bloomRadius: number;
   readonly clearColor: readonly [number, number, number, number];
   /** Optional active-camera SSR authoring fact, copied from the ECS schema. */
   readonly ambientOcclusion?: AmbientOcclusionData;
@@ -1273,8 +1276,8 @@ export const RENDER_GRAPH_EXECUTION_PHASE_CATALOG = [
   'record/graph-execute/skybox',
   'record/graph-execute/main',
   'record/graph-execute/fxaa',
-  'record/graph-execute/bloom-downsample',
-  'record/graph-execute/bloom-upsample',
+  'record/graph-execute/bloom-horizontal',
+  'record/graph-execute/bloom-vertical',
   'record/graph-execute/bloom-composite',
   'record/graph-execute/depth-pyramid',
   'record/graph-execute/ssr-trace',

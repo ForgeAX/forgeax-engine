@@ -3811,9 +3811,9 @@ export function* recordCompiledFrameGraph(
           );
         } else {
           encoder.copyTextureToBuffer(
-            { texture: graphTexture as never },
+            { texture: graphTexture },
             {
-              buffer: graphCapture.buffer as never,
+              buffer: graphCapture.buffer,
               bytesPerRow: graphCapture.bytesPerRow,
               rowsPerImage: graphCapture.height,
             },

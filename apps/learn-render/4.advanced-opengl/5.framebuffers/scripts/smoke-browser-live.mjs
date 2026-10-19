@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // Real Chrome/WebGPU M3 live pipeline evidence for Learn Render 4.5.
 // The page already owns the public installPipelineByKey, resize listener, and
 // RHI-debug capture hook; this smoke drives those browser-visible surfaces.
@@ -12,7 +13,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { writeReferencePng } from '../../../../shared/png-codec.mjs';
+
 import { buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import { bootstrapDawn } from '../../../../shared/scripts/rhi-debug-verify.mjs';
 import { createOwnedProcessGroupStopper } from '../../../../shared/scripts/rhi-debug-process.mjs';
@@ -83,7 +84,7 @@ function changedPixels(before, after) {
 
 function writeCapturePng(label, capture) {
   const path = resolve(ARTIFACT_DIR, `${label}.png`);
-  writeFileSync(path, writeReferencePng(capture.pixels, capture.width, capture.height));
+  writeFileSync(path, encodePng(capture.width, capture.height, capture.pixels));
   return path;
 }
 
@@ -132,7 +133,7 @@ async function capture(page, label) {
     const response = await fetch(`${location.origin}${route}?runId=${runId}`, {
       method: 'POST',
       headers: { 'content-type': mime },
-      body: capture.value.bytes,
+      body: new Blob([capture.value.bytes], { type: 'application/x-forgeax-rhitape' }),
     });
     const artifact = await response.json();
     if (!response.ok) throw new Error(`raw tape upload failed: ${JSON.stringify(artifact)}`);
@@ -316,25 +317,26 @@ try {
     const model = buildFrameModel(tape);
     if (model.works.length === 0) throw new Error('decoded tape has no work entries');
     const inspectedWork = model.works.length - 1;
-    const { freshDevice, rhiWebgpu } = await bootstrapDawn('m3-programmable', tape);
-    const replayResult = await openReplay(tape, {
-      device: freshDevice,
-      createShaderModule: rhiWebgpu.createShaderModule,
-    });
-    if (!replayResult.ok) {
-      freshDevice.destroy?.();
-      throw new Error(`openReplay failed: ${replayResult.error.code}`);
+    const { freshDevice, rhiWebgpu, dispose } = await bootstrapDawn('m3-programmable', tape);
+    let inspection;
+    let replay;
+    try {
+      const replayResult = await openReplay(tape, {
+        device: freshDevice,
+        createShaderModule: rhiWebgpu.createShaderModule,
+      });
+      if (!replayResult.ok) throw new Error(`openReplay failed: ${replayResult.error.code}`);
+      replay = replayResult.value;
+      const inspected = await replay.inspectWork(inspectedWork, ['bindings', 'pixels']);
+      if (!inspected.ok) throw new Error(`inspectWork(${inspectedWork}) failed: ${inspected.error.code}`);
+      inspection = inspected.value;
+    } finally {
+      try {
+        if (replay !== undefined) (await replay.dispose()).unwrap();
+      } finally {
+        await dispose();
+      }
     }
-    const replay = replayResult.value;
-    const inspectionResult = await replay.inspectWork(inspectedWork, ['bindings', 'pixels']);
-    if (!inspectionResult.ok) {
-      await replay.dispose();
-      freshDevice.destroy?.();
-      throw new Error(`inspectWork(${inspectedWork}) failed: ${inspectionResult.error.code}`);
-    }
-    const inspection = inspectionResult.value;
-    await replay.dispose();
-    freshDevice.destroy?.();
     const drawCount = model.works.filter((work) => work.kind === 'draw' || work.kind === 'drawIndexed').length;
     const summary = {
       workCount: model.works.length,

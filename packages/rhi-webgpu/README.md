@@ -20,9 +20,9 @@
 | Entry | Form | Purpose |
 |:--|:--|:--|
 | `requestAdapter(opts?)` | `(RequestAdapterOptions?) => Promise<Result<RhiAdapter, RhiError>>` | Browser-native adapter probe. A resolved `null` is `adapter-unavailable`; a rejection is `webgpu-runtime-error` and preserves the original cause in `detail.error`. |
-| `requestDevice(opts?)` | `(RequestDeviceOptions) => Promise<Result<RhiDevice, RhiError>>` | Entry 1: navigates `navigator.gpu` (default) or an injected `gpu` provider; error paths 1/2/3 originate here |
+| `requestAdapter(opts?)` / `requestAdapterFrom(gpu, opts?)` | `Promise<Result<RhiAdapter, RhiError>>` | Ambient browser or explicit provider; the returned adapter owns `requestDevice` |
 | `createShaderModule(device, desc)` | `(RhiDevice, { code, label? }) => Promise<Result<ShaderModule, RhiError>>` | Entry 2: async shader compile; `'shader-compile-failed'` forwards every `GPUCompilationMessage` field to `RhiError.detail.compilerMessages` |
-| `rhi` | `{ requestDevice, createShaderModule }` const singleton | Progressive-disclosure entry (charter proposition 1); see `Engine.create({ rhi, canvas })` and `import { rhi } from '@forgeax/engine-rhi-webgpu'` |
+| `rhi` | RHI factory | `requestAdapter`, canvas acquisition and shader-module operations; device construction belongs to the returned adapter |
 | `_internal_getRawDevice(device)` | `(RhiDevice) => GPUDevice \| undefined` | D-S1 single-point escape hatch (whitelist: `device.ts` def + `index.ts` createShaderModule + `apps/hello/triangle/src/main.ts:96` canvas context.configure + `dawn-real-gpu.dawn.test.ts` validation probe). `getRawDevice` (without prefix) was removed in M4 (AC-RSC-05). |
 | `GpuLike` / `GpuAdapterLike` / `GpuDeviceLike` | `interface` provider seam | Mock fixture's minimal GPU subset (research §F-6) |
 | `RequestDeviceOptions` | `{ gpu?, adapterOptions?, deviceDescriptor? }` | Provider seam injection arguments |
@@ -175,7 +175,7 @@ A: D-S1 single-point exemption — `apps/hello/triangle/src/main.ts:96` `context
 
 - [`@forgeax/engine-rhi`](../rhi) — pure interface contract (14 opaque handles + descriptor projections + 7 main interfaces + `RhiError` / `Result`).
 - [`@forgeax/engine-types`](../types) — POD types / enum SSOT.
-- [`@forgeax/engine-runtime`](../engine) — async factory entry (M3 injects via `rhi.requestDevice()`).
+- [`@forgeax/engine-runtime`](../engine) — async factory entry (M3 injects via `rhi.requestAdapter()` and `adapter.requestDevice()`).
 
 ## Device pipeline library
 

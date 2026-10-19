@@ -1,5 +1,1 @@
-export { MeshBinAssetError } from './errors/asset.js';
-export {
-  type UnpackedMeshBin,
-  unpackMeshBin,
-} from './loaders/mesh-bin.js';
+export { MeshBinAssetError, type UnpackedMeshBin, unpackMeshBin } from '@forgeax/engine-geometry';

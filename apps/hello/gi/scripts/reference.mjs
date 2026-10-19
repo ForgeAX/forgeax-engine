@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { World } from '@forgeax/engine-ecs';
+import { mipDimension } from '@forgeax/engine-types';
 import * as gi from './gi-dawn.mjs';
 import { intermediateBufferReads, optionReader, referenceAssetCommit, referenceCoverage, replayTimingSummary } from './gi-comparison.mjs';
 import {
@@ -531,9 +532,9 @@ async function replayTape(path, bytes, live) {
     let bytes = 0;
     for (let mip = 0; mip < (desc.mipLevelCount ?? 1); mip++) {
       bytes += width * height * depth * texel;
-      width = Math.max(1, width >> 1);
-      height = Math.max(1, height >> 1);
-      depth = Math.max(1, depth >> 1);
+      width = mipDimension(width, 1);
+      height = mipDimension(height, 1);
+      depth = mipDimension(depth, 1);
     }
     return bytes;
   };

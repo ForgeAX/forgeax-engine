@@ -2,10 +2,10 @@ import type { DeviceScope, ResourceRef } from '../device/device-scope';
 import { createTemporalCoverage, type TemporalCoverage } from './coverage';
 import type { TemporalView } from './view';
 
-export type TemporalProducer = 'rigid' | 'instance' | 'skin' | 'morph' | 'transparent' | 'vfx';
-export type TemporalProducerState = Partial<Record<TemporalProducer, string>>;
+type TemporalProducer = 'rigid' | 'instance' | 'skin' | 'morph' | 'transparent' | 'vfx';
+type TemporalProducerState = Partial<Record<TemporalProducer, string>>;
 
-export interface TemporalHistorySnapshot {
+interface TemporalHistorySnapshot {
   readonly historyValid: boolean;
   readonly frameIndex: number;
   readonly previous: TemporalProducerState;

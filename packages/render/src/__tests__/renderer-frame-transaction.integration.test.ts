@@ -106,8 +106,8 @@ function temporalResolveFrame(
       bloom: 'off',
       bloomThreshold: 1,
       bloomIntensity: 1,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
       clearColor: [0, 0, 0, 1],
       temporal: frameState.lastSuccessfulTemporalView,
     },
@@ -1527,4 +1527,46 @@ describe('frame completion stage inspection', () => {
     await expect(reflection).rejects.toBe(error);
     expect(withReflection()).toEqual({ queue: 'fulfilled', reflection: 'rejected' });
   });
+});
+
+it('reuses a retained TAA binding while preserving uploads, pipeline checks and resource replacement', async () => {
+  const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+  const scope = DeviceScope.create(93, 'taa-binding-owner');
+  const frameState = {
+    temporalGpuState: undefined,
+    activeTemporalGpuState: undefined,
+    retiringTemporalGpuStates: new Set(),
+  } as unknown as RenderFrameState;
+  const graph = await buildTemporalResolveGraph(device);
+  const groups = vi.spyOn(device, 'createBindGroup');
+  const writes = vi.spyOn(device.queue, 'writeBuffer');
+  const execute = async (pipeline: object | null = {}) => {
+    const frame = temporalResolveFrame(device, scope, frameState, pipeline);
+    graph.execute(frame).unwrap();
+    device.queue.submit([frame.encoder.finish().unwrap()]).unwrap();
+    await device.queue.onSubmittedWorkDone();
+  };
+  try {
+    await execute();
+    const firstWrites = writes.mock.calls.length;
+    await execute();
+    const count = () =>
+      groups.mock.calls.filter(([desc]) => desc.label === 'taa-resolve-bind-group').length;
+    expect(count()).toBe(1);
+    expect(writes).toHaveBeenCalledTimes(firstWrites + 1);
+    await expect(execute(null)).rejects.toBeDefined();
+    expect(count()).toBe(1);
+    const state = getTemporalGpuState(frameState, device, scope, 8, 8);
+    const previous = state.paramsBuffer;
+    state.paramsBuffer = device.createBuffer({ size: 32, usage: 0x48 }).unwrap();
+    await execute();
+    await execute();
+    expect(count()).toBe(2);
+    state.paramsBuffer = previous;
+    await execute();
+    expect(count()).toBe(2);
+  } finally {
+    (await graph.retire()).unwrap();
+    scope.retire();
+  }
 });

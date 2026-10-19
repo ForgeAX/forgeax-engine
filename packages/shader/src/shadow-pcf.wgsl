@@ -214,8 +214,11 @@ fn sample_shadow_2d_vogel(
     let point = SHADOW_VOGEL_OFFSETS[i];
     let offset = vec2<f32>(point.x * rotation.x - point.y * rotation.y,
       point.x * rotation.y + point.y * rotation.x);
-    let sampleUv = clamp(uv + offset * texel.x, texel, vec2<f32>(1.0) - texel);
-    let sampleDepth = depthRef + dot(planeGradient, (sampleUv - uv) / texel);
+    // Match Three's unclamped Vogel footprint. Clamp only the position used
+    // by receiver-plane correction to the comparison sampler's edge texel.
+    let sampleUv = uv + offset * texel;
+    let receiverUv = clamp(sampleUv, 0.5 * texel, vec2<f32>(1.0) - 0.5 * texel);
+    let sampleDepth = depthRef + dot(planeGradient, (receiverUv - uv) / texel);
     lit += textureSampleCompareLevel(shadowMap, shadowSampler, sampleUv, layer, sampleDepth);
   }
   return lit * 0.2;

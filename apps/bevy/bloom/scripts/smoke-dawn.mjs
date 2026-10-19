@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-bloom headless dawn smoke (pixel falsifier + structural gate).
 // Strategy: the shared Bevy-faithful 10x10 emissive sphere field is rendered
@@ -12,7 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -179,8 +180,8 @@ const artifactDir = resolve(here, '..', 'artifacts');
 mkdirSync(artifactDir, { recursive: true });
 const offPng = resolve(artifactDir, 'bloom-off.png');
 const onPng = resolve(artifactDir, 'bloom-on.png');
-writeFileSync(offPng, writeReferencePng(bloomOffPixels, WIDTH, HEIGHT));
-writeFileSync(onPng, writeReferencePng(bloomOnPixels, WIDTH, HEIGHT));
+writeFileSync(offPng, encodePng(WIDTH, HEIGHT, bloomOffPixels));
+writeFileSync(onPng, encodePng(WIDTH, HEIGHT, bloomOnPixels));
 
 const device = sharedDevice;
 if (device) await device.queue.onSubmittedWorkDone();
@@ -196,15 +197,16 @@ if (errors.length > 0) {
 if (drawErrors > 0) failures.push(`(c) draw returned ${drawErrors} errors`);
 if (diff.mean <= 0.25 || diff.changedPixels <= 20) failures.push(`(d) bloom on/off diff too small: mean=${diff.mean.toFixed(4)}, changedPixels=${diff.changedPixels}`);
 for (const pass of [
-  'bloom-downsample-0',
-  'bloom-downsample-1',
-  'bloom-downsample-2',
-  'bloom-downsample-3',
-  'bloom-downsample-4',
-  'bloom-upsample-3',
-  'bloom-upsample-2',
-  'bloom-upsample-1',
-  'bloom-upsample-0',
+  'bloom-horizontal-0',
+  'bloom-vertical-0',
+  'bloom-horizontal-1',
+  'bloom-vertical-1',
+  'bloom-horizontal-2',
+  'bloom-vertical-2',
+  'bloom-horizontal-3',
+  'bloom-vertical-3',
+  'bloom-horizontal-4',
+  'bloom-vertical-4',
   'bloom-composite',
 ]) {
   if (!passNames.includes(pass)) failures.push(`(e) missing bloom pass ${pass}; actual=${passNames.join(',')}`);

@@ -22,6 +22,13 @@ fn evalDistanceAttenuation(
   return window * window / max(pow(safeDistance, 0.5 * decay), nearFloor);
 }
 
+// Equal inner/outer cosines represent a hard cone. smoothstep(a, a, x)
+// is undefined, including at the edge, on both WGSL and GLSL backends.
+fn evalSpotCone(cosInner: f32, cosOuter: f32, angleCos: f32) -> f32 {
+  if (cosInner <= cosOuter) { return step(cosOuter, angleCos); }
+  return smoothstep(cosOuter, cosInner, angleCos);
+}
+
 fn evalSpotAttenuation(
   lightPos : vec3<f32>,
   lightDir : vec3<f32>,
@@ -34,7 +41,7 @@ fn evalSpotAttenuation(
   let dSquared = dot(toLight, toLight);
   let distance = evalDistanceAttenuation(dSquared, invRangeSquared, 2.0, 1e-4);
   let direction = normalize(select(vec3<f32>(0.0, 0.0, -1.0), toLight, dSquared > 1e-4));
-  let cone = smoothstep(cosOuter, cosInner, dot(direction, -normalize(lightDir)));
+  let cone = evalSpotCone(cosInner, cosOuter, dot(direction, -normalize(lightDir)));
   return distance * cone;
 }
 

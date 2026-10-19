@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
+import { isFilesystemPathWithin } from './filesystem-path.js';
 
 // Disposable outputs and installed dependencies are not author inputs.
 const excluded = new Set([
@@ -151,16 +152,6 @@ function documentationReferences(source: string): readonly DocumentationReferenc
   return [...references.values()];
 }
 
-function isWithinProjectRoot(projectRoot: string, path: string): boolean {
-  const fromRoot = relative(projectRoot, path);
-  return (
-    fromRoot === '' ||
-    (fromRoot !== '..' &&
-      !fromRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) &&
-      !isAbsolute(fromRoot))
-  );
-}
-
 function resolveDocumentationReference(
   projectRoot: string,
   sourcePath: string,
@@ -175,7 +166,7 @@ function resolveDocumentationReference(
     : base === 'project'
       ? resolve(projectRoot, reference)
       : resolve(sourcePath, '..', reference);
-  return isWithinProjectRoot(projectRoot, candidate) ? candidate : undefined;
+  return isFilesystemPathWithin(projectRoot, candidate) ? candidate : undefined;
 }
 
 function hasDynamicDocumentationDependency(source: string): boolean {

@@ -15,7 +15,7 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 //   5. console.error fires 0 times.
 //   6. frames >= SMOKE_MIN_FRAMES.
 //   7. The per-frame render graph contains the 10 declarative Bloom
-//      passes (five downsample / four upsample / bloom-composite)
+//      passes (five horizontal / five vertical / bloom-composite)
 //      — proves the bloom chain is wired in the compiled graph.
 //   8. Camera bloom off -> on -> off transitions prove exact-zero roster
 //      removal and re-admission without a second Standard post topology.
@@ -50,15 +50,9 @@ const SMOKE_MIN_FRAMES = 60;
 const FALSIFY_BLOOM = process.env.FORGEAX_BLOOM_FALSIFY === '1';
 const CAPTURE_GPU_TIMINGS = process.env.FORGEAX_BLOOM_CAPTURE_TIMINGS === '1';
 const EXPECTED_BLOOM_TIMING_PASSES = Object.freeze([
-  'bloom-downsample-0',
-  'bloom-downsample-1',
-  'bloom-downsample-2',
-  'bloom-downsample-3',
-  'bloom-downsample-4',
-  'bloom-upsample-3',
-  'bloom-upsample-2',
-  'bloom-upsample-1',
-  'bloom-upsample-0',
+  ...Array.from({ length: 5 }, (_, level) => [
+    `bloom-horizontal-${level}`, `bloom-vertical-${level}`,
+  ]).flat(),
   'bloom-composite',
 ]);
 
@@ -423,7 +417,7 @@ app.world.spawn(
 // Directional light.
 app.world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.4, -0.6, -0.7],
     color: [1, 1, 1],
     intensity: FALSIFY_BLOOM ? 0 : 1.5,
@@ -441,8 +435,8 @@ const cameraEntity = app.world.spawn(
       bloom: BLOOM_ENABLED,
       bloomThreshold: 1.0,
       bloomIntensity: 1.0,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
     },
   },
 ).unwrap();
@@ -548,9 +542,7 @@ function bloomPassNames() {
 const transitionFailures = [];
 function assertBloomRoster(label, expected) {
   const actual = bloomPassNames();
-  const expectedNames = expected
-    ? ['bloom-downsample-0', 'bloom-downsample-1', 'bloom-downsample-2', 'bloom-downsample-3', 'bloom-downsample-4', 'bloom-upsample-3', 'bloom-upsample-2', 'bloom-upsample-1', 'bloom-upsample-0', 'bloom-composite']
-    : [];
+  const expectedNames = expected ? EXPECTED_BLOOM_TIMING_PASSES : [];
   if (JSON.stringify(actual) !== JSON.stringify(expectedNames)) {
     transitionFailures.push(`${label}: expected ${JSON.stringify(expectedNames)}, got ${JSON.stringify(actual)}`);
   }
@@ -925,8 +917,8 @@ const performanceEvidence = CAPTURE_GPU_TIMINGS
         sampleCount: timingResourceSamples.filter((entry) => entry.stage === 'on').slice(0, SMOKE_MIN_FRAMES).length,
         first: timingResourceSamples.find((entry) => entry.stage === 'on') ?? null,
         last: timingResourceSamples.filter((entry) => entry.stage === 'on').slice(0, SMOKE_MIN_FRAMES).at(-1) ?? null,
-        parameterBytes: 5 * 256 + 4 * 256 + 16,
-        parameterBreakdown: { downsample: 5 * 256, upsample: 4 * 256, composite: 16 },
+        parameterBytes: 5 * 256 + 5 * 256 + 16,
+        parameterBreakdown: { horizontal: 5 * 256, vertical: 5 * 256, composite: 16 },
         nativeBloom: {
           firstStable: firstNativeResourceSample,
           lastStable: lastNativeResourceSample,
@@ -1019,8 +1011,8 @@ if (onStage?.readback === undefined || offStage?.readback === undefined) {
     '(g) Bloom contribution oracle: on/off numeric RGB readback is identical; scene contribution did not reach the Bloom graph',
   );
 }
-if (onStage?.bloom?.graphStatus !== 'valid' || onStage?.bloom?.passCount !== 10) {
-  failures.push(`(h) Bloom inspection did not report a valid ten-pass graph: ${JSON.stringify(onStage?.bloom)}`);
+if (onStage?.bloom?.graphStatus !== 'valid' || onStage?.bloom?.passCount !== 11) {
+  failures.push(`(h) Bloom inspection did not report a valid eleven-pass graph: ${JSON.stringify(onStage?.bloom)}`);
 }
 if (onStage?.bloom?.residentChildBytes !== onStage?.bloom?.targetBytes || onStage?.bloom?.residentChildBytes <= 0) {
   failures.push(`(h0) Bloom inspection did not report descriptor-derived resident bytes: ${JSON.stringify(onStage?.bloom)}`);

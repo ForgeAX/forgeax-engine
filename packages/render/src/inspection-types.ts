@@ -139,8 +139,8 @@ export interface BloomInspection {
   readonly enabled: boolean;
   readonly levelCount: number;
   readonly levelDimensions: readonly { readonly width: number; readonly height: number }[];
-  readonly downsamplePassCount: number;
-  readonly upsamplePassCount: number;
+  readonly horizontalPassCount: number;
+  readonly verticalPassCount: number;
   readonly targetCount: number;
   readonly targetBytes: number;
   readonly resourceCount: number;
@@ -159,8 +159,8 @@ export const emptyBloomInspection = (): BloomInspection => ({
   enabled: false,
   levelCount: 0,
   levelDimensions: [],
-  downsamplePassCount: 0,
-  upsamplePassCount: 0,
+  horizontalPassCount: 0,
+  verticalPassCount: 0,
   targetCount: 0,
   targetBytes: 0,
   resourceCount: 0,

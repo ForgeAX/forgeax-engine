@@ -513,3 +513,71 @@ export {
   type ResultErr,
   type ResultOk,
 } from '@forgeax/engine-types';
+
+// Backend-independent validation failures; each backend keeps its detection and delivery channel.
+
+export function limitExceeded(limitName?: string | undefined): RhiError {
+  const lname = limitName ?? 'maxBindGroups';
+  return new RhiError({
+    code: 'limit-exceeded',
+    expected: `${lname} to be within bounds`,
+    hint: `verify device.limits.${lname}`,
+  });
+}
+
+export function shaderCompileFailed(compilerMessages: readonly GPUCompilationMessage[]): RhiError {
+  return new RhiError({
+    code: 'shader-compile-failed',
+    expected: 'valid WGSL source',
+    hint: 'inspect RhiError.detail.compilerMessages (each entry: { message, type, lineNum, linePos, offset, length } per WebGPU GPUCompilationMessage shape)',
+    detail: { compilerMessages },
+  });
+}
+
+export function commandEncoderFinished(kind: 'command' | 'render bundle' = 'command'): RhiError {
+  return new RhiError({
+    code: 'command-encoder-finished',
+    expected: `an unfinished ${kind} encoder`,
+    hint:
+      kind === 'command'
+        ? 'create a new command encoder via device.createCommandEncoder(); do not reuse a finished encoder'
+        : 'create a new render bundle encoder via device.createRenderBundleEncoder()',
+  });
+}
+
+export function renderPassNotEnded(): RhiError {
+  return new RhiError({
+    code: 'render-pass-not-ended',
+    expected:
+      'previous render or compute pass must be ended before beginning a new pass or finishing the encoder',
+    hint: 'call pass.end() before beginning another pass or calling encoder.finish()',
+  });
+}
+
+export function queueSubmitFailed(detailMessage?: string | undefined): RhiError {
+  const baseHint =
+    'check if any referenced buffer / pipeline / texture has been destroyed before submit';
+  const hint =
+    detailMessage !== undefined && detailMessage.length > 0
+      ? `${baseHint}; underlying GPU error: ${detailMessage}`
+      : baseHint;
+  return new RhiError({
+    code: 'queue-submit-failed',
+    expected:
+      'command buffer references must be valid at submit time (not destroyed; not from a different device)',
+    hint,
+  });
+}
+
+export function queueWriteBufferOutOfBounds(args: {
+  offset: number;
+  byteLength: number;
+  bufferSize: number;
+}): RhiError {
+  return new RhiError({
+    code: 'queue-write-buffer-out-of-bounds',
+    expected:
+      'writeBuffer offset + data.byteLength must be <= buffer.size; offset must be 4-byte aligned',
+    hint: `verify offset alignment and bounds: offset (got ${args.offset}) + data.byteLength (got ${args.byteLength}) must be <= buffer.size (got ${args.bufferSize})`,
+  });
+}

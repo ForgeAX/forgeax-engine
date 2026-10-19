@@ -1,9 +1,7 @@
-import {
-  createAcceptedPublicationStore,
-  scriptablePackOutputSetDigest,
-  scriptablePackPublicationGeneration,
-} from '@forgeax/engine-ddc';
+import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { AssetPublicationEnvelope } from '@forgeax/engine-types';
+import { assetPublicationGeneration, assetPublicationOutputSetDigest } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   preserveAcceptedPublicationGeneration,
@@ -27,7 +25,7 @@ function publication(generation: number): AssetPublicationEnvelope {
       refs: [] as const,
     },
   ];
-  const outputSetDigest = scriptablePackOutputSetDigest(outputs);
+  const outputSetDigest = assetPublicationOutputSetDigest(outputs);
   return {
     schemaVersion: 'asset-publication/1',
     sourcePath: 'assets/showcase.pack.ts',
@@ -56,10 +54,8 @@ describe('ScriptablePack publication integration', () => {
       digest: 'sha256:package',
       outputSetDigest: 'sha256:outputs',
     };
-    expect(scriptablePackPublicationGeneration(input)).toBe(
-      scriptablePackPublicationGeneration({ ...input }),
-    );
-    expect(scriptablePackPublicationGeneration(input)).toBeGreaterThan(0);
+    expect(assetPublicationGeneration(input)).toBe(assetPublicationGeneration({ ...input }));
+    expect(assetPublicationGeneration(input)).toBeGreaterThan(0);
   });
 
   it('reuses the accepted generation for an unchanged authored tuple', () => {
@@ -128,5 +124,35 @@ describe('ScriptablePack publication integration', () => {
       error: { code: 'asset-publication-route-failed', recovery: { useLastKnownGood: true } },
     });
     expect(store.observe(first.sourcePath)).toMatchObject({ current: { generation: 1 } });
+  });
+});
+
+it('admits a runtime Pack tuple through the DDC publication authority', async () => {
+  const { publication } = createRuntimePackPublication({
+    pack: { assets: [{ guid: 'MESH-GUID', kind: 'mesh', payload: {} }] },
+    scopeId: 'runtime-fixture',
+    sourcePath: 'mesh.pack.ts',
+    sourceRevision: 'source-1',
+    packageUrl: '/mesh.pack.json',
+  });
+  const store = createAcceptedPublicationStore();
+  const candidate = { envelope: publication };
+  expect(store.stage(publication.sourcePath, candidate)).toEqual({ ok: true, value: undefined });
+  const committed = await store.commit(publication.sourcePath, candidate, () => {});
+  expect(committed.ok).toBe(true);
+  expect(store.observe(publication.sourcePath).current).toMatchObject({
+    generation: publication.generation,
+    outputSetDigest: publication.outputSetDigest,
+    receipt: publication.receipt,
+  });
+  const firstOutput = publication.outputs[0];
+  if (firstOutput === undefined) throw new Error('fixture emitted no output');
+  const changedOutput = { ...firstOutput, sourceKey: 'other-source-key' };
+  const rejected = store.stage(publication.sourcePath, {
+    envelope: { ...publication, generation: publication.generation + 1, outputs: [changedOutput] },
+  });
+  expect(rejected).toMatchObject({
+    ok: false,
+    error: { code: 'asset-publication-output-set-mismatch' },
   });
 });

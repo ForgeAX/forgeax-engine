@@ -134,6 +134,7 @@
           "sun": {
             "components": {
               "DirectionalLight": {
+                "castShadow": true,
                 "direction": [
                   -0.5,
                   -1,

@@ -84,7 +84,7 @@ export default async function bootstrap(data) {
               { component: Transform, data: {} },
               {
                 component: DirectionalLight,
-                data: { intensity: 3, direction: [-0.5, -1, -0.3], color: [1, 1, 1] },
+                data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3], color: [1, 1, 1] },
               },
             )
             .unwrap();

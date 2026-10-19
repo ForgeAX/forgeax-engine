@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+import { isValidAssetGuidString } from '@forgeax/engine-types';
+
 import { decodeCatalogWire } from './catalog-wire.js';
 
 // @forgeax/engine-pack/src/cli-asset — Pack producer implementation used by
@@ -10,9 +11,8 @@ import { decodeCatalogWire } from './catalog-wire.js';
 // Exit codes: 0 success, 1 any error.
 
 import { createHash } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { ArtifactDescriptor, AssetEvidence, CookReceipt } from '@forgeax/engine-types';
 import { validateArtifactPath } from './artifact-path.js';
@@ -22,7 +22,7 @@ import {
   type OfflineArtifactInput,
 } from './evidence/offline-evidence.js';
 import { readSourceInventory } from './evidence/source-inventory.js';
-import { isValidAssetGuidString } from './guid.js';
+
 import { parsePackV2 } from './index.js';
 import { projectScriptablePackMeta } from './pack-authoring.js';
 import { declaredPackAssets, type ScanSourceDeclaration, scanInventory } from './scanner.js';
@@ -644,7 +644,7 @@ async function readJson(path: string, ctx: AssetCtx): Promise<unknown | undefine
 function catalogRows(value: unknown): readonly Record<string, unknown>[] | undefined {
   // Offline inspection also accepts row containers without runtime authority.
   const rows =
-    isRecord(value) && value.schemaVersion !== 'pack-index-publications/1' ? value.entries : value;
+    isRecord(value) && value.schemaVersion !== 'pack-index-tables/1' ? value.entries : value;
   const decoded = decodeCatalogWire(rows);
   if (!decoded.ok) return undefined;
   const entries: readonly unknown[] = decoded.value;
@@ -762,23 +762,4 @@ async function runEvidence(rest: string[], ctx: AssetCtx): Promise<number> {
   if (!result.ok) return emitError(ctx, result.error);
   ctx.stdoutWrite(JSON.stringify(result.value satisfies AssetEvidence));
   return 0;
-}
-
-// Bin entry guard — only fires when this module is the process entry.
-const isBinEntry = await (async (): Promise<boolean> => {
-  const argv1 = process.argv[1];
-  if (typeof argv1 !== 'string') return false;
-  const argv1Real = await realpath(argv1).catch(() => argv1);
-  const selfReal = await realpath(fileURLToPath(import.meta.url)).catch(() =>
-    fileURLToPath(import.meta.url),
-  );
-  return argv1Real === selfReal;
-})();
-
-if (isBinEntry) {
-  const exitCode = await runCliAsset(process.argv.slice(2), {
-    stdoutWrite: (line: string) => process.stdout.write(`${line}\n`),
-    stderrWrite: (line: string) => process.stderr.write(`${line}\n`),
-  });
-  process.exit(exitCode);
 }

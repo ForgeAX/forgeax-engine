@@ -14,7 +14,7 @@
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] pixelSamples=<json>`
 
-import { setTimeout as delay } from 'node:timers/promises';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -287,7 +287,7 @@ for (const [px, py, pz, sx, sy, sz] of quads) {
 // Directional light.
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.1, -0.6, -1],
     color: [1, 1, 1],
     intensity: 3,
@@ -314,13 +314,12 @@ let totalFrames = 0;
 const pixelReads = [];
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
   totalFrames++;
-  await delay(0);
 }
 const frameWall = Math.round(performance.now() - start);
 

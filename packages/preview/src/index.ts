@@ -41,29 +41,26 @@ export {
 export { createResourcePreviewReport, type ResourcePreviewReport } from './evidence/report.js';
 export {
   bindPreviewHost,
-  createPreviewHost as createNativePreviewHost,
+  createPreviewHost,
   type PreviewAssetLoadFailure,
   type PreviewAssetLoadResult,
   type PreviewAssetRegistry,
-  type PreviewHost as NativePreviewHost,
+  type PreviewHost,
   type PreviewHostMechanisms,
   type PreviewRenderRuntime,
   previewHostCapability,
   previewHostPlugin,
 } from './host/preview-host.js';
 export {
-  createPreviewHost,
   type PreviewAssetBinding,
   type PreviewCapture,
   PreviewCleanupError,
-  type PreviewCleanupReport,
   type PreviewFrameInput,
-  type PreviewHost,
   type PreviewHostAdapter,
   type PreviewHostRequest,
   type PreviewHostSession,
-  type PreviewResourceCensus,
   previewRuntimeUnavailable,
+  withPreviewSession,
 } from './host.js';
 export {
   type CanonicalPreviewRecipe,
@@ -122,6 +119,16 @@ export {
   type TexturePreviewRequest,
   texturePreviewDescriptor,
 } from './texture.js';
+export {
+  createTextureViewMaterial,
+  describeTextureView,
+  type TextureViewControl,
+  type TextureViewInfo,
+  type TextureViewOptions,
+  textureViewSource,
+  validateTextureViewOptions,
+} from './texture-view.js';
+export { previewThumbnailInput, THUMBNAIL_PREVIEW } from './thumbnail.js';
 export {
   createVfxPreviewContribution,
   type VfxBinding,

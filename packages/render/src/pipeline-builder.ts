@@ -64,7 +64,7 @@ import { colorFormatsForPassKind, type PipelineSpec } from './pipeline-spec';
  * from {@link MaterialRenderState} (material-authored state); these are
  * geometry properties of the mesh being drawn (requirements D-2 / D-A3).
  */
-export interface PipelineGeometry {
+interface PipelineGeometry {
   /** Primitive topology baked into `primitive.topology`. Defaults to 'triangle-list'. */
   readonly topology?: PrimitiveTopology;
   /**

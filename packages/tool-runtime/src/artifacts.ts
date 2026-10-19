@@ -1,20 +1,27 @@
 import { artifactManifestError } from './errors.js';
-import type { ArtifactRef, JsonValue, SnapshotRef, ToolEvidenceKind } from './types.js';
+import {
+  type ArtifactRef,
+  type JsonValue,
+  type SnapshotRef,
+  TOOL_EVIDENCE_KINDS,
+  type ToolEvidenceKind,
+} from './types.js';
 
-export type PreviewArtifactRole =
-  | 'report'
-  | 'rhi-tape'
-  | 'capture'
-  | 'fresh-replay'
-  | 'profile-capture'
-  | 'contact-sheet';
+const PREVIEW_ROLE_KINDS = {
+  report: 'report',
+  'rhi-tape': 'rhi-tape',
+  capture: 'png',
+  'fresh-replay': 'png',
+  'profile-capture': 'profile-capture',
+  'contact-sheet': 'contact-sheet',
+} as const;
 
-export type PreviewArtifactKind =
-  | 'report'
-  | 'rhi-tape'
-  | 'png'
-  | 'profile-capture'
-  | 'contact-sheet';
+export type PreviewArtifactRole = keyof typeof PREVIEW_ROLE_KINDS;
+export type PreviewArtifactKind = (typeof PREVIEW_ROLE_KINDS)[PreviewArtifactRole];
+
+export function isToolEvidenceKind(value: unknown): value is ToolEvidenceKind {
+  return TOOL_EVIDENCE_KINDS.some((kind) => kind === value);
+}
 
 export interface PreviewArtifactIdentity {
   readonly runId: string;
@@ -117,6 +124,7 @@ export function validateArtifactManifest(
   const seen = new Set<ToolEvidenceKind>();
   for (const artifact of manifest.artifacts) {
     if (
+      !isToolEvidenceKind(artifact.kind) ||
       artifact.owner.length === 0 ||
       artifact.uri.length === 0 ||
       artifact.digest.length === 0 ||
@@ -142,15 +150,6 @@ export function validateArtifactManifest(
       );
   return { ok: true, value: manifest };
 }
-
-const PREVIEW_ROLE_KINDS: Readonly<Record<PreviewArtifactRole, PreviewArtifactKind>> = {
-  report: 'report',
-  'rhi-tape': 'rhi-tape',
-  capture: 'png',
-  'fresh-replay': 'png',
-  'profile-capture': 'profile-capture',
-  'contact-sheet': 'contact-sheet',
-};
 
 export function createPreviewArtifactManifest(
   manifest: PreviewArtifactManifest,
@@ -232,33 +231,70 @@ export function validatePreviewArtifactManifest(
   return { ok: true, value: manifest };
 }
 
-export function isSerializableValue(value: unknown, seen = new Set<object>()): value is JsonValue {
+export function isSerializableValue(
+  value: unknown,
+  ancestors = new Set<object>(),
+): value is JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
-  if (typeof value !== 'object') return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  if (Array.isArray(value)) return value.every((entry) => isSerializableValue(entry, seen));
-  if (Object.getPrototypeOf(value) !== Object.prototype) return false;
-  return Object.entries(value).every(
-    ([key, entry]) => typeof key === 'string' && isSerializableValue(entry, seen),
-  );
+  if (
+    typeof value !== 'object' ||
+    ancestors.has(value) ||
+    Object.getOwnPropertySymbols(value).length
+  )
+    return false;
+  if (
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) !== Object.prototype &&
+    Object.getPrototypeOf(value) !== null
+  )
+    return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (
+    Array.isArray(value) &&
+    (Object.keys(value).length !== value.length ||
+      Object.keys(value).some((key, index) => key !== String(index)))
+  )
+    return false;
+  ancestors.add(value);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (Array.isArray(value) && key === 'length') continue;
+    if (
+      !descriptor.enumerable ||
+      !('value' in descriptor) ||
+      !isSerializableValue(descriptor.value, ancestors)
+    )
+      return false;
+  }
+  ancestors.delete(value);
+  return true;
 }
 
-export function createArtifactRef(input: {
-  readonly kind: ToolEvidenceKind | 'tool-result' | 'receipt';
-  readonly digest: string;
-  readonly uri?: string;
-  readonly mediaType?: string;
-  readonly sizeBytes?: number;
-}): ArtifactRef {
-  if (input.digest.length === 0) throw new TypeError('ArtifactRef digest must not be empty');
+function artifactRefProblem(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return 'ArtifactRef must be an object';
+  const input = value as Record<string, unknown>;
+  if (!isToolEvidenceKind(input.kind) && input.kind !== 'tool-result' && input.kind !== 'receipt')
+    return 'ArtifactRef kind must be a supported evidence or terminal artifact';
+  if (typeof input.digest !== 'string' || input.digest.length === 0)
+    return 'ArtifactRef digest must not be empty';
+  if (input.uri !== undefined && typeof input.uri !== 'string')
+    return 'ArtifactRef uri must be a string';
+  if (input.mediaType !== undefined && typeof input.mediaType !== 'string')
+    return 'ArtifactRef mediaType must be a string';
   if (
     input.sizeBytes !== undefined &&
-    (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 0)
-  ) {
-    throw new TypeError('ArtifactRef sizeBytes must be a non-negative safe integer');
-  }
+    (typeof input.sizeBytes !== 'number' ||
+      !Number.isSafeInteger(input.sizeBytes) ||
+      input.sizeBytes < 0)
+  )
+    return 'ArtifactRef sizeBytes must be a non-negative safe integer';
+  return undefined;
+}
+
+export function createArtifactRef(input: ArtifactRef): ArtifactRef {
+  const problem = artifactRefProblem(input);
+  if (problem !== undefined) throw new TypeError(problem);
   return { ...input };
 }
 
@@ -271,15 +307,5 @@ export function createSnapshotRef(input: SnapshotRef): SnapshotRef {
 }
 
 export function validateArtifactRefs(value: unknown): value is readonly ArtifactRef[] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        typeof entry === 'object' &&
-        entry !== null &&
-        typeof Reflect.get(entry, 'kind') === 'string' &&
-        typeof Reflect.get(entry, 'digest') === 'string' &&
-        (Reflect.get(entry, 'uri') === undefined || typeof Reflect.get(entry, 'uri') === 'string'),
-    )
-  );
+  return Array.isArray(value) && value.every((entry) => artifactRefProblem(entry) === undefined);
 }

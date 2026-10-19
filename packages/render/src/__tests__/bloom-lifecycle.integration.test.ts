@@ -22,7 +22,7 @@ beforeAll(async () => {
   device = result.value;
 });
 
-function build(bloom: 'off' | 'on') {
+function build(bloom: 'off' | 'on', tonemap: 'none' | 'aces-filmic' = 'aces-filmic') {
   const topology: RenderPipelineTopology = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: DEFAULT_STANDARD_PROFILE,
@@ -34,7 +34,7 @@ function build(bloom: 'off' | 'on') {
       viewFormat: 'bgra8unorm-srgb',
     },
     camera: {
-      tonemap: 'aces-filmic',
+      tonemap,
       antialias: 'fxaa',
       bloom,
       bloomIntensity: 1,
@@ -108,7 +108,7 @@ describe('Standard Bloom lifecycle contract', () => {
     const on = bloomSummary(build('on'));
     const off = bloomSummary(build('off'));
     const recovered = bloomSummary(build('on'));
-    expect(on.passes).toHaveLength(10);
+    expect(on.passes).toHaveLength(11);
     expect(on.resources.length).toBeGreaterThan(0);
     expect(off).toEqual({ passes: [], resources: [] });
     expect(recovered).toEqual(on);
@@ -118,15 +118,16 @@ describe('Standard Bloom lifecycle contract', () => {
     const names = build('on').passes.map((pass) => pass.name);
     const order = [
       'forward',
-      'bloom-downsample-0',
-      'bloom-downsample-1',
-      'bloom-downsample-2',
-      'bloom-downsample-3',
-      'bloom-downsample-4',
-      'bloom-upsample-3',
-      'bloom-upsample-2',
-      'bloom-upsample-1',
-      'bloom-upsample-0',
+      'bloom-horizontal-0',
+      'bloom-vertical-0',
+      'bloom-horizontal-1',
+      'bloom-vertical-1',
+      'bloom-horizontal-2',
+      'bloom-vertical-2',
+      'bloom-horizontal-3',
+      'bloom-vertical-3',
+      'bloom-horizontal-4',
+      'bloom-vertical-4',
       'bloom-composite',
       'output-transform',
       'fxaa',
@@ -139,13 +140,27 @@ describe('Standard Bloom lifecycle contract', () => {
     }
   });
 
+  it('creates HDR and Bloom independently of tone mapping', () => {
+    const info = build('on', 'none');
+    expect(bloomSummary(info).passes).toHaveLength(11);
+    expect(
+      info.resources.some(
+        (resource) =>
+          resource.label === 'scene-color' &&
+          resource.descriptor.kind === 'texture' &&
+          resource.descriptor.format === 'rgba16float',
+      ),
+    ).toBe(true);
+    expect(info.passes.some((pass) => pass.name === 'output-transform')).toBe(true);
+  });
+
   it('owns a Bloom transient lease in a child DeviceScope and retires it', async () => {
     const renderer = DeviceScope.create(71, 'renderer');
     const bloom = renderer.createChild('standard-bloom');
     const transaction = new LifecycleTransaction(bloom);
     transaction.add({
       kind: 'texture',
-      create: () => ({ label: 'bloom-downsample-0' }),
+      create: () => ({ label: 'bloom-horizontal-0' }),
       cleanup: () => undefined,
     });
     const committed = await transaction.commit();

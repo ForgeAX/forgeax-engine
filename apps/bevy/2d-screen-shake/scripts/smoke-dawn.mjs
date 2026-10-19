@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-2d-screen-shake headless dawn smoke — proves Bevy 2d_screen_shake
@@ -9,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const MOTION_THRESHOLD = Number.parseFloat(process.env.SMOKE_MOTION_THRESHOLD ?? '0.0005');
@@ -212,8 +213,8 @@ console.log(`[smoke] earlyPos=${JSON.stringify(earlyPos)} finalPos=${JSON.string
 try {
   const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(resolve(outDir, 'frame-early.png'), writeReferencePng(earlyFrame, WIDTH, HEIGHT));
-  writeFileSync(resolve(outDir, 'frame-late.png'), writeReferencePng(lateFrame, WIDTH, HEIGHT));
+  writeFileSync(resolve(outDir, 'frame-early.png'), encodePng(WIDTH, HEIGHT, earlyFrame));
+  writeFileSync(resolve(outDir, 'frame-late.png'), encodePng(WIDTH, HEIGHT, lateFrame));
   console.log(`[smoke] wrote PNGs to ${outDir}`);
 } catch (err) { console.warn(`[smoke] (non-fatal) PNG dump skipped: ${err instanceof Error ? err.message : String(err)}`); }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { driveReadyAppFrames } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 // apps/learn-render/5.advanced-lighting/3.3.csm/scripts/smoke.mjs
@@ -47,7 +48,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const FALSIFY = process.env.FALSIFY ?? '';
@@ -421,7 +422,7 @@ if (!shadowPresent) {
 const lightEntity = world.spawn(
   {
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [0.3, -0.9, -0.3],
       color: [1, 1, 1], intensity: 1,
       ...(shadowPresent
@@ -823,7 +824,7 @@ const mvdExpectationMatrix = [
   };
 });
 mkdirSync(MVD_RECEIPT_DIR, { recursive: true });
-writeFileSync(mvdPngPath, writeReferencePng(tightRgba, WIDTH, HEIGHT));
+writeFileSync(mvdPngPath, encodePng(WIDTH, HEIGHT, tightRgba));
 
 // --- 9. Verdict (structural + pixel) ---
 

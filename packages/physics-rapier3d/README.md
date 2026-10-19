@@ -138,6 +138,7 @@ across differing compiler patch releases or wasm-opt versions.
 |:--|:--|
 | Rapier | A floor normal parallel to `up` retains the entire horizontal tangent plane, including normals rounded around unit length. |
 | Rapier | Fixed CCD targets invalidate on every authored scene change, including steps with no fast body; later sweeps cannot reuse removed colliders or omit replacement targets. |
+| Parry | Cuboid CCD queries visit exact occupied cuboids per voxel chunk. Query bounds select complete cuboids instead of clipping them into artificial interior collision faces; holes and current chunk edits remain authoritative. |
 | Parry | Capsule/cuboid closest points minimize segment-to-box distance. The normal, signed distance and witnesses derive from that same solution. Initial casts preserve every strictly approaching direction and reject parallel/separating motion when `stop_at_penetration` is false. |
 | Parry | A thin triangle's closest-point projection cannot be farther away than its edges. Ill-conditioned f32 projections use f64 intermediate coordinates. |
 | Parry | EPA expands a touching CSO edge with a noncollinear support point before admitting its initial facets; a degenerate zero-normal facet cannot become a published contact. |

@@ -345,7 +345,8 @@ fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
   if (any(globalId.xy >= size)) { return; }
   let pixel = vec2<i32>(globalId.xy);
   let fullSize = textureDimensions(currentDepth, 0);
-  let uv = (vec2<f32>(globalId.xy * 2u) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
+  let sourcePixel = floor(vec2<f32>(globalId.xy) * vec2<f32>(fullSize) / vec2<f32>(size));
+  let uv = (sourcePixel + vec2<f32>(0.5)) / vec2<f32>(fullSize);
   let history = resolveSsrAt(uv, fullSize);
   textureStore(historyOutput, pixel, vec4<f32>(history.color.rgb, select(history.depth, -history.depth, history.missing)));
   // Presentation remains on the current raster lattice expected by material

@@ -147,11 +147,7 @@ function spawnCameraAndLight(world: World): void {
   world
     .spawn({
       component: DirectionalLight,
-      data: {
-        direction: [0, -1, 0],
-        color: [1, 1, 1],
-        intensity: 1,
-      },
+      data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
     })
     .unwrap();
 }

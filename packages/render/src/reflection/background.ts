@@ -97,7 +97,10 @@ export function recordProbeBackground(
   const image =
     source === undefined
       ? undefined
-      : context.store.getCubemapGpuView(toShared<'EquirectAsset'>(source.equirectHandle));
+      : context.store.getCubemapGpuView(
+          toShared<'EquirectAsset'>(source.equirectHandle),
+          context.world,
+        );
   const view = environmentCube ?? image ?? skylightResources.prefilterView;
   const rotation =
     environmentCube === undefined ? (source?.rotation ?? [0, 0, 0, 1]) : [0, 0, 0, 1];

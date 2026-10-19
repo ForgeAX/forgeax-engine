@@ -1,6 +1,6 @@
 export type LoadStatus = 'unloaded' | 'prepared' | 'provisional' | 'ready' | 'failed';
 
-export interface LoadRecord {
+interface LoadRecord {
   readonly status: LoadStatus;
   readonly refs: readonly string[];
   readonly value?: unknown;

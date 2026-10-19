@@ -6,7 +6,7 @@ const encoderSource = readFileSync(
   'utf8',
 );
 const decoderSource = readFileSync(
-  new URL('../../../geometry/src/assets/mesh-binary.ts', import.meta.url),
+  new URL('../../../geometry/src/assets/mesh-bin.ts', import.meta.url),
   'utf8',
 );
 

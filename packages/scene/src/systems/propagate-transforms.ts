@@ -109,6 +109,7 @@ interface Scratch {
   position: Float32Array;
   rotation: Float32Array;
   scale: Float32Array;
+  shear: Float32Array;
   local: Mat4;
   parent: Mat4;
   candidate: Mat4;
@@ -138,9 +139,9 @@ interface Scratch {
    */
   hierarchyValid: boolean;
   structure?: StateProjection;
-  dirtyTransforms?: Query<readonly [typeof Transform]>;
-  dirtyParents?: Query<readonly [typeof ChildOf]>;
-  dirtyGlobals?: Query<readonly [typeof GlobalTransform]>;
+  dirtyTransforms?: Query<readonly []>;
+  dirtyParents?: Query<readonly []>;
+  dirtyGlobals?: Query<readonly []>;
   flatQuery?: FlatQuery;
   hierarchyQuery?: HierarchyQuery;
   transformQuery?: TransformQuery;
@@ -206,11 +207,9 @@ function ensureQueries(world: World, scratch: Scratch): Result<void, SceneError>
     without: [ChildOf],
     changed: [Transform],
   });
-  scratch.dirtyTransforms ??= world.query({ read: [Transform], changed: [Transform] }).unwrap();
-  scratch.dirtyParents ??= world.query({ read: [ChildOf], changed: [ChildOf] }).unwrap();
-  scratch.dirtyGlobals ??= world
-    .query({ read: [GlobalTransform], changed: [GlobalTransform] })
-    .unwrap();
+  scratch.dirtyTransforms ??= world.query({ changed: [Transform] }).unwrap();
+  scratch.dirtyParents ??= world.query({ changed: [ChildOf] }).unwrap();
+  scratch.dirtyGlobals ??= world.query({ changed: [GlobalTransform] }).unwrap();
   const hierarchy = world.query({ read: [Transform, ChildOf], write: [GlobalTransform] });
   const transform = world.query({ read: [Transform], write: [GlobalTransform] });
   const missingGlobal = world.query({ with: [Transform], without: [GlobalTransform] });
@@ -263,6 +262,7 @@ function scratchFor(world: World): Scratch {
     position: new Float32Array(3),
     rotation: new Float32Array(4),
     scale: new Float32Array(3),
+    shear: new Float32Array(3),
     local: mat4.create(),
     parent: mat4.create(),
     candidate: mat4.create(),
@@ -295,6 +295,7 @@ function composeColumns(
   position: ArrayLike<number>,
   rotation: ArrayLike<number>,
   scale: ArrayLike<number>,
+  shear: ArrayLike<number>,
   out: Mat4,
   scratch: Scratch,
   positionStart = 0,
@@ -310,13 +311,17 @@ function composeColumns(
   scratch.scale[0] = scale[positionStart] ?? 1;
   scratch.scale[1] = scale[positionStart + 1] ?? 1;
   scratch.scale[2] = scale[positionStart + 2] ?? 1;
-  mat4.compose(out, scratch.position, scratch.rotation, scratch.scale);
+  scratch.shear[0] = shear[positionStart] ?? 0;
+  scratch.shear[1] = shear[positionStart + 1] ?? 0;
+  scratch.shear[2] = shear[positionStart + 2] ?? 0;
+  mat4.compose(out, scratch.position, scratch.rotation, scratch.scale, scratch.shear);
 }
 
 function composeFlatColumns(
   positions: ArrayLike<number>,
   rotations: ArrayLike<number>,
   scales: ArrayLike<number>,
+  shears: ArrayLike<number>,
   worlds: Float32Array,
   count: number,
   worldBase: number,
@@ -361,6 +366,17 @@ function composeFlatColumns(
     worlds[world + 13] = positions[position + 1] ?? 0;
     worlds[world + 14] = positions[position + 2] ?? 0;
     worlds[world + 15] = 1;
+    const hxy = shears[position] ?? 0,
+      hxz = shears[position + 1] ?? 0,
+      hyz = shears[position + 2] ?? 0;
+    if (hxy !== 0 || hxz !== 0 || hyz !== 0) {
+      worlds[world + 4] = (xy - wz + (1 - (yy + zz)) * hxy) * sy;
+      worlds[world + 5] = (1 - (xx + zz) + (xy + wz) * hxy) * sy;
+      worlds[world + 6] = (yz + wx + (xz - wy) * hxy) * sy;
+      worlds[world + 8] = (xz + wy + (1 - (yy + zz)) * hxz + (xy - wz) * hyz) * sz;
+      worlds[world + 9] = (yz - wx + (xy + wz) * hxz + (1 - (xx + zz)) * hyz) * sz;
+      worlds[world + 10] = (1 - (xx + yy) + (xz - wy) * hxz + (yz + wx) * hyz) * sz;
+    }
   }
 }
 
@@ -372,7 +388,15 @@ function composeFlatRange(
   context: unknown,
 ): void {
   const local = context as TransformColumnShape;
-  composeFlatColumns(local.pos, local.quat, local.scale, worldColumn(binding), count, base + start);
+  composeFlatColumns(
+    local.pos,
+    local.quat,
+    local.scale,
+    local.shear,
+    worldColumn(binding),
+    count,
+    base + start,
+  );
 }
 
 function propagateFlat(
@@ -477,6 +501,7 @@ interface TransformColumnShape {
   readonly pos: ArrayLike<number>;
   readonly quat: ArrayLike<number>;
   readonly scale: ArrayLike<number>;
+  readonly shear: ArrayLike<number>;
 }
 
 interface OutputColumnShape {
@@ -539,7 +564,16 @@ function composeBindingRow(
   if ('parent' in (binding.read as object)) countPropagation('hierarchyRowsEvaluated');
   const local = transformColumns(binding);
   const offset = row * 3;
-  composeColumns(local.pos, local.quat, local.scale, scratch.local, scratch, offset, row * 4);
+  composeColumns(
+    local.pos,
+    local.quat,
+    local.scale,
+    local.shear,
+    scratch.local,
+    scratch,
+    offset,
+    row * 4,
+  );
   if (parentBinding === undefined) {
     scratch.candidate.set(scratch.local);
   } else {
@@ -1262,18 +1296,23 @@ function propagateHierarchy(
     return ok(undefined);
   }
   const dirty = new Set<EntityHandle>();
-  for (const row of scratch.dirtyTransforms ?? []) dirty.add(row.entity);
+  for (const span of scratch.dirtyTransforms?.spans().unwrap() ?? []) {
+    for (let row = 0; row < span.length; row++) dirty.add(span.entities[row] as EntityHandle);
+  }
   let rebuild = !scratch.hierarchyValid || structural.relationLeftTransform;
   const structuralSet = new Set(structural.entities);
   const edgeCursor = scratch.hierarchyResidualParentCursor;
-  for (const row of scratch.dirtyParents ?? []) {
-    dirty.add(row.entity);
-    if (
-      !rebuild &&
-      !structuralSet.has(row.entity) &&
-      !parentEdgeMirrored(world, row.entity, transformWriter, edgeCursor)
-    ) {
-      rebuild = true;
+  for (const span of scratch.dirtyParents?.spans().unwrap() ?? []) {
+    for (let row = 0; row < span.length; row++) {
+      const entity = span.entities[row] as EntityHandle;
+      dirty.add(entity);
+      if (
+        !rebuild &&
+        !structuralSet.has(entity) &&
+        !parentEdgeMirrored(world, entity, transformWriter, edgeCursor)
+      ) {
+        rebuild = true;
+      }
     }
   }
   for (const entity of structural.entities) {
@@ -1391,7 +1430,10 @@ export function propagateTransforms(world: World): Result<void, SceneError> {
   if (!pairs.ok) return pairs;
   const structural = readStructuralCandidates(world, scratch);
   const globalEdited: EntityHandle[] = [];
-  for (const row of scratch.dirtyGlobals ?? []) globalEdited.push(row.entity);
+  for (const span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
+    for (let row = 0; row < span.length; row++)
+      globalEdited.push(span.entities[row] as EntityHandle);
+  }
   const flat = propagateFlat(world, scratch, structural.entities, globalEdited);
   if (!flat.ok) {
     scratch.structure?.invalidate();

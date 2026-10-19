@@ -43,7 +43,7 @@ export function buildAntiAliasingWorld(world: World, aspect: number): AntiAliasi
     );
   }
 
-  world.spawn({ component: DirectionalLight, data: { direction: [-0.4, -0.6, -0.7], color: [1, 1, 1], intensity: 1.5 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -0.6, -0.7], color: [1, 1, 1], intensity: 1.5 } });
   const camera = world.spawn(
     { component: Transform, data: { pos: [0, 0, 6], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: Camera, data: { ...perspective({ fov: Math.PI / 4, aspect }), antialias: ANTIALIAS_NONE } },

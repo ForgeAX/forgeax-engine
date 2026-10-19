@@ -209,8 +209,8 @@ import {
   prepareLowLimitMaterialShaderEntry,
   prepareMaterialShaders,
   requiresPreparedMaterialShader,
+  resolveCachedMaterialShaderVariant,
   resolveMaterialShaderBackendArtifactKey,
-  resolveMaterialShaderVariantSet,
   resolveMaterialShaderVertexInputContract,
   type ShaderDeviceAdapterInternal,
   selectPipelineLayoutForVariant,
@@ -270,7 +270,6 @@ export type { RecoveryFailureLocation } from './recovery/failure-location';
 import { ADMIT_EVERY_VARIANT } from './shader-prewarm-policy';
 import { buildReadyWebGPU, prepareDevicePipelineLibrary } from './webgpu-ready';
 import { DEPTH_TEXTURE_FORMAT, HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
-import { adaptMipmapShaderModuleFactory } from './webgpu-ready-mipmap';
 import {
   tryCreateWebGPURenderer as tryCreateWebGPURendererBootstrap,
   type WebGPURendererInternals,
@@ -779,10 +778,6 @@ async function makeWebGPURenderer(
   // (buildPipelineContext + getMaterialShaderPipeline) to drive the clamp-to-last
   // alias; naga reflection can be stale for engine-shipped modules, so the
   // count is asserted explicitly. Missing mesh sets are clamp-to-last aliases.
-  const packShaderFactory = adaptMipmapShaderModuleFactory(internals.pack.createShaderModule);
-  // The RhiDevice surface satisfies `MipmapBlitDevice` (createTexture +
-  // createTextureView + createCommandEncoder + createBindGroup +
-  // queue.submit + queue.writeTexture all live on RhiDevice).
   // feat-20260601-device/gpu-residency-extraction M1 (D-3 / D-8): device +
   // shader-module factory + cube-POD register relay are wired onto the store
   // together. feat-20260614 M8 (D-15 / D-17): `registerCube` is the wire-layer
@@ -793,7 +788,7 @@ async function makeWebGPURenderer(
   // shared ref as the cubemap GPU residency's identity token.
   gpuStore.configureGpuDevice(
     internals.device,
-    packShaderFactory,
+    internals.pack.createShaderModule,
     (world, pod, source) => {
       // The accepted equirect identity already owns this renderer-local GPU projection.
       if ('resolveAsset' in world) return ok(source);
@@ -898,25 +893,12 @@ async function makeWebGPURenderer(
   ): string | undefined => {
     // Keep lazy PSO resolution aligned with buildReadyWebGPU's sampled-texture gate.
     const device = currentBuildDevice();
-    const sampledTextureLimit = device.limits.maxSampledTexturesPerShaderStage;
-    if (manifestEntry === undefined) return requestedVariantSet;
-    const variants = manifestEntry.variants;
-    let byRequest = materialShaderVariantResolutionCache.get(variants);
-    if (byRequest === undefined) {
-      byRequest = new Map();
-      materialShaderVariantResolutionCache.set(variants, byRequest);
-    }
-    const cacheKey = `${requestedVariantSet ?? '\u0000'}|${device.caps.backendKind}|${device.caps.storageBuffer ? '1' : '0'}|${sampledTextureLimit ?? '\u0000'}`;
-    if (byRequest.has(cacheKey)) return byRequest.get(cacheKey);
-    const resolved = resolveMaterialShaderVariantSet(
+    return resolveCachedMaterialShaderVariant(
+      materialShaderVariantResolutionCache,
       requestedVariantSet,
-      variants,
-      device.caps.backendKind,
-      device.caps.storageBuffer,
-      sampledTextureLimit,
+      manifestEntry,
+      device,
     );
-    byRequest.set(cacheKey, resolved);
-    return resolved;
   };
   const promotePipelineExtendedLighting = (state: PipelineState, scope: DeviceScope): void => {
     if (
@@ -965,7 +947,7 @@ async function makeWebGPURenderer(
     residencyStore: GpuResidencyCache = gpuStore,
   ): Promise<PipelineState> => {
     if (internals.options?.pipelineLibrary !== undefined)
-      await prepareDevicePipelineLibrary(device, internals.options.pipelineLibrary);
+      await prepareDevicePipelineLibrary(device, internals.options.pipelineLibrary, getShader());
     return buildReadyWebGPU(
       device,
       scope,
@@ -1159,14 +1141,9 @@ async function makeWebGPURenderer(
       materialShaderId === undefined
         ? undefined
         : getShader().findMaterialArtifact(materialShaderId);
-    const materialShaderSource =
-      materialShaderEntry === undefined ? undefined : materialProgramSource(materialShaderEntry);
-    const vertexInputContract =
-      materialShaderId === undefined
-        ? 'render-material'
-        : materialShaderSource !== undefined
-          ? resolveMaterialShaderVertexInputContract(materialShaderSource)
-          : 'render-material';
+    const vertexInputContract = materialShaderEntry?.ok
+      ? resolveMaterialShaderVertexInputContract(materialShaderEntry.value.program)
+      : 'render-material';
     const currentState = currentPipelineState();
     const pipelineLayout =
       group0Layout !== null
@@ -2335,7 +2312,6 @@ async function makeWebGPURenderer(
       internals.options?.dynamicGeometryMeshBudgetBytes,
     );
   const transformReleases = new Map<World, () => void>();
-  const attachmentOwner = {};
   let frameId = 0;
   let latestPublicationRevision = 0;
   // Caller-owned receipts remain observable; Renderer does not retain every submitted receipt.
@@ -3025,7 +3001,7 @@ async function makeWebGPURenderer(
       if (!attached.ok) {
         return err(new RendererContractFailureError('attach', attached.error.hint));
       }
-      const lease = createRenderReadLease(world, attachmentOwner);
+      const lease = createRenderReadLease(world);
       const disposeRead = lease.dispose;
       lease.dispose = () => {
         disposeRead();
@@ -4075,7 +4051,6 @@ async function makeWebGPURenderer(
     getImmediateShaderModuleAdapter,
     getShader,
     assets,
-    adaptMipmapShaderModuleFactory,
     buildPipeline,
     getMaterialShaderPipeline,
     getMaterialShaderPipelineEntry,

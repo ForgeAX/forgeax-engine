@@ -373,6 +373,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -416,6 +419,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -456,6 +462,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -499,6 +508,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -536,6 +548,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -573,6 +588,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -619,6 +637,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -665,6 +686,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -711,6 +735,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -754,6 +781,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -852,6 +882,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1014,6 +1047,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1103,6 +1139,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1146,6 +1185,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1192,6 +1234,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1232,6 +1277,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1272,6 +1320,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1315,6 +1366,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1386,6 +1440,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1558,6 +1615,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1598,6 +1658,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1687,6 +1750,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1733,6 +1799,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1770,6 +1839,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1807,6 +1879,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1918,6 +1993,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -1961,6 +2039,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -1998,6 +2079,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2035,6 +2119,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -2078,6 +2165,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2158,6 +2248,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -2192,6 +2285,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -2226,6 +2322,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -2263,6 +2362,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2309,6 +2411,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2469,6 +2574,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2509,6 +2617,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2555,6 +2666,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2592,6 +2706,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -2632,6 +2749,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2672,6 +2792,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -2770,6 +2893,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -2807,6 +2933,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3034,6 +3163,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -3138,6 +3270,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3178,6 +3313,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3218,6 +3356,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3261,6 +3402,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -3298,6 +3442,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3341,6 +3488,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-shader-compiler':
         specifier: workspace:*
         version: link:../../../packages/shader-compiler
@@ -3381,6 +3531,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-shader-compiler':
         specifier: workspace:*
         version: link:../../../packages/shader-compiler
@@ -3568,6 +3721,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -3846,6 +4002,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3886,6 +4045,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3926,6 +4088,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -3969,6 +4134,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4009,6 +4177,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4049,6 +4220,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4095,6 +4269,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4304,6 +4481,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4344,6 +4524,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4384,6 +4567,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -4464,6 +4650,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4501,6 +4690,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -4538,6 +4730,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -4575,6 +4770,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -4612,6 +4810,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4652,6 +4853,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4753,6 +4957,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-rhi-debug
@@ -4796,6 +5003,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -4981,6 +5191,9 @@ importers:
       '@forgeax/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../packages/image
     devDependencies:
       '@forgeax/engine-shader':
         specifier: workspace:*
@@ -5370,6 +5583,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-pack':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-pack
@@ -5443,6 +5659,9 @@ importers:
 
   apps/hello/boss-lightning:
     dependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
@@ -5495,6 +5714,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -5941,6 +6163,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -6229,6 +6454,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -6348,6 +6576,9 @@ importers:
       '@forgeax/apps-shared':
         specifier: workspace:*
         version: link:../../shared
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
@@ -6774,6 +7005,9 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/project
     devDependencies:
+      '@forgeax/engine-devkit':
+        specifier: workspace:*
+        version: link:../../../packages/devkit
       '@zappar/msdf-generator':
         specifier: 1.2.4
         version: 1.2.4
@@ -6802,6 +7036,9 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/types
     devDependencies:
+      '@forgeax/engine-shader':
+        specifier: workspace:*
+        version: link:../../../packages/shader
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -6842,6 +7079,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -6970,6 +7210,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -7191,6 +7434,9 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-pack
     devDependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
@@ -7304,6 +7550,9 @@ importers:
 
   apps/hello/rect-light-texture:
     dependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
@@ -7335,6 +7584,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-webgpu':
         specifier: workspace:*
         version: link:../../../packages/rhi-webgpu
@@ -7601,6 +7853,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-pack':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-pack
@@ -7733,9 +7988,15 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/types
     devDependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -7757,6 +8018,9 @@ importers:
 
   apps/hello/taa:
     dependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-app':
         specifier: workspace:*
         version: link:../../../packages/app
@@ -7861,6 +8125,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -8030,6 +8297,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -8131,6 +8401,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../packages/rhi-debug
@@ -9479,6 +9752,9 @@ importers:
       '@forgeax/apps-shared':
         specifier: workspace:*
         version: link:../../../shared
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../../packages/rhi-debug
@@ -9964,6 +10240,9 @@ importers:
       '@forgeax/apps-shared':
         specifier: workspace:*
         version: link:../../../shared
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../../../packages/rhi-debug
@@ -10561,6 +10840,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../../packages/image
       '@forgeax/engine-vite-plugin-rhi-debug':
         specifier: workspace:*
         version: link:../../../../packages/vite-plugin-rhi-debug
@@ -10701,6 +10983,9 @@ importers:
       '@forgeax/apps-shared':
         specifier: workspace:*
         version: link:../../shared
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-assets-runtime':
         specifier: workspace:*
         version: link:../../../packages/assets-runtime
@@ -10839,6 +11124,9 @@ importers:
 
   apps/parity/mesh-io:
     dependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
       '@forgeax/engine-animation':
         specifier: workspace:*
         version: link:../../../packages/animation
@@ -10955,6 +11243,9 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/types
     devDependencies:
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -10995,6 +11286,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -11053,6 +11347,9 @@ importers:
       '@forgeax/engine-devkit':
         specifier: workspace:*
         version: link:../../../packages/devkit
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-pack':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-pack
@@ -11102,6 +11399,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
       '@forgeax/engine-vite-plugin-shader':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-shader
@@ -11348,6 +11648,9 @@ importers:
         specifier: ^1.0.7
         version: 1.0.7(tailwindcss@3.4.19(yaml@2.9.1))
     devDependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@testing-library/react':
         specifier: ^16.3.0
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -11501,6 +11804,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../../packages/dawn-node
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../packages/image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../../packages/rhi-debug
@@ -11730,6 +12036,9 @@ importers:
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../plugin
+      '@forgeax/engine-preview':
+        specifier: workspace:*
+        version: link:../preview
       '@forgeax/engine-profiler':
         specifier: workspace:*
         version: link:../profiler
@@ -11879,6 +12188,9 @@ importers:
       '@forgeax/engine-assets-runtime':
         specifier: workspace:*
         version: link:../assets-runtime
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../image
       '@forgeax/engine-import':
         specifier: workspace:*
         version: link:../import
@@ -11978,6 +12290,9 @@ importers:
       '@forgeax/engine-dawn-node':
         specifier: workspace:*
         version: link:../dawn-node
+      '@forgeax/engine-ddc':
+        specifier: workspace:*
+        version: link:../ddc
       '@forgeax/engine-fbx':
         specifier: workspace:*
         version: link:../fbx
@@ -12105,6 +12420,9 @@ importers:
         specifier: ^2.9.0
         version: 2.9.1
     devDependencies:
+      '@forgeax/engine-math':
+        specifier: workspace:*
+        version: link:../math
       '@forgeax/engine-platform-wechat':
         specifier: workspace:*
         version: link:../platform-wechat
@@ -12344,6 +12662,9 @@ importers:
       '@forgeax/engine-terrain':
         specifier: workspace:*
         version: link:../terrain
+      '@forgeax/engine-three':
+        specifier: workspace:*
+        version: link:../three
       '@forgeax/engine-tool-runtime':
         specifier: workspace:*
         version: link:../tool-runtime
@@ -12423,6 +12744,9 @@ importers:
 
   packages/font:
     dependencies:
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../image
       '@forgeax/engine-pack':
         specifier: workspace:*
         version: link:../pack
@@ -12594,6 +12918,9 @@ importers:
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.40
+      '@types/pako':
+        specifier: ^1.0.7
+        version: 1.0.7
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
@@ -12718,7 +13045,11 @@ importers:
         specifier: workspace:*
         version: link:../types
 
-  packages/math: {}
+  packages/math:
+    dependencies:
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../types
 
   packages/mesh-io:
     dependencies:
@@ -13276,6 +13607,9 @@ importers:
       '@forgeax/engine-codec':
         specifier: workspace:*
         version: link:../codec
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../image
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../rhi-debug
@@ -13319,6 +13653,9 @@ importers:
 
   packages/rhi-debug:
     dependencies:
+      '@forgeax/engine-math':
+        specifier: workspace:*
+        version: link:../math
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -13614,14 +13951,81 @@ importers:
       '@forgeax/engine-geometry':
         specifier: workspace:*
         version: link:../geometry
+      '@forgeax/engine-math':
+        specifier: workspace:*
+        version: link:../math
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
+
+  packages/three:
+    dependencies:
+      '@forgeax/engine-app':
+        specifier: workspace:*
+        version: link:../app
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
+      '@forgeax/engine-codec':
+        specifier: workspace:*
+        version: link:../codec
+      '@forgeax/engine-ecs':
+        specifier: workspace:*
+        version: link:../ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../geometry
+      '@forgeax/engine-math':
+        specifier: workspace:*
+        version: link:../math
+      '@forgeax/engine-pack':
+        specifier: workspace:*
+        version: link:../pack
+      '@forgeax/engine-render':
+        specifier: workspace:*
+        version: link:../render
+      '@forgeax/engine-rhi-debug':
+        specifier: workspace:*
+        version: link:../rhi-debug
+      '@forgeax/engine-rhi-webgpu':
+        specifier: workspace:*
+        version: link:../rhi-webgpu
+      '@forgeax/engine-runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@forgeax/engine-scene':
+        specifier: workspace:*
+        version: link:../scene
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../types
+      '@types/three':
+        specifier: 0.184.0
+        version: 0.184.0
+      three:
+        specifier: 0.184.0
+        version: 0.184.0
+    devDependencies:
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../shader-compiler
+      '@webgpu/types':
+        specifier: ^0.1.74
+        version: 0.1.74
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
 
   packages/tool-runtime: {}
 
   packages/types:
     dependencies:
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
@@ -16480,6 +16884,9 @@ packages:
 
   '@types/node@25.8.0':
     resolution: {integrity: sha512-TCFSk8IZh+iLX1xtksoBVtdmgL+1IX0fC9BeU4QqFSuNdN/K+HUlhqOzEmSYYpZUVsLYcPqc9KX+60iDuninSQ==}
+
+  '@types/pako@1.0.7':
+    resolution: {integrity: sha512-YBtzT2ztNF6R/9+UXj2wTGFnC9NklAnASt3sC0h2m1bbH7G6FyBIkt4AN8ThZpNfxUo1b2iMVO0UawiJymEt8A==}
 
   '@types/react-dom@19.2.3':
     resolution: {integrity: sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==}
@@ -20677,6 +21084,8 @@ snapshots:
   '@types/node@25.8.0':
     dependencies:
       undici-types: 7.24.6
+
+  '@types/pako@1.0.7': {}
 
   '@types/react-dom@19.2.3(@types/react@19.2.17)':
     dependencies:

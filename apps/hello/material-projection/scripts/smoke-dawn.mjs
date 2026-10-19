@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // Dawn-node smoke for projection and the non-PBR family. One orthographic
 // frame holds every subject, so each gate reads fixed pixel rectangles:
 // - triplanar boxes with zeroed UVs still show the checker (UV mapping would
@@ -14,7 +15,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { height, patch, patchDifference, runProjection, width } from './dawn-harness.mjs';
 
@@ -32,7 +33,7 @@ if (falsify !== undefined && !FALSIFIERS.includes(falsify)) {
 const run = await runProjection({ appRoot, mode: falsify ?? 'projection', frames: targetFrames });
 const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(appRoot, 'artifacts', falsify ? `smoke-${falsify}.png` : 'smoke-frame.png');
 mkdirSync(dirname(pngOut), { recursive: true });
-writeFileSync(pngOut, writeReferencePng(run.pixels, width, height));
+writeFileSync(pngOut, encodePng(width, height, run.pixels));
 
 /** Rectangle of half-size `half` pixels centred on world (x, y). */
 const around = (x, y, half, dx = 0, dy = 0) => {

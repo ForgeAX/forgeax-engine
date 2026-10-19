@@ -89,7 +89,7 @@ export interface ProductionBridge {
   readonly replaceSession: () => ProductionSession<ProductionGenerationState>;
 }
 
-export interface ProductionBridgeContext {
+interface ProductionBridgeContext {
   readonly producerReadiness?: ProducerReadiness | undefined;
   readonly takeInitialSourceSnapshot?: (() => ScriptablePackSourceSnapshot | undefined) | undefined;
   readonly ignorePath?: ((path: string) => boolean) | undefined;
@@ -407,7 +407,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
   };
 }
 
-export interface ProductionRouteBridgeContext {
+interface ProductionRouteBridgeContext {
   readonly callbacks: PluginServerCallbacks;
   readonly activeDevSession: DevSession;
   readonly roots: readonly string[];

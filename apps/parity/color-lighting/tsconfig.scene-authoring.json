@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": ["src/scene-authoring/forgeax-scene.mjs", "src/vite-env.d.ts"]
+}

@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createSphereGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -14,7 +15,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -156,7 +156,7 @@ function resolveLinear(bytes: Uint8Array, bytesPerRow: number, size: number): Fl
   for (let y = 0; y < size; y++)
     for (let x = 0; x < size; x++) {
       const at = (channel: number) =>
-        halfToFloat(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true));
+        halfFloat.f16ToF32(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true));
       const index = Math.floor(y / factor) * LOW + Math.floor(x / factor);
       radiance[index] = (radiance[index] ?? 0) + 0.2126 * at(0) + 0.7152 * at(1) + 0.0722 * at(2);
     }

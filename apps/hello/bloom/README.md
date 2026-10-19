@@ -1,16 +1,16 @@
 # hello-bloom
 
-> Bloom post-processing opt-in exemplar. Press Space to toggle the ten-pass declarative Bloom pipeline at runtime.
+> Bloom post-processing opt-in exemplar. Press Space to toggle the eleven-pass declarative Bloom pipeline at runtime.
 
 (feat-20260531-bloom-first-declarative-render-graph-pass / M4 / w18)
 
 ## What is demonstrated
 
-- **Ten-pass declarative render graph chain**: five downsample passes -> four tent upsample passes -> Bloom composite, all in linear HDR.
-- **Camera bloom columns**: `bloom`, `bloomThreshold`, `bloomIntensity`, `bloomSoftKnee`, and `bloomScatter` configured per-Camera alongside `tonemap`/`antialias`.
+- **Eleven-pass declarative render graph chain**: five progressive levels, each with horizontal and vertical Gaussian blur -> Bloom composite, all in linear HDR.
+- **Camera bloom columns**: `bloom`, `bloomThreshold`, `bloomIntensity`, `bloomSmoothWidth`, and `bloomRadius` configured per-Camera alongside `tonemap`/`antialias`.
 - **Zero-overhead default**: bloom=0 (BLOOM_DISABLED) allocates no Bloom textures, binds no Bloom pipelines, and performs no Bloom uploads or encodes.
 - **Runtime toggle**: Space-key press-edge system swaps Camera.bloom between BLOOM_ENABLED and BLOOM_DISABLED via world.set. DOM HUD overlay mirrors state as text; the carrier smoke verifies on -> off -> resize -> on surface reconfiguration.
-- **HDR+Reinhard pipeline**: Camera.tonemap=Reinhard-Extended enables the HDR path required by Bloom; continuous HDR extraction uses bloomThreshold (1.0) from the scene-linear target.
+- **HDR+Reinhard pipeline**: This scene explicitly selects Reinhard-Extended and threshold 1.0. Bloom also works with NoToneMapping; its engine defaults are threshold 0, smooth width 0.01, intensity 1, and radius 0.
 
 Game-facing imports use the public umbrella route:
 
@@ -61,9 +61,9 @@ oracle uses numeric RGB
 readback and rejects an all-black enabled output; hashes are diagnostic only.
 `smoke:falsify` removes every scene radiance source with the same camera, graph,
 and frame schedule and must make that oracle fail. `smoke:odd-dawn` runs the
-cooked production downsample shader against an independent CPU extraction
-oracle: 100 threshold/knee/RGB/HDR cases, the odd-extent coverage cases, the
-per-texel-before-average falsifier, and threshold-adjacent continuity sweeps
+cooked production horizontal shader against an independent CPU extraction
+oracle: 100 threshold/smooth-width/RGB/HDR cases, the odd-extent coverage cases, the
+half-grid bilinear high-pass oracle, and threshold-adjacent continuity sweeps
 that reject a legacy whole-RGB switch. Its evidence records the binary16
 subnormal quantum used for the unavoidable `rgba16float` near-zero absolute
 error boundary; references above `2^-24 / 0.01` retain the 1% normalized gate,
@@ -73,11 +73,14 @@ values. `smoke:quality-dawn` binds the same cooked production modules for
 matched-contribution `r90`, constant-field DC, tone-free intensity, alpha,
 small/odd extents, and a 60-frame energy-constant subpixel trajectory whose
 energy is summed over the entire D0 footprint; its radial metric is reported
-in output-pixel coordinates and is accepted only when the complete D0 edge
-decodes to zero. The motion trajectory uses the same full-D0 boundary rule;
-its PNG files are viewed evidence only. `smoke:performance` opts into the existing
+in output-pixel coordinates. The five-level Gaussian response legitimately reaches
+the image boundary, so the former tent-filter zero-edge requirement no longer
+applies. The pinned Three.js comparison checks the whole image, including its
+edges. The quality gate retains its 1% intensity/DC tolerance, 5% motion-energy
+tolerance, alpha checks, radius ordering, and single-scale falsifier; PNG files
+are viewed evidence only. `smoke:performance` opts into the existing
 Renderer receipt-bound timestamp route and fails closed if 60 stable Bloom
-frames cannot produce complete ten-pass timing facts, or if the active Bloom
+frames cannot produce complete eleven-pass timing facts, or if the active Bloom
 resource signature drifts during the sample window. The carrier also intercepts
 the real Dawn `GPUDevice` lifecycle for `bloom-*` textures, parameter buffers,
 bind groups, layouts, samplers, and pipelines: stable-frame create/destroy
@@ -87,7 +90,7 @@ peaks are recorded at every intercepted create boundary and frame snapshot.
 buffers, labeled native resources, and in-flight retirement are reported
 separately in the performance artifact. `measurement.status` admits timing completeness and resource stability only;
 `budget.status` is `not-evaluated` because this carrier declares no elapsed-time
-budget or physical-adapter admission. The ten-pass sum is a diagnostic with
+budget or physical-adapter admission. The eleven-pass sum is a diagnostic with
 repeated interval coverage, never exclusive Bloom cost, frame latency or FPS.
 Summing individual pass p95 values is retained only as a non-percentile diagnostic. WebGPU does not expose driver-private
 pipeline memory or allocator alignment, so those remain explicitly unavailable.
@@ -95,13 +98,18 @@ pipeline memory or allocator alignment, so those remain explicitly unavailable.
 `scripts/smoke-browser.mjs` runs the same lifecycle on a real Browser WebGPU
 canvas, waits for 60 submitted-frame events, captures PNGs, decodes their
 pixels, and stores the inspection/readback contract in `evidence/`. It also
-checks the enum-on/intensity-zero exact-zero state. Its
+checks the enum-on/intensity-zero exact-zero state. The radius 0/1 sweep
+requires at least 1,000 changed pixels at epsilon 0.05 and mean RGB change 0.01.
+The former scatter sweep reused the on/off minimum peak change of 0.25;
+that amplitude requirement is not a Gaussian radius invariant. On/off checks
+retain all original bounds; the quality carrier's r90/shape and pinned Three
+whole-image comparison own numerical filter correctness. Its
 surface-reconfigure stage is separate from device-loss recovery. The dev
 server uses an ephemeral port and allows the shader-heavy startup up to 120s;
 set `FORGEAX_BLOOM_SERVER_START_TIMEOUT_MS` to adjust that bound.
 `scripts/smoke-browser-device-loss.mjs` uses the real `Browser.crashGpuProcess`
 driver action, waits for `device-lost -> recovering -> alive`, calls the public
-`renderer.recover()`, and verifies the ten-pass Bloom graph plus visible PNG
+`renderer.recover()`, and verifies the eleven-pass Bloom graph plus visible PNG
 restoration on the replacement device generation. `smoke:all` includes the
 receipt-bound performance carrier, so the aggregate gate covers every listed
 Bloom evidence class.

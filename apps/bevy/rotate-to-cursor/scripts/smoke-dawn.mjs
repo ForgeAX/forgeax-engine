@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -115,8 +116,8 @@ let rotationDelta = 0;
 for (let i = 0; i < 4; i += 1) rotationDelta += Math.abs((earlyRotation[i] ?? 0) - (lateRotation[i] ?? 0));
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'rotate-to-cursor-left.png'), writeReferencePng(early, width, height));
-writeFileSync(resolve(outDir, 'rotate-to-cursor-right.png'), writeReferencePng(late, width, height));
+writeFileSync(resolve(outDir, 'rotate-to-cursor-left.png'), encodePng(width, height, early));
+writeFileSync(resolve(outDir, 'rotate-to-cursor-right.png'), encodePng(width, height, late));
 const imageMeanDelta = imageDelta / (early.length * 255);
 console.log(`[smoke] frames=${frames} brightPixels=${brightPixels} imageMeanDelta=${imageMeanDelta.toFixed(5)} rotationDelta=${rotationDelta.toFixed(5)} errors=${errors.length}`);
 const failures = [];

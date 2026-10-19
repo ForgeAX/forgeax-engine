@@ -7,27 +7,10 @@ const hostBuffer = () =>
   (
     globalThis as typeof globalThis & {
       Buffer?: {
-        from(
-          bytes: ArrayBufferLike,
-          offset: number,
-          length: number,
-        ): { toString(encoding: 'base64'): string };
         from(encoded: string, encoding: 'base64'): Uint8Array;
       };
     }
   ).Buffer;
-
-export function encodePackBlob(bytes: Uint8Array): string {
-  const native = (bytes as Uint8Array & { toBase64?: () => string }).toBase64;
-  if (native) return native.call(bytes);
-  const buffer = hostBuffer();
-  if (buffer)
-    return buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 32768)
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-  return btoa(binary);
-}
 
 /** Validate without allocating a decoded buffer or enumerating properties per byte. */
 export function validatePackBlob(value: unknown): asserts value is PackBlob {

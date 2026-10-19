@@ -32,7 +32,7 @@ function fixture(staggerCascades = true) {
   world
     .spawn({
       component: DirectionalLight,
-      data: { staggerCascades, cascadeCount: 3, direction: [0.2, -1, 0.1] },
+      data: { castShadow: true, staggerCascades, cascadeCount: 3, direction: [0.2, -1, 0.1] },
     })
     .unwrap();
   const entity = world

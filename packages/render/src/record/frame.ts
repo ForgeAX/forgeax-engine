@@ -1,4 +1,5 @@
 import { halfFloat } from '@forgeax/engine-math';
+import { textureReadbackLayout } from '@forgeax/engine-rhi';
 import {
   type FrameRecording,
   profileFrameRecording,
@@ -40,6 +41,7 @@ import {
   validateRenderables,
 } from './fold-buckets';
 import { createPassTimingInstrumentation } from './gpu-pass-timing/instrumentation';
+import { materialCanvasTextureView } from './main-pass-material';
 import { uploadMaterialUniforms } from './material-uniforms';
 import { createShadowDispatchProjectionOwner, prepareShadowMaterialPipelines } from './shadow-pass';
 import {
@@ -343,7 +345,7 @@ import {
   computeProjectionMatrix,
   computeViewMatrix,
   driveLazyEquirectProjection,
-  selectLazyEquirectHandle,
+  selectLazyEquirectHandles,
   warnMultiSkybox,
   warnMultiSkylight,
 } from './helpers';
@@ -618,10 +620,14 @@ function createReflectionFallbackReadbackRequest(
   ) {
     return undefined;
   }
-  const bytesPerRow = Math.ceil((descriptor.size.width * 8) / 256) * 256;
+  const { bytesPerRow, byteLength } = textureReadbackLayout(
+    descriptor.size.width,
+    descriptor.size.height,
+    { blockWidth: 1, blockHeight: 1, bytesPerBlock: 8 },
+  );
   const created = internals.device.createBuffer({
     label: 'reflection-fallback-linear-hdr.readback',
-    size: bytesPerRow * descriptor.size.height,
+    size: byteLength,
     usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ,
     mappedAtCreation: false,
   });
@@ -790,7 +796,7 @@ function volumeTemporalSignature(
     ...camera.world,
     camera.fov,
     camera.aspect,
-    camera.eye?.frustumShift ?? 0,
+    ...(camera.projectionOffset ?? [0, 0]),
     camera.near,
     camera.far,
     camera.orthoLeft,
@@ -1569,6 +1575,7 @@ export function* prepareFrameRecording(
   // helper calls retain their complete legacy observation and recording path.
   rendererRecording = false,
 ): FrameRecording {
+  let settleCanvasMips: ((submitted: boolean) => void) | undefined;
   void shadowCasterEntityKeys;
   frameState.reflectionFallbackObservationSource = undefined;
   frameState.reflectionFallbackCompletion = undefined;
@@ -1776,8 +1783,7 @@ export function* prepareFrameRecording(
         //                          handle (R-2/AC-09: store records failed
         //                          permanently and never retries; the latch keeps
         //                          the channel from flooding)
-        const lazyEquirectHandle = selectLazyEquirectHandle(skylight, skybox);
-        if (lazyEquirectHandle !== 0) {
+        for (const lazyEquirectHandle of selectLazyEquirectHandles(skylight, skybox)) {
           driveLazyEquirectProjection(internals, world, frameState, lazyEquirectHandle);
         }
       });
@@ -1801,7 +1807,7 @@ export function* prepareFrameRecording(
       (handle) =>
         handle !== undefined &&
         handle !== 0 &&
-        internals.gpuStore.getCubemapStatus(toShared<'EquirectAsset'>(handle)) === 'pending',
+        internals.gpuStore.getCubemapStatus(toShared<'EquirectAsset'>(handle), world) === 'pending',
     );
     const deferImageDisplay =
       imagePending &&
@@ -1811,9 +1817,7 @@ export function* prepareFrameRecording(
       !captureOnly &&
       cameras.length === 1 &&
       (camera.output === undefined ||
-        (camera.output.exposure.kind === 'manual' &&
-          camera.output.colorLut === 0 &&
-          camera.output.colorLutStrength === 0)) &&
+        (camera.output.exposure.kind === 'manual' && camera.output.colorLut === 0)) &&
       frameState.autoExposureState === undefined &&
       frameState.standardLutState.lastKnownGood === null &&
       camera.dynamicResolution === undefined &&
@@ -3033,6 +3037,7 @@ export function* prepareFrameRecording(
       frameState,
       recordCamera,
       skybox,
+      world,
     );
 
     // feat-20260604-learn-render-4.10-anti-aliasing-msaa M2 / w9 (D-6, C-9):
@@ -3615,6 +3620,22 @@ export function* prepareFrameRecording(
       featureGraphCandidate?.onRejected?.();
       return pending.ok;
     }
+    // Material slots cover visible and shadow-only materials, including published sources.
+    // Upload before graph execution so every shadow/capture/color consumer sees the same mips.
+    for (let slot = 0; slot < passCtx.materialSlotCount; slot++) {
+      const material = passCtx.materialSlots[slot];
+      if (material === undefined) continue;
+      const scope = passCtx.materialSlotOwners[slot]?.world ?? passCtx.world;
+      for (const field of material.textureSources?.keys() ?? [])
+        materialCanvasTextureView(material, field, scope, internals);
+    }
+    const canvasMips = internals.dynamicTextureStore?.encodeMipmaps(encoder);
+    if (canvasMips !== undefined && !canvasMips.ok) {
+      internals.errorRegistry.fire(canvasMips.error);
+      abortPreparedGpuDriven();
+      return false;
+    }
+    settleCanvasMips = canvasMips?.value;
     uploadMaterialUniforms(passCtx);
     {
       const timing = internals.gpuPassTimingCapture;
@@ -3958,6 +3979,7 @@ export function* prepareFrameRecording(
     }
     return submitted;
   } finally {
+    settleCanvasMips?.(submitted);
     // Probe tickets belong to this recording attempt, including native
     // preparation barriers which return before queue submission.
     const fallbackSource =

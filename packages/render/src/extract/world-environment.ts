@@ -26,6 +26,7 @@ import {
   computeInvRangeSquared,
   degToCos,
   type LightValidationError,
+  resolvePunctualShadowFarPlane,
   validateDirectionalLightData,
   validateLightProbeData,
   validateRectAreaLightData,
@@ -45,7 +46,6 @@ import {
   prepareCookieProjection,
 } from '../prepare/extended-lighting/spot-modifiers';
 import type {
-  CsmCameraData,
   DirectionalCsmConfig,
   DirectionalLightSnapshot,
   ExtractedFrame,
@@ -121,7 +121,7 @@ export function extractWorldEnvironment(
   let directional: DirectionalLightSnapshot | undefined;
   let directionalCount = 0;
   // feat-20260621 M2: capture shadow fields from the first-hit DirectionalLight.
-  // castShadow defaults to true; the CSM path is gated on firstHitCastShadow !== false.
+  // castShadow defaults to false; only an explicit opt-in requests CSM.
   let firstHitCastShadow: boolean | undefined;
   let firstHitShadowFields:
     | {
@@ -399,7 +399,8 @@ export function extractWorldEnvironment(
     const castShadow = s.castShadow;
     const sMapSize = s.mapSize;
     const sNearPlane = s.nearPlane;
-    const sFarPlane = s.farPlane;
+    const shadowProjection = resolvePunctualShadowFarPlane(s.range, sNearPlane, s.farPlane);
+    const sFarPlane = shadowProjection.ok ? shadowProjection.value : s.farPlane;
     const cookieAsset =
       s.cookie === undefined ? undefined : resolveAssetHandle<TextureAsset>(world, s.cookie);
     // Resolve the legacy projector before assigning array slices so the
@@ -455,7 +456,13 @@ export function extractWorldEnvironment(
     // A projector needs the same perspective transform even when its SpotLight
     // has no shadow atlas tile. The matrix remains a derived light fact; the
     // shadow tile stays -1 so shadow visibility is still independently gated.
-    if ((castShadow || hasProjector) && hasValidDirection) {
+    if ((castShadow || hasProjector) && !shadowProjection.ok) {
+      worldInternal._routeError(shadowProjection.error, {
+        severity: Severity.Error,
+        systemName: 'RenderSystem.extract (spot-shadow-projection)',
+      });
+    }
+    if ((castShadow || hasProjector) && hasValidDirection && shadowProjection.ok) {
       const target = vec3.create(
         (position[0] ?? 0) + (dirN[0] ?? 0),
         (position[1] ?? 0) + (dirN[1] ?? 0),
@@ -685,30 +692,14 @@ export function extractWorldEnvironment(
 
   // Camera data needed for frustum corner computation (first camera only;
   // multi-camera CSM is OOS-1). Undefined in a cameraless world.
-  const cam0 = cameras[0];
-  const cameraData: CsmCameraData | undefined =
-    cam0 !== undefined
-      ? {
-          world: cam0.world,
-          fov: cam0.fov,
-          aspect: cam0.aspect,
-          near: cam0.near,
-          far: cam0.far,
-          projection: cam0.projection,
-          orthoLeft: cam0.orthoLeft,
-          orthoRight: cam0.orthoRight,
-          orthoBottom: cam0.orthoBottom,
-          orthoTop: cam0.orthoTop,
-          ...(cam0.eye === undefined ? {} : { eye: cam0.eye }),
-        }
-      : undefined;
+  const cameraData = cameras[0];
 
   // feat-20260621 M2: CSM computation gated on castShadow from the
-  // merged DirectionalLight. castShadow defaults to true (first-hit-wins
+  // merged DirectionalLight. castShadow defaults to false (first-hit-wins
   // semantics, D-6 no cardinality cap).
   if (
     directional !== undefined &&
-    firstHitCastShadow !== false &&
+    firstHitCastShadow === true &&
     directionalShadowError === undefined
   ) {
     const dirSnapshot = directional;
@@ -775,7 +766,7 @@ export function extractWorldEnvironment(
   const pointShadowSnapshots: PointShadowSnapshot[] = [];
   {
     const pointShadowQuery = world
-      .query({ read: [Transform, GlobalTransform, PointLightShadow], with: [PointLight] })
+      .query({ read: [Transform, GlobalTransform, PointLightShadow, PointLight] })
       .unwrap();
     for (const row of pointShadowQuery) {
       const ps = row.get(PointLightShadow);
@@ -797,7 +788,19 @@ export function extractWorldEnvironment(
       const lightPos = vec3.create(px, py, pz);
       const mapSize = ps.mapSize;
       const nearPlane = ps.nearPlane;
-      const farPlane = ps.farPlane;
+      const projection = resolvePunctualShadowFarPlane(
+        row.get(PointLight).range,
+        nearPlane,
+        ps.farPlane,
+      );
+      if (!projection.ok) {
+        worldInternal._routeError(projection.error, {
+          severity: Severity.Error,
+          systemName: 'RenderSystem.extract (point-shadow-projection)',
+        });
+        continue;
+      }
+      const farPlane = projection.value;
       // The renderer, not ECS, owns the atlas budget. Preserve every request
       // for inspection, but emit the shader sentinel for entries that cannot
       // acquire a layer so record never calls faceView outside the atlas.
@@ -864,8 +867,8 @@ export function extractWorldEnvironment(
     cascadeCount,
     cascadeBlend,
     shadowMapSize,
-    depthBias: firstHitCastShadow !== false ? firstHitShadowFields?.depthBias : undefined,
-    normalBias: firstHitCastShadow !== false ? firstHitShadowFields?.normalBias : undefined,
+    depthBias: firstHitCastShadow === true ? firstHitShadowFields?.depthBias : undefined,
+    normalBias: firstHitCastShadow === true ? firstHitShadowFields?.normalBias : undefined,
     directionalShadowQuality,
     directionalShadowError,
     pointShadow: pointShadowSnapshots,
@@ -919,6 +922,11 @@ export function extractWorldEnvironment(
             }),
         equirectHandle: equirectRaw !== undefined ? Math.round(equirectRaw) : 0,
         color: [colorR, colorG, colorB],
+        ambientIrradiance: [
+          s.ambientIrradiance[0] ?? 0,
+          s.ambientIrradiance[1] ?? 0,
+          s.ambientIrradiance[2] ?? 0,
+        ],
         intensity,
         rotation,
         // w19: winning entity handle for the multi-Skylight once-warn (F-8).

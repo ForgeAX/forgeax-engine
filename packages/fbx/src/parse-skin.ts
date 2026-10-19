@@ -11,7 +11,7 @@
 //     influences: [{ jointIndices: number[], jointWeights: number[] }],
 //   }]
 //
-// Output: SkinPod { skeletonGuid, jointPaths, vertexCount, influences }
+// Output: SkinPod { jointPaths, vertexCount, influences }
 
 import type { SkinPod, SkinVertexInfluencePod } from '@forgeax/engine-types';
 
@@ -29,12 +29,6 @@ export interface FbxRawSkin {
 
 export interface FbxRawSkinDoc {
   readonly skins?: readonly FbxRawSkin[];
-}
-
-function bridgeSkeletonGuid(_jointPaths: readonly string[]): string {
-  // Deterministic GUID from joint paths. Real GUID assignment happens
-  // at import-runner time; this is a placeholder bridge identifier.
-  return 'fbx-skeleton-000000000000';
 }
 
 function toInfluence(raw: FbxRawSkinInfluence): SkinVertexInfluencePod {
@@ -55,15 +49,14 @@ function toInfluence(raw: FbxRawSkinInfluence): SkinVertexInfluencePod {
 export function parseSkin(doc: FbxRawSkinDoc): SkinPod {
   const skins = doc.skins;
   if (!skins || skins.length === 0) {
-    return { skeletonGuid: '', jointPaths: [], vertexCount: 0, influences: [] };
+    return { jointPaths: [], vertexCount: 0, influences: [] };
   }
 
   const skin = skins[0];
   if (!skin) {
-    return { skeletonGuid: '', jointPaths: [], vertexCount: 0, influences: [] };
+    return { jointPaths: [], vertexCount: 0, influences: [] };
   }
   return {
-    skeletonGuid: bridgeSkeletonGuid(skin.jointPaths),
     jointPaths: [...skin.jointPaths],
     vertexCount: skin.vertexCount,
     influences: skin.influences.map(toInfluence),

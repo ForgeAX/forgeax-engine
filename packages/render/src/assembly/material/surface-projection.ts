@@ -7,13 +7,14 @@ import type {
 } from '@forgeax/engine-types';
 import { shadowCasterRenderState } from '../../material-render-state';
 
-export const STANDARD_MATERIAL_MODULE = 'forgeax_material::standard';
+const STANDARD_MATERIAL_MODULE = 'forgeax_material::standard';
+
 export { DEFAULT_STANDARD_SURFACE_MODULE };
 
-export type StandardSurfacePassName = 'forward' | 'deferred' | 'shadow-caster';
-export type StandardSurfaceGeometryVariant = 'rigid' | 'skinned' | 'instanced';
-export type StandardSurfaceLightingLane = 'direct' | 'clustered';
-export type StandardSurfaceKind = 'standard' | 'full-custom';
+type StandardSurfacePassName = 'forward' | 'deferred' | 'shadow-caster';
+type StandardSurfaceGeometryVariant = 'rigid' | 'skinned' | 'instanced';
+type StandardSurfaceLightingLane = 'direct' | 'clustered';
+type StandardSurfaceKind = 'standard' | 'full-custom';
 
 export interface StandardSurfaceProjectionOptions {
   readonly surfaceModule: string;

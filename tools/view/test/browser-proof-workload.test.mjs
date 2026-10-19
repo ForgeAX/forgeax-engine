@@ -30,7 +30,19 @@ test('installed Game3D fixture needs no contributor helper and preserves every l
       assert.equal(await readFile(join(root, 'assets/geometry.pack.ts'), 'utf8'), 'createSphereGeometry(1, 32, 24)');
       assert.equal(await readFile(join(assets, 'scene.pack.ts'), 'utf8'), authored);
     }
-    await writeFile(join(assets, 'scene.pack.ts'), authored.replace('mapSize: 1024,', 'mapSize: 512,'));
+    for (const [name, sourceFields, expectedFields] of [
+      ['inherited', '', 'mapSize: 256, '],
+      ['smaller', 'mapSize: 128, cascadeCount: 3, ', 'mapSize: 128, cascadeCount: 3, '],
+      ['larger', 'mapSize: 512, cascadeCount: 3, ', 'mapSize: 256, cascadeCount: 3, '],
+    ]) {
+      const changed = authored.replace('mapSize: 1024, cascadeCount: 3, ', sourceFields);
+      await writeFile(join(assets, 'scene.pack.ts'), changed);
+      const root = join(temp, name);
+      await prepare(checkout, root, cp, join, { env: { FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' } }, pathToFileURL, readFile, writeFile, assert);
+      assert.equal(await readFile(join(root, 'assets/scene.pack.ts'), 'utf8'), authored.replace('mapSize: 1024, cascadeCount: 3, ', expectedFields));
+      assert.equal(await readFile(join(assets, 'scene.pack.ts'), 'utf8'), changed);
+    }
+    await writeFile(join(assets, 'scene.pack.ts'), authored.replace('mapSize: 1024,', 'mapSize: shadowSize,'));
     await assert.rejects(prepare(checkout, join(temp, 'changed-project'), cp, join, { env: { FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' } }, pathToFileURL, readFile, writeFile, assert), /view-ci-shadow-fixture-changed/);
   } finally {
     await rm(temp, { recursive: true, force: true });

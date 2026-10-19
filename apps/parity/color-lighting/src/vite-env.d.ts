@@ -2,7 +2,7 @@
 
 declare module 'virtual:forgeax/bundler' {
   export function forgeaxBundlerAdapter(): {
-    readonly importTransport?: unknown;
+    readonly importTransport?: NonNullable<import('@forgeax/engine/app').BundlerOptions['importTransport']>;
     readonly shaderManifestUrl?: string;
   };
 }

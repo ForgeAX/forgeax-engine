@@ -373,3 +373,17 @@ color suppression does not disable shadows. Derived temporal attachments write
 all scene-data channels. See the [pass table and RHI Debug regression commands](../../packages/render/README.md#material-color-writes-and-polygon-depth-offset)
 before interpreting masks on deferred/MRT attachments. Inspect both pipeline
 state and live/fresh-replay pixels, including the zero-bias and write-off controls.
+
+## Material and punctual default behavior
+
+Standard `roughness`, `emissiveIntensity`, and `sheenRoughness` default to 1.
+Black emissive/sheen colors still disable their contribution; physical sheen
+still needs its static switch. Explicit zero intensity remains zero.
+
+Point and spot lights default to no distance cutoff. Use an explicit finite
+`range` to bound cluster membership and shading cost in many-light scenes.
+A no-cutoff light reaches all camera clusters, including when its source is
+outside the frustum. The default spot has equal 60-degree inner and outer
+half-angles (hard cone); author both angles for a narrower or soft cone.
+Equal angles are valid with shadows on or off and use a defined hard step in
+surface and volume shaders. Spot shadow farPlane remains its own range.

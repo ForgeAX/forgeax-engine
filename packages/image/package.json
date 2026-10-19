@@ -43,7 +43,11 @@
       },
       "default": null
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./png": {
+      "types": "./dist/png-encoder.d.ts",
+      "import": "./dist/png-encoder.mjs"
+    }
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -70,7 +74,8 @@
   "devDependencies": {
     "@forgeax/engine-import": "workspace:*",
     "@types/node": "^20.14.0",
-    "@webgpu/types": "^0.1.74"
+    "@webgpu/types": "^0.1.74",
+    "@types/pako": "^1.0.7"
   },
   "forgeax": {
     "metrics": {

@@ -88,7 +88,7 @@ function buildWorldA(): World {
   world
     .spawn({
       component: DirectionalLight,
-      data: {
+      data: { castShadow: true,
         direction: [-0.4, -0.7, -1],
         color: [1, 1, 1],
         intensity: 1.4,

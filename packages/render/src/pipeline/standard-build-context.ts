@@ -4,4 +4,5 @@ import type { TargetCoverageAttachment } from '../temporal/target-coverage-attac
 /** Standard-only graph input; custom pipeline consumers never see coverage. */
 export type StandardPipelineBuildContext = RenderPipelineBuildContext<RenderPipelineFrame> & {
   readonly targetCoverage?: TargetCoverageAttachment;
+  readonly forwardOutput?: import('./standard-forward-output').StandardForwardOutput;
 };

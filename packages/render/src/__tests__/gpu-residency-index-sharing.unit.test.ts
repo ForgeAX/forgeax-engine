@@ -5,6 +5,13 @@ import { err, type MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
 
+function comparisonBytes(store: GpuResidencyCache, buffer: object | null): number {
+  const owner = store as unknown as {
+    meshBufferOwners: WeakMap<object, { bytes: Uint32Array }>;
+  };
+  return buffer === null ? 0 : (owner.meshBufferOwners.get(buffer)?.bytes.byteLength ?? 0);
+}
+
 function mesh(indices: Uint16Array | Uint32Array, position = 0): MeshAsset {
   return {
     kind: 'mesh',
@@ -65,6 +72,9 @@ it.each([
   expect(second.entry.indexFormat).toBe(format);
   expect(second.entry.iboBytes).toBe(format === 'uint16' ? 8 : 12);
   store.destroyAll();
+  expect(comparisonBytes(store, first.entry.vertexBuffer)).toBe(0);
+  expect(comparisonBytes(store, second.entry.vertexBuffer)).toBe(0);
+  expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(0);
 });
 
 it('preserves one index format per physical buffer even when uploaded bytes match', async () => {
@@ -112,6 +122,7 @@ it('fences a retired shared index allocation until its last lease and submission
   store.invalidateMesh(first.handle, first.world);
   store.invalidateMesh(second.handle, second.world);
   expect(first.entry.indexBuffer?.isDestroyed).toBe(false);
+  expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(8);
   const third = upload(mesh(new Uint16Array([0, 1, 2]), 2));
   expect(third.entry.indexBuffer).toBe(first.entry.indexBuffer);
   finish();
@@ -120,6 +131,8 @@ it('fences a retired shared index allocation until its last lease and submission
   expect(third.entry.indexBuffer?.isDestroyed).toBe(false);
   store.invalidateMesh(third.handle, third.world);
   expect(third.entry.indexBuffer?.isDestroyed).toBe(true);
+  expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(0);
+  expect(comparisonBytes(store, first.entry.vertexBuffer)).toBe(0);
   store.destroyAll();
 });
 
@@ -200,6 +213,8 @@ it('removes an exclusively updated index allocation from immutable reuse', async
   const source = mesh(new Uint16Array([0, 1, 2]));
   const first = upload(source);
   store.updateMesh(first.handle, source.vertices, new Uint16Array([2, 1, 0]), first.world);
+  expect(comparisonBytes(store, first.entry.vertexBuffer)).toBe(0);
+  expect(comparisonBytes(store, first.entry.indexBuffer)).toBe(0);
   const second = upload(mesh(new Uint16Array([0, 1, 2]), 1));
   expect(second.entry.indexBuffer).not.toBe(first.entry.indexBuffer);
   expect(store.getMeshGpuHandles(first.handle, first.world)).toBe(first.entry);

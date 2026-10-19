@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { dracoDecoder, meshoptDecoder } from './node-importer-entry.js';
 // @forgeax/engine-gltf/src/cli-gltf — internal producer used by DevKit's
 // unified `forgeax asset import` command. It is deliberately not a package bin.
@@ -21,9 +20,8 @@ import { dracoDecoder, meshoptDecoder } from './node-importer-entry.js';
 // single JSON Lines record with code / expected / hint; detail when
 // available.
 
-import { readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { GLTF_ERROR_HINTS } from './errors.js';
 import { parseGlb, parseGltf, toAssetPack } from './parse-gltf.js';
@@ -320,22 +318,4 @@ async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
   }
   await writeFile(metaPath, serializeMetaJson(pack.value.meta), 'utf-8');
   return 0;
-}
-
-const isBinEntry = await (async (): Promise<boolean> => {
-  const argv1 = process.argv[1];
-  if (typeof argv1 !== 'string') return false;
-  const argv1Real = await realpath(argv1).catch(() => argv1);
-  const selfReal = await realpath(fileURLToPath(import.meta.url)).catch(() =>
-    fileURLToPath(import.meta.url),
-  );
-  return argv1Real === selfReal;
-})();
-
-if (isBinEntry) {
-  const exitCode = await runCliGltf(process.argv.slice(2), {
-    stdoutWrite: (line: string) => process.stdout.write(`${line}\n`),
-    stderrWrite: (line: string) => process.stderr.write(`${line}\n`),
-  });
-  process.exit(exitCode);
 }

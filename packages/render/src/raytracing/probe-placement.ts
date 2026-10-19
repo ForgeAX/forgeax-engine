@@ -2,6 +2,7 @@ import type { Buffer, RhiComputePassEncoder, RhiDevice, ShaderModule } from '@fo
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
+import { isBufferOffsetAligned } from './buffer-range';
 import type { RasterRayInputs } from './raster-source';
 
 export const PROBE_PLACEMENT_STRIDE = 32;
@@ -125,9 +126,7 @@ export function createRasterProbePlacement(device: RhiDevice, module: ShaderModu
       const viewOffset = input.view.offset ?? 0;
       if (
         input.view.size !== VIEW_UNIFORM_BYTES ||
-        !Number.isSafeInteger(viewOffset) ||
-        viewOffset < 0 ||
-        viewOffset % device.limits.minUniformBufferOffsetAlignment !== 0
+        !isBufferOffsetAligned(device.limits, viewOffset, true)
       )
         return failure(`an exact ${VIEW_UNIFORM_BYTES}-byte View range at a device-aligned offset`);
       const reads = [

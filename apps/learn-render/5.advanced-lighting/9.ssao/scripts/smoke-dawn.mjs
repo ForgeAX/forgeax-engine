@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 // apps/learn-render/5.advanced-lighting/9.ssao/scripts/smoke-dawn.mjs
 // Standard profile SSAO Dawn smoke (structural-only + discrimination).
@@ -24,7 +25,7 @@ import { spawnSsaoScene } from '../src/ssao-scene.ts';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
-import { writeReferencePng } from '../../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const FALSIFY = process.env.FALSIFY ?? '';
@@ -304,7 +305,7 @@ if (DISCRIMINATION) {
     if (process.env.SMOKE_ARTIFACT_DIR) {
       const output = resolve(process.env.SMOKE_ARTIFACT_DIR, `${algorithm}-${label}.png`);
       mkdirSync(dirname(output), { recursive: true });
-      writeFileSync(output, writeReferencePng(pixels, WIDTH, HEIGHT));
+      writeFileSync(output, encodePng(WIDTH, HEIGHT, pixels));
       console.log(`[smoke-discrimination] png=${output}`);
     }
 

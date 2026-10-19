@@ -11,7 +11,7 @@ import {
 } from '../render-contract';
 
 /** Inputs owned by the renderer assembly for one detached output projection. */
-export interface RendererOutputInspectionInput {
+interface RendererOutputInspectionInput {
   readonly graph: CompiledRenderGraphInfo | undefined;
   readonly surfaceAvailable: boolean;
   readonly surfaceStorage: TextureFormat;
@@ -41,7 +41,7 @@ function writesSurface(pass: CompiledRenderGraphInfo['passes'][number]): boolean
  * Profile fields are deliberately not consulted: a transform pass, a real
  * intermediate target, and the final endpoint/domain are graph facts.
  */
-export function projectRendererOutputInspection(
+function projectRendererOutputInspection(
   input: RendererOutputInspectionInput,
 ): RenderOutputInspection {
   const graph = input.graph;
@@ -143,9 +143,4 @@ export function projectRendererOutputInspectionFromSurface(input: {
       ? {}
       : { presentationProof: input.presentationProof }),
   });
-}
-
-/** Detached inspection projection helper; live renderer objects never cross this boundary. */
-export function detachRendererInspection<T extends object>(inspection: T): Readonly<T> {
-  return Object.freeze({ ...inspection });
 }

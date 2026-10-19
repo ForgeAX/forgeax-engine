@@ -1,4 +1,9 @@
+import {
+  applyMeshMaterialSlotTopology,
+  meshMaterialSlotsToTopology,
+} from '@forgeax/engine-geometry';
 import { cookMeshCollision } from '@forgeax/engine-import';
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { groupMeshPrimitives } from './mesh-primitives';
 // gltf-importer.ts - the build-time gltfImporter (feat-20260603-asset-import-loader-injection M2 / w19,
 // extended in feat-20260608 M3 w14 with the texture pipeline: three image
@@ -55,7 +60,6 @@ import {
   ImportError,
   readConservativeAnimatedBounds,
   reconcileMeshMaterialSlotTopology,
-  resolveMeshMaterialSlotDefaultGuid,
   toShared,
 } from '@forgeax/engine-types';
 import { deriveGltfAnimatedBounds } from './animated-bounds';
@@ -73,12 +77,7 @@ import { GLTF_MATERIAL_TEXTURE_SLOTS, materialTextureBinding } from './material/
 import { cookGltfMeshCards } from './mesh-cards';
 import { cookGltfMeshDistanceField } from './mesh-distance-field';
 import type { GltfDoc, GltfMaterialIr, GltfParseOptions } from './parse-gltf.js';
-import {
-  GLTF_UV_SET_COUNT,
-  gltfMeshUvSet,
-  parseGlbForImporter,
-  parseGltfForImporter,
-} from './parse-gltf.js';
+import { GLTF_UV_SET_COUNT, gltfMeshUvSet, parseGlb, parseGltf } from './parse-gltf.js';
 import { deriveGltfShadowCapsules } from './shadow-capsules';
 
 type ParseDocResult =
@@ -182,17 +181,8 @@ function stabilizeMeshMaterialSlots(
   meshGuid: string,
   meshSourceKey: string | undefined,
 ): MeshAsset {
-  const current = mesh.materialSlots.map(
-    (slot): MeshMaterialSlotTopologyEntry => ({
-      slotName: slot.slotName,
-      ...(slot.sourceKey === undefined ? {} : { sourceKey: slot.sourceKey }),
-      ...(slot.defaultMaterial === undefined
-        ? {}
-        : { defaultMaterialGuid: AssetGuidCodec.format(slot.defaultMaterial) }),
-    }),
-  );
   const reconciled = reconcileMeshMaterialSlotTopology(
-    current,
+    meshMaterialSlotsToTopology(mesh.materialSlots),
     previousMaterialSlotTopology(ctx, meshSourceKey),
   );
   if (!reconciled.ok) {
@@ -230,29 +220,7 @@ function stabilizeMeshMaterialSlots(
     });
   }
   const authoredBySlot = authoredDefaults as Readonly<Record<string, unknown>> | undefined;
-  const activeStableSlots = new Set(reconciled.currentToStableSlot);
-  return {
-    ...mesh,
-    submeshes: mesh.submeshes.map((submesh) => ({
-      ...submesh,
-      materialSlot: reconciled.currentToStableSlot[submesh.materialSlot] as number,
-    })),
-    materialSlots: reconciled.slots.map((slot, stableIndex) => {
-      const active = activeStableSlots.has(stableIndex);
-      const authored = authoredBySlot?.[slot.sourceKey ?? slot.slotName];
-      const effectiveDefault = resolveMeshMaterialSlotDefaultGuid(
-        slot,
-        active && (typeof authored === 'string' || authored === null) ? authored : undefined,
-      );
-      const parsed =
-        effectiveDefault === undefined ? undefined : AssetGuidCodec.parse(effectiveDefault);
-      return {
-        slotName: slot.slotName,
-        ...(slot.sourceKey === undefined ? {} : { sourceKey: slot.sourceKey }),
-        ...(active && parsed?.ok ? { defaultMaterial: parsed.value } : {}),
-      };
-    }),
-  };
+  return applyMeshMaterialSlotTopology(mesh, reconciled, authoredBySlot);
 }
 
 async function parseDoc(
@@ -266,7 +234,7 @@ async function parseDoc(
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
   if (isGlbBytes(source)) {
-    const res = await parseGlbForImporter(ab, source, options);
+    const res = await parseGlb(ab, source, options);
     if (!res.ok) {
       if (res.error instanceof ImportError) return { ok: false, error: res.error };
       throw new Error(parseFailureMessage('parseGlb failed', res.error));
@@ -291,7 +259,7 @@ async function parseDoc(
       sib.value.byteOffset + sib.value.byteLength,
     ) as ArrayBuffer;
   };
-  const res = await parseGltfForImporter(json, externalLoader, source, options);
+  const res = await parseGltf(json, externalLoader, source, options);
   if (!res.ok) {
     if (res.error instanceof ImportError) return { ok: false, error: res.error };
     throw new Error(parseFailureMessage('parseGltf failed', res.error));
@@ -324,10 +292,7 @@ interface HandleMaps {
  * importer dereferences `textures[i].source` to convert that into an image
  * index when stamping material handles.
  */
-function buildHandleMaps(
-  subAssets: readonly { guid: string; sourceIndex: number; kind: string }[],
-  doc: GltfDoc,
-): HandleMaps {
+function buildHandleMaps(subAssets: readonly ImportSubAsset[], doc: GltfDoc): HandleMaps {
   const meshHandles = new Map<number, Handle<'MeshAsset', 'shared'>>();
   const materialHandles = new Map<number, Handle<'MaterialAsset', 'shared'>>();
   const textureHandles = new Map<number, Handle<'TextureAsset', 'shared'>>();
@@ -537,7 +502,7 @@ async function importGltf(
     if (sub.kind === 'skeleton') skeletonGuidBySourceIndex.set(sub.sourceIndex, sub.guid);
   }
   // feat-20260612 M2 fixup: parallel skin GUID index. Skins and skeletons
-  // share `sourceIndex` (toAssetPack emits 1:1 per GltfSkeletonRecord) but live
+  // share `sourceIndex` (toAssetPack emits 1:1 per SkeletonPod) but live
   // as distinct `kind` sub-assets, so the SkinAsset GUIDs differ from the
   // SkeletonAsset GUIDs. The scene branch below appends these GUIDs to both
   // its refs[] (the runtime recursion source: loadByGuid<SceneAsset> walks
@@ -1027,7 +992,7 @@ async function importGltf(
         artifacts: {},
       });
     } else if (sub.kind === 'skeleton') {
-      // tweak-20260611 M4: skeleton sub-asset POD emit. GltfSkeletonRecord (the
+      // tweak-20260611 M4: skeleton sub-asset POD emit. SkeletonPod (the
       // gltf IR shape from parse-skin) carries inverseBindMatrices + jointCount
       // + jointPaths; SkeletonAsset (the runtime POD) carries IBM + jointCount
       // only — jointPaths live on the parallel SkinAsset (1:1 mapping per
@@ -1044,10 +1009,10 @@ async function importGltf(
       out.push({ guid: sub.guid, kind: 'skeleton', payload, refs: [], artifacts: {} });
     } else if (sub.kind === 'skin') {
       // tweak-20260611 M4: skin sub-asset POD emit. The 1:1 mapping with
-      // skeleton (toAssetPack emits one skin per GltfSkeletonRecord at the same
+      // skeleton (toAssetPack emits one skin per SkeletonPod at the same
       // sourceIndex) lets us pull the skeleton GUID out of the pre-built
       // skeletonGuidBySourceIndex map. SkinAsset is the runtime POD, distinct
-      // from GltfSkeletonRecord: skeletonGuid + jointPaths only (zero entity refs
+      // from SkeletonPod: skeletonGuid + jointPaths only (zero entity refs
       // at the asset layer per AC-06). refs[] carries the skeletonGuid so the
       // runner sees the cross-edge.
       const rec = doc.skeletons[sub.sourceIndex];

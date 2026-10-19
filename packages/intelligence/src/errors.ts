@@ -1,13 +1,6 @@
 import type { ActivityId } from './types';
 
-export type IntelligenceErrorCode =
-  | 'intelligence-invalid-request'
-  | 'intelligence-session-provider-mismatch'
-  | 'intelligence-capacity-exceeded'
-  | 'intelligence-activity-not-found'
-  | 'intelligence-provider-failed'
-  | 'intelligence-output-overflow'
-  | 'intelligence-closed';
+export type IntelligenceErrorCode = keyof IntelligenceErrorDetailMap;
 
 export interface IntelligenceErrorDetailMap {
   readonly 'intelligence-invalid-request': { readonly field: 'input'; readonly reason: string };

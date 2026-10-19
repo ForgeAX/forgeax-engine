@@ -10,7 +10,7 @@ import {
   terminalError,
   timeoutError,
 } from './errors.js';
-import { createLexicalLease, type LeaseTerminationReason } from './lease.js';
+import { createLexicalLease, type LeaseTerminationReason, toolCleanupFailure } from './lease.js';
 import { createExclusiveTiming, finishToolTiming, startToolTiming } from './timing.js';
 import type {
   JsonValue,
@@ -197,23 +197,18 @@ export function createToolRuntime(contributions: readonly unknown[]): ToolRuntim
       const finalizeStartedAtMs = startToolTiming();
       const cleanupResult = await lease.terminate(reason);
       const cleanupFailure = cleanupResult.failures[0];
-      const liveResources = Object.entries(cleanupReport.census).filter(([, count]) => count !== 0);
-      const reportFailure =
-        cleanupReport.failures[0] ??
-        (liveResources.length === 0
-          ? undefined
-          : `live resources remain: ${liveResources.map(([kind, count]) => `${kind}=${count}`).join(', ')}`);
+      const failure =
+        cleanupFailure !== undefined
+          ? `${cleanupFailure.owner}: ${cleanupFailure.message}`
+          : candidate.outcome === 'succeeded'
+            ? toolCleanupFailure(cleanupReport)
+            : undefined;
       operationTiming.record('finalize', Math.max(0, startToolTiming() - finalizeStartedAtMs));
       const finalTerminal: ToolTerminal<TResult> =
-        cleanupFailure || (candidate.outcome === 'succeeded' && reportFailure !== undefined)
+        failure !== undefined
           ? {
               outcome: 'failed',
-              failure: cleanupError(
-                runId,
-                cleanupFailure === undefined
-                  ? (reportFailure as string)
-                  : `${cleanupFailure.owner}: ${cleanupFailure.message}`,
-              ),
+              failure: cleanupError(runId, failure),
               artifacts: candidate.artifacts,
               cleanup: cleanupReport,
               ...(candidate.snapshotAfter === undefined

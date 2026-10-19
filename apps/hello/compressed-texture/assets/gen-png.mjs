@@ -11,17 +11,13 @@
 //
 // The generated *.png files are git-ignored (.gitignore `*.png` global block);
 // they are regenerated on demand by the demo's dev / build / smoke hooks
-// (see package.json `predev` / `prebuild` / `presmoke*`). The PNG chunk
-// machinery mirrors packages/image/src/__tests__/make-fixture.ts (the
-// established in-repo synthesis pattern).
+// (see package.json `predev` / `prebuild` / `presmoke*`).
 //
 // Run: `node assets/gen-png.mjs` from the demo root (idempotent overwrite).
-import { deflateSync } from 'node:zlib';
+import { encodePng } from '@forgeax/engine-image/png';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-
-const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 // Texture geometry deliberately crosses BC7's 4x4 block boundary. This keeps
 // the browser smoke on the full-subresource tail-copy path.
@@ -29,35 +25,11 @@ const TEX_W = 257;
 const TEX_H = 259;
 const CHECK_SIZE = 32;
 
-// CRC-32 (PNG polynomial) over a chunk's type+data.
-function crc32(bytes) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let k = 0; k < 8; k++) {
-      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function u32(n) {
-  return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
-}
-
-function chunk(type, data) {
-  const typeBytes = [...type].map((c) => c.charCodeAt(0));
-  const body = new Uint8Array([...typeBytes, ...data]);
-  return [...u32(data.length), ...body, ...u32(crc32(body))];
-}
-
 // 8-bit RGBA PNG (colour-type 6), standard zlib/deflate, filter-type 0 rows.
 function makeCheckerPng(width, height, cell) {
-  const ihdr = new Uint8Array([...u32(width), ...u32(height), 8, 6, 0, 0, 0]);
-  const raw = new Uint8Array(height * (1 + width * 4));
+  const raw = new Uint8Array(height * width * 4);
   let o = 0;
   for (let y = 0; y < height; y++) {
-    raw[o++] = 0; // filter-type: none
     for (let x = 0; x < width; x++) {
       const cx = Math.floor(x / cell) % 2;
       const cy = Math.floor(y / cell) % 2;
@@ -68,13 +40,7 @@ function makeCheckerPng(width, height, cell) {
       raw[o++] = 255;
     }
   }
-  const idat = new Uint8Array(deflateSync(raw));
-  return new Uint8Array([
-    ...PNG_MAGIC,
-    ...chunk('IHDR', ihdr),
-    ...chunk('IDAT', idat),
-    ...chunk('IEND', new Uint8Array(0)),
-  ]);
+  return encodePng(width, height, raw);
 }
 
 const here = dirname(fileURLToPath(import.meta.url));

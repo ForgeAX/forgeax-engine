@@ -1,19 +1,12 @@
+import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type {
+  CarrierExecutionRequest,
   CarrierLeaseRequest,
   CarrierOffer,
-  CarrierResult,
-  CarrierState,
   CarrierStateMachine,
   ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
-
-export interface CarrierProvider {
-  readonly offer: CarrierOffer;
-  readonly accept: (request: CarrierLeaseRequest) => CarrierResult<{ readonly leaseId: string }>;
-  readonly started: (leaseId: string) => CarrierResult<CarrierState>;
-  readonly exit: (leaseId: string) => CarrierResult<CarrierState>;
-}
 
 export interface CarrierProviderServiceOptions {
   readonly machine: CarrierStateMachine;
@@ -23,14 +16,6 @@ export interface CarrierProviderServiceOptions {
     request: CarrierExecutionRequest,
   ) => Promise<ToolTerminal<unknown>> | ToolTerminal<unknown>;
   readonly host?: '127.0.0.1' | 'localhost';
-}
-
-/** Local structural view keeps DevKit source-compatible with an unbuilt runtime dist. */
-export interface CarrierExecutionRequest {
-  readonly leaseId: string;
-  readonly descriptorDigest: string;
-  readonly recipeDigest: string;
-  readonly args: unknown;
 }
 
 export interface CarrierProviderService {
@@ -109,18 +94,18 @@ export async function createCarrierProviderService(
             typeof body.descriptorDigest === 'string' ? body.descriptorDigest : undefined,
           recipeDigest: typeof body.recipeDigest === 'string' ? body.recipeDigest : undefined,
         } as CarrierLeaseRequest);
-        reply(response, result.ok ? 200 : 409, result.ok ? result : result);
+        reply(response, result.ok ? 200 : 409, result);
         return;
       }
       const leaseId = typeof body.leaseId === 'string' ? body.leaseId : '';
       if (route === 'start') {
         const result = options.machine.started(leaseId);
-        reply(response, result.ok ? 200 : 409, result.ok ? result : result);
+        reply(response, result.ok ? 200 : 409, result);
         return;
       }
       if (route === 'exit') {
         const result = options.machine.exit(leaseId);
-        reply(response, result.ok ? 200 : 409, result.ok ? result : result);
+        reply(response, result.ok ? 200 : 409, result);
         return;
       }
       if (route === 'execute') {
@@ -192,19 +177,7 @@ export async function createCarrierProviderService(
       );
     }
   });
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error) => {
-      server.off('listening', onListening);
-      reject(error);
-    };
-    const onListening = () => {
-      server.off('error', onError);
-      resolve();
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(0, host);
-  });
+  await once(server.listen(0, host), 'listening');
   const address = server.address();
   if (address === null || typeof address === 'string')
     throw new Error('carrier provider did not expose a loopback port');
@@ -220,18 +193,5 @@ export async function createCarrierProviderService(
         server.close((error) => (error === undefined ? resolve() : reject(error))),
       );
     },
-  };
-}
-
-export function createCarrierProvider(machine: CarrierStateMachine): CarrierProvider {
-  return {
-    offer: machine.offer,
-    accept(request) {
-      const result = machine.lease(request);
-      if (!result.ok) return result;
-      return { ok: true, value: { leaseId: result.value.leaseId }, state: result.state };
-    },
-    started: machine.started,
-    exit: machine.exit,
   };
 }

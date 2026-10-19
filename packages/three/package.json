@@ -1,0 +1,91 @@
+{
+  "name": "@forgeax/engine-three",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Three.js r184 object compatibility on the Forgeax renderer.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./addons/controls/OrbitControls.js": {
+      "types": "./dist/addons/controls/OrbitControls.d.ts",
+      "import": "./dist/addons/controls/OrbitControls.mjs"
+    },
+    "./addons/loaders/GLTFLoader.js": {
+      "types": "./dist/addons/loaders/GLTFLoader.d.ts",
+      "import": "./dist/addons/loaders/GLTFLoader.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "COMPATIBILITY.md",
+    "migrations",
+    "LICENSE",
+    "LICENSE-THREE"
+  ],
+  "scripts": {
+    "build": "node scripts/build-materials.mjs && tsup",
+    "test": "vitest run",
+    "audit:api": "node scripts/audit-api.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "example": "vite example --config example/vite.config.ts"
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@types/three": "0.184.0",
+    "three": "0.184.0",
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*"
+  },
+  "forgeax": {
+    "buildDependencies": ["@forgeax/engine-shader-compiler"],
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Prototype frame timings are measured by the compatibility browser fixture."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "No performance equivalence claim for the compatibility prototype."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/engine-three test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Supported behavior and limitations are maintained in the package README."
+      }
+    }
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "@forgeax/engine": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "@forgeax/engine-shader-compiler": "workspace:*"
+  }
+}

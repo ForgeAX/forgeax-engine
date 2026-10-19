@@ -11,7 +11,7 @@ import {
   type TextureSourceDescriptorError,
 } from './source-descriptor.js';
 
-export interface TextureSourceInput {
+interface TextureSourceInput {
   readonly descriptor: unknown;
   readonly guid: string;
   readonly sourceKey: string;
@@ -23,7 +23,7 @@ export interface TextureSourceInput {
   >;
 }
 
-export interface TextureSourceReadError {
+interface TextureSourceReadError {
   readonly code: 'source-read-failed';
   readonly expected: string;
   readonly hint: string;
@@ -34,12 +34,9 @@ export interface TextureSourceReadError {
   };
 }
 
-export type TextureSourceError =
-  | TextureSourceDescriptorError
-  | TextureSourceReadError
-  | TextureError;
+type TextureSourceError = TextureSourceDescriptorError | TextureSourceReadError | TextureError;
 
-export type TextureSourceResult = Result<ImportedAsset<TextureAsset>, TextureSourceError>;
+type TextureSourceResult = Result<ImportedAsset<TextureAsset>, TextureSourceError>;
 
 function sourceReadError(input: TextureSourceInput, reason: unknown): TextureSourceReadError {
   return {

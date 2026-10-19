@@ -1,5 +1,6 @@
 import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_SMAA,
   Camera,
@@ -14,7 +15,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -37,7 +37,9 @@ const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value, 
 function floats(bytes: Uint8Array, width: number, height: number, stride: number): number[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return Array.from({ length: width * height * 4 }, (_, i) =>
-    halfToFloat(view.getUint16(Math.floor(i / (width * 4)) * stride + (i % (width * 4)) * 2, true)),
+    halfFloat.f16ToF32(
+      view.getUint16(Math.floor(i / (width * 4)) * stride + (i % (width * 4)) * 2, true),
+    ),
   );
 }
 const mse = (a: readonly number[], b: readonly number[]) =>

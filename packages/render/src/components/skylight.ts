@@ -1,6 +1,6 @@
 // @forgeax/engine-runtime - Skylight (ambient environment light).
 //
-// Schema: 4 fields -- equirect (Handle<EquirectAsset>, u32-stored handle,
+// Schema: environment fields -- equirect (Handle<EquirectAsset>, u32-stored handle,
 // OPTIONAL) + color (array<f32,3>, default [1,1,1] = white) + intensity (f32,
 // default 1.0) + rotation (quaternion xyzw, default identity). feat-20260709 M2 collapsed colorR/G/B into one inline
 // array<f32,3> column. Naming convention follows the DirectionalLight / PointLight /
@@ -61,8 +61,12 @@ import { defineComponent } from '@forgeax/engine-ecs';
  * cubemap projection is internal and idempotent: the same equirect source
  * always resolves to the same GPU cubemap (no user upload call).
  *
+ * `ambientIrradiance` is an additive linear RGB diffuse irradiance, default
+ * zero, independent of image/color/intensity. Standard applies 1/pi before
+ * occlusion; this value produces no specular environment.
+ *
  * `color` is the linear-space ambient tint (default white [1, 1, 1]).
- * `intensity` is a linear multiplier (default 1.0; 0 disables ambient). Both
+ * `intensity` is a linear multiplier (default 1.0; 0 disables image/solid-color lighting). Both
  * are read every frame, so they are live dynamic dials.
  *
  * `rotation` is an environment-space quaternion in `[x, y, z, w]` order.
@@ -88,6 +92,9 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *   world.spawn({ component: Skylight, data: { equirect: hdrRes.value } });
  */
 export const Skylight = defineComponent('Skylight', {
+  // Direction-independent diffuse irradiance, independent of image-based radiance.
+  // It is additive and does not create a specular environment.
+  ambientIrradiance: { type: 'array<f32, 3>' },
   // The GPU equirect-to-cubemap projection is render-owned presentation
   // state. Record/restore preserves the portable lighting controls while the
   // render owner resolves this asset again on the target world.

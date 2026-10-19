@@ -1,19 +1,47 @@
+import { isDeepStrictEqual } from 'node:util';
 import type {
+  AssetPublicationEnvelope,
   CatalogDelta,
-  CatalogDiagnostic,
   CatalogRevisionWindow,
   ImportedOutputDeclaration,
   PackIndexEntry,
 } from '@forgeax/engine-types';
-import { catalogEntryDigest } from '@forgeax/engine-types';
+import { checkCatalogRevisionContinuity } from '@forgeax/engine-types';
 import { diffTopology } from './topology.js';
 
 function rowsByGuid(rows: readonly PackIndexEntry[]): Map<string, PackIndexEntry> {
   return new Map(rows.map((row) => [row.guid.toLowerCase(), row]));
 }
 
-function sameRow(left: PackIndexEntry, right: PackIndexEntry): boolean {
-  return catalogEntryDigest(left) === catalogEntryDigest(right);
+function sameRow(
+  left: PackIndexEntry,
+  right: PackIndexEntry,
+  publications: WeakMap<AssetPublicationEnvelope, WeakMap<AssetPublicationEnvelope, boolean>>,
+): boolean {
+  const { publication: leftPublication, ...leftFields } = left;
+  const { publication: rightPublication, ...rightFields } = right;
+  if (
+    !isDeepStrictEqual(
+      { ...leftFields, guid: left.guid.toLowerCase() },
+      { ...rightFields, guid: right.guid.toLowerCase() },
+    )
+  )
+    return false;
+  if (leftPublication === rightPublication) return true;
+  if (!leftPublication || !rightPublication) return false;
+  let compared = publications.get(leftPublication);
+  if (!compared) {
+    compared = new WeakMap();
+    publications.set(leftPublication, compared);
+  }
+  let equal = compared.get(rightPublication);
+  if (equal === undefined) {
+    // Compare complete facts, including outputs, without trusting claimed digests
+    // or hashing the same shared publication again for every catalog row.
+    equal = isDeepStrictEqual(leftPublication, rightPublication);
+    compared.set(rightPublication, equal);
+  }
+  return equal;
 }
 
 function topologyGroups(rows: readonly PackIndexEntry[]): Map<string, ImportedOutputDeclaration[]> {
@@ -37,86 +65,6 @@ function topologyGroups(rows: readonly PackIndexEntry[]): Map<string, ImportedOu
   return groups;
 }
 
-function revisionDiagnostic(
-  code: string,
-  expected: string,
-  actual: string,
-  hint: string,
-  rootId?: string,
-): CatalogDiagnostic {
-  return {
-    code,
-    severity: 'blocking',
-    authority: 'catalog',
-    expected,
-    actual,
-    hint,
-    ...(rootId === undefined ? {} : { subject: { type: 'package' as const, id: rootId } }),
-  };
-}
-
-function checkRevisionContinuity(
-  window: CatalogRevisionWindow,
-  hasChanges: boolean,
-): CatalogDiagnostic | undefined {
-  const baselineByRoot = new Map(window.baseline.map((point) => [point.rootId, point]));
-  const currentRoots = new Set(window.current.map((point) => point.rootId));
-
-  for (const point of window.current) {
-    const baseline = baselineByRoot.get(point.rootId);
-    if (baseline === undefined) {
-      return revisionDiagnostic(
-        'catalog-revision-conflict',
-        'every current root must have a verified baseline',
-        point.rootId,
-        'restore the latest verified snapshot for this root before applying the delta',
-        point.rootId,
-      );
-    }
-    if (point.revision < baseline.revision) {
-      return revisionDiagnostic(
-        'catalog-revision-stale',
-        'current revision must not be older than baseline',
-        `${baseline.revision} -> ${point.revision}`,
-        'discard the stale update and request a fresh catalog snapshot',
-        point.rootId,
-      );
-    }
-    if (point.revision === baseline.revision && hasChanges) {
-      return revisionDiagnostic(
-        'catalog-revision-conflict',
-        'a changed delta must advance the root revision',
-        `${baseline.revision} -> ${point.revision}`,
-        'keep the verified baseline and serialize concurrent updates before retrying',
-        point.rootId,
-      );
-    }
-    if (point.revision > baseline.revision + 1) {
-      return revisionDiagnostic(
-        'catalog-revision-conflict',
-        'the next revision must be exactly baseline + 1',
-        `${baseline.revision} -> ${point.revision}`,
-        'request the missing revisions or rebuild from the latest verified snapshot',
-        point.rootId,
-      );
-    }
-  }
-
-  for (const point of window.baseline) {
-    if (!currentRoots.has(point.rootId)) {
-      return revisionDiagnostic(
-        'catalog-revision-conflict',
-        'every baseline root must be present in the current revision set',
-        point.rootId,
-        'do not apply a partial root set over the verified baseline',
-        point.rootId,
-      );
-    }
-  }
-
-  return undefined;
-}
-
 /**
  * Derives one neutral delta from consecutive complete catalog projections.
  *
@@ -135,11 +83,15 @@ export function calculateCatalogDelta(
   const added: PackIndexEntry[] = [];
   const changed: PackIndexEntry[] = [];
   const removed: string[] = [];
+  const publications = new WeakMap<
+    AssetPublicationEnvelope,
+    WeakMap<AssetPublicationEnvelope, boolean>
+  >();
 
   for (const [guid, row] of after) {
     const prior = before.get(guid);
     if (prior === undefined) added.push(row);
-    else if (!sameRow(prior, row)) changed.push(row);
+    else if (!sameRow(prior, row, publications)) changed.push(row);
   }
   for (const guid of before.keys()) {
     if (!after.has(guid)) removed.push(guid);
@@ -168,7 +120,7 @@ export function calculateCatalogDelta(
   const delta = { added, changed, removed, ...(topology.length > 0 ? { topology } : {}) };
   if (revision === undefined) return delta;
 
-  const diagnostic = checkRevisionContinuity(revision, hasChanges);
+  const diagnostic = checkCatalogRevisionContinuity(revision, hasChanges);
   if (diagnostic !== undefined) {
     return {
       added: [],

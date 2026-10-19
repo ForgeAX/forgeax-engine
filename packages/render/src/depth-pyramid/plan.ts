@@ -8,7 +8,7 @@ export interface DepthPyramidExtent {
   readonly height: number;
 }
 
-export interface DepthPyramidLevelPlan extends DepthPyramidExtent {
+interface DepthPyramidLevelPlan extends DepthPyramidExtent {
   readonly level: number;
 }
 
@@ -63,9 +63,4 @@ export function buildDepthPyramidPlan(extent: DepthPyramidExtent): DepthPyramidP
     levels: Object.freeze(levels.map((entry) => Object.freeze(entry))),
     graphSize: Object.freeze({ width: extent.width, height: extent.height }),
   });
-}
-
-/** Map an invalid or empty depth sample to the depth pyramid empty-pixel sentinel. */
-export function normalizeDepthPyramidDepth(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
 }

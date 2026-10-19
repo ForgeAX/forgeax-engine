@@ -130,6 +130,39 @@ describe('device-safe browser drawing buffer', () => {
     }
   });
 
+  it('uses delivered logical dimensions without forcing layout while observing DPR, budgets and hidden buffers', () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    const canvas = budgetedSurface(1920, 1080, 1920, 1080);
+    const width = vi.fn(() => 1920),
+      height = vi.fn(() => 1080);
+    Object.defineProperties(canvas, { clientWidth: { get: width }, clientHeight: { get: height } });
+    const display = { width: 800, height: 600 };
+    for (let frame = 0; frame < 120; frame++)
+      expect(measureCanvasDrawingBuffer(canvas, undefined, display)).toEqual({
+        width: 800,
+        height: 600,
+      });
+    vi.stubGlobal('devicePixelRatio', 2);
+    expect(measureCanvasDrawingBuffer(canvas, undefined, display)).toEqual({
+      width: 1440,
+      height: 1080,
+    });
+    expect(measureCanvasDrawingBuffer(canvas, 1, display)).toEqual({ width: 800, height: 600 });
+    expect(measureCanvasDrawingBuffer(canvas, undefined, { width: 600, height: 800 })).toEqual({
+      width: 1080,
+      height: 1440,
+    });
+    expect(measureCanvasDrawingBuffer(canvas, undefined, { width: 0, height: 0 })).toEqual({
+      width: 300,
+      height: 150,
+    });
+    expect(width).not.toHaveBeenCalled();
+    expect(height).not.toHaveBeenCalled();
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 1920, height: 1080 });
+    expect(width).toHaveBeenCalledOnce();
+    expect(height).toHaveBeenCalledOnce();
+  });
+
   it('recomputes on window and DPI changes, including returning to a small window', () => {
     vi.stubGlobal('devicePixelRatio', 1);
     const canvas = surface(1200, 700);

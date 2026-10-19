@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
+import { isFilesystemPathWithin } from './filesystem-path.js';
 import type { BuildOptions, CommandResult, ProjectFacts } from './types.js';
 
 export interface DistArtifact {
@@ -162,7 +163,7 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
   }
   for (const artifact of manifest.artifacts) {
     const path = resolve(root, artifact.path);
-    if (relative(root, path).startsWith('..')) {
+    if (!isFilesystemPathWithin(root, path)) {
       return {
         ok: false,
         error: {

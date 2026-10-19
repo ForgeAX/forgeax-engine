@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<title>Skylight environment response — Three.js / Forgeax</title>
+<style>
+  body { margin: 32px; background: #111820; color: #e4eaf2; font: 16px system-ui; }
+  h1 { font-size: 24px; } p { max-width: 980px; line-height: 1.6; }
+  main { display: flex; gap: 24px; flex-wrap: wrap; }
+  figure { margin: 0; } canvas { width: 384px; height: 384px; background: black; }
+  figcaption { padding: 10px 0; } button { padding: 8px 16px; margin-right: 8px; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>Environment lighting: material response</h1>
+<p>Compare a uniform white environment with an HDR studio containing warm, cool and narrow bright lights. Both engines receive identical image texels. Rows: white metal, copper, blue dielectric.
+Columns: roughness 0.1, 0.5, 1. No direct lights, shadows, tone mapping, Bloom or antialiasing.
+Forgeax Skylight includes diffuse lighting and environment reflection.</p>
+<p><button id="forward">Forward</button><button id="deferred">Deferred</button><button id="solid">Solid Skylight</button><button id="panorama">White panorama</button><button id="studio">HDR studio</button><button id="rotate">Rotate 90° / reset</button></p>
+<main>
+  <figure><canvas id="three" width="256" height="256"></canvas><figcaption>Three.js r184 · scene.environment</figcaption></figure>
+  <figure><canvas id="forgeax" width="256" height="256"></canvas><figcaption>Forgeax · Skylight</figcaption></figure>
+</main>
+<pre id="status">Rendering…</pre>
+<script type="module" src="/src/environment-response.mjs"></script>
+</html>

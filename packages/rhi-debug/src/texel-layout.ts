@@ -18,6 +18,7 @@
 
 import {
   isCompressedFormat,
+  mipDimension,
   type TextureFormatBlock,
   textureFormatBlock,
 } from '@forgeax/engine-types';
@@ -27,64 +28,18 @@ import {
  * {@link textureBlockLayout} because their bytes are addressed by blocks.
  */
 export function bytesPerTexel(format: GPUTextureFormat | undefined): number | undefined {
-  if (format === undefined) return undefined;
-  return TEXEL_BYTES[format];
+  if (format === undefined || isCompressedFormat(format)) return undefined;
+  return textureBlockLayout(format)?.bytesPerBlock;
 }
-
-// Uncompressed color formats and the copyable depth32float plane. Keyed to the W3C WebGPU GPUTextureFormat
-// names. Other depth/stencil and block-compressed formats are absent.
-const TEXEL_BYTES: Partial<Record<GPUTextureFormat, number>> = {
-  // 8-bit channels
-  r8unorm: 1,
-  r8snorm: 1,
-  r8uint: 1,
-  r8sint: 1,
-  rg8unorm: 2,
-  rg8snorm: 2,
-  rg8uint: 2,
-  rg8sint: 2,
-  rgba8unorm: 4,
-  'rgba8unorm-srgb': 4,
-  rgba8snorm: 4,
-  rgba8uint: 4,
-  rgba8sint: 4,
-  bgra8unorm: 4,
-  'bgra8unorm-srgb': 4,
-  // 16-bit channels
-  r16uint: 2,
-  r16sint: 2,
-  r16float: 2,
-  rg16uint: 4,
-  rg16sint: 4,
-  rg16float: 4,
-  rgba16uint: 8,
-  rgba16sint: 8,
-  rgba16float: 8,
-  // 32-bit channels
-  r32uint: 4,
-  r32sint: 4,
-  r32float: 4,
-  depth32float: 4,
-  rg32uint: 8,
-  rg32sint: 8,
-  rg32float: 8,
-  rgba32uint: 16,
-  rgba32sint: 16,
-  rgba32float: 16,
-  // packed
-  rgb10a2unorm: 4,
-  rg11b10ufloat: 4,
-  rgb9e5ufloat: 4,
-};
 
 /** Return the WebGPU texel-block footprint for each supported color format. */
 export function textureBlockLayout(
   format: GPUTextureFormat | undefined,
 ): TextureFormatBlock | undefined {
   if (format === undefined) return undefined;
-  if (isCompressedFormat(format)) return textureFormatBlock(format);
-  const bytesPerBlock = TEXEL_BYTES[format];
-  return bytesPerBlock === undefined ? undefined : { blockWidth: 1, blockHeight: 1, bytesPerBlock };
+  if (isCompressedFormat(format) || format === 'depth32float' || formatInfo(format) !== undefined)
+    return textureFormatBlock(format);
+  return undefined;
 }
 
 // ============================================================================
@@ -97,7 +52,7 @@ export type ChannelType = 'unorm' | 'snorm' | 'uint' | 'sint' | 'float' | 'ufloa
 /**
  * Per-channel layout of an uncompressed color format, enough to decode its raw
  * GPU bytes into displayable RGBA8 on the host (no GPU). Sits beside
- * {@link bytesPerTexel} (which stays the SSOT for total texel size); the
+ * {@link bytesPerTexel} (derived from the shared Types block footprint); the
  * per-channel byte width is derived as `bytesPerTexel / channels` for plain
  * formats, so no byte count is re-stored here. `packed` formats pack all
  * channels into a single 4-byte word (channels read by bit-field, not by a
@@ -112,7 +67,7 @@ export interface FormatInfo {
   readonly packed?: 'rgb10a2unorm' | 'rg11b10ufloat' | 'rgb9e5ufloat';
 }
 
-// Keyed to the same uncompressed color formats as TEXEL_BYTES. Depth/stencil and
+// Supported CPU color decoders. Depth/stencil and
 // block-compressed formats are absent (return undefined -> caller falls back).
 const FORMAT_INFO: Partial<Record<GPUTextureFormat, FormatInfo>> = {
   // 8-bit channels
@@ -163,7 +118,7 @@ const FORMAT_INFO: Partial<Record<GPUTextureFormat, FormatInfo>> = {
  * (the viewer's preview path treats `undefined` as "not directly previewable").
  */
 export function formatInfo(format: GPUTextureFormat | string | undefined): FormatInfo | undefined {
-  if (format === undefined) return undefined;
+  if (format === undefined || !Object.hasOwn(FORMAT_INFO, format)) return undefined;
   return FORMAT_INFO[format as GPUTextureFormat];
 }
 
@@ -195,28 +150,34 @@ export interface TextureExtent {
   readonly layerCount: number;
 }
 
-/** Project a serialized GPU texture extent onto the dimensions used by snapshots. */
-export function projectTextureExtent(size: unknown): TextureExtent {
-  if (typeof size === 'number') return { width: size, height: 1, layerCount: 1 };
-  if (Array.isArray(size)) {
-    const width = typeof size[0] === 'number' ? size[0] : 1;
-    const height = typeof size[1] === 'number' ? size[1] : width;
-    const layerCount = typeof size[2] === 'number' ? size[2] : 1;
-    return { width, height, layerCount };
-  }
-  if (size !== null && typeof size === 'object') {
-    const record = size as {
-      readonly width?: unknown;
-      readonly height?: unknown;
-      readonly depthOrArrayLayers?: unknown;
-    };
-    const width = typeof record.width === 'number' ? record.width : 1;
-    const height = typeof record.height === 'number' ? record.height : width;
-    const layerCount =
-      typeof record.depthOrArrayLayers === 'number' ? record.depthOrArrayLayers : 1;
-    return { width, height, layerCount };
-  }
-  return { width: 1, height: 1, layerCount: 1 };
+/** Decode a recorded extent with WebGPU defaults; malformed dimensions stay unavailable. */
+export function projectTextureExtent(size: unknown): TextureExtent | undefined {
+  const fields =
+    typeof size === 'number'
+      ? [size]
+      : Array.isArray(size)
+        ? size
+        : size !== null && typeof size === 'object'
+          ? [
+              (size as GPUExtent3DDict).width,
+              (size as GPUExtent3DDict).height,
+              (size as GPUExtent3DDict).depthOrArrayLayers,
+            ]
+          : [];
+  const [width, height = 1, layerCount = 1] = fields;
+  if (
+    typeof width !== 'number' ||
+    !Number.isInteger(width) ||
+    width <= 0 ||
+    typeof height !== 'number' ||
+    !Number.isInteger(height) ||
+    height <= 0 ||
+    typeof layerCount !== 'number' ||
+    !Number.isInteger(layerCount) ||
+    layerCount <= 0
+  )
+    return undefined;
+  return { width, height, layerCount };
 }
 
 /**
@@ -245,8 +206,8 @@ export function computeTextureLayout(
   let offset = 0;
   for (let layer = 0; layer < layers; layer++) {
     for (let mip = 0; mip < mips; mip++) {
-      const mw = Math.max(1, width >> mip);
-      const mh = Math.max(1, height >> mip);
+      const mw = mipDimension(width, mip);
+      const mh = mipDimension(height, mip);
       const blockCountX = Math.ceil(mw / block.blockWidth);
       const blockCountY = Math.ceil(mh / block.blockHeight);
       const byteLength = blockCountX * blockCountY * block.bytesPerBlock;

@@ -27,7 +27,7 @@ type FallbackDevice = Pick<
   'createBuffer' | 'createTexture' | 'createTextureView' | 'queue'
 >;
 
-export interface ExtendedLightingFallbackResources {
+interface ExtendedLightingFallbackResources {
   readonly iesProfileTexture: Texture;
   readonly cookieTexture: Texture;
   readonly cookieMatrixBuffer: Buffer;

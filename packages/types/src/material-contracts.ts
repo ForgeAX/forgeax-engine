@@ -99,26 +99,20 @@ export interface NumericParamSchemaEntry {
   readonly default?: number | readonly number[];
 }
 
-// Texture-binding-family schema entry (texture* / sampler*).
-// `default` is kept optional for backward compatibility with existing
-// schema fixtures that carry stray defaults; derive ignores it for the
-// non-numeric families (D-4 auto-pair rule resolves samplers; textures
-// resolve via Handle<TextureAsset>).
+// Resource schema entries declare bindings. Defaults belong only to numeric
+// UBO entries; resource values and sampler pairing have their own owners.
 export interface TextureBindingParamSchemaEntry {
   readonly name: string;
   readonly type: TextureBindingParamType;
-  readonly default?: unknown;
   /** Cooked textureLoad-only bindings admit float textures without filtering support. */
   readonly sampleType?: 'float' | 'unfilterable-float';
 }
 
 // Storage-binding-family schema entry (storage_buffer).
-// Always an independent binding (not merged into the UBO run); `default`
-// is optional and ignored by derive (backward compatibility shim).
+// Always an independent binding, not merged into the UBO run.
 export interface StorageBindingParamSchemaEntry {
   readonly name: string;
   readonly type: StorageBindingParamType;
-  readonly default?: unknown;
 }
 
 // Re-export derive(schema) and its output shapes alongside the schema
@@ -148,6 +142,8 @@ export {
   findUndeclaredSampledTextures,
   getAdmittedParamSchemaInterface,
   inferMaterialParameterKind,
+  MATERIAL_NUMERIC_LAYOUT,
+  MATERIAL_TEXTURE_LAYOUT,
   ParamSchemaProjectionOwner,
 } from './derive-paramschema.js';
 
@@ -353,3 +349,5 @@ export const KNOWN_PASS_KINDS: readonly string[] = [
  * ```
  */
 export type PassSelector = Record<string, readonly string[]>;
+
+export { stripWgslComments } from './wgsl-comments.js';

@@ -22,7 +22,7 @@ export interface StandardColorLutAdmissionInput {
   readonly bind: () => boolean;
 }
 
-export interface StandardColorLutAdmission {
+interface StandardColorLutAdmission {
   readonly viewDimension: '3d';
   readonly extent: Readonly<{ width: number; height: number; depth: number }>;
   readonly sampler: SamplerDescriptor;

@@ -1,8 +1,4 @@
-function base64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
+import { encodeBase64 } from '@forgeax/engine/types';
 
 function concat(parts: readonly ArrayBufferView[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
@@ -76,7 +72,10 @@ export function cubeGltf(options: { readonly glb?: boolean; readonly png?: Uint8
   const buffer =
     options.glb === true
       ? { byteLength: bin.byteLength }
-      : { byteLength: bin.byteLength, uri: `data:application/octet-stream;base64,${base64(bin)}` };
+      : {
+          byteLength: bin.byteLength,
+          uri: `data:application/octet-stream;base64,${encodeBase64(bin)}`,
+        };
   const json = {
     asset: { version: '2.0' },
     buffers: [buffer],
@@ -130,7 +129,11 @@ export function cubeGltf(options: { readonly glb?: boolean; readonly png?: Uint8
           textures: [{ source: 0, sampler: 0 }],
           samplers: [{ magFilter: 9728, minFilter: 9728 }],
           images: [
-            { name: 'Checker', uri: `data:image/png;base64,${base64(png)}`, mimeType: 'image/png' },
+            {
+              name: 'Checker',
+              uri: `data:image/png;base64,${encodeBase64(png)}`,
+              mimeType: 'image/png',
+            },
           ],
         }),
     meshes: [
@@ -192,7 +195,7 @@ export function skinnedGltf(
     buffers: [
       {
         byteLength: binary.byteLength,
-        uri: `data:application/octet-stream;base64,${base64(binary)}`,
+        uri: `data:application/octet-stream;base64,${encodeBase64(binary)}`,
       },
     ],
     bufferViews: [

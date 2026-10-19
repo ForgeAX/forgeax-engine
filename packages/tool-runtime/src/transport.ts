@@ -8,13 +8,6 @@ import type {
 } from './carrier.js';
 import type { JsonValue, ToolTerminal } from './types.js';
 
-export interface CarrierTransport {
-  readonly endpoint: string;
-  readonly connected: boolean;
-  readonly send: (payload: unknown) => boolean;
-  readonly close: () => void;
-}
-
 export interface CarrierExecutionRequest {
   readonly leaseId: string;
   readonly descriptorDigest: string;
@@ -136,28 +129,6 @@ export function createAuthenticatedCarrierTransport(
     started: (payload) => request('/start', payload),
     execute: (payload) => request('/execute', payload),
     exit: (payload) => request('/exit', payload),
-    close() {
-      connected = false;
-    },
-  };
-}
-
-/** Minimal loopback transport seam; it carries POD only and owns no operation state. */
-export function createLoopbackTransport(endpoint: string): CarrierTransport {
-  const url = new URL(endpoint);
-  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname)) {
-    throw new TypeError('carrier transport endpoint must be loopback HTTP');
-  }
-  let connected = true;
-  return {
-    endpoint,
-    get connected() {
-      return connected;
-    },
-    send(payload) {
-      if (!connected || !validateRealmBootstrapPayload(payload).ok) return false;
-      return true;
-    },
     close() {
       connected = false;
     },

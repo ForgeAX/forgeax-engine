@@ -9,7 +9,6 @@ import {
   createArtifactRef,
   createAuthenticatedLoopbackTransport,
   createCarrierStateMachine,
-  createLoopbackTransport,
   createRealmCapabilityMatrix,
   createServiceCapability,
   createSnapshotRef,
@@ -231,16 +230,6 @@ describe('tool-runtime uncovered contracts', () => {
   });
 
   it('covers loopback transport validation, payload rejection, and close state', async () => {
-    const transport = createLoopbackTransport('http://127.0.0.1:1234/run');
-    expect(transport.connected).toBe(true);
-    expect(transport.send({ recipe: 'ok' })).toBe(true);
-    expect(transport.send({ fn: () => undefined })).toBe(false);
-    transport.close();
-    expect(transport.connected).toBe(false);
-    expect(transport.send({ recipe: 'ok' })).toBe(false);
-    expect(() => createLoopbackTransport('https://127.0.0.1/run')).toThrow();
-    expect(() => createLoopbackTransport('http://192.168.0.1/run')).toThrow();
-
     const server = createServer((request, response) => {
       if (request.url === '/ok') {
         response.statusCode = 200;
@@ -258,6 +247,7 @@ describe('tool-runtime uncovered contracts', () => {
     if (address === null || typeof address === 'string') throw new Error('server address missing');
     const options = { endpoint: `http://127.0.0.1:${address.port}/ok`, bearerToken: 'token-1234' };
     const authenticated = createAuthenticatedLoopbackTransport(options);
+    expect(authenticated.connected).toBe(true);
     await expect(authenticated.request({ descriptorDigest: 'd', recipeDigest: 'r', args: {} }, 'wrong')).rejects.toThrow('rejected');
     await expect(authenticated.request({ descriptorDigest: 'd', recipeDigest: 'r', args: { fn: () => undefined } }, options.bearerToken)).rejects.toThrow('structured-clone');
     await expect(authenticated.request({ descriptorDigest: 'd', recipeDigest: 'r', args: {} }, options.bearerToken)).resolves.toMatchObject({ outcome: 'succeeded' });
@@ -265,8 +255,10 @@ describe('tool-runtime uncovered contracts', () => {
     await expect(failing.request({ descriptorDigest: 'd', recipeDigest: 'r', args: {} }, options.bearerToken)).rejects.toThrow('server failed');
     failing.close();
     authenticated.close();
+    expect(authenticated.connected).toBe(false);
     await expect(authenticated.request({ descriptorDigest: 'd', recipeDigest: 'r', args: {} }, options.bearerToken)).rejects.toThrow('disconnected');
     expect(() => createAuthenticatedLoopbackTransport({ endpoint: 'https://127.0.0.1/run', bearerToken: options.bearerToken })).toThrow();
+    expect(() => createAuthenticatedLoopbackTransport({ endpoint: 'http://192.168.0.1/run', bearerToken: options.bearerToken })).toThrow();
     expect(() => createAuthenticatedLoopbackTransport({ endpoint: options.endpoint, bearerToken: 'short' })).toThrow();
   });
 

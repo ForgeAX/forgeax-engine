@@ -1,8 +1,8 @@
+import { halfFloat } from '@forgeax/engine-math';
 import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -46,7 +46,7 @@ export async function verifyMeshDecalReplay(
         attachment.bytes.byteOffset,
         attachment.bytes.byteLength / 2,
       ),
-      halfToFloat,
+      halfFloat.f16ToF32,
     );
     expect(pixels.length).toBe(live.length);
     const maximum = pixels.reduce(

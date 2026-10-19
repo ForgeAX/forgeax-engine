@@ -120,7 +120,7 @@ async function captureArtifact(label) {
     const response = await fetch(`/__forgeax-debug/tape?runId=${encodeURIComponent(runId)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-forgeax-rhitape' },
-      body: captured.value.bytes,
+      body: new Blob([captured.value.bytes], { type: 'application/x-forgeax-rhitape' }),
     });
     const payload = await response.json();
     if (!response.ok) return { ok: false, error: payload };

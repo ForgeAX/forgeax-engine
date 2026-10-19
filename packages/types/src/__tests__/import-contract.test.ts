@@ -36,6 +36,34 @@ describe('generic import contract', () => {
     );
   });
 
+  it.each([1e100, -1e100])('rejects finite bounds that overflow the f32 payload (%s)', (value) => {
+    const bounds = value > 0 ? [0, 0, 0, value, 1, 1] : [value, 0, 0, 1, 1, 1];
+    expect(parseConservativeAnimatedBounds(bounds)).toBeUndefined();
+  });
+
+  it.each([
+    [0, 0, 0, 0, 0, 0],
+    [-2, -1, -3, 2, 1, 3],
+  ])('copies finite ordered bounds without retaining source storage', (...bounds) => {
+    const copy = parseConservativeAnimatedBounds(bounds);
+    expect(copy).toEqual(new Float32Array(bounds));
+    bounds[0] = 99;
+    expect(copy?.[0]).not.toBe(99);
+  });
+
+  it.each([
+    [2, 0, 0, 1, 1, 1],
+    [0, 2, 0, 1, 1, 1],
+    [0, 0, 2, 1, 1, 1],
+    [0, 0, 0, 1, 1, NaN],
+    [0, Infinity, 0, 1, 1, 1],
+    ['0', 0, 0, 1, 1, 1],
+    [0, 0, 0, 1, 1],
+    [0, 0, 0, 1, 1, 1, 2],
+  ])('rejects malformed author bounds %j', (...bounds) => {
+    expect(parseConservativeAnimatedBounds(bounds)).toBeUndefined();
+  });
+
   it('models a product with asset-local artifacts and normalized source dependencies', () => {
     const product: ImportProduct = {
       assets: [],

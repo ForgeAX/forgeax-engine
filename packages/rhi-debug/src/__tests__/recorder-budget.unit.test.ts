@@ -1,8 +1,8 @@
 import type { RhiInstance } from '@forgeax/engine-rhi';
-import { rhi } from '@forgeax/engine-rhi-null';
+import { createShaderModule, rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { wrap } from '../recorder';
-import { recorderDeviceIdentity } from '../recorder/core';
+import { recorderDeviceIdentity, snapshotResourceBytes } from '../recorder/core';
 import { ResourceRegistry } from '../recorder/resource-registry';
 import { attachRecorder, type RecordableBackend } from '../recorder/session';
 import { snapshotFrame } from '../recorder/snapshot';
@@ -48,7 +48,7 @@ describe('RecorderSession bounded options', () => {
 
 describe('snapshot byte accounting', () => {
   it('does not drain the GPU queue when every live seed is omitted', async () => {
-    const recorder = wrap(rhi);
+    const recorder = wrap(rhi, createShaderModule);
     const device = (await (await recorder.requestAdapter()).unwrap().requestDevice()).unwrap();
     device.createBuffer({ size: 64, usage: 0x0c }).unwrap();
     const realDevice = recorderDeviceIdentity(device) ?? device;
@@ -59,7 +59,7 @@ describe('snapshot byte accounting', () => {
   });
 
   it('uses complete format, mip and layer bytes before any GPU readback', async () => {
-    const recorder = wrap(rhi);
+    const recorder = wrap(rhi, createShaderModule);
     const device = (await (await recorder.requestAdapter()).unwrap().requestDevice()).unwrap();
     device
       .createTexture({
@@ -84,7 +84,7 @@ describe('snapshot byte accounting', () => {
   });
 
   it('counts compressed blocks and excludes unseedable scratch and MSAA', async () => {
-    const recorder = wrap(rhi);
+    const recorder = wrap(rhi, createShaderModule);
     const device = (await (await recorder.requestAdapter()).unwrap().requestDevice()).unwrap();
     device
       .createTexture({
@@ -108,4 +108,20 @@ describe('snapshot byte accounting', () => {
     device.createBuffer({ size: 4096, usage: 9 }).unwrap();
     expect(new ResourceRegistry(recorder).estimateSnapshotBytes()).toBe(80);
   });
+});
+
+it.each([
+  ['bc1-rgba-unorm', 5, 7, 32, 512],
+  ['astc-5x4-unorm', 11, 7, 96, 512],
+  ['rgba16float', 33, 3, 792, 1536],
+  ['depth32float', 33, 3, 396, 2304],
+] as const)('accounts padded staging separately from %s payload', (format, width, height, payload, staging) => {
+  expect(
+    snapshotResourceBytes({
+      kind: 'texture',
+      format,
+      size: { width, height, depthOrArrayLayers: 1 },
+      usage: 4,
+    }),
+  ).toEqual({ payload, staging });
 });

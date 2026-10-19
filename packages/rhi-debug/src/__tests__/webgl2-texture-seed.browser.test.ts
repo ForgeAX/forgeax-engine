@@ -67,7 +67,7 @@ it('retains the uploaded white texel in a WebGL2 recorder frame seed', async () 
     row.set([255, 255, 255, 255]);
     device.queue
       .writeTexture(
-        { texture },
+        { texture, origin: { x: 0 } },
         row,
         { bytesPerRow: 256, rowsPerImage: 1 },
         { width: 1, height: 1, depthOrArrayLayers: 1 },

@@ -1,7 +1,7 @@
+import { halfFloat } from '@forgeax/engine-math';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from './errors';
 import type { ReplayReadbackResult, ReplaySession } from './replay/session';
-import { halfToFloat } from './texel-decode';
 
 /** `f16` reads IEEE half floats (packed `vec2<f16>` / `pack2x16float` payloads). */
 export type BufferFieldType = 'f32' | 'u32' | 'i32' | 'f16';
@@ -134,7 +134,7 @@ function readScalar(view: DataView, offset: number, type: BufferFieldType): numb
     case 'i32':
       return view.getInt32(offset, true);
     case 'f16':
-      return halfToFloat(view.getUint16(offset, true));
+      return halfFloat.f16ToF32(view.getUint16(offset, true));
   }
 }
 

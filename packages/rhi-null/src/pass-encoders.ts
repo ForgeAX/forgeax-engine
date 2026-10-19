@@ -33,7 +33,7 @@ import type {
   RhiRenderCommands,
   RhiRenderPassEncoder,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
+import { commandEncoderFinished, RhiError } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { type Bookkeeper, isHandleDestroyed } from './bookkeeping';
 
@@ -56,12 +56,7 @@ export function createRenderBundleEncoder(
   const capture =
     (method: keyof RhiRenderCommands, resourceIndex?: number) =>
     (...args: unknown[]) => {
-      if (finished)
-        throw new RhiError({
-          code: 'command-encoder-finished',
-          expected: 'an unfinished bundle encoder',
-          hint: 'create a new bundle encoder',
-        });
+      if (finished) throw commandEncoderFinished('render bundle');
       if (resourceIndex !== undefined) resources.push(args[resourceIndex] as object);
       Reflect.apply(pass[method], pass, args);
     };
@@ -78,14 +73,7 @@ export function createRenderBundleEncoder(
     popDebugGroup: capture('popDebugGroup'),
     insertDebugMarker: capture('insertDebugMarker'),
     finish() {
-      if (finished)
-        return err(
-          new RhiError({
-            code: 'command-encoder-finished',
-            expected: 'an unfinished bundle encoder',
-            hint: 'create a new bundle encoder',
-          }),
-        );
+      if (finished) return err(commandEncoderFinished('render bundle'));
       finished = true;
       for (const resource of resources) {
         const valid = bookkeeper.validateOwnership(resource);

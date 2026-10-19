@@ -9,7 +9,11 @@ import { addAtmosphereBackground } from '../environment/background';
 import { analyticFogSampleCountError } from '../pipeline/analytic-fog-pass';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
-import { type RenderTarget, renderTargetLayerCount } from '../targets/contracts';
+import {
+  type RenderTarget,
+  renderTargetLayerCount,
+  renderTargetMipCount,
+} from '../targets/contracts';
 import { resolveRenderTargetMaterialSource } from '../targets/material-source';
 import type { RenderTargetPhysical } from '../targets/physical';
 import { isCanvasTextureSource } from '../textures/canvas-texture';
@@ -35,13 +39,6 @@ export interface CubeCaptureGraphState {
   atmosphere?: boolean;
   reflectionProbes?: ReflectionProbeGraphState;
   planar?: import('../capture/planar-state').PlanarCaptureState;
-}
-
-function renderTargetMipCount(work: CubeCaptureGraphWork): number {
-  const { descriptor } = work.physical;
-  return descriptor.mipLevels === 1
-    ? 1
-    : Math.floor(Math.log2(Math.max(descriptor.width, descriptor.height))) + 1;
 }
 
 export function addTargetCaptureGraphPasses(
@@ -78,7 +75,7 @@ export function addTargetCaptureGraphPasses(
           height: descriptor.height,
           depthOrArrayLayers: msaa ? 1 : layers,
         },
-        mipLevelCount: msaa ? 1 : renderTargetMipCount(initial),
+        mipLevelCount: msaa ? 1 : renderTargetMipCount(descriptor),
         sampleCount: descriptor.sampleCount,
         dimension: volume ? '3d' : '2d',
         usage: 0x10 | 0x04 | 0x01,
@@ -136,7 +133,7 @@ export function addTargetCaptureGraphPasses(
               height: descriptor.height,
               depthOrArrayLayers: layers,
             },
-            mipLevelCount: renderTargetMipCount(initial),
+            mipLevelCount: renderTargetMipCount(descriptor),
             sampleCount: 1,
             dimension: '2d',
             usage: 0x10 | 0x04 | 0x01,

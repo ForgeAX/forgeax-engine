@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { createBrowserCapture } from '../software-capture.js';
+import { createBrowserCapture } from '../browser-capture.js';
 
 it('reobserves the new document when startup adapter inspection races a reload', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-capture-navigation-'));

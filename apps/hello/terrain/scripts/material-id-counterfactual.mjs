@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
@@ -10,7 +11,7 @@ import {
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import * as backend from '@forgeax/engine-rhi-webgpu';
-import { readReferencePng, writeReferencePng } from '../../../shared/png-codec.mjs';
+import { readReferencePng } from '../../../shared/png-codec.mjs';
 const dir = resolve(process.argv[2]);
 const verifyWriter = process.argv[3] === 'verify-writer';
 const writer = verifyWriter || process.argv[3] === 'writer';
@@ -119,7 +120,7 @@ for (const mode of modes)
           'original tape replay must reproduce live output',
         );
       else assert(patches > 0, 'counterfactual must affect the actual receiver function');
-      writeFileSync(resolve(out, `${mode}-${encoding}.png`), writeReferencePng(pixels, 960, 540));
+      writeFileSync(resolve(out, `${mode}-${encoding}.png`), encodePng(960, 540, pixels));
       pairs.set(`${mode}-${encoding}`, pixels);
       rows.push({
         mode,

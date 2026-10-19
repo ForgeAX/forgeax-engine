@@ -11,7 +11,7 @@ import {
   inspectEnvironment,
 } from './inspection';
 
-export interface EnvironmentLease {
+interface EnvironmentLease {
   readonly generation: number;
   release(): void;
 }

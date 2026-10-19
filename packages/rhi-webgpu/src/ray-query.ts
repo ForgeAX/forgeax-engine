@@ -35,7 +35,7 @@ import {
 import { err, ok } from '@forgeax/engine-types';
 
 /** A raw acceleration structure object of the extension. */
-export interface RawAccelerationStructure {
+interface RawAccelerationStructure {
   destroy(): void;
 }
 
@@ -52,7 +52,7 @@ export interface RawBlasBuildEntry {
   }[];
 }
 
-export interface RawTlasBuildEntry {
+interface RawTlasBuildEntry {
   readonly tlas: RawAccelerationStructure;
   readonly instances: readonly {
     readonly blas: RawAccelerationStructure;
@@ -63,13 +63,13 @@ export interface RawTlasBuildEntry {
 }
 
 /** Device-side extension members. */
-export interface RawRayQueryDevice {
+interface RawRayQueryDevice {
   createBlas(descriptor: BlasDescriptor): RawAccelerationStructure;
   createTlas(descriptor: TlasDescriptor): RawAccelerationStructure;
 }
 
 /** Encoder-side extension member. */
-export interface RawRayQueryEncoder {
+interface RawRayQueryEncoder {
   buildAccelerationStructures(
     blas: readonly RawBlasBuildEntry[],
     tlas: readonly RawTlasBuildEntry[],

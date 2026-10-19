@@ -1,7 +1,7 @@
 import type { SubmissionPlan } from './batch-topology';
 import { prepareLodProjectionPlan, rasterLodDraws } from './production-raster-lod';
 
-export interface ShadowLodLevels {
+interface ShadowLodLevels {
   readonly runs: readonly {
     readonly levels: readonly number[];
     readonly count: number;

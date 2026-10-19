@@ -1,3 +1,5 @@
+import { linearChannelToSrgb } from '@forgeax/engine/types';
+import { halfFloat } from '@forgeax/engine/math';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -5,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import UPNG from 'upng-js';
 import { matchesSourceSrgb, sourceSrgbInterval } from './srgb-oracle.mjs';
-import { decodeTape, buildFrameModel, EVENT_SEMANTICS, halfToFloat } from '@forgeax/engine-rhi-debug';
+import { decodeTape, buildFrameModel, handleAccess } from '@forgeax/engine-rhi-debug';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../artifacts/mesh-io/acceptance');
 const budgets=JSON.parse(await readFile(new URL('../acceptance-budgets.json',import.meta.url),'utf8'));
 const enforcePhysicalBudgets=process.env.FIDELITY_ENFORCE_PHYSICAL_BUDGET==='1';
@@ -19,7 +21,7 @@ for(const row of report.results){
   if(mode==='live')fingerprints.push({id:row.id,sha256:createHash('sha256').update(bytes).digest('hex')});
   if(!writePreviews)continue;
   const rgba=new Uint8Array(320*240*4);
-  for(let i=0;i<rgba.length;i+=4){for(let c=0;c<3;c++){const linear=Math.min(1,Math.max(0,halfToFloat(bytes.readUInt16LE((i+c)*2)))); const srgb=linear<=.0031308?12.92*linear:1.055*linear**(1/2.4)-.055; rgba[i+c]=Math.round(srgb*255);}rgba[i+3]=255;}
+  for(let i=0;i<rgba.length;i+=4){for(let c=0;c<3;c++){const linear=Math.min(1,Math.max(0,halfFloat.f16ToF32(bytes.readUInt16LE((i+c)*2)))); const srgb=linearChannelToSrgb(linear); rgba[i+c]=Math.round(srgb*255);}rgba[i+3]=255;}
   sources.push(rgba);
   await writeFile(`${root}/${row.id}/${mode}.png`,Buffer.from(UPNG.encode([rgba.buffer],320,240,0)));
  }
@@ -38,9 +40,9 @@ for(const row of report.results){
  for(const resource of model.unseededResources){
   const accesses=[];
   for(const [eventIndex,event] of tape.events.entries()){
-   const semantics=EVENT_SEMANTICS[event.kind];
-   if(semantics.read(event).some(id=>resolved(id)===resource.resourceId)&&!semantics.written(event).some(id=>resolved(id)===resource.resourceId))accesses.push({eventIndex,access:'read',kind:event.kind});
-   if(semantics.written(event).some(id=>resolved(id)===resource.resourceId))accesses.push({eventIndex,access:'write',kind:event.kind});
+   const access=handleAccess(event);
+   if(access.read.some(id=>resolved(id)===resource.resourceId)&&!access.written.some(id=>resolved(id)===resource.resourceId))accesses.push({eventIndex,access:'read',kind:event.kind});
+   if(access.written.some(id=>resolved(id)===resource.resourceId))accesses.push({eventIndex,access:'write',kind:event.kind});
   }
   const creation=tape.bootstrap.find(entry=>entry.handleId===resource.resourceId).create;
   let conclusion;
@@ -77,7 +79,7 @@ for (const row of report.results) {
  const bytes=await readFile(`${root}/${row.id}/live.rgba16float`),control=await readFile(`${root}/${row.id}/missing-draw.rgba16float`);
  const values=new Float32Array(320*240*4),mask=[];
  for(let pixel=0;pixel<320*240;pixel++){
-  let changed=false;for(let c=0;c<4;c++){const i=pixel*4+c;values[i]=halfToFloat(bytes.readUInt16LE(i*2));if(c<3&&Math.abs(values[i]-halfToFloat(control.readUInt16LE(i*2)))>budgets.linearHdrChannelAbsoluteError)changed=true;}
+  let changed=false;for(let c=0;c<4;c++){const i=pixel*4+c;values[i]=halfFloat.f16ToF32(bytes.readUInt16LE(i*2));if(c<3&&Math.abs(values[i]-halfFloat.f16ToF32(control.readUInt16LE(i*2)))>budgets.linearHdrChannelAbsoluteError)changed=true;}
   if(changed)mask.push(pixel);
  }
  const xs=mask.map(i=>i%320),ys=mask.map(i=>Math.floor(i/320));

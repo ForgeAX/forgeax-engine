@@ -1,13 +1,10 @@
+import { isValidAssetGuidString } from '@forgeax/engine-types';
 import { uuidv7obj } from 'uuidv7';
 import { PackError } from './errors.js';
 import { uuidV5 } from './uuid-v5.js';
 
-/**
- * 16-byte UUID branded ABI. Prevents assignment from plain Uint8Array or string.
- * Brand field mirrors the declaration in @forgeax/engine-types for cross-package
- * structural compatibility (both use __guidBrand: 'AssetGuid').
- */
-export type AssetGuid = Uint8Array & { readonly __guidBrand: 'AssetGuid' };
+/** Asset byte identity is declared by the realm-neutral Types contract. */
+export type AssetGuid = import('@forgeax/engine-types').AssetGuid;
 
 /** Pack-level identity. It is intentionally not assignable to AssetGuid. */
 export type PackageId = Uint8Array & { readonly __packageIdBrand: 'PackageId' };
@@ -29,17 +26,11 @@ function bytesToDashForm(bytes: Uint8Array): string {
   return `${h[bytes[0]!]}${h[bytes[1]!]}${h[bytes[2]!]}${h[bytes[3]!]}-${h[bytes[4]!]}${h[bytes[5]!]}-${h[bytes[6]!]}${h[bytes[7]!]}-${h[bytes[8]!]}${h[bytes[9]!]}-${h[bytes[10]!]}${h[bytes[11]!]}${h[bytes[12]!]}${h[bytes[13]!]}${h[bytes[14]!]}${h[bytes[15]!]}`;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /** Stable author-owned output identity. Paths and payloads are not identity inputs. */
 export const PACK_SOURCE_KEY_RE = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)*$/;
 
 export function isValidPackSourceKey(value: unknown): value is string {
   return typeof value === 'string' && PACK_SOURCE_KEY_RE.test(value);
-}
-
-export function isValidAssetGuidString(value: unknown): value is string {
-  return typeof value === 'string' && UUID_RE.test(value);
 }
 
 function dashFormToBytes(dashForm: string): Uint8Array {

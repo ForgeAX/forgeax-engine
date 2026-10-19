@@ -1,6 +1,8 @@
 import type { PrimitiveTopology } from '@forgeax/engine-types';
+import { isFiniteBounds3 } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { BatchTopologyInspection } from '../inspection-types';
+import { isReflectedTransform, transformRenderState } from '../material-render-state';
 import { renderStateHash } from '../pipeline-spec';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
@@ -372,7 +374,7 @@ export function eligibleGpuDrivenDraws(
         (snapshot.skin?.storageOrUniform === 'storage' &&
           snapshot.skin.customDataStart >= 0 &&
           Number.isInteger(snapshot.skin.customDataStart) &&
-          hasFiniteOrderedBounds(snapshot.skin.bounds) &&
+          isFiniteBounds3(snapshot.skin.bounds) &&
           prepared.skinPaletteAddress !== undefined);
       if (
         !materialIdentityMatches ||
@@ -390,7 +392,9 @@ export function eligibleGpuDrivenDraws(
         ...(prepared.receiptIdentity === undefined ? [] : [prepared.receiptIdentity]),
         prepared.receiptGeneration,
       ].join('|');
-      const stateHash = renderStateHash(material.renderState);
+      const stateHash = renderStateHash(
+        transformRenderState(material.renderState, snapshot.transform.world),
+      );
       const admission = hasActiveAlphaMask(material, prepared) ? 'alpha-mask' : 'opaque';
       result.push({
         sourceDrawIndex: drawItemIndex,
@@ -424,7 +428,9 @@ export function eligibleGpuDrivenDraws(
         baseVertex: draw.baseVertex,
         materialSlot: draw.materialSlot,
         topology: draw.topology,
-        pipelineClass: draw.pipelineClass,
+        pipelineClass: isReflectedTransform(snapshot.transform.world)
+          ? `${draw.pipelineClass}|reflected`
+          : draw.pipelineClass,
         materialResourceClass: draw.materialResourceClass,
       },
       ...drawLod(draw, snapshot),
@@ -476,7 +482,7 @@ function preparationContent(
         skin.customDataStart >= 0 &&
         Number.isInteger(skin.customDataStart) &&
         skin.buffer !== undefined &&
-        hasFiniteOrderedBounds(skin.bounds)),
+        isFiniteBounds3(skin.bounds)),
   ];
   for (const draw of draws) {
     const material = snapshot.materials[draw.key.materialSlot] ?? snapshot.material;
@@ -488,33 +494,6 @@ function preparationContent(
     );
   }
   return content;
-}
-
-function hasFiniteOrderedBounds(bounds: Float32Array | undefined): boolean {
-  if (bounds === undefined || bounds.length < 6) return false;
-  const minX = bounds[0];
-  const minY = bounds[1];
-  const minZ = bounds[2];
-  const maxX = bounds[3];
-  const maxY = bounds[4];
-  const maxZ = bounds[5];
-  return (
-    minX !== undefined &&
-    minY !== undefined &&
-    minZ !== undefined &&
-    maxX !== undefined &&
-    maxY !== undefined &&
-    maxZ !== undefined &&
-    Number.isFinite(minX) &&
-    Number.isFinite(minY) &&
-    Number.isFinite(minZ) &&
-    Number.isFinite(maxX) &&
-    Number.isFinite(maxY) &&
-    Number.isFinite(maxZ) &&
-    minX <= maxX &&
-    minY <= maxY &&
-    minZ <= maxZ
-  );
 }
 
 function keyText(key: GpuDrivenBatchKey): string {

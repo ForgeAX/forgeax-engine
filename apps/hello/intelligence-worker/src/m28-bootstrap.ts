@@ -252,7 +252,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
         world
           .spawn({
             component: DirectionalLight,
-            data: { direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.2 },
+            data: { castShadow: true, direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.2 },
           })
           .unwrap(),
       ];

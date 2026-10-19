@@ -1,7 +1,6 @@
 import type { RhiCanvasContext, Texture, TextureView } from '@forgeax/engine-rhi';
 import type { RenderGraphExecutionPhase } from '../render-contract';
 import type { ExtractedLights } from '../render-system-extract';
-import type { RenderTargetDescriptor } from '../targets/contracts';
 import {
   configurePipelineSurface,
   type PipelineState,
@@ -21,11 +20,11 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
     return 'record/graph-execute/ssr-reflection-mip';
   }
   if (passName === 'ssr-compose') return 'record/graph-execute/ssr-compose';
-  if (passName.startsWith('bloom-downsample-')) {
-    return 'record/graph-execute/bloom-downsample';
+  if (passName.startsWith('bloom-horizontal-')) {
+    return 'record/graph-execute/bloom-horizontal';
   }
-  if (passName.startsWith('bloom-upsample-')) {
-    return 'record/graph-execute/bloom-upsample';
+  if (passName.startsWith('bloom-vertical-')) {
+    return 'record/graph-execute/bloom-vertical';
   }
   switch (passName) {
     case 'cluster-binner-upload':
@@ -56,30 +55,15 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
       return 'record/graph-execute/main';
     case 'fxaa':
       return 'record/graph-execute/fxaa';
-    case 'bloom-downsample':
-      return 'record/graph-execute/bloom-downsample';
-    case 'bloom-upsample':
-      return 'record/graph-execute/bloom-upsample';
+    case 'bloom-horizontal':
+      return 'record/graph-execute/bloom-horizontal';
+    case 'bloom-vertical':
+      return 'record/graph-execute/bloom-vertical';
     case 'bloom-composite':
       return 'record/graph-execute/bloom-composite';
     default:
       return 'record/graph-execute/other';
   }
-}
-
-export function resolveRenderTargetMipExtent(
-  descriptor: RenderTargetDescriptor,
-  mipLevel: number,
-): { readonly width: number; readonly height: number } {
-  const mipCount =
-    descriptor.mipLevels === 1
-      ? 1
-      : Math.floor(Math.log2(Math.max(descriptor.width, descriptor.height))) + 1;
-  const level = Math.max(0, Math.min(mipLevel, mipCount - 1));
-  return {
-    width: Math.max(1, descriptor.width >> level),
-    height: Math.max(1, descriptor.height >> level),
-  };
 }
 
 export function acquireSwapChainTarget(

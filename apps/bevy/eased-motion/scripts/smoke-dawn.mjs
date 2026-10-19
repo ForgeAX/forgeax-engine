@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -113,8 +114,8 @@ function diff(a, b) {
 }
 
 mkdirSync(resolve(here, '..', 'artifacts'), { recursive: true });
-writeFileSync(resolve(here, '..', 'artifacts', 'frame-early.png'), writeReferencePng(earlyFrame, width, height));
-writeFileSync(resolve(here, '..', 'artifacts', 'frame-late.png'), writeReferencePng(lateFrame, width, height));
+writeFileSync(resolve(here, '..', 'artifacts', 'frame-early.png'), encodePng(width, height, earlyFrame));
+writeFileSync(resolve(here, '..', 'artifacts', 'frame-late.png'), encodePng(width, height, lateFrame));
 const motion = diff(earlyFrame, lateFrame);
 const checks = [
   ['backend=webgpu', rendererBackend(renderer) === 'webgpu'],

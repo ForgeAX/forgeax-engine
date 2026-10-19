@@ -24,9 +24,7 @@ export interface GenerationAggregate<
   readonly graph: TGraph | undefined;
 }
 
-export interface GenerationAssemblyInput<
-  TAggregate extends GenerationAggregate = GenerationAggregate,
-> {
+interface GenerationAssemblyInput<TAggregate extends GenerationAggregate = GenerationAggregate> {
   readonly scope: TAggregate['scope'];
   readonly device: TAggregate['device'];
   readonly context: TAggregate['context'];
@@ -36,7 +34,7 @@ export interface GenerationAssemblyInput<
   readonly roots: readonly LifecycleResourceSpec<unknown>[];
 }
 
-export interface GenerationAssemblyFailure {
+interface GenerationAssemblyFailure {
   readonly code: 'generation-assembly-failed';
   readonly generation: number;
   readonly resourceKind: DeviceResourceKind;

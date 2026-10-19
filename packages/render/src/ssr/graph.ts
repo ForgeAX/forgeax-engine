@@ -7,7 +7,7 @@ import type {
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, mipDimension, numMipLevels, ok, type Result } from '@forgeax/engine-types';
 import {
   type ComputeState,
   computeBindGroup,
@@ -23,24 +23,24 @@ import type { RenderPipelineFrame } from '../render-pipeline';
 import type { SsrSpatialAdmission } from './admission';
 import { createSsrSpatialResources, type SsrSpatialResources } from './resources';
 
-export const SSR_TRACE_COARSE_STEPS = 48 as const;
-export const SSR_TRACE_REFINE_STEPS = 5 as const;
+const SSR_TRACE_COARSE_STEPS = 48 as const;
+const SSR_TRACE_REFINE_STEPS = 5 as const;
 
-export interface SsrTracePlan {
-  readonly resolution: 'half';
+interface SsrTracePlan {
+  readonly resolution: 'full';
   readonly coarseSteps: typeof SSR_TRACE_COARSE_STEPS;
   readonly refineSteps: typeof SSR_TRACE_REFINE_STEPS;
 }
 
 export function buildSsrTracePlan(): SsrTracePlan {
   return Object.freeze({
-    resolution: 'half' as const,
+    resolution: 'full' as const,
     coarseSteps: SSR_TRACE_COARSE_STEPS,
     refineSteps: SSR_TRACE_REFINE_STEPS,
   });
 }
 
-export interface SsrSpatialGraphInputs {
+interface SsrSpatialGraphInputs {
   readonly admission: SsrSpatialAdmission;
   readonly width: number;
   readonly height: number;
@@ -65,7 +65,7 @@ export interface SsrSpatialGraphInputs {
   };
 }
 
-export interface SsrSpatialGraphProjection {
+interface SsrSpatialGraphProjection {
   readonly enabled: boolean;
   readonly passNames: readonly string[];
   readonly resources: SsrSpatialResources | undefined;
@@ -151,13 +151,13 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   let radiancePyramid: GraphTextureView | undefined;
   const reflectionLevels: GraphTextureView[] = [];
   if (temporal !== undefined) {
-    const width = Math.max(1, Math.floor(input.width / 2));
-    const height = Math.max(1, Math.floor(input.height / 2));
+    const width = Math.max(1, Math.floor(input.width));
+    const height = Math.max(1, Math.floor(input.height));
     const resolvedTexture = graph.createTexture('ssr-resolved', {
       format: 'rgba16float',
       size: { width, height },
       domain: 'linear-hdr',
-      mipLevelCount: 1 + Math.floor(Math.log2(Math.max(width, height))),
+      mipLevelCount: numMipLevels({ width, height }),
     });
     if (!resolvedTexture.ok) return resolvedTexture;
     const resolvedView = graph.view(resolvedTexture.value, {
@@ -168,7 +168,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
     });
     if (!resolvedView.ok) return resolvedView;
     reflectionLevels.push(resolvedView.value);
-    for (let level = 1; level <= Math.floor(Math.log2(Math.max(width, height))); level++) {
+    for (let level = 1; level < numMipLevels({ width, height }); level++) {
       const view = graph.view(resolvedTexture.value, {
         label: `ssr-resolved.mip-${level}.view`,
         dimension: '2d',
@@ -499,8 +499,8 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
           ]),
         );
         pass.dispatchWorkgroups(
-          Math.ceil(Math.max(1, input.width / 2) / 8),
-          Math.ceil(Math.max(1, input.height / 2) / 8),
+          Math.ceil(Math.max(1, input.width) / 8),
+          Math.ceil(Math.max(1, input.height) / 8),
           1,
         );
       },
@@ -570,8 +570,8 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
             ]),
           );
           pass.dispatchWorkgroups(
-            Math.ceil(Math.max(1, output.width >> level) / 8),
-            Math.ceil(Math.max(1, output.height >> level) / 8),
+            Math.ceil(mipDimension(output.width, level) / 8),
+            Math.ceil(mipDimension(output.height, level) / 8),
             1,
           );
         }

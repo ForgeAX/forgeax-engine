@@ -33,7 +33,7 @@ import type { WorldTraversal } from './world-traversal';
 const RAY_BYTES = 32;
 const storage = 128 | 12;
 
-export interface ScreenProbeFrameInput {
+interface ScreenProbeFrameInput {
   readonly runtime: RenderSystemInternals;
   readonly profile: StandardScreenProbeGi;
   /** The Renderer's shared Irradiance Field, prepared for this profile's `field`. */

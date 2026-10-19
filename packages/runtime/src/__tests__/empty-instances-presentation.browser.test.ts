@@ -46,6 +46,7 @@ it('presents empty, populated, then empty instance holders across completed fram
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [0, -1, -1],

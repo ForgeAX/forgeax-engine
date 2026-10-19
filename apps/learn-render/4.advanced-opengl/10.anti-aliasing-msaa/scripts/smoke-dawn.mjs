@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // learn-render-4.10-msaa headless smoke
 // (feat-20260604-learn-render-4-10-anti-aliasing-msaa-engine-wiring / M3 / w14).
 //
@@ -238,7 +239,7 @@ function spawnScene(world, antialias) {
   // Directional light.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.4, -0.6, -0.7],
       color: [1, 1, 1],
       intensity: 1.5,
@@ -316,35 +317,20 @@ renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: 
 // The smoke must FAIL under this variant (diffCount <= threshold).
 const antialiasForPass2 =
   FALSIFY === 'msaa-noop' ? ANTIALIAS_NONE : ANTIALIAS_MSAA;
-const falsifyLabel = FALSIFY === 'msaa-noop' ? ' (FALSIFY=msaa-noop)' : '';
 
 let framesObserved = 0;
 
-async function renderPass(world, lease, label) {
+async function renderPass(world, lease) {
   for (let frame = 0; frame < SMOKE_MIN_FRAMES; frame += 1) {
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
     });
-    if (!drawn.ok) {
-      console.error(`[smoke] FAIL - draw (${label}) frame=${frame} failed: ${drawn.error.code}`);
-      return false;
-    }
-    const completed = await drawn.value.completed;
-    if (!completed.ok) {
-      console.error(
-        `[smoke] FAIL - draw (${label}) frame=${frame} completion failed: ${completed.error.code}`,
-      );
-      return false;
-    }
-    // Count only a draw whose FrameReceipt completion succeeded. This is the
-    // observed work count used by the smoke gate, rather than a loop target.
     framesObserved += 1;
   }
   await device.queue.onSubmittedWorkDone();
-  return true;
 }
 
 // Pass 1: ANTIALIAS_NONE baseline.
@@ -354,11 +340,7 @@ if (!worldAttachment1.ok) throw worldAttachment1.error;
 const leaseNone = worldAttachment1.value;
 spawnScene(worldNone, ANTIALIAS_NONE);
 
-const noneRendered = await renderPass(worldNone, leaseNone, 'none');
-if (!noneRendered) {
-  console.log(`[smoke] frames observed=${framesObserved}`);
-  process.exit(1);
-}
+await renderPass(worldNone, leaseNone);
 const pixelsNone = await doReadPixels();
 
 // Pass 2: ANTIALIAS_MSAA (or ANTIALIAS_NONE under FALSIFY).
@@ -368,11 +350,7 @@ if (!worldAttachment2.ok) throw worldAttachment2.error;
 const leaseMsaa = worldAttachment2.value;
 spawnScene(worldMsaa, antialiasForPass2);
 
-const msaaRendered = await renderPass(worldMsaa, leaseMsaa, `msaa${falsifyLabel}`);
-if (!msaaRendered) {
-  console.log(`[smoke] frames observed=${framesObserved}`);
-  process.exit(1);
-}
+await renderPass(worldMsaa, leaseMsaa);
 const pixelsMsaa = await doReadPixels();
 
 // --- 8. Verdict ------------------------------------------------------------

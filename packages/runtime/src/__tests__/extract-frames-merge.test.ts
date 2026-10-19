@@ -74,11 +74,7 @@ function makeWorldWithDirectionalLight(): World {
       { component: Transform, data: identityTransform() },
       {
         component: DirectionalLight,
-        data: {
-          color: [1, 1, 1],
-          intensity: 1,
-          direction: [0, -1, 0],
-        },
+        data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0, -1, 0] },
       },
     )
     .unwrap();
@@ -278,6 +274,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         {
           component: SpotLight,
           data: {
+            castShadow: true,
             color: [1, 0, 0],
             intensity: 1,
             direction: [0, -1, 0],
@@ -295,6 +292,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         {
           component: SpotLight,
           data: {
+            castShadow: true,
             color: [0, 1, 0],
             intensity: 2,
             direction: [1, 0, 0],
@@ -325,11 +323,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 0, 0],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 0, 0], intensity: 1, direction: [0, -1, 0] },
         },
       )
       .unwrap();
@@ -340,11 +334,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [0, 1, 0],
-            intensity: 2,
-            direction: [1, 0, 0],
-          },
+          data: { castShadow: true, color: [0, 1, 0], intensity: 2, direction: [1, 0, 0] },
         },
       )
       .unwrap();
@@ -372,11 +362,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [1, 0, 0],
-            intensity: 1,
-            direction: [0, -1, 0],
-          },
+          data: { castShadow: true, color: [1, 0, 0], intensity: 1, direction: [0, -1, 0] },
         },
       )
       .unwrap();
@@ -387,11 +373,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: {
-            color: [0, 1, 0],
-            intensity: 2,
-            direction: [1, 0, 0],
-          },
+          data: { castShadow: true, color: [0, 1, 0], intensity: 2, direction: [1, 0, 0] },
         },
       )
       .unwrap();
@@ -415,6 +397,7 @@ describe('extractFrames merge semantics (m2-t1, AC-04/05/06)', () => {
         {
           component: DirectionalLight,
           data: {
+            castShadow: true,
             direction: [0, -1, 0],
             shadowFilter: 4,
             shadowAngularRadius: 999,
@@ -648,7 +631,7 @@ describe('extractFrames cross-world directional CSM (bug-20260710)', () => {
         { component: Transform, data: identityTransform() },
         {
           component: DirectionalLight,
-          data: { color: [1, 1, 1], intensity: 1, direction: [0.3, -1, 0.2] },
+          data: { castShadow: true, color: [1, 1, 1], intensity: 1, direction: [0.3, -1, 0.2] },
         },
       )
       .unwrap();

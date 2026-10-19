@@ -2,13 +2,13 @@ import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../../gpu-scene-schema';
 import { type LodSelection, selectLod } from './lod-selector';
 export const GPU_LOD_ROW_LAYOUT = GPU_SCENE_LAYOUTS.lod;
 
-export interface LodDrawRange {
+interface LodDrawRange {
   readonly firstIndex: number;
   readonly indexCount: number;
   readonly baseVertex: number;
 }
 
-export interface GpuLodRowsInput {
+interface GpuLodRowsInput {
   readonly generation: number;
   readonly hysteresis: number;
   readonly ranges: readonly LodDrawRange[];
@@ -105,7 +105,7 @@ export function encodeGpuLodRows(rows: readonly GpuLodRow[]): Uint8Array {
   return bytes;
 }
 
-export interface GpuLodSelectionInput {
+interface GpuLodSelectionInput {
   readonly projectedHeight: number;
   readonly previousLevel: number;
   readonly historyValid: boolean;

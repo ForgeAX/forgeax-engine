@@ -5,7 +5,7 @@ function percentile(sorted: ArrayLike<number>, fraction: number): number {
   return sorted[index] ?? 0;
 }
 
-export interface MeasurementSeries {
+interface MeasurementSeries {
   add(value: number): ExecutionMeasurement;
   clear(): void;
 }

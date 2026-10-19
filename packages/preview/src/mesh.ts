@@ -14,8 +14,10 @@ import {
   type PreviewDomainResult,
   type PreviewDomainRunner,
   previewRuntimeUnavailable,
+  REQUIRED_PREVIEW_EVIDENCE,
   validateDomainValue,
 } from './host.js';
+import { isNonemptyString, isRecord, parsePreviewRequest } from './request-schema.js';
 
 export interface MeshSubmeshBinding {
   readonly id: string;
@@ -52,35 +54,66 @@ export interface MeshPreviewReport {
   readonly framing: 'aabb' | 'inverted-aabb';
 }
 
+function isSubmeshBinding(value: unknown): value is MeshSubmeshBinding {
+  return (
+    isRecord(value) &&
+    isNonemptyString(value.id) &&
+    typeof value.vertexCount === 'number' &&
+    Number.isFinite(value.vertexCount) &&
+    value.vertexCount > 0 &&
+    typeof value.indexCount === 'number' &&
+    Number.isFinite(value.indexCount) &&
+    value.indexCount > 0
+  );
+}
+
+function isSubmeshBindings(value: unknown): value is MeshSubmeshBinding[] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  for (const entry of value) if (!isSubmeshBinding(entry)) return false;
+  return true;
+}
+
+function isBoundsVector(value: unknown): value is readonly [number, number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1]) &&
+    Number.isFinite(value[2])
+  );
+}
+
 const meshPreviewArgsSchema: ToolSchema<MeshPreviewRequest> = {
   parse(value) {
-    if (value === null || typeof value !== 'object')
-      return { ok: false, error: 'expected a mesh preview request object' };
-    const request = value as Partial<MeshPreviewRequest>;
+    const envelope = parsePreviewRequest(value, 'MeshAsset');
+    if (!envelope.ok) return envelope;
+    const request = envelope.value;
     const binding = request.binding;
-    if (request.subject?.kind !== 'MeshAsset' || typeof request.subject.guid !== 'string')
-      return { ok: false, error: 'expected a MeshAsset subject' };
     if (
-      request.snapshot === undefined ||
-      !Number.isSafeInteger(request.snapshot.revision) ||
-      typeof request.snapshot.digest !== 'string'
-    )
-      return { ok: false, error: 'expected a revisioned snapshot' };
-    if (
-      binding === undefined ||
-      binding.guid !== request.subject.guid ||
-      binding.vertexDigest.length === 0 ||
-      binding.indexDigest.length === 0 ||
-      binding.submeshes.length === 0 ||
-      binding.submeshes.some(
-        (submesh) => submesh.id.length === 0 || submesh.vertexCount <= 0 || submesh.indexCount <= 0,
-      ) ||
-      binding.aabb.min.some((value) => !Number.isFinite(value)) ||
-      binding.aabb.max.some((value) => !Number.isFinite(value)) ||
-      binding.aabb.min.some((value, index) => value >= (binding.aabb.max[index] ?? Number.NaN))
+      !isNonemptyString(binding.vertexDigest) ||
+      !isNonemptyString(binding.indexDigest) ||
+      !isSubmeshBindings(binding.submeshes) ||
+      !isRecord(binding.aabb) ||
+      !isBoundsVector(binding.aabb.min) ||
+      !isBoundsVector(binding.aabb.max)
     )
       return { ok: false, error: 'expected complete mesh buffers and a valid AABB' };
-    return { ok: true, value: request as MeshPreviewRequest };
+    const { min, max } = binding.aabb;
+    if (min.some((component, index) => component >= (max[index] ?? Number.NaN)))
+      return { ok: false, error: 'expected complete mesh buffers and a valid AABB' };
+    return {
+      ok: true,
+      value: {
+        ...request,
+        binding: {
+          guid: request.subject.guid,
+          vertexDigest: binding.vertexDigest,
+          indexDigest: binding.indexDigest,
+          submeshes: binding.submeshes,
+          aabb: { min: binding.aabb.min, max: binding.aabb.max },
+        },
+      },
+    };
   },
   describe:
     '{"type":"object","required":["subject","snapshot","binding"],"properties":{"subject":{"type":"object","required":["kind","guid"],"properties":{"kind":{"const":"MeshAsset"},"guid":{"type":"string"}}},"snapshot":{"type":"object","required":["revision","digest"]},"binding":{"type":"object","required":["guid","vertexDigest","indexDigest","submeshes","aabb"]}}}',
@@ -98,12 +131,12 @@ export const meshPreviewDescriptor = {
   realm: 'engine' as const,
   argsSchema: meshPreviewArgsSchema,
   resultSchema: meshPreviewResultSchema,
-  evidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+  evidence: REQUIRED_PREVIEW_EVIDENCE,
   preview: {
     realm: 'engine' as const,
     subject: { kind: 'MeshAsset', guid: '<request>' },
     snapshot: { revision: 0, digest: '<request>' },
-    requiredEvidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+    requiredEvidence: REQUIRED_PREVIEW_EVIDENCE,
   } satisfies ToolPreviewContract,
 };
 

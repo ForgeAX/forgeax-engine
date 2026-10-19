@@ -1,7 +1,7 @@
 # `@forgeax/engine-skinning`
 
 > [!IMPORTANT]
-> Owner: skeletal binding and joint resolution. This package is renderer-independent and is optional until a world contains a `Skin` component.
+> Owner: skeletal binding, joint resolution and CPU four-influence vertex blending. This package is renderer-independent and is optional until a world contains a `Skin` component.
 
 ```ts
 import { Skin, resolveSkinJoints, skinningPlugin } from '@forgeax/engine-skinning';
@@ -32,3 +32,10 @@ nonempty list, including multiple same-name rigs in one Scene. An empty list
 uses the existing matching SkinAsset's joint-path resolution. Render extraction
 still validates the skeleton, joint count and live propagated joint transforms
 before publishing a palette; explicit references do not bypass those checks.
+
+`skinVertexPosition` writes a caller-owned `Float64Array` XYZW from four joint
+indices and weights plus a world-space palette. It retains influence order,
+non-unit weight sums and zero-weight index validation. Picking rounds XYZ into
+its Float32 vertex output; Render uses both XYZ and homogeneous projection to
+form a conservative envelope. Neither query path normalizes the source weights.
+Palette acquisition, cache lifetime and World reads remain with the consumer.

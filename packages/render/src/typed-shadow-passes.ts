@@ -248,14 +248,19 @@ function shadowLayerTarget(
   target: RenderPipelineTarget,
   label: string,
   layer: number,
+  resolve?: () => import('@forgeax/engine-rhi').TextureView,
 ): Result<RenderPipelineTarget, RenderGraphError> {
-  const view = graph.view(target.texture, {
+  const descriptor = {
     label,
-    dimension: '2d',
-    aspect: 'depth-only',
+    dimension: '2d' as const,
+    aspect: 'depth-only' as const,
     baseArrayLayer: layer,
     arrayLayerCount: 1,
-  });
+  };
+  const view =
+    resolve === undefined
+      ? graph.view(target.texture, descriptor)
+      : graph.importView(target.texture, descriptor, resolve);
   if (!view.ok) return view;
   return ok({ texture: target.texture, view: view.value, format: target.format, sampleCount: 1 });
 }
@@ -282,12 +287,16 @@ function createStaticShadowArrayTarget(
     () => staticLayers.texture(label, size, layers),
   );
   if (!texture.ok) return texture;
-  const view = graph.view(texture.value, {
-    label: `${label}.view`,
-    dimension: '2d-array',
-    aspect: 'depth-only',
-    arrayLayerCount: layers,
-  });
+  const view = graph.importView(
+    texture.value,
+    {
+      label: `${label}.view`,
+      dimension: '2d-array',
+      aspect: 'depth-only',
+      arrayLayerCount: layers,
+    },
+    () => staticLayers.view(label),
+  );
   if (!view.ok) return view;
   return ok({ texture: texture.value, view: view.value, format: 'depth32float', sampleCount: 1 });
 }
@@ -361,7 +370,13 @@ function recordStaticLayeredShadowPass(
   const staticIdentity: ShadowViewIdentity = Object.freeze({ ...identity, layer: 'static' });
   const staticProjection = projectGpuDrivenShadow(staticIdentity);
   if (!staticProjection.ok) return staticProjection;
-  const staticLayer = shadowLayerTarget(graph, staticArray, `${name}-static-layer`, layer);
+  const staticLayer = shadowLayerTarget(
+    graph,
+    staticArray,
+    `${name}-static-layer`,
+    layer,
+    staticLayers === undefined ? undefined : () => staticLayers.view(staticLabel, layer),
+  );
   if (!staticLayer.ok) return staticLayer;
   const staticRaster = shadowViewRaster(
     graph,
@@ -440,8 +455,8 @@ function recordStaticLayeredShadowPass(
       const destination = resources.texture(target.texture);
       if (!destination.ok) throw destination.error;
       encoder.copyTextureToTexture(
-        { texture: source.value as never, mipLevel: 0, origin: { x: 0, y: 0, z: layer } },
-        { texture: destination.value as never, mipLevel: 0, origin: { x: 0, y: 0, z: layer } },
+        { texture: source.value, mipLevel: 0, origin: { x: 0, y: 0, z: layer } },
+        { texture: destination.value, mipLevel: 0, origin: { x: 0, y: 0, z: layer } },
         { width: size, height: size, depthOrArrayLayers: 1 },
       );
     },
@@ -631,8 +646,8 @@ export function addTypedShadowPasses(
               const target = resources.texture(directionalTarget.texture);
               if (!target.ok) throw target.error;
               encoder.copyTextureToTexture(
-                { texture: source.value as never, origin: { x: 0, y: 0, z: cascade } },
-                { texture: target.value as never, origin: { x: 0, y: 0, z: physicalLayer } },
+                { texture: source.value, origin: { x: 0, y: 0, z: cascade } },
+                { texture: target.value, origin: { x: 0, y: 0, z: physicalLayer } },
                 { width: mapSize, height: mapSize, depthOrArrayLayers: 1 },
               );
             },

@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine/math';
 import { definePack } from '@forgeax/engine/pack/source';
 import type { EquirectAsset } from '@forgeax/engine/types';
 import { ok } from '@forgeax/engine/types';
@@ -17,26 +18,9 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
   return t * t * (3 - 2 * t);
 }
 
-function floatToHalf(value: number): number {
-  const source = new Float32Array([value]);
-  const bits = new Uint32Array(source.buffer)[0] ?? 0;
-  const sign = (bits >>> 16) & 0x8000;
-  const exponent = (bits >>> 23) & 0xff;
-  const mantissa = bits & 0x7fffff;
-  if (exponent === 0xff) return sign | (mantissa === 0 ? 0x7c00 : 0x7e00);
-  const halfExponent = exponent - 127 + 15;
-  if (halfExponent >= 0x1f) return sign | 0x7c00;
-  if (halfExponent <= 0) {
-    if (halfExponent < -10) return sign;
-    const hidden = mantissa | 0x800000;
-    const shift = 14 - halfExponent;
-    return sign | ((hidden + (1 << (shift - 1))) >> shift);
-  }
-  return sign | (halfExponent << 10) | ((mantissa + 0x1000) >> 13);
-}
 
 function writeHalf(data: Uint8Array, offset: number, value: number): void {
-  const half = floatToHalf(value);
+  const half = halfFloat.f32ToF16(value);
   data[offset] = half & 0xff;
   data[offset + 1] = half >>> 8;
 }

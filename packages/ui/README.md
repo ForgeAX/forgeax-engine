@@ -149,6 +149,9 @@ and contextual table fragments. Unsupported properties, values, controls and
 parser recovery retain source ranges and recovery hints. Neither checker changes
 author source or treats successful Stylo parsing as proof of native painting.
 
+`parseHtmlAuthoring` and `parseCssAuthoring` return the complete diagnostics and
+URL references with source ranges in one parse. The importer consumes this same
+authoring contract; it has no separate HTML/CSS validation or URL-only API.
 `validateUiAuthoring` adds the UiAsset companion/scoping policy above.
 `parseHtmlAuthoring(html, path, { portableOnly: true, context: 'document' })`
 checks a host shell, including embedded styles; `parseCssAuthoring(css, path,
@@ -442,3 +445,7 @@ After `forgeax project build --root templates/game-3d --out-dir .forgeax/g09-pro
 run `node apps/preview/scripts/smoke-game3d-localization-production.mjs` from the repository
 root. This contributor gate serves only the built files, rejects external requests,
 requires 60 completed frames and a nonblank canvas, and saves offline action evidence.
+
+HTML and CSS authoring parsers return `UiAuthoringParse`. Companion URL categories
+and precedence come from the authoring profile; blocking is derived from diagnostic
+severity independently of category, including browser-extension declarations.

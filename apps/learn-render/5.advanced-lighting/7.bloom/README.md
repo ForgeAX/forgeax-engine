@@ -43,7 +43,7 @@ pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-7-bloom smoke
 pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-7-bloom smoke:browser
 ```
 
-The Dawn smoke runs 60 frames and checks the real ten-pass Bloom graph,
+The Dawn smoke runs 60 frames and checks the real eleven-pass Bloom graph,
 non-black HDR output, and structured error count. The browser smoke is an
 additional visual/WebGPU path; it is not a replacement for the Dawn run.
 Both commands require the asset submodule to be present and the normal

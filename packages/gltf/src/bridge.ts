@@ -21,12 +21,12 @@
 
 import {
   computeTangentVec4,
+  meshMaterialSlotsFromTopology,
   packInterleavedVertexAttributes,
   writeNormalPlaneTangent,
 } from '@forgeax/engine-geometry';
 import type { Mat4 } from '@forgeax/engine-math';
 import { box3, mat4, quat, vec3 } from '@forgeax/engine-math';
-import { AssetGuid as AssetGuidCodec } from '@forgeax/engine-pack/guid';
 import type {
   AssetGuid,
   Handle,
@@ -36,7 +36,6 @@ import type {
   MaterialPass,
   MaterialTextureValue,
   MeshAsset,
-  MeshMaterialSlot,
   MorphTarget,
   RenderQueue,
   Result,
@@ -45,6 +44,8 @@ import type {
   VertexAttributeMap,
 } from '@forgeax/engine-types';
 import {
+  createMeshMaterialSlotTable,
+  type MeshMaterialSlotSource,
   STANDARD_LAYER_PARAMETER_GROUPS,
   STANDARD_SURFACE_PARAM_SCHEMA,
   STANDARD_TRANSMISSION_PARAMETER_NAMES,
@@ -106,11 +107,7 @@ function copyVertexStream(
  */
 export function meshIrToMeshAsset(
   prims: readonly GltfMeshIr[],
-  materials: {
-    readonly guidByIndex?: ReadonlyMap<number, string>;
-    readonly nameByIndex?: ReadonlyMap<number, string>;
-    readonly sourceKeyByIndex?: ReadonlyMap<number, string>;
-  } = {},
+  materials: MeshMaterialSlotSource = {},
 ): Result<MeshAsset, GltfError> {
   if (prims.length === 0) {
     return err(
@@ -204,42 +201,12 @@ export function meshIrToMeshAsset(
       ? new Uint32Array(totalIndexCount)
       : new Uint16Array(totalIndexCount);
   const submeshes: Submesh[] = [];
-  const materialSlots: MeshMaterialSlot[] = [];
-  const slotByMaterial = new Map<number | null, number>();
-  const usedNames = new Set<string>();
-  const uniqueSlotName = (base: string): string => {
-    let candidate = base.trim() || 'Material';
-    let suffix = 2;
-    while (usedNames.has(candidate)) candidate = `${base}_${suffix++}`;
-    usedNames.add(candidate);
-    return candidate;
-  };
-  const slotFor = (materialIndex: number | null): number => {
-    const existing = slotByMaterial.get(materialIndex);
-    if (existing !== undefined) return existing;
-    const slotIndex = materialSlots.length;
-    const guid = materialIndex === null ? undefined : materials.guidByIndex?.get(materialIndex);
-    const parsed = guid === undefined ? undefined : AssetGuidCodec.parse(guid);
-    materialSlots.push({
-      slotName: uniqueSlotName(
-        materialIndex === null
-          ? 'Default'
-          : (materials.nameByIndex?.get(materialIndex) ?? `Material_${materialIndex}`),
-      ),
-      sourceKey:
-        materialIndex === null
-          ? 'gltf:default'
-          : (materials.sourceKeyByIndex?.get(materialIndex) ?? `gltf:material:${materialIndex}`),
-      ...(parsed?.ok ? { defaultMaterial: parsed.value } : {}),
-    });
-    slotByMaterial.set(materialIndex, slotIndex);
-    return slotIndex;
-  };
+  const materialTable = createMeshMaterialSlotTable('gltf', materials);
 
   let vertexCursor = 0;
   let indexCursor = 0;
   for (const mesh of prims) {
-    const materialSlot = slotFor(mesh.materialIndex);
+    const materialSlot = materialTable.slotFor(mesh.materialIndex);
     const primVertexCount = mesh.positions.length / 3;
     const primIndexCount = mesh.indices === undefined ? 0 : mesh.indices.length;
     // Repair only undefined source frames; valid authored MikkTSpace tangents
@@ -439,7 +406,7 @@ export function meshIrToMeshAsset(
     vertices: packed.value.vertices,
     ...(indices === undefined ? {} : { indices }),
     submeshes,
-    materialSlots,
+    materialSlots: meshMaterialSlotsFromTopology(materialTable.slots),
     aabb: box3.fromPositions(box3.create(), positionsCat),
     attributes,
     ...(morphTargetCount === 0 ? {} : { morphTargets }),

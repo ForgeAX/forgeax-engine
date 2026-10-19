@@ -1,4 +1,4 @@
-import type { AssetRegistry, MipmapShaderModuleFactory } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { adaptDynamicTextureDevice, DynamicTextureStore } from '@forgeax/engine-assets-runtime';
 import type {
   BindGroupLayout,
@@ -33,7 +33,6 @@ import type {
   RecoveryRootBundle,
 } from '../../recovery/types';
 import type { RenderSystem } from '../../render-system';
-import type { RhiBackendPack } from '../backend-contract';
 import {
   prepareMaterialShaders,
   type ShaderDeviceAdapterInternal,
@@ -164,9 +163,6 @@ export interface RendererRecoveryDependencies {
   readonly getImmediateShaderModuleAdapter: () => ShaderDeviceAdapterInternal;
   readonly getShader: () => ShaderCatalog;
   readonly assets: AssetRegistry;
-  readonly adaptMipmapShaderModuleFactory: (
-    factory: RhiBackendPack['createShaderModule'],
-  ) => MipmapShaderModuleFactory | undefined;
   readonly buildPipeline: (
     scope?: DeviceScope,
     device?: RhiDevice,
@@ -244,7 +240,6 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     getImmediateShaderModuleAdapter,
     getShader,
     assets,
-    adaptMipmapShaderModuleFactory,
     buildPipeline,
     getMaterialShaderPipeline,
     getMaterialShaderPipelineEntry,
@@ -479,7 +474,7 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     // candidateState; the active aggregate remains untouched on every await.
     candidateGpuStore.configureGpuDevice(
       device,
-      adaptMipmapShaderModuleFactory(internals.pack.createShaderModule),
+      internals.pack.createShaderModule,
       (world, pod) => {
         if ('resolveAsset' in world)
           return err(

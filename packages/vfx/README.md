@@ -338,3 +338,7 @@ No stale handle or CPU particle mirror survives recovery.
 The source descriptor and particle output producer include vector texture GUIDs in normal dependency closure. Catalog replacement preserves the GUID and produces a new payload; VFX does not own a second asset registry, texture format or CPU particle simulation. See the ordinary `hello-boss-lightning/assets/fields.pack.ts` producer and `fields.html` consumer.
 
 The portable managed field path admits at most eight compute storage bindings. Combining fields, Custom storage and event storage above that limit is a structured cook failure; split the work into another emitter.
+
+Scalar/vector byte sizes and alignments derive from Types' `WGSL_NUMERIC_LAYOUT`.
+VFX retains its Core field offsets, Custom lane budget, and authored member order;
+the compiler and runtime packers consume the same numeric layout.

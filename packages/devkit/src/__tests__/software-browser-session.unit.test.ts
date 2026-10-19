@@ -120,8 +120,8 @@ vi.mock('@forgeax/engine-image/parse-image', () => ({
   },
 }));
 
+import { createBrowserCapture } from '../browser-capture.js';
 import { createViteConfig } from '../host.js';
-import { createBrowserCapture, createSoftwareBrowser } from '../software-capture.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
 afterEach(() => {
@@ -362,9 +362,9 @@ describe('software browser session', () => {
       writeFile(resolve(root, 'main.ts'), 'export default {};\n'),
     ]);
 
-    const software = createSoftwareBrowser(root);
+    const software = createBrowserCapture(root);
     const session = await software.open({
-      software: true,
+      backend: 'software',
       browser: executable,
       headless: false,
       deterministic: true,
@@ -463,16 +463,16 @@ describe('software browser session', () => {
       writeFile(resolve(root, 'main.ts'), 'export default {};\n'),
     ]);
 
-    const software = createSoftwareBrowser(root);
+    const software = createBrowserCapture(root);
     const session = await software.open({
-      software: true,
+      backend: 'software',
       browser: executable,
       deterministic: true,
       requireUi: true,
     });
     try {
       await expect(session.capture('ready')).rejects.toMatchObject({
-        code: 'software-capture-runtime-failed',
+        code: 'browser-capture-runtime-failed',
       });
       expect(session.report().captures).toEqual([
         expect.objectContaining({
@@ -516,16 +516,16 @@ describe('software browser session', () => {
       writeFile(resolve(root, 'main.ts'), 'export default {};\n'),
     ]);
 
-    const software = createSoftwareBrowser(root);
+    const software = createBrowserCapture(root);
     const session = await software.open({
-      software: true,
+      backend: 'software',
       browser: executable,
       deterministic: true,
       requireUi: true,
     });
     try {
       await expect(session.capture('ready')).rejects.toMatchObject({
-        code: 'software-capture-runtime-failed',
+        code: 'browser-capture-runtime-failed',
       });
       expect(session.report().captures).toEqual([
         expect.objectContaining({

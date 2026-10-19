@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite_flipping`: three asymmetric sprite instances
 // exercise identity, horizontal UV flip, and vertical UV flip.
@@ -6,7 +7,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 240;
@@ -172,7 +173,7 @@ const png = new Uint8Array(WIDTH * HEIGHT * 4);
 for (let y = 0; y < HEIGHT; y++) png.set(bytes.subarray(y * bytesPerRow, y * bytesPerRow + WIDTH * 4), y * WIDTH * 4);
 const pngPath = process.env.SMOKE_PNG_OUT ?? resolve(here, '..', 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngPath), { recursive: true });
-writeFileSync(pngPath, writeReferencePng(png, WIDTH, HEIGHT));
+writeFileSync(pngPath, encodePng(WIDTH, HEIGHT, png));
 console.log(`[smoke] frames=${FRAMES} samples=${JSON.stringify(samples)} errors=${errors.length} png=${pngPath}`);
 
 const visible = [samples.normalTopLeft, samples.flipXLeft, samples.flipYTop].filter(([r, g, b]) => r + g + b > 90).length;

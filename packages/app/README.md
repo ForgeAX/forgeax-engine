@@ -50,6 +50,12 @@ passed to `syncCanvasDrawingBuffer` applies those same budgets without requiring
 visible layout or multiplying the requested pixels by DPR again. Non-finite or
 non-positive extents retain the existing buffer within the device limit.
 
+Worker Hosts with native resize observation consume Platform display notifications
+when sizing each admitted frame. They seed the current dimensions on subscription
+and reseed after canvas replacement. DPR and render budgets remain live; native
+resize/visibility notifications update logical dimensions. Browsers without native
+resize observation and direct sizing calls continue to measure current layout.
+
 ### Fixed animation assembly
 
 For spring bones or managed physical skeletons, select the existing Animation
@@ -95,6 +101,15 @@ common project/asset/SceneAsset/camera lifecycle after the factory returns an
 `App`, `AssetRegistry`, `World`, and a headed `target`; it does not guess a
 project loader or create a second runtime. Node project hosts use DevKit `createDevKitWorkspaceProvider` for the production
 Vite/browser bridge. Other environments supply the session constructor.
+
+`projectEngineWorkspaceAssets` projects Catalog `particle-effect` entries into
+the existing workspace `vfx` preview kind; ordinary Preview and cached thumbnails
+consume this same capability projection.
+
+`createTextureWorkspacePreview` accepts initial texture-view options before
+allocating its ordinary resources. DevKit's retained thumbnail batch selects
+transparent flat output through this same owner; interactive previews keep their
+channel, mip and directional environment controls. Renderer owns both outputs.
 
 For asset kinds other than `scene`, the session may expose `openPreview` to
 dispatch the existing Engine type-preview capability. A session's optional
@@ -192,6 +207,9 @@ after UI removal leaves the canvas hidden. Automatic sizing then retains that
 hidden buffer. Capture reports its actual extent. A completed `pending`
 fallback does not qualify. An older in-flight completion cannot satisfy that
 barrier. PNG pixels and returned dimensions must describe the same surface.
+Completed frame notifications retain their receipt's output mapping. Capture
+also checks that mapping against the current drawing buffer, so a ready frame
+from before an automatic resize cannot qualify the new surface.
 The browser preview plugin pauses continuous rendering while its canvas has no
 visible intersection. Synchronous target queries remain available while another
 independent preview initializes, retaining the current target and preview-owner
@@ -1396,3 +1414,15 @@ closes on replacement or native Fiber retirement. The workspace client keeps
 generation admission, and the Engine target keeps camera transaction ownership.
 Native frontends can submit semantic camera samples
 locally; external API and CLI callers continue through the same target operations.
+
+### Texture preview controls
+
+A resource preview may expose `texture: TextureViewControl`. The public workspace
+operations `preview.texture.get` and `preview.texture.set` use the same exact
+target/generation admission as other preview operations. Reads return bound
+source facts and accepted display options; writes validate before replacing an
+ordinary material binding. `createTextureWorkspacePreview` assembles that
+material, quad and camera from the source payload and Preview's shared material
+contract, whose shader is compiled into the host manifest. Renderer owns
+sampling and real mip residency. The preview closes its entities and
+producer references together; host UI owns no resource or execution state.

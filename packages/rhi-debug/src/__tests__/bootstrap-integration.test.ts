@@ -6,6 +6,7 @@
 // Tests the recorder integration at API level without a real GPU context.
 // Uses stubs/mocks for the RHI backend; no real canvas or device.
 
+import { createShaderModule } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { type CreateShaderModuleFn, wrap, wrapCreateShaderModule } from '../recorder';
 
@@ -124,7 +125,7 @@ describe('bootstrap integration (m3-3)', () => {
     const { inst } = stubRhiInstance();
 
     // Step 1: wrap(rhiInstance)
-    const debugInst = wrap(inst);
+    const debugInst = wrap(inst, createShaderModule);
 
     expect(debugInst.getState()).toBe('idle');
 
@@ -139,7 +140,7 @@ describe('bootstrap integration (m3-3)', () => {
 
   it('arm + onFrameEnd produces frameMark event', () => {
     const { inst } = stubRhiInstance();
-    const debugInst = wrap(inst);
+    const debugInst = wrap(inst, createShaderModule);
 
     // Arm for 1 frame
     const armResult = debugInst.arm(1);
@@ -159,7 +160,7 @@ describe('bootstrap integration (m3-3)', () => {
 
   it('onFrameEnd listener pattern: register -> draw -> fire', () => {
     const { inst } = stubRhiInstance();
-    const debugInst = wrap(inst);
+    const debugInst = wrap(inst, createShaderModule);
 
     // Simulate the _onFrameEnd pattern: register a callback,
     // fire it on frame boundary.
@@ -197,7 +198,7 @@ describe('bootstrap integration (m3-3)', () => {
 
   it('bootstrap events go into frame-0 before frameMark', () => {
     const { inst } = stubRhiInstance();
-    const debugInst = wrap(inst);
+    const debugInst = wrap(inst, createShaderModule);
 
     // Arm for 1 frame
     debugInst.arm(1);
@@ -223,7 +224,7 @@ describe('bootstrap integration (m3-3)', () => {
 
   it('_onFrameEnd fires every frame even when not armed (no recording)', () => {
     const { inst } = stubRhiInstance();
-    const debugInst = wrap(inst);
+    const debugInst = wrap(inst, createShaderModule);
 
     // Not armed — onFrameEnd should increment frameIdx but not record
     const state1 = debugInst.getState();
@@ -239,7 +240,7 @@ describe('bootstrap integration (m3-3)', () => {
 
   it('wrap + extras (createShaderModule via Channel-1 pattern)', async () => {
     const { inst } = stubRhiInstance();
-    const debugInst = wrap(inst);
+    const debugInst = wrap(inst, createShaderModule);
 
     // Simulate the Channel-1 probe pattern: attach createShaderModule as an extra
     // property on the wrapped instance (as done in createApp m3-1).

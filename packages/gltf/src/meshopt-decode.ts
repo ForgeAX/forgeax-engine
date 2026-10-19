@@ -40,7 +40,7 @@ export interface GltfBufferViewDecodeCapability {
   }) => Uint8Array | Promise<Uint8Array>;
 }
 
-export interface MeshoptProjection {
+interface MeshoptProjection {
   readonly bufferViews: readonly MeshoptBufferViewJson[];
   readonly buffers: readonly Uint8Array[];
   readonly decodedCount: number;

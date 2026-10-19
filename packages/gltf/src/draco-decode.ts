@@ -1,4 +1,5 @@
 import type { AccessorJson, BufferViewJson } from './accessor/decode-accessor.js';
+import { accessorStorage, accessorVectorSize, COMPONENT_TYPE } from './accessor/layout.js';
 import { err, type GltfError, gltfErr, ok, type Result } from './errors.js';
 import type { MeshJson } from './parse-gltf.js';
 
@@ -7,13 +8,7 @@ export interface DracoCompressionJson {
   readonly attributes: Readonly<Record<string, number>>;
 }
 
-export type DracoAttributeArray =
-  | Float32Array
-  | Uint32Array
-  | Uint16Array
-  | Int16Array
-  | Uint8Array
-  | Int8Array;
+export type DracoAttributeArray = InstanceType<NonNullable<ReturnType<typeof accessorStorage>>>;
 
 /** Decoder produces raw accessor components; normalized integer attributes stay integers. */
 export interface GltfDracoDecodeCapability {
@@ -28,16 +23,6 @@ export interface GltfDracoDecodeCapability {
     readonly vertexCount: number;
   }>;
 }
-
-const COMPONENTS: Readonly<Record<string, number>> = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
-const STORAGE = {
-  5120: Int8Array,
-  5121: Uint8Array,
-  5122: Int16Array,
-  5123: Uint16Array,
-  5125: Uint32Array,
-  5126: Float32Array,
-};
 
 /** Project compressed primitives onto the ordinary accessor path, without mutating source facts. */
 export async function projectDracoPrimitives(
@@ -107,8 +92,8 @@ export async function projectDracoPrimitives(
           accessor.sparse !== undefined
         )
           return false;
-        const Storage = STORAGE[accessor.componentType as keyof typeof STORAGE];
-        const components = COMPONENTS[accessor.type];
+        const Storage = accessorStorage(accessor.componentType);
+        const components = accessorVectorSize(accessor.type);
         if (
           Storage === undefined ||
           components === undefined ||
@@ -167,8 +152,8 @@ export async function projectDracoPrimitives(
           !Number.isSafeInteger(accessor.count) ||
           accessor.count <= 0 ||
           accessor.count > 10_000_000 ||
-          COMPONENTS[accessor.type] === undefined ||
-          !(accessor.componentType in STORAGE)
+          accessorVectorSize(accessor.type) === undefined ||
+          accessorStorage(accessor.componentType) === undefined
         )
           return fail(`invalid ${semantic} attribute declaration`);
         attributes[semantic] = { id, accessor };
@@ -182,12 +167,13 @@ export async function projectDracoPrimitives(
         const projectedAttributes = { ...primitive.attributes };
         for (const [semantic, declaration] of Object.entries(attributes)) {
           const data = decoded.attributes[semantic];
-          const Storage = STORAGE[declaration.accessor.componentType as keyof typeof STORAGE];
+          const Storage = accessorStorage(declaration.accessor.componentType);
           if (
+            Storage === undefined ||
             !(data instanceof Storage) ||
             decoded.vertexCount !== declaration.accessor.count ||
             data.length !==
-              declaration.accessor.count * (COMPONENTS[declaration.accessor.type] ?? 0) ||
+              declaration.accessor.count * (accessorVectorSize(declaration.accessor.type) ?? 0) ||
             !data.every(Number.isFinite)
           )
             return fail(`decoder output mismatches ${semantic} accessor`);
@@ -202,22 +188,24 @@ export async function projectDracoPrimitives(
           return fail('invalid decoded triangle indices');
         const indexAccessor =
           primitive.indices === undefined
-            ? { bufferView: 0, count: decoded.indices.length, type: 'SCALAR', componentType: 5125 }
+            ? {
+                bufferView: 0,
+                count: decoded.indices.length,
+                type: 'SCALAR',
+                componentType: COMPONENT_TYPE.U32,
+              }
             : sourceAccessors[primitive.indices];
+        const IndexStorage = accessorStorage(indexAccessor?.componentType);
         if (
           indexAccessor === undefined ||
           indexAccessor.count !== decoded.indices.length ||
           indexAccessor.type !== 'SCALAR' ||
-          ![5121, 5123, 5125].includes(indexAccessor.componentType)
+          (IndexStorage !== Uint8Array &&
+            IndexStorage !== Uint16Array &&
+            IndexStorage !== Uint32Array)
         )
           return fail('decoded indices mismatch accessor');
-        const IndexStorage = STORAGE[indexAccessor.componentType as 5121 | 5123 | 5125];
-        const limit =
-          indexAccessor.componentType === 5121
-            ? 255
-            : indexAccessor.componentType === 5123
-              ? 65535
-              : 0xffffffff;
+        const limit = 2 ** (IndexStorage.BYTES_PER_ELEMENT * 8) - 1;
         if (decoded.indices.some((index) => index > limit))
           return fail('decoded index exceeds component range');
         const indices = append(new IndexStorage(decoded.indices), indexAccessor);

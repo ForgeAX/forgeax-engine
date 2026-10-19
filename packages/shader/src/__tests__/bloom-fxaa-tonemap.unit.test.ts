@@ -4,62 +4,14 @@ import { describe, expect, it } from 'vitest';
 
 const shaderRoot = resolve(import.meta.dirname, '..');
 const tonemap = readFileSync(resolve(shaderRoot, 'tonemap.wgsl'), 'utf8');
+const toneMapping = readFileSync(resolve(shaderRoot, 'tone-mapping.wgsl'), 'utf8');
 const outputEncoding = readFileSync(resolve(shaderRoot, 'output-encoding.wgsl'), 'utf8');
 const common = readFileSync(resolve(shaderRoot, 'common.wgsl'), 'utf8');
-const bloomDownsample = readFileSync(resolve(shaderRoot, 'bloom-downsample.wgsl'), 'utf8');
-const bloomUpsample = readFileSync(resolve(shaderRoot, 'bloom-upsample.wgsl'), 'utf8');
+const bloomHorizontal = readFileSync(resolve(shaderRoot, 'bloom-horizontal.wgsl'), 'utf8');
+const bloomVertical = readFileSync(resolve(shaderRoot, 'bloom-vertical.wgsl'), 'utf8');
 const bloomComposite = readFileSync(resolve(shaderRoot, 'bloom-composite.wgsl'), 'utf8');
-const bloom = `${bloomDownsample}\n${bloomUpsample}\n${bloomComposite}`;
+const bloom = `${bloomHorizontal}\n${bloomVertical}\n${bloomComposite}`;
 const fxaa = readFileSync(resolve(shaderRoot, 'fxaa.wgsl'), 'utf8');
-
-const REC709 = [0.2126, 0.7152, 0.0722] as const;
-
-function extractBloom(
-  color: readonly [number, number, number],
-  threshold: number,
-  softKnee: number,
-): readonly [number, number, number] {
-  const c = [Math.max(color[0], 0), Math.max(color[1], 0), Math.max(color[2], 0)] as const;
-  const luma = Math.max(c[0] * REC709[0] + c[1] * REC709[1] + c[2] * REC709[2], 0);
-  if (threshold === 0) return c;
-  const knee = threshold * softKnee;
-  const response =
-    knee === 0
-      ? Math.max(luma - threshold, 0)
-      : Math.max(
-          luma - threshold,
-          Math.min(2 * knee, Math.max(0, luma - threshold + knee)) ** 2 / (4 * knee),
-        );
-  const multiplier = response / Math.max(luma, 1e-6);
-  return [c[0] * multiplier, c[1] * multiplier, c[2] * multiplier];
-}
-
-function normalizedCoverageAverage(
-  source: readonly number[],
-  sourceWidth: number,
-  sourceHeight: number,
-  destinationWidth: number,
-  destinationHeight: number,
-  destinationX: number,
-  destinationY: number,
-): number {
-  const sourceMinX = (destinationX * sourceWidth) / destinationWidth;
-  const sourceMaxX = ((destinationX + 1) * sourceWidth) / destinationWidth;
-  const sourceMinY = (destinationY * sourceHeight) / destinationHeight;
-  const sourceMaxY = ((destinationY + 1) * sourceHeight) / destinationHeight;
-  let sum = 0;
-  let coverage = 0;
-  for (let y = Math.floor(sourceMinY); y < Math.ceil(sourceMaxY); y += 1) {
-    for (let x = Math.floor(sourceMinX); x < Math.ceil(sourceMaxX); x += 1) {
-      const weight =
-        Math.max(0, Math.min(sourceMaxX, x + 1) - Math.max(sourceMinX, x)) *
-        Math.max(0, Math.min(sourceMaxY, y + 1) - Math.max(sourceMinY, y));
-      sum += (source[y * sourceWidth + x] ?? 0) * weight;
-      coverage += weight;
-    }
-  }
-  return sum / coverage;
-}
 
 function codeOnly(source: string): string {
   return source
@@ -90,22 +42,27 @@ describe('post shader color-domain contract', () => {
     expect(tonemap).toContain('fs_encode_only');
     expect(outputEncoding.match(/linearToSrgbOetf\s*\(/g)).toHaveLength(1);
     expect(tonemap).toContain('#import forgeax_view::output_encoding');
-    expect(code).toContain('let exposed : vec3<f32> = sample * params.exposure;');
-    const mapping = functionBody(code, 'mapTonemap');
+    expect(toneMapping).toContain('let exposed : vec3<f32> = sample * exposure;');
+    expect(code).toContain(
+      'mapTone(sample, params.exposure, params.whitePoint, params.mode, params.outputGamut)',
+    );
+    const mapping = functionBody(codeOnly(toneMapping), 'mapTone');
     expect(mapping.indexOf('let exposed')).toBeGreaterThanOrEqual(0);
-    expect(mapping.indexOf('let exposed')).toBeLessThan(mapping.indexOf('switch (params.mode)'));
+    expect(mapping.indexOf('let exposed')).toBeLessThan(mapping.indexOf('switch (mode)'));
     expect(code).toContain('encodeFinal(mapTonemap');
   });
 
   it('maps every public mode before one shared OETF', () => {
     const code = codeOnly(tonemap);
-    const body = functionBody(code, 'mapTonemap');
+    const body = functionBody(codeOnly(toneMapping), 'mapTone');
     for (const mode of [1, 2, 3, 4, 5, 6, 7]) {
       expect(body).toMatch(
         new RegExp(`case ${mode}u:\\s*\\{\\s*mapped\\s*=\\s*(?:toneMap|tonemap)`),
       );
     }
-    expect(body).toMatch(/default:\s*\{\s*mapped\s*=\s*toneMapLinearLdr\(sample\);\s*\}/);
+    expect(body).toMatch(
+      /default:\s*\{\s*mapped\s*=\s*toneMapLinearLdr\(sample, outputGamut\);\s*\}/,
+    );
     expect(functionBody(code, 'fs_main')).toContain(
       'return encodeFinal(mapTonemap(source.rgb), source.a, in.position);',
     );
@@ -130,7 +87,7 @@ describe('post shader color-domain contract', () => {
     expect(common).not.toContain('quantizeToF16');
     expect(outputEncoding).not.toContain('quantizeToF16');
     const code = codeOnly(tonemap);
-    expect(functionBody(code, 'mapTonemap')).not.toContain('quantizeToF16');
+    expect(functionBody(codeOnly(toneMapping), 'mapTone')).not.toContain('quantizeToF16');
     expect(functionBody(code, 'encodeFinal')).not.toContain('quantizeToF16');
     // Fused tone/LUT work retains the two physical binary16 store boundaries.
     expect(functionBody(code, 'fs_tone_lut_encode').match(/quantizeToF16/g)).toHaveLength(2);
@@ -160,62 +117,8 @@ describe('post shader color-domain contract', () => {
     expect(`${tonemap}\n${bloom}\n${fxaa}`).not.toContain('encodedDestinationBlend');
   });
 
-  it('locks continuous HDR extraction, normalized 13-tap reduction, and tent weights', () => {
-    const exact = extractBloom([2, 1, 0.5], 0, 0.5);
-    expect(exact).toEqual([2, 1, 0.5]);
-
-    const hard = extractBloom([2, 1, 0.5], 1, 0);
-    expect(hard[0] / hard[1]).toBeCloseTo(2, 10);
-    expect(hard[1] / hard[2]).toBeCloseTo(2, 10);
-
-    const soft = extractBloom([2, 1, 0.5], 1, 0.5);
-    expect(soft[0] / soft[1]).toBeCloseTo(2, 10);
-    expect(soft[1] / soft[2]).toBeCloseTo(2, 10);
-    expect(soft.every((channel) => channel >= 0)).toBe(true);
-
-    const fixedWeights = [
-      0.125,
-      ...Array.from({ length: 4 }, () => 0.0625),
-      ...Array.from({ length: 4 }, () => 0.03125),
-      ...Array.from({ length: 4 }, () => 0.125),
-    ];
-    expect(fixedWeights).toHaveLength(13);
-    expect(fixedWeights.reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 12);
-
-    const tentWeights = [1, 2, 1, 2, 4, 2, 1, 2, 1].map((weight) => weight / 16);
-    expect(tentWeights.reduce((sum, weight) => sum + weight, 0)).toBe(1);
-
-    const downsampleBody = functionBody(codeOnly(bloomDownsample), 'fixedDownsample');
-    expect(downsampleBody.match(/textureSampleLevel\(/g)).toHaveLength(13);
-    expect(codeOnly(bloomDownsample)).toContain('textureLoad(src');
-    expect(codeOnly(bloomDownsample)).toContain('let sourceMin =');
-    expect(codeOnly(bloomDownsample)).toContain('let sourceMax =');
-    expect(codeOnly(bloomDownsample)).toContain('let weight =');
-    expect(codeOnly(bloomDownsample)).toContain('coverage = coverage + weight');
-    expect(codeOnly(bloomDownsample)).toContain('sum / max(coverage, 1e-6)');
-    expect(codeOnly(bloomDownsample)).toContain('let q = clamp(luma + (knee - threshold)');
-    expect(codeOnly(bloomDownsample)).toContain('let response = max(luma - threshold, soft)');
-    expect(codeOnly(bloomDownsample)).not.toContain('1.0005');
-    expect(codeOnly(bloomDownsample)).toContain('let isD0 = params.level == 0.0');
-    expect(functionBody(codeOnly(bloomDownsample), 'fs_main')).toContain('if isD0');
-    expect(functionBody(codeOnly(bloomDownsample), 'fs_main')).not.toContain(
-      'select(fixedDownsample(in.uv), loadCoveredAverage(pixel), isD0)',
-    );
-    expect(extractBloom([65504, 65504, 65504], 65504, 0)).toEqual([0, 0, 0]);
-    expect(normalizedCoverageAverage([0, 6, 0], 3, 1, 2, 1, 0, 0)).toBeCloseTo(2, 12);
-    expect(normalizedCoverageAverage([0, 6, 0], 3, 1, 2, 1, 1, 0)).toBeCloseTo(2, 12);
-    expect(normalizedCoverageAverage([0, 1, 2, 3, 4, 5], 3, 2, 2, 2, 0, 1)).toBeCloseTo(
-      3.3333333333333335,
-      12,
-    );
-    expect(codeOnly(bloomUpsample)).toContain('textureDimensions(coarse)');
-    expect(codeOnly(bloomUpsample)).toContain('mix(currentColor, reconstructed, scatter)');
-    expect(codeOnly(bloomComposite)).toContain('let sceneSample : vec4<f32>');
-    expect(codeOnly(bloomComposite)).toContain('sceneSample.rgb');
-    expect(codeOnly(bloomComposite)).toContain(
-      'return vec4<f32>(clampLinearHdr(result), sceneSample.a)',
-    );
-  });
+  // Bloom's spatial response, threshold and gain are verified on real GPU output
+  // against the pinned Three node by apps/parity/color-lighting/verify-render-defaults.
 
   it('returns display-encoded RGB from both FXAA exits through the dither gate', () => {
     const body = functionBody(codeOnly(fxaa), 'fs_main');

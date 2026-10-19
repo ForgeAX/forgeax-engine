@@ -130,7 +130,7 @@ const fixtures = vi.hoisted(() => {
 });
 
 vi.mock('node:child_process', () => ({ spawn: fixtures.spawn }));
-vi.mock('../software-capture.js', () => ({ createBrowserCapture: fixtures.createBrowserCapture }));
+vi.mock('../browser-capture.js', () => ({ createBrowserCapture: fixtures.createBrowserCapture }));
 vi.mock('../live-project-inputs.js', () => ({
   readLiveProjectInputs: fixtures.readLiveProjectInputs,
 }));

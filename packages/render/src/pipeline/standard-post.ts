@@ -5,7 +5,7 @@ import type {
   GraphTextureView,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, mipDimension, ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { addTypedDebugOverlayPass } from '../debug-draw-glue';
 import type { GraphAtmosphere } from '../environment/luts';
@@ -64,8 +64,8 @@ export const STANDARD_BLOOM_MAX_LEVELS = 5;
 /** One authored Bloom contract drives declaration and compiled-graph validation. */
 export const STANDARD_BLOOM_TARGET_SPEC = {
   composited: { label: 'bloom-composited', format: 'rgba16float' },
-  downsamplePrefix: 'bloom-downsample-',
-  upsamplePrefix: 'bloom-upsample-',
+  horizontalPrefix: 'bloom-horizontal-',
+  verticalPrefix: 'bloom-vertical-',
 } as const;
 
 export interface StandardBloomLevelDimensions {
@@ -83,7 +83,6 @@ export function deriveStandardBloomLevels(
   let height = Math.max(1, Math.ceil(outputHeight / 2));
   for (let level = 0; level < STANDARD_BLOOM_MAX_LEVELS; level += 1) {
     levels.push({ width, height });
-    if (width === 1 && height === 1) break;
     width = Math.max(1, Math.ceil(width / 2));
     height = Math.max(1, Math.ceil(height / 2));
   }
@@ -92,8 +91,8 @@ export function deriveStandardBloomLevels(
 
 export interface StandardBloomTargetSpecs {
   readonly composited: GraphTextureDescriptor & { readonly label: string };
-  readonly downsample: readonly (GraphTextureDescriptor & { readonly label: string })[];
-  readonly upsample: readonly (GraphTextureDescriptor & { readonly label: string })[];
+  readonly horizontal: readonly (GraphTextureDescriptor & { readonly label: string })[];
+  readonly vertical: readonly (GraphTextureDescriptor & { readonly label: string })[];
   readonly levels: readonly StandardBloomLevelDimensions[];
 }
 
@@ -109,14 +108,14 @@ function standardBloomTargetSpecs(
       size: { width: outputWidth, height: outputHeight },
       domain: 'linear-hdr',
     },
-    downsample: levels.map((size, level) => ({
-      label: `${STANDARD_BLOOM_TARGET_SPEC.downsamplePrefix}${level}`,
+    horizontal: levels.map((size, level) => ({
+      label: `${STANDARD_BLOOM_TARGET_SPEC.horizontalPrefix}${level}`,
       format: 'rgba16float' as const,
       size,
       domain: 'linear-hdr' as const,
     })),
-    upsample: levels.slice(0, -1).map((size, level) => ({
-      label: `${STANDARD_BLOOM_TARGET_SPEC.upsamplePrefix}${level}`,
+    vertical: levels.map((size, level) => ({
+      label: `${STANDARD_BLOOM_TARGET_SPEC.verticalPrefix}${level}`,
       format: 'rgba16float' as const,
       size,
       domain: 'linear-hdr' as const,
@@ -132,8 +131,8 @@ export interface StandardBloomGraphInspection {
   readonly passCount: number;
   readonly levelCount: number;
   readonly levelDimensions: readonly StandardBloomLevelDimensions[];
-  readonly downsamplePassCount: number;
-  readonly upsamplePassCount: number;
+  readonly horizontalPassCount: number;
+  readonly verticalPassCount: number;
 }
 
 const emptyBloomGraphInspection = (): StandardBloomGraphInspection => ({
@@ -143,8 +142,8 @@ const emptyBloomGraphInspection = (): StandardBloomGraphInspection => ({
   passCount: 0,
   levelCount: 0,
   levelDimensions: [],
-  downsamplePassCount: 0,
-  upsamplePassCount: 0,
+  horizontalPassCount: 0,
+  verticalPassCount: 0,
 });
 
 const invalidBloomGraphInspection = (): StandardBloomGraphInspection => ({
@@ -154,8 +153,8 @@ const invalidBloomGraphInspection = (): StandardBloomGraphInspection => ({
   passCount: 0,
   levelCount: 0,
   levelDimensions: [],
-  downsamplePassCount: 0,
-  upsamplePassCount: 0,
+  horizontalPassCount: 0,
+  verticalPassCount: 0,
 });
 
 type CompiledBloomResource = CompiledRenderGraphInfo['resources'][number];
@@ -169,12 +168,12 @@ function textureBytes(resource: CompiledBloomResource): number | undefined {
     descriptor.format !== 'rgba16float'
   )
     return undefined;
-  const texelBytes = 8;
+  const texelBytes = textureFormatBlock(descriptor.format).bytesPerBlock;
   let bytes = 0;
   for (let level = 0; level < descriptor.mipLevelCount; level += 1) {
     bytes +=
-      Math.max(1, descriptor.width >> level) *
-      Math.max(1, descriptor.height >> level) *
+      mipDimension(descriptor.width, level) *
+      mipDimension(descriptor.height, level) *
       descriptor.depthOrArrayLayers *
       texelBytes;
   }
@@ -238,19 +237,19 @@ export function inspectStandardBloomGraph(
   const composited = graph.resources.filter(
     (resource) => resource.label === STANDARD_BLOOM_TARGET_SPEC.composited.label,
   );
-  const downsample = graph.resources
-    .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.downsamplePrefix))
+  const horizontal = graph.resources
+    .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.horizontalPrefix))
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
-  const upsample = graph.resources
-    .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.upsamplePrefix))
+  const vertical = graph.resources
+    .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.verticalPrefix))
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
-  const targets = [...composited, ...downsample, ...upsample];
+  const targets = [...composited, ...horizontal, ...vertical];
   const passes = graph.passes
     .filter(
       (pass) =>
         pass.name === TYPED_BLOOM_PASS_NAMES.composite ||
-        pass.name.startsWith(`${TYPED_BLOOM_PASS_NAMES.downsample}-`) ||
-        pass.name.startsWith(`${TYPED_BLOOM_PASS_NAMES.upsample}-`),
+        pass.name.startsWith(`${TYPED_BLOOM_PASS_NAMES.horizontal}-`) ||
+        pass.name.startsWith(`${TYPED_BLOOM_PASS_NAMES.vertical}-`),
     )
     .sort((left, right) => left.executionIndex - right.executionIndex);
   if (targets.length === 0 && passes.length === 0) return emptyBloomGraphInspection();
@@ -261,87 +260,73 @@ export function inspectStandardBloomGraph(
   if (compositedSize === undefined) return invalidBloomGraphInspection();
 
   const expected = standardBloomTargetSpecs(compositedSize.width, compositedSize.height);
-  const expectedDownsampleLabels = expected.downsample.map((entry) => entry.label);
-  const expectedUpsampleLabels = expected.upsample.map((entry) => entry.label);
-  const orderedDownsample = downsample.sort((left, right) =>
+  const expectedHorizontalLabels = expected.horizontal.map((entry) => entry.label);
+  const expectedVerticalLabels = expected.vertical.map((entry) => entry.label);
+  const orderedHorizontal = horizontal.sort((left, right) =>
     left.label.localeCompare(right.label, undefined, { numeric: true }),
   );
-  const orderedUpsample = upsample.sort((left, right) =>
+  const orderedVertical = vertical.sort((left, right) =>
     left.label.localeCompare(right.label, undefined, { numeric: true }),
   );
   const completeTargetSet =
-    targets.length === 1 + expectedDownsampleLabels.length + expectedUpsampleLabels.length &&
-    orderedDownsample.length === expectedDownsampleLabels.length &&
-    orderedUpsample.length === expectedUpsampleLabels.length &&
-    orderedDownsample.every(
-      (resource, level) => resource.label === expectedDownsampleLabels[level],
+    targets.length === 1 + expectedHorizontalLabels.length + expectedVerticalLabels.length &&
+    orderedHorizontal.length === expectedHorizontalLabels.length &&
+    orderedVertical.length === expectedVerticalLabels.length &&
+    orderedHorizontal.every(
+      (resource, level) => resource.label === expectedHorizontalLabels[level],
     ) &&
-    orderedUpsample.every((resource, level) => resource.label === expectedUpsampleLabels[level]) &&
-    orderedDownsample.every(
+    orderedVertical.every((resource, level) => resource.label === expectedVerticalLabels[level]) &&
+    orderedHorizontal.every(
       (resource, level) =>
         resourceSize(resource)?.width === expected.levels[level]?.width &&
         resourceSize(resource)?.height === expected.levels[level]?.height,
     ) &&
-    orderedUpsample.every(
+    orderedVertical.every(
       (resource, level) =>
         resourceSize(resource)?.width === expected.levels[level]?.width &&
         resourceSize(resource)?.height === expected.levels[level]?.height,
     );
-  const expectedPassNames = [
-    ...expectedDownsampleLabels,
-    ...[...expectedUpsampleLabels].reverse(),
-    TYPED_BLOOM_PASS_NAMES.composite,
-  ];
+  const expectedPassNames = expectedHorizontalLabels.flatMap((label, level) => [
+    label,
+    expectedVerticalLabels[level],
+  ]);
+  expectedPassNames.push(TYPED_BLOOM_PASS_NAMES.composite);
   const completePassSet =
-    passes.length === expected.levels.length + expected.upsample.length + 1 &&
+    passes.length === expectedPassNames.length &&
     passes.every((pass, index) => pass.name === expectedPassNames[index]);
   const sceneLabel = passes[0]?.accesses[0]?.resource;
   const passTopology =
     completePassSet &&
     sceneLabel !== undefined &&
-    !sceneLabel.startsWith(STANDARD_BLOOM_TARGET_SPEC.downsamplePrefix) &&
-    !sceneLabel.startsWith(STANDARD_BLOOM_TARGET_SPEC.upsamplePrefix) &&
-    sceneLabel !== STANDARD_BLOOM_TARGET_SPEC.composited.label &&
+    !sceneLabel.startsWith('bloom-') &&
     graph.resources.some((resource) => resource.label === sceneLabel) &&
-    orderedDownsample.every((_, level) =>
-      hasPassAccesses(passes[level], [
-        {
-          resource: level === 0 ? sceneLabel : `bloom-downsample-${level - 1}`,
-          usage: 'sampled-read',
-        },
-        { resource: `bloom-downsample-${level}`, usage: 'color-attachment' },
-      ]),
+    orderedHorizontal.every(
+      (_, level) =>
+        hasPassAccesses(passes[level * 2], [
+          {
+            resource: level === 0 ? sceneLabel : `bloom-vertical-${level - 1}`,
+            usage: 'sampled-read',
+          },
+          { resource: `bloom-horizontal-${level}`, usage: 'color-attachment' },
+        ]) &&
+        hasPassAccesses(passes[level * 2 + 1], [
+          { resource: `bloom-horizontal-${level}`, usage: 'sampled-read' },
+          { resource: `bloom-vertical-${level}`, usage: 'color-attachment' },
+        ]),
     ) &&
-    orderedUpsample.every((_, level) => {
-      const passIndex = expected.levels.length + expected.upsample.length - 1 - level;
-      return hasPassAccesses(passes[passIndex], [
-        { resource: `bloom-downsample-${level}`, usage: 'sampled-read' },
-        {
-          resource:
-            level === expected.levels.length - 2
-              ? `bloom-downsample-${level + 1}`
-              : `bloom-upsample-${level + 1}`,
-          usage: 'sampled-read',
-        },
-        { resource: `bloom-upsample-${level}`, usage: 'color-attachment' },
-      ]);
-    }) &&
     hasPassAccesses(passes.at(-1), [
       { resource: sceneLabel, usage: 'sampled-read' },
-      {
-        resource: expected.levels.length === 1 ? 'bloom-downsample-0' : 'bloom-upsample-0',
-        usage: 'sampled-read',
-      },
+      ...expectedVerticalLabels.map((resource) => ({ resource, usage: 'sampled-read' })),
       { resource: STANDARD_BLOOM_TARGET_SPEC.composited.label, usage: 'color-attachment' },
     ]);
   if (!completeTargetSet || !passTopology) {
     return invalidBloomGraphInspection();
   }
-  const levelDimensions = orderedDownsample.flatMap((resource) => {
+  const levelDimensions = orderedHorizontal.flatMap((resource) => {
     const size = resourceSize(resource);
     return size === undefined ? [] : [size];
   });
-  if (levelDimensions.length !== orderedDownsample.length) {
+  if (levelDimensions.length !== orderedHorizontal.length) {
     return invalidBloomGraphInspection();
   }
   const targetBytes = targets.reduce((bytes, resource) => bytes + (textureBytes(resource) ?? 0), 0);
@@ -350,10 +335,10 @@ export function inspectStandardBloomGraph(
     targetCount: targets.length,
     targetBytes,
     passCount: passes.length,
-    levelCount: orderedDownsample.length,
+    levelCount: orderedHorizontal.length,
     levelDimensions,
-    downsamplePassCount: orderedDownsample.length,
-    upsamplePassCount: orderedUpsample.length,
+    horizontalPassCount: orderedHorizontal.length,
+    verticalPassCount: orderedVertical.length,
   };
 }
 
@@ -384,7 +369,7 @@ function missingTemporalContributor(
  * Build the one Standard post chain shared by direct and clustered lighting.
  * Bloom is admitted before any Bloom target is declared, keeping the disabled
  * path exact-zero while building one bounded five-level HDR
- * downsample/tent-upsample pyramid for the enabled path.
+ * horizontal/vertical Gaussian pyramid for the enabled path.
  */
 /**
  * Project the generic scene-stage features over a lane's final scene target,
@@ -492,11 +477,11 @@ export function addStandardPost(
     );
   }
   const hdr =
-    !clearOnly && (topology.camera.tonemap !== 'none' || topology.camera.antialias === 'taa');
-  // Bloom is an HDR-domain effect and its recorders intentionally no-op when
-  // tone mapping is disabled. Keep the graph in the same no-op state for the
-  // TAA + tonemap:none combination; otherwise the declared Bloom composite is
-  // left clear and the following Output Transform presents a black frame.
+    !clearOnly &&
+    (topology.camera.tonemap !== 'none' ||
+      topology.camera.antialias === 'taa' ||
+      outputPlan.features.bloom);
+  // Bloom requires linear HDR intermediates independently of the selected output curve.
   const bloomActive = hdr && outputPlan.features.bloom;
   const fxaa = outputPlan.features.fxaa;
   // Keep the graph-owned output transform on every non-HDR frame, including
@@ -705,23 +690,23 @@ export function addStandardPost(
     const bloomSpecs = standardBloomTargetSpecs(outputWidth, outputHeight);
     const composited = target(context, bloomSpecs.composited.label, bloomSpecs.composited);
     if (!composited.ok) return composited;
-    const downsample: RenderPipelineTarget[] = [];
-    for (const spec of bloomSpecs.downsample) {
+    const horizontal: RenderPipelineTarget[] = [];
+    for (const spec of bloomSpecs.horizontal) {
       const level = target(context, spec.label, spec);
       if (!level.ok) return level;
-      downsample.push(level.value);
+      horizontal.push(level.value);
     }
-    const upsample: RenderPipelineTarget[] = [];
-    for (const spec of bloomSpecs.upsample) {
+    const vertical: RenderPipelineTarget[] = [];
+    for (const spec of bloomSpecs.vertical) {
       const level = target(context, spec.label, spec);
       if (!level.ok) return level;
-      upsample.push(level.value);
+      vertical.push(level.value);
     }
     const bloom = addTypedBloomPasses(context.graph, {
       scene: postInput,
       composited: composited.value,
-      downsample,
-      upsample,
+      horizontal,
+      vertical,
       levelDimensions: bloomSpecs.levels,
     });
     if (!bloom.ok) return bloom;

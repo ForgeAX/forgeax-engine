@@ -66,7 +66,8 @@ describe('actual deferred direct AO uniform owners', () => {
     expect(f.graph.createBuffer).toHaveBeenCalledWith('deferred-lighting-params', { size: 32 });
     const payload = f.writeBuffer.mock.calls[0]?.[2] as unknown as Float32Array;
     expect(payload.byteLength).toBe(32);
-    expect(payload[0]).toBeCloseTo(1.4);
+    // Intensity is applied to raw AO before denoising, exactly once.
+    expect(payload[0]).toBe(1);
     expect(payload[4]).toBe(strength ?? 0);
     expect([...payload.slice(5)]).toEqual([0, 0, 0]);
   });

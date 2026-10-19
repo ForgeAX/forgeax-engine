@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { decodeMeshBinary, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { describe, expect, it } from 'vitest';
-import { unpackMeshBin } from '../loaders/mesh-bin';
+import { unpackMeshBin } from '../mesh-bin';
 import { defined } from './assert-defined.js';
 
 // Independent byte oracle: deliberately does not use the production encoder/header writer.

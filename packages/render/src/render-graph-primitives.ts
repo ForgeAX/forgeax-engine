@@ -5,7 +5,6 @@
 // closures, fullscreen dispatch, depth resolution, and encoding.
 //
 // Public graph assembly does not depend on legacy add* wrappers.
-import { mat4 } from '@forgeax/engine-math';
 import type { ResolveContext } from '@forgeax/engine-render-graph';
 import type {
   Buffer,
@@ -23,13 +22,12 @@ import {
 } from './fullscreen-post-process-pass';
 import { buildBeginRenderPassDescriptor } from './pipeline-spec';
 import { PostProcessError } from './post-process-errors';
-import { computeProjectionMatrix, computeViewMatrix } from './record/helpers';
 import { getOrCreateFromChain } from './record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './record/render-context';
 import { recordFxaaPass } from './record/skybox-post-pass';
 import type { RenderPipelineContext } from './render-contract';
 import { getOrCreateSsaoBuffers, getOrCreateSsaoFallbackTexture } from './ssao-buffers';
-import { getSsaoParameters, SSAO_SAMPLE_COUNTS } from './ssao-config';
+import { buildSsaoUniformPayload } from './ssao-uniform';
 
 type DepthResolutionContext = Pick<_InternalRenderPipelineContext, 'runtime'> & {
   readonly frameState: {
@@ -191,47 +189,6 @@ function ensureSsaoRecordCompanions(internals: _InternalRenderPipelineContext): 
 }
 
 /**
- * Pack the 256B SSAO uniform payload from the camera + config.ssao.
- *
- * Layout (plan-strategy D-1 + D-C):
- *   floats [0..15]   view              mat4
- *   floats [16..31]  projection        mat4
- *   floats [32..47]  inverseProjection mat4
- *   floats [48..51]  intensityPad      vec4  (x=intensity, y=radius, z=bias)
- *   floats [52..55]  algorithmPad (x: 0 = SSAO, 1 = GTAO)
- *   floats [56..63]  trailing zero-pad to round to 256B / 64f UBO alignment.
- */
-function buildSsaoUniformPayload(internals: _InternalRenderPipelineContext): Float32Array {
-  const { camera, frameState } = internals;
-  const sProj = computeProjectionMatrix(camera);
-  if (camera.temporal?.currentJitterUv !== undefined) {
-    const jitter = mat4.identity(mat4.create());
-    jitter[12] = camera.temporal.currentJitterUv[0] * 2;
-    jitter[13] = camera.temporal.currentJitterUv[1] * -2;
-    mat4.multiply(sProj, jitter, sProj);
-  }
-  const sView = computeViewMatrix(camera);
-  const invProj = mat4.create();
-  mat4.invert(invProj, sProj);
-
-  const out = new Float32Array(64);
-  out.set(sView, 0);
-  out.set(sProj, 16);
-  out.set(invProj, 32);
-
-  const ssaoConfig = frameState.installedPipelineConfig?.ssao;
-  const parameters = getSsaoParameters(
-    ssaoConfig !== undefined && ssaoConfig.enabled === true ? ssaoConfig : undefined,
-  );
-  out[48] = parameters.intensity;
-  out[49] = parameters.radius;
-  out[50] = parameters.bias;
-  out[51] = SSAO_SAMPLE_COUNTS[parameters.quality];
-  out[52] = parameters.algorithm === 'gtao' ? 1 : 0;
-  return out;
-}
-
-/**
  * recordSsaoCalcPass — fullscreen SSAO occlusion calculation (M8 / w38).
  *
  * Resolves the graph-owned half-resolution ssaoRaw color target, writes the
@@ -313,27 +270,12 @@ export function recordSsaoCalcPass(
   const ssaoBufs = getOrCreateSsaoBuffers(runtime);
   if (ssaoBufs === null) return;
 
-  const noiseViewRes = runtime.device.createTextureView(ssaoBufs.noiseTexture, {
-    label: 'hdrp-ssao-noise-view',
-    format: 'rgba32float',
-    dimension: '2d',
-    aspect: 'all',
-    baseMipLevel: 0,
-    mipLevelCount: 1,
-    baseArrayLayer: 0,
-    arrayLayerCount: 1,
-  });
-  if (!noiseViewRes.ok) {
-    runtime.errorRegistry.fire(noiseViewRes.error);
-    return;
-  }
-
   const companions = ensureSsaoRecordCompanions(_c);
   if (companions === null) return;
 
   // Per-frame uniform write (D-C: view+proj+invProj+intensity at one queue
   // call). 256 B Float32Array (64 f32) lands in ssao_uniform UBO offset 0.
-  const payload = buildSsaoUniformPayload(_c);
+  const payload = buildSsaoUniformPayload(_c.camera, _c.frameState.installedPipelineConfig?.ssao);
   const writeRes = runtime.device.queue.writeBuffer(ssaoBufs.uniformBuffer, 0, payload);
   if (!writeRes.ok) {
     runtime.errorRegistry.fire(writeRes.error);
@@ -344,7 +286,7 @@ export function recordSsaoCalcPass(
   // createRenderer. Keyed on the graph-pooled gbuf0 + hdrDepth views (both
   // retire + reallocate on resize), so the WeakMap misses after a resize and
   // rebuilds against the live textures. The noise / depth-only views bound
-  // below are created fresh each frame but back stable textures; keying on the
+  // below back stable textures; keying on the
   // resize-varying graph views is what makes invalidation correct. Replaces
   // the prior `=== null` slot cache that submitted a destroyed gbuf0/hdrDepth
   // after resize.
@@ -360,7 +302,7 @@ export function recordSsaoCalcPass(
         entries: [
           { binding: 0, resource: { kind: 'buffer', value: { buffer: ssaoBufs.uniformBuffer } } },
           { binding: 1, resource: { kind: 'buffer', value: { buffer: ssaoBufs.kernelBuffer } } },
-          { binding: 2, resource: { kind: 'textureView', value: noiseViewRes.value } },
+          { binding: 2, resource: { kind: 'textureView', value: ssaoBufs.noiseView } },
           {
             binding: 3,
             resource: { kind: 'sampler', value: companions.filteringSampler },
@@ -457,21 +399,6 @@ export function recordSsaoBlurPass(
   const ssaoBufs = getOrCreateSsaoBuffers(runtime);
   if (ssaoBufs === null) return;
 
-  const noiseViewRes = runtime.device.createTextureView(ssaoBufs.noiseTexture, {
-    label: 'hdrp-ssao-noise-view',
-    format: 'rgba32float',
-    dimension: '2d',
-    aspect: 'all',
-    baseMipLevel: 0,
-    mipLevelCount: 1,
-    baseArrayLayer: 0,
-    arrayLayerCount: 1,
-  });
-  if (!noiseViewRes.ok) {
-    runtime.errorRegistry.fire(noiseViewRes.error);
-    return;
-  }
-
   const companions = ensureSsaoRecordCompanions(_c);
   if (companions === null) return;
 
@@ -497,7 +424,7 @@ export function recordSsaoBlurPass(
         entries: [
           { binding: 0, resource: { kind: 'buffer', value: { buffer: ssaoBufs.uniformBuffer } } },
           { binding: 1, resource: { kind: 'buffer', value: { buffer: ssaoBufs.kernelBuffer } } },
-          { binding: 2, resource: { kind: 'textureView', value: noiseViewRes.value } },
+          { binding: 2, resource: { kind: 'textureView', value: ssaoBufs.noiseView } },
           {
             binding: 3,
             resource: { kind: 'sampler', value: companions.filteringSampler },
@@ -626,8 +553,8 @@ function dispatchFullscreenPass(
       });
     }
     ctx.encoder.copyTextureToTexture(
-      { texture: ctx.currentTexture as never, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-      { texture: scratchTex as never, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+      { texture: ctx.currentTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+      { texture: scratchTex as Texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
       { width: ctx.targetW, height: ctx.targetH, depthOrArrayLayers: 1 },
     );
     inputView = scratchView as TextureView;

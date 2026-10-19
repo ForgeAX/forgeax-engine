@@ -13,7 +13,7 @@ import { RAY_REFERENCE_LIMIT } from './scene';
 /** State/query-status/candidate-flags/mapped-mask, then hit-t/TMin/TMax/first-distance.
  * Surface support is independent of RGB; no lighting or environment is evaluated. */
 export const PROBE_CARD_SUPPORT_STRIDE = 32;
-export const ProbeCardSupportStatus = {
+const ProbeCardSupportStatus = {
   masked: 0,
   blocked: 1,
   supported: 2,

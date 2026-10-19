@@ -237,3 +237,18 @@ function's documented result path.
 - [`@forgeax/engine-runtime`](../runtime) -- `AssetRegistry.uploadTexture(handle, decoded)` GPU 上传入口 (M3 落地，本包 M2 仅 producer)
 
 The image sidecar producer emits one texture. `toAssetPack(meta)` depends only on sidecar facts, and `reimportReuseMeta(existing)` depends only on persisted identity. Neither operation requires decoded pixel bytes. Reuse preserves the first matching source key or unnamed legacy texture at source index zero.
+
+Binary16 output uses the Math codec, including rounded mantissa carry into the
+next exponent. Source parsing, LUT channel order, IES normalization and GUIDs
+remain owned by their existing producers.
+
+`encodePng(width, height, rgba)` from `@forgeax/engine/image/png` synchronously encodes an RGBA8 byte view in
+Node, browsers and Workers. It writes deterministic PNG color type 6, filter 0
+and zlib level 6 without changing RGB/alpha values. Font baking, debug output
+and smoke captures share this encoder; callers supply positive integral dimensions
+and the corresponding complete pixel view.
+
+The offline Basis path resolves sidecar controls once with `basisEncodeParamsFor`.
+A null result keeps the uncompressed import path; otherwise pass those parameters
+to `encodeTextureToKtx2(pixels, width, height, params)`. Encode results and failures
+report the codec mode (`etc1s`, `uastc-ldr`, or `uastc-hdr`) directly.

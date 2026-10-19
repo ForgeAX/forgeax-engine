@@ -131,7 +131,7 @@ export async function loadSkeletalMotionScene(ctx: Context, aspect: number) {
   world
     .spawn({
       component: DirectionalLight,
-      data: { direction: [-0.4, -1, -0.5], color: [1, 0.95, 0.85], intensity: 4 },
+      data: { castShadow: true, direction: [-0.4, -1, -0.5], color: [1, 0.95, 0.85], intensity: 4 },
     })
     .unwrap();
   return {

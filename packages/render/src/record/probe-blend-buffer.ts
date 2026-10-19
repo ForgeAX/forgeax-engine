@@ -13,7 +13,7 @@ import {
 } from '../scene/probe-blend-record';
 import type { RenderFrameState } from './frame-snapshot';
 
-export interface ProbeBlendBufferRecord {
+interface ProbeBlendBufferRecord {
   readonly cacheKey: number;
   readonly record: ProbeBlendRecord;
 }

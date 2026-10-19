@@ -1,6 +1,7 @@
 import type { RhiComputePassEncoder, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
 import type { GlobalSdfQueryInputs } from './global-sdf-query';
 import { PROBE_PLACEMENT_DIAGNOSTIC_STRIDE, PROBE_PLACEMENT_STRIDE } from './probe-placement';
 import { RAY_INPUT_STRIDE, RAY_REFERENCE_LIMIT } from './scene';
@@ -181,26 +182,9 @@ export function createProbeRayRecorder(device: RhiDevice, module: ShaderModule) 
         const range = input[name],
           offset = range.offset ?? 0,
           uniform = name === 'settings';
-        if (
-          !Number.isSafeInteger(offset) ||
-          offset < 0 ||
-          offset %
-            (uniform
-              ? device.limits.minUniformBufferOffsetAlignment
-              : device.limits.minStorageBufferOffsetAlignment) !==
-            0
-        )
+        if (!isBufferOffsetAligned(device.limits, offset, uniform))
           return failure(`device-aligned nonnegative ${name} offset`);
-        if (
-          !Number.isSafeInteger(offset + range.size) ||
-          !(offset + range.size <= device.limits.maxBufferSize) ||
-          !(
-            range.size <=
-            (uniform
-              ? device.limits.maxUniformBufferBindingSize
-              : device.limits.maxStorageBufferBindingSize)
-          )
-        )
+        if (!isBufferRangeWithinLimits(device.limits, range, uniform))
           return failure(`${name} range within device buffer limits`, 'limit-exceeded');
       }
       if (

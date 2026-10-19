@@ -47,7 +47,10 @@ it('keeps the published command source World distinct from its transport namespa
     )
     .unwrap();
   world
-    .spawn({ component: DirectionalLight, data: { direction: [0, -1, -1], intensity: 1 } })
+    .spawn({
+      component: DirectionalLight,
+      data: { castShadow: true, direction: [0, -1, -1], intensity: 1 },
+    })
     .unwrap();
   const handle = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
   const entity = world

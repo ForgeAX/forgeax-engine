@@ -885,9 +885,10 @@ describe('forgeax::standard graph', () => {
       expect.arrayContaining(['depth-pyramid', 'ssr-trace', 'reflection-fallback-linear-hdr']),
     );
     for (const label of ['ssr-trace', 'ssr-hit-reactivity', 'depth-pyramid']) {
+      const size = label === 'depth-pyramid' ? internal / 2 : internal;
       expect(
         result.value.inspect().resources.find((resource) => resource.label === label),
-      ).toMatchObject({ descriptor: { size: { width: internal / 2, height: internal / 2 } } });
+      ).toMatchObject({ descriptor: { size: { width: size, height: size } } });
     }
     (await result.value.retire()).unwrap();
   });
@@ -942,7 +943,7 @@ describe('forgeax::standard graph', () => {
     expect(result.value.inspect().passes.length).toBeGreaterThan(0);
   });
 
-  it('keeps Bloom a no-op when TAA has no active tone mapper', async () => {
+  it('keeps Bloom active when TAA has no tone mapper', async () => {
     const result = await buildTaa(
       { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
       { camera: { tonemap: 'none', antialias: 'taa', bloom: 'on' } },
@@ -950,9 +951,9 @@ describe('forgeax::standard graph', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const names = result.value.inspect().passes.map((pass) => pass.name);
-    expect(names.some((name) => name.startsWith('bloom-downsample-'))).toBe(false);
-    expect(names.some((name) => name.startsWith('bloom-upsample-'))).toBe(false);
-    expect(names).not.toContain('bloom-composite');
+    expect(names.some((name) => name.startsWith('bloom-horizontal-'))).toBe(true);
+    expect(names.some((name) => name.startsWith('bloom-vertical-'))).toBe(true);
+    expect(names).toContain('bloom-composite');
     expect(names).toContain('taa-resolve');
     expect(names).toContain('output-transform');
   });

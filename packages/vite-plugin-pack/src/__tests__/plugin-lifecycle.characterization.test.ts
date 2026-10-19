@@ -19,12 +19,12 @@ const watcherControl = vi.hoisted(() => ({
   }>,
 }));
 
-vi.mock('../dev/watcher.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../dev/watcher.js')>();
+vi.mock('../dev/revision-observer.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../dev/revision-observer.js')>();
   return {
     ...actual,
-    watchDevRoots: (options: Parameters<typeof actual.watchDevRoots>[0]) => {
-      const handle = actual.watchDevRoots(options);
+    createRevisionObserver: (options: Parameters<typeof actual.createRevisionObserver>[0]) => {
+      const handle = actual.createRevisionObserver(options);
       if (!watcherControl.enabled) return handle;
       const readyFailure = watcherControl.readyFailure;
       watcherControl.readyFailure = undefined;
@@ -49,19 +49,13 @@ vi.mock('../dev/watcher.js', async (importOriginal) => {
       const stop = async (): Promise<void> => {
         record.stopCalls += 1;
         await stopReleased;
-        await handle.stop();
+        await handle.close();
       };
-      const wrapped = (() => handle()) as typeof handle;
-      Object.defineProperties(wrapped, {
-        ready: {
-          configurable: false,
-          enumerable: true,
-          value: readyFailure === undefined ? handle.ready : Promise.reject(readyFailure),
-          writable: false,
-        },
-        stop: { configurable: false, enumerable: true, value: stop, writable: false },
-      });
-      return wrapped;
+      return {
+        ...handle,
+        ready: readyFailure === undefined ? handle.ready : Promise.reject(readyFailure),
+        close: stop,
+      };
     },
   };
 });

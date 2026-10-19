@@ -20,6 +20,9 @@ import type {
   Result,
   RhiCommandEncoder,
   RhiError,
+  TexelCopyBufferInfo,
+  TexelCopyTextureInfo,
+  Texture,
 } from '../index';
 
 describe('w2 - RhiCommandEncoder spec method set (12 spec + 1 compound)', () => {
@@ -111,4 +114,21 @@ describe('w2 - RhiCommandEncoder spec method set (12 spec + 1 compound)', () => 
       Result<CommandBuffer, RhiError>
     >();
   });
+});
+
+// Resource brands survive every copy direction; only the backend unwraps them.
+it('uses RHI resources for all texel copies', () => {
+  expectTypeOf<TexelCopyTextureInfo['texture']>().toEqualTypeOf<Texture>();
+  expectTypeOf<TexelCopyBufferInfo['buffer']>().toEqualTypeOf<Buffer>();
+  expectTypeOf<Parameters<RhiCommandEncoder['copyBufferToTexture']>>().toEqualTypeOf<
+    [TexelCopyBufferInfo, TexelCopyTextureInfo, GPUExtent3DStrict]
+  >();
+  expectTypeOf<Parameters<RhiCommandEncoder['copyTextureToBuffer']>>().toEqualTypeOf<
+    [TexelCopyTextureInfo, TexelCopyBufferInfo, GPUExtent3DStrict]
+  >();
+  expectTypeOf<Parameters<RhiCommandEncoder['copyTextureToTexture']>>().toEqualTypeOf<
+    [TexelCopyTextureInfo, TexelCopyTextureInfo, GPUExtent3DStrict]
+  >();
+  expectTypeOf<GPUTexture>().not.toExtend<Texture>();
+  expectTypeOf<GPUBuffer>().not.toExtend<Buffer>();
 });

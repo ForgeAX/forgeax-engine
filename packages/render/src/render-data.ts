@@ -22,7 +22,7 @@ import {
 import { err, ok, type Result } from '@forgeax/engine-rhi';
 import {
   ASSET_ERROR_HINTS,
-  type AssetError,
+  AssetError,
   deriveTextureLayout,
   isCompressedFormat,
   type MeshAsset,
@@ -42,30 +42,6 @@ import {
   GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_VERTEX,
 } from './gpu-usage';
-
-// AssetError without importing AssetRegistry: build the 4-field surface
-// (.code / .expected / .hint) directly against the @forgeax/engine-types SSOT
-// (charter P5 producer / consumer split; mirrors the store's RuntimeAssetError).
-class ProjectionAssetError extends Error implements AssetError {
-  readonly code: AssetError['code'];
-  readonly expected: string;
-  readonly hint: string;
-  constructor(fields: { code: AssetError['code']; expected: string; hint: string }) {
-    super(`[AssetError ${fields.code}] expected: ${fields.expected}; hint: ${fields.hint}`);
-    this.name = 'AssetError';
-    this.code = fields.code;
-    this.expected = fields.expected;
-    this.hint = fields.hint;
-  }
-}
-
-function projectionError(fields: {
-  code: AssetError['code'];
-  expected: string;
-  hint: string;
-}): AssetError {
-  return new ProjectionAssetError(fields);
-}
 
 /** Descriptor for a mesh's GPU vertex + index buffers (projected from POD). */
 export interface MeshRenderData {
@@ -121,6 +97,23 @@ export interface TextureExtent {
   readonly height: number;
 }
 
+function physicalTextureDimension(logical: number, block: number): number {
+  return Math.ceil(logical / block) * block;
+}
+
+/** Material packing needs only this scale, without GPU allocation descriptors. */
+export function deriveTextureUvScale(
+  format: GPUTextureFormat,
+  width: number,
+  height: number,
+): readonly [number, number] {
+  const { blockWidth, blockHeight } = textureFormatBlock(format);
+  return [
+    width / physicalTextureDimension(width, blockWidth),
+    height / physicalTextureDimension(height, blockHeight),
+  ];
+}
+
 /**
  * The sole logical-content to physical-storage projection for a texture.
  * Block sizes come from the texture format block table; no physical dimensions are
@@ -136,8 +129,8 @@ export function deriveTextureExtent(
   readonly uvScale: readonly [number, number];
 } {
   const { blockWidth, blockHeight } = textureFormatBlock(format);
-  const physicalWidth = Math.ceil(width / blockWidth) * blockWidth;
-  const physicalHeight = Math.ceil(height / blockHeight) * blockHeight;
+  const physicalWidth = physicalTextureDimension(width, blockWidth);
+  const physicalHeight = physicalTextureDimension(height, blockHeight);
   return {
     logicalExtent: { width, height },
     physicalExtent: { width: physicalWidth, height: physicalHeight },
@@ -194,7 +187,7 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
   const expectedColorSpace: 'srgb' | 'linear' = isSrgbFormat ? 'srgb' : 'linear';
   if (tex.colorSpace !== expectedColorSpace) {
     return err(
-      projectionError({
+      new AssetError({
         code: 'invalid-source-format',
         expected: "format ends in '-srgb' iff colorSpace is 'srgb' (linear otherwise)",
         hint: `colorSpace '${tex.colorSpace}' does not match format '${tex.format}'; author sRGB color data as a '-srgb' format with colorSpace 'srgb', and data textures (normals, masks) as a linear format with colorSpace 'linear'`,
@@ -206,7 +199,7 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
   const layout = deriveTextureLayout({ shape: tex.shape, format: tex.format, mips: tex.mips });
   if (!layout.ok) {
     return err(
-      projectionError({
+      new AssetError({
         code: 'invalid-source-format',
         expected: layout.error.expected,
         hint: layout.error.hint,
@@ -221,7 +214,7 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
   // layer -- producer self-validate).
   if (compressed && tex.mips.kind === 'generate') {
     return err(
-      projectionError({
+      new AssetError({
         code: 'mipgen-unsupported-compressed-format',
         expected:
           'a compressed texture requesting mipmap:true must carry an offline mip chain (mipLevelCount > 1)',
@@ -238,7 +231,7 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
   const baseLevel = layout.value.levels[0];
   if (baseLevel === undefined) {
     return err(
-      projectionError({
+      new AssetError({
         code: 'invalid-source-format',
         expected: 'texture layout contains a base mip level',
         hint: ASSET_ERROR_HINTS['invalid-source-format'],
@@ -247,7 +240,7 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
   }
   if (!compressed && tex.data.byteLength < baseLevel.byteLength) {
     return err(
-      projectionError({
+      new AssetError({
         code: 'invalid-source-format',
         expected: 'uncompressed texture data contains at least one complete base mip',
         hint: ASSET_ERROR_HINTS['invalid-source-format'],
@@ -312,7 +305,7 @@ export function deriveRenderDataCubemap(source: TextureAsset): Result<CubeRender
   const isAcceptedHdr = source.format === 'rgba16float' || source.format === 'rgba32float';
   if (!isAcceptedHdr || source.colorSpace !== 'linear') {
     return err(
-      projectionError({
+      new AssetError({
         code: 'invalid-source-format',
         expected: "format 'rgba16float' or 'rgba32float' with colorSpace 'linear'",
         hint: ASSET_ERROR_HINTS['invalid-source-format'],

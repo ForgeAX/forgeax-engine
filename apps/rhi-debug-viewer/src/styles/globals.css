@@ -159,6 +159,8 @@ body {
 }
 
 .forgeax-appbar {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-shrink: 0;
   align-items: center;
@@ -168,6 +170,9 @@ body {
   padding: var(--fx-ref-space-4) var(--fx-ref-space-12);
   border-bottom: var(--fx-border-width) solid var(--fx-color-border-subtle);
   background: var(--fx-color-surface-sidebar);
+}
+.rhi-viewer > main {
+  isolation: isolate;
 }
 .forgeax-notice {
   padding: var(--fx-ref-space-6) var(--fx-ref-space-12);
@@ -338,6 +343,8 @@ body {
 .forgeax-texture-stage {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: clamp(var(--rhi-texture-stage-min-height), 42cqh, var(--rhi-texture-stage-max-height));
   min-height: var(--rhi-texture-stage-min-height);
   place-items: center;

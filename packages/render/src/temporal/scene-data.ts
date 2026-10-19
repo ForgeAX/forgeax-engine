@@ -1,5 +1,4 @@
-import { type RenderError, RenderFeaturePreparedStateMismatchError } from '../errors/render';
-import type { RenderFeatureTargetHandle } from '../features/targets';
+import { RenderFeaturePreparedStateMismatchError } from '../errors/render';
 
 /** The closed semantic schema namespace published by the render owner. */
 export const SCENE_DATA_TEMPORAL_V1_SCHEMA = 'forgeax::scene-data::temporal-v1' as const;
@@ -136,14 +135,4 @@ export function isSceneDataTarget(value: unknown): value is SceneDataTarget {
     candidate.extent === 'render-resolution' &&
     targetOwners.has(value)
   );
-}
-
-export function sceneDataTargetAsAttachment(_target: SceneDataTarget): never {
-  throw new TypeError('SceneDataTarget is sampled-read-only and cannot be used as an attachment');
-}
-
-export type SceneDataTargetInput = RenderFeatureTargetHandle | SceneDataTarget;
-
-export function sceneDataError(error: SceneDataTokenMismatch): RenderError {
-  return error;
 }

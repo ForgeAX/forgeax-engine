@@ -310,7 +310,7 @@ world.spawn(
 ).unwrap();
 world.spawn({
   component: DirectionalLight,
-  data: { direction: [-0.5, -1, -0.3], color: [1, 0.95, 0.9], intensity: 1 },
+  data: { castShadow: true, direction: [-0.5, -1, -0.3], color: [1, 0.95, 0.9], intensity: 1 },
 }).unwrap();
 
 const materialValues = normalMaterial.values;

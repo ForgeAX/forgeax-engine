@@ -8,83 +8,9 @@ const functionSource = (file: string, name: string) => {
   return body;
 };
 
-// Execute the actual Standard ambient coefficient, including its canonical
-// Fresnel helpers, rather than a CPU mirror of the proposed correction.
-it.each([
-  'default-standard-pbr.wgsl',
-  'default-standard-pbr-skin.wgsl',
-])('%s retains rough dielectric diffuse energy at grazing angles', async (file) => {
-  expect(source(file)).toContain('evaluateStandardEnvironment');
-  const coefficient = source('standard-lighting.wgsl').match(
-    /let fresnel = [\s\S]*?let kD = [\s\S]*?;/,
-  )?.[0];
-  expect(coefficient).toBeDefined();
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error('Dawn ambient regression requires a GPU adapter');
-  const device = await adapter.requestDevice();
-  const output = device.createBuffer({
-    size: 64,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-  });
-  const readback = device.createBuffer({
-    size: 64,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-  try {
-    const module = device.createShaderModule({
-      code: `
-        ${functionSource('brdf.wgsl', 'specularF90')}
-        ${functionSource('brdf.wgsl', 'f_schlick')}
-        ${functionSource('ibl-shared.wgsl', 'fresnelSchlickRoughness')}
-        ${functionSource('ibl-shared.wgsl', 'standardDiffuseWeight')}
-        @group(0) @binding(0) var<storage, read_write> result: array<vec4<f32>, 4>;
-        @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-          let normal = vec3<f32>(0.0, 1.0, 0.0);
-          let cosine = select(0.001, 1.0, id.x == 1u);
-          let direction = vec3<f32>(sqrt(1.0 - cosine * cosine), cosine, 0.0);
-          let f0 = vec3<f32>(0.04);
-          let metallic = select(0.0, 1.0, id.x == 3u);
-          let roughness = select(0.95, 0.04, id.x == 2u);
-          ${coefficient}
-          result[id.x] = vec4<f32>(kD, 1.0);
-        }`,
-    });
-    const compilation = await module.getCompilationInfo();
-    expect(
-      compilation.messages
-        .filter((message) => message.type === 'error')
-        .map(({ message, lineNum, linePos }) => ({ message, lineNum, linePos })),
-    ).toEqual([]);
-    const pipeline = await device.createComputePipelineAsync({
-      layout: 'auto',
-      compute: { module, entryPoint: 'main' },
-    });
-    const group = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: output } }],
-    });
-    const encoder = device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, group);
-    pass.dispatchWorkgroups(4);
-    pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, 64);
-    device.queue.submit([encoder.finish()]);
-    await readback.mapAsync(GPUMapMode.READ);
-    const values = Array.from(new Float32Array(readback.getMappedRange()));
-    readback.unmap();
-    expect(values.every(Number.isFinite)).toBe(true);
-    expect(values[0]).toBeGreaterThan(0.9);
-    expect(values[4]).toBeCloseTo(0.96, 3);
-    expect(values[8]).toBeLessThan(0.06);
-    expect(values[12]).toBe(0);
-  } finally {
-    output.destroy();
-    readback.destroy();
-    device.destroy();
-  }
-});
+// Standard's LUT-based diffuse energy is covered by the real-bake white-furnace
+// test in render. This file retains the shared roughness Fresnel kernel proof
+// used by diffuse transmission.
 
 // Cover the full angle/roughness range on the actual backend, including clamp
 // endpoints and colored F0. Keep the reference expression independent of the

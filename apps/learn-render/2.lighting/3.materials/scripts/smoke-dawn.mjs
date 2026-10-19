@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs
 //
@@ -292,18 +293,12 @@ let device;
 let probeReadbackBuffer;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
-  }
+  framesObserved++;
   if (!device && sharedDevice) device = sharedDevice;
   if (i + 1 === PROBE_FRAME) {
     if (!device) {

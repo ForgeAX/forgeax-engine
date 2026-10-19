@@ -1797,9 +1797,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     );
 
     // bug-20260625 regression: createRenderer identifies the 3 bloom post-
-    // process entries by the uniform-struct-name markers BloomDownsampleParams /
-    // BloomUpsampleParams / BloomCompositeParams. The original triage used `//`
-    // content-marker COMMENTS (bloomExtract / bloomUpsample /
+    // process entries by the uniform-struct-name markers BloomHorizontalParams /
+    // BloomVerticalParams / BloomCompositeParams. The original triage used `//`
+    // content-marker COMMENTS (bloomExtract / bloomVertical /
     // bloomComposite) which naga_oil's WGSL writeback strips (comments are not
     // naga IR), so the markers vanished from the composed entry.wgsl, the
     // triage never matched, bloom resources stayed null, and bloom silently
@@ -1814,8 +1814,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         // must appear as a real WGSL `struct` declaration (naga IR survivor) --
         // NOT merely inside a comment that naga would drop.
         for (const struct of [
-          'BloomDownsampleParams',
-          'BloomUpsampleParams',
+          'BloomHorizontalParams',
+          'BloomVerticalParams',
           'BloomCompositeParams',
         ]) {
           const hits = manifest.entries.filter((e) => e.wgsl.includes(struct));

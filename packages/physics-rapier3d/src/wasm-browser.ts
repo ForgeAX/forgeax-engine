@@ -7,7 +7,6 @@
 //   if ('code' in rapier) { /* handle PhysicsError */ }
 //   const world = new rapier.World({ x: 0, y: -9.81, z: 0 });
 
-import type { PhysicsErrorCode } from '@forgeax/engine-types';
 import { PhysicsError } from '@forgeax/engine-types';
 
 /**
@@ -16,9 +15,6 @@ import { PhysicsError } from '@forgeax/engine-types';
  */
 // biome-ignore lint/suspicious/noExplicitAny: existing Rapier backend injection boundary
 export type Rapier3DModule = any;
-
-/** Cached RAPIER instance — loaded once, reused across frames. */
-let rapierInstance: Rapier3DModule | null = null;
 
 /** Loading promise — ensures concurrent callers share one init. */
 let loadingPromise: Promise<Rapier3DModule | PhysicsError> | null = null;
@@ -30,13 +26,12 @@ let loadingPromise: Promise<Rapier3DModule | PhysicsError> | null = null;
  * No network request or runtime source patching is required.
  *
  * Concurrent callers share a single loading promise; after the first
- * successful load the cached instance is returned synchronously.
+ * successful load the same settled promise is reused.
  *
  * @returns the RAPIER module namespace on success, or a PhysicsError with
  *          code 'wasm-load-failed' if dynamic import or init() rejects.
  */
-export async function loadRapier3D(): Promise<Rapier3DModule | PhysicsError> {
-  if (rapierInstance !== null) return rapierInstance;
+export function loadRapier3D(): Promise<Rapier3DModule | PhysicsError> {
   if (loadingPromise !== null) return loadingPromise;
 
   loadingPromise = _doLoad();
@@ -47,14 +42,12 @@ async function _doLoad(): Promise<Rapier3DModule | PhysicsError> {
   try {
     const RAPIER = await import('../pkg/rapier.mjs');
     await RAPIER.default.init();
-    rapierInstance = RAPIER.default;
-    loadingPromise = null;
     return RAPIER.default;
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     loadingPromise = null;
     return new PhysicsError({
-      code: 'wasm-load-failed' as PhysicsErrorCode,
+      code: 'wasm-load-failed',
       expected: 'successful dynamic import and init of the package-local Rapier WASM',
       hint: `dynamic import or init() failed: ${reason}. Rebuild or restore packages/physics-rapier3d/pkg with build:wasm.`,
       detail: { code: 'wasm-load-failed', reason },

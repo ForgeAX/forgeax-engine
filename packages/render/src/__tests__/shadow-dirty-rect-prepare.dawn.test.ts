@@ -413,8 +413,8 @@ it.each([
       }
       pass.end();
       encoder.copyTextureToBuffer(
-        { texture: depth as unknown as GPUTexture },
-        { buffer: readback as unknown as GPUBuffer, bytesPerRow: ROW_BYTES, rowsPerImage: SIZE },
+        { texture: depth },
+        { buffer: readback, bytesPerRow: ROW_BYTES, rowsPerImage: SIZE },
         { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
       );
       device.queue.submit([encoder.finish().unwrap()]).unwrap();

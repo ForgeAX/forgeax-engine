@@ -1,8 +1,7 @@
 import { decompressZstd } from '@forgeax/engine-codec';
 import { validateArtifactPath } from '@forgeax/engine-pack';
-import { encodePackBlob } from '@forgeax/engine-pack/runtime';
 import type { ArtifactDescriptor, AssetArtifactError } from '@forgeax/engine-types';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
 import {
   bytesOf,
@@ -134,7 +133,7 @@ async function verifyBytes(
   const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
   const matches = /^[0-9a-f]{64}$/i.test(expectedDigest)
     ? expectedDigest.toLowerCase() === hex
-    : expectedDigest === encodePackBlob(digest);
+    : expectedDigest === encodeBase64(digest);
   if (!matches) {
     return err(
       failure(

@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -13,7 +14,7 @@ import {
   replayDeviceRequest,
 } from '../../../../packages/rhi-debug/dist/index.mjs';
 import * as webgpu from '../../../../packages/rhi-webgpu/dist/index.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const directory = resolve(process.env.FORGEAX_PATH_EVIDENCE ?? 'artifacts/path-follow');
 await mkdir(resolve(directory, 'replay'), { recursive: true });
@@ -285,7 +286,7 @@ try {
         throw new Error(JSON.stringify({ parity, errors }));
       await writeFile(
         resolve(directory, 'replay', `${source.phase}.png`),
-        writeReferencePng(rgba, output.width, output.height),
+        encodePng(output.width, output.height, rgba),
       );
       rows.push({
         phase: source.phase,

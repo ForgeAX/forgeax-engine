@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/1.getting-started/6.coordinate-systems/scripts/smoke-dawn.mjs
 //
 // LearnOpenGL section 1.6 coordinate-systems dawn-node smoke
@@ -280,7 +281,7 @@ world.spawn(
 );
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.5, -1, -0.3],
     color: [1, 1, 1],
     intensity: 1,
@@ -292,15 +293,8 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw(frameRequest);
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-    if (i === 0) console.error(JSON.stringify({ error: r.error, inspection: renderer.inspect() }));
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
-  }
+  await drawReadyFrame(renderer, frameRequest);
+  framesObserved++;
 }
 const device = sharedDevice;
 if (!device) {

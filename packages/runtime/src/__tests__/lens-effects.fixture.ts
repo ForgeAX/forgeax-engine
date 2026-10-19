@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   BarrelDistortion,
   Camera,
@@ -14,7 +15,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   type ReplayReadbackResult,
@@ -33,7 +33,7 @@ function rgba(read: ReplayReadbackResult): number[] {
   expect(read.format).toBe('rgba16float');
   const data = new DataView(read.bytes.buffer, read.bytes.byteOffset, read.bytes.byteLength);
   return Array.from({ length: read.bytes.length / 2 }, (_, i) =>
-    halfToFloat(data.getUint16(i * 2, true)),
+    halfFloat.f16ToF32(data.getUint16(i * 2, true)),
   );
 }
 
@@ -130,7 +130,7 @@ export async function verifyLensEffects(
       width,
       height,
       pixels: Array.from({ length: width * height * 4 }, (_, i) =>
-        halfToFloat(
+        halfFloat.f16ToF32(
           data.getUint16(Math.floor(i / (width * 4)) * bytesPerRow + (i % (width * 4)) * 2, true),
         ),
       ),

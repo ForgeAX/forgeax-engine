@@ -514,8 +514,8 @@ type __MergedKeep =
       bloom: 'off',
       bloomThreshold: 1.0,
       bloomIntensity: 1.0,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
       clearColor: [0, 0, 0, 1],
     };
   }

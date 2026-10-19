@@ -33,6 +33,95 @@ const material: MaterialAsset = {
  * only its own temporal slot.
  */
 describe('PersistentRenderScene frame caches', () => {
+  it('retains unchanged draw addresses across partial publications and preserves older frames', () => {
+    const world = new World();
+    registerPropagateTransforms(world);
+    const handle = world.allocSharedRef('MaterialAsset', material);
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 30] } },
+        { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 200 } },
+      )
+      .unwrap();
+    const meshes = [100, 120, 0, 1].map((x) =>
+      world
+        .spawn(
+          { component: Transform, data: { pos: [x, 0, 0] } },
+          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshRenderer, data: { materials: [handle] } },
+        )
+        .unwrap(),
+    );
+    const [hiddenMesh, , stableMesh, changingMesh] = meshes;
+    if (hiddenMesh === undefined || stableMesh === undefined || changingMesh === undefined) {
+      throw new Error('Missing test mesh');
+    }
+    const scene = new PersistentRenderScene();
+    const lease = createRenderReadLease(world);
+    const assets = new AssetRegistry({
+      materialArtifact: () => undefined,
+      findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
+    } as unknown as ShaderRegistry);
+    const owner = { cameraOwner: 0, resourceOwner: 0 };
+    const draw = () => {
+      world.update(1 / 60).unwrap();
+      return scene.extractComposition(
+        [world],
+        owner,
+        0,
+        (request) =>
+          extractFrames([world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
+            cull: 'none',
+            retainHidden: true,
+            renderables: request,
+          }),
+        [lease],
+      );
+    };
+    const replacement = world.allocSharedRef('MaterialAsset', {
+      ...material,
+      values: { baseColor: [1, 0, 0, 1], metallic: 0, roughness: 0.5 },
+    });
+    try {
+      const first = draw();
+      const stable = first.dispatch.find((entry) => entry.entityIndex === stableMesh);
+      if (stable === undefined) throw new Error('Missing visible dispatch');
+      expect(stable.renderableIndex).toBe(0);
+      world.set(changingMesh, MeshRenderer, { materials: [replacement] }).unwrap();
+      const changed = draw();
+      expect(changed.dispatch).not.toBe(first.dispatch);
+      expect(changed.dispatch.find((entry) => entry.entityIndex === stableMesh)).toBe(stable);
+      world.set(hiddenMesh, Transform, { pos: [-1, 0, 0] }).unwrap();
+      const expanded = draw();
+      const shifted = expanded.dispatch.find((entry) => entry.entityIndex === stableMesh);
+      if (shifted === undefined) throw new Error('Missing shifted dispatch');
+      expect(shifted.renderableIndex).toBe(1);
+      expect(stable.renderableIndex).toBe(0);
+      world.set(hiddenMesh, Transform, { pos: [100, 0, 0] }).unwrap();
+      const contracted = draw();
+      expect(
+        contracted.dispatch.find((entry) => entry.entityIndex === stableMesh)?.renderableIndex,
+      ).toBe(0);
+      expect(shifted.renderableIndex).toBe(1);
+      world.set(stableMesh, MeshRenderer, { materials: [replacement] }).unwrap();
+      const replaced = draw();
+      expect(replaced.dispatch.find((entry) => entry.entityIndex === stableMesh)).not.toBe(stable);
+      expect(first.dispatch.find((entry) => entry.entityIndex === stableMesh)).toBe(stable);
+      world.despawn(hiddenMesh).unwrap();
+      const removed = draw();
+      expect(removed.dispatch.some((entry) => entry.entityIndex === hiddenMesh)).toBe(false);
+      expect(removed.dispatch.some((entry) => entry.entityIndex === stableMesh)).toBe(true);
+      for (const frame of [first, changed, expanded, contracted, replaced, removed]) {
+        for (const entry of frame.dispatch) {
+          expect(frame.renderables[entry.renderableIndex]?.entityKey).toBe(entry.entityIndex);
+        }
+      }
+    } finally {
+      lease.dispose();
+      scene.dispose();
+    }
+  });
+
   it('reuse the plan across camera-only frames and miss only on real input changes', () => {
     const world = new World();
     registerPropagateTransforms(world);

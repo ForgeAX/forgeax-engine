@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -111,8 +112,8 @@ for (let i = 0; i < offPixels.length; i += 4) {
 const diffMean = totalDiff / (width * height * 3);
 const artifactDir = resolve(here, '..', 'artifacts');
 mkdirSync(artifactDir, { recursive: true });
-writeFileSync(resolve(artifactDir, 'bloom-2d-off.png'), writeReferencePng(offPixels, width, height));
-writeFileSync(resolve(artifactDir, 'bloom-2d-on.png'), writeReferencePng(onPixels, width, height));
+writeFileSync(resolve(artifactDir, 'bloom-2d-off.png'), encodePng(width, height, offPixels));
+writeFileSync(resolve(artifactDir, 'bloom-2d-on.png'), encodePng(width, height, onPixels));
 console.log(`[smoke] frames=${frames} visiblePixels=${visiblePixels} bloomDiffMean=${diffMean.toFixed(4)} changedPixels=${changedPixels} errors=${errors.length + offErrors + onErrors + tailErrors} passes=${passNames.join(',')}`);
 
 const failures = [];
@@ -122,15 +123,16 @@ if (visiblePixels < 100) failures.push(`visiblePixels=${visiblePixels}`);
 if (diffMean <= 0.25 || changedPixels <= 20) failures.push(`bloomDiffMean=${diffMean.toFixed(4)} changedPixels=${changedPixels}`);
 if (errors.length + offErrors + onErrors + tailErrors > 0) failures.push(`errors=${errors.length + offErrors + onErrors + tailErrors}`);
 for (const pass of [
-  'bloom-downsample-0',
-  'bloom-downsample-1',
-  'bloom-downsample-2',
-  'bloom-downsample-3',
-  'bloom-downsample-4',
-  'bloom-upsample-3',
-  'bloom-upsample-2',
-  'bloom-upsample-1',
-  'bloom-upsample-0',
+  'bloom-horizontal-0',
+  'bloom-vertical-0',
+  'bloom-horizontal-1',
+  'bloom-vertical-1',
+  'bloom-horizontal-2',
+  'bloom-vertical-2',
+  'bloom-horizontal-3',
+  'bloom-vertical-3',
+  'bloom-horizontal-4',
+  'bloom-vertical-4',
   'bloom-composite',
 ]) if (!passNames.includes(pass)) failures.push(`missing=${pass}`);
 if (failures.length > 0) {

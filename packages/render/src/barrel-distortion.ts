@@ -4,6 +4,7 @@ import {
   validateBarrelDistortionParameters,
 } from './components/barrel-distortion';
 import { BarrelDistortionInvalidParameterError } from './errors/render';
+import type { CameraSnapshot } from './render-contract';
 
 /** One immutable mapping used by the output pass and display interaction. */
 export interface BarrelDistortionMapping {
@@ -19,10 +20,7 @@ export interface BarrelDistortionMapping {
 }
 
 /** Camera matrices paired with the mapping's accepted render frame. */
-export interface BarrelDistortionCameraFrame {
-  readonly projection: 'perspective' | 'orthographic';
-  /** Far plane from the same submitted camera snapshot as the matrices. */
-  readonly far: number;
+export interface BarrelDistortionCameraFrame extends Pick<CameraSnapshot, 'projection' | 'far'> {
   readonly viewMatrix: ArrayLike<number>;
   readonly projectionMatrix: ArrayLike<number>;
 }

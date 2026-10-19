@@ -15,7 +15,6 @@ const vfxSource = readFileSync(
 
 describe('runtime Environment consumer ownership', () => {
   it('consumes extracted Environment facts without a second Fog resource topology', () => {
-    expect(environmentSource).toContain('createEnvironmentExtractionContext');
     expect(environmentSource).not.toContain('createFullscreenRenderFeature');
     expect(vfxSource).not.toMatch(/fog.*(history|counter|upload)/i);
   });

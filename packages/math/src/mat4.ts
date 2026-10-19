@@ -38,6 +38,7 @@
 //   #7  mat4.perspective(near>=far) etc.   → numerically undefined but does not throw
 
 import { EPS_DET, EPS_NORMALIZE } from './_internal/epsilon';
+import { rotationToQuat } from './_internal/rotation';
 import type { Mat4, Mat4Like, Quat, QuatLike, Vec3, Vec3Like } from './types';
 import * as vec3 from './vec3';
 
@@ -500,9 +501,10 @@ export function lookAt(out: Mat4, eye: Vec3Like, target: Vec3Like, up: Vec3Like)
 }
 
 /**
- * out = T(translation) * R(rotation) * S(scale) (TRS affine composition). Returns out.
+ * out = T * R * H * S. Optional shear H has upper-triangular XY, XZ, YZ entries;
+ * omission is ordinary TRS. Returns out.
  */
-export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like): Mat4 {
+export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like, shear?: Vec3Like): Mat4 {
   // build R (from quat) first, then scale each column, finally write translation
   const x = r[0] as number;
   const y = r[1] as number;
@@ -523,6 +525,12 @@ export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like): Mat4 
   const sx = s[0] as number;
   const sy = s[1] as number;
   const sz = s[2] as number;
+  const tx = t[0] as number,
+    ty = t[1] as number,
+    tz = t[2] as number;
+  const hxy = shear?.[0] ?? 0,
+    hxz = shear?.[1] ?? 0,
+    hyz = shear?.[2] ?? 0;
 
   out[0] = (1 - (yy + zz)) * sx;
   out[1] = (xy + wz) * sx;
@@ -536,11 +544,96 @@ export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like): Mat4 
   out[9] = (yz - wx) * sz;
   out[10] = (1 - (xx + yy)) * sz;
   out[11] = 0;
-  out[12] = t[0] as number;
-  out[13] = t[1] as number;
-  out[14] = t[2] as number;
+  out[12] = tx;
+  out[13] = ty;
+  out[14] = tz;
   out[15] = 1;
+  if (hxy !== 0 || hxz !== 0 || hyz !== 0) {
+    out[4] = (xy - wz + (1 - (yy + zz)) * hxy) * sy;
+    out[5] = (1 - (xx + zz) + (xy + wz) * hxy) * sy;
+    out[6] = (yz + wx + (xz - wy) * hxy) * sy;
+    out[8] = (xz + wy + (1 - (yy + zz)) * hxz + (xy - wz) * hyz) * sz;
+    out[9] = (yz - wx + (xy + wz) * hxz + (1 - (xx + zz)) * hyz) * sz;
+    out[10] = (1 - (xx + yy) + (xz - wy) * hxz + (yz + wx) * hyz) * sz;
+  }
   return out;
+}
+
+/**
+ * QR decomposition of a finite nonsingular affine matrix into T * R * H * S.
+ * The reflection sign belongs to scale Z; H stores dimensionless XY, XZ, YZ shear.
+ * Returns false without changing outputs for non-affine, singular or unrepresentable input.
+ * Outputs must be disjoint, but may borrow the input's storage.
+ */
+export function decomposeAffine(
+  out_t: Vec3,
+  out_r: Quat,
+  out_s: Vec3,
+  out_shear: Vec3,
+  m: Mat4Like,
+): boolean {
+  for (let i = 0; i < 16; i++) if (!Number.isFinite(Math.fround(m[i] as number))) return false;
+  // Double-precision inversions can leave homogeneous W one ULP from 1.
+  if (m[3] !== 0 || m[7] !== 0 || m[11] !== 0 || Math.fround(m[15] as number) !== 1) return false;
+  const tx = m[12] as number,
+    ty = m[13] as number,
+    tz = m[14] as number;
+  const ax = m[0] as number,
+    ay = m[1] as number,
+    az = m[2] as number;
+  const bx = m[4] as number,
+    by = m[5] as number,
+    bz = m[6] as number;
+  const cx = m[8] as number,
+    cy = m[9] as number,
+    cz = m[10] as number;
+  const sx = Math.hypot(ax, ay, az);
+  if (sx === 0) return false;
+  const ux = ax / sx,
+    uy = ay / sx,
+    uz = az / sx;
+  const xy = ux * bx + uy * by + uz * bz;
+  const vx0 = bx - ux * xy,
+    vy0 = by - uy * xy,
+    vz0 = bz - uz * xy;
+  const sy = Math.hypot(vx0, vy0, vz0);
+  if (sy === 0) return false;
+  const vx = vx0 / sy,
+    vy = vy0 / sy,
+    vz = vz0 / sy;
+  const wx = uy * vz - uz * vy,
+    wy = uz * vx - ux * vz,
+    wz = ux * vy - uy * vx;
+  const sz = wx * cx + wy * cy + wz * cz;
+  if (sz === 0) return false;
+  const xz = ux * cx + uy * cy + uz * cz;
+  const yz = vx * cx + vy * cy + vz * cz;
+  const hxy = xy / sy,
+    hxz = xz / sz,
+    hyz = yz / sz;
+  if (
+    !Number.isFinite(Math.fround(sx)) ||
+    !Number.isFinite(Math.fround(sy)) ||
+    !Number.isFinite(Math.fround(sz)) ||
+    Math.fround(sx) === 0 ||
+    Math.fround(sy) === 0 ||
+    Math.fround(sz) === 0 ||
+    !Number.isFinite(Math.fround(hxy)) ||
+    !Number.isFinite(Math.fround(hxz)) ||
+    !Number.isFinite(Math.fround(hyz))
+  )
+    return false;
+  out_t[0] = tx;
+  out_t[1] = ty;
+  out_t[2] = tz;
+  out_s[0] = sx;
+  out_s[1] = sy;
+  out_s[2] = sz;
+  out_shear[0] = hxy;
+  out_shear[1] = hxz;
+  out_shear[2] = hyz;
+  rotationToQuat(out_r, ux, uy, uz, vx, vy, vz, wx, wy, wz);
+  return true;
 }
 
 /**
@@ -595,33 +688,7 @@ export function decompose(out_t: Vec3, out_r: Quat, out_s: Vec3, m: Mat4Like): v
   const r21 = (m[9] as number) * invSz;
   const r22 = (m[10] as number) * invSz;
 
-  // rotation matrix → quat (Shoemake's method; case-split on the sign of trace)
-  const trace = r00 + r11 + r22;
-  if (trace > 0) {
-    const s = 0.5 / Math.sqrt(trace + 1);
-    out_r[0] = (r12 - r21) * s;
-    out_r[1] = (r20 - r02) * s;
-    out_r[2] = (r01 - r10) * s;
-    out_r[3] = 0.25 / s;
-  } else if (r00 > r11 && r00 > r22) {
-    const s = 2 * Math.sqrt(1 + r00 - r11 - r22);
-    out_r[0] = 0.25 * s;
-    out_r[1] = (r10 + r01) / s;
-    out_r[2] = (r20 + r02) / s;
-    out_r[3] = (r12 - r21) / s;
-  } else if (r11 > r22) {
-    const s = 2 * Math.sqrt(1 + r11 - r00 - r22);
-    out_r[0] = (r10 + r01) / s;
-    out_r[1] = 0.25 * s;
-    out_r[2] = (r21 + r12) / s;
-    out_r[3] = (r20 - r02) / s;
-  } else {
-    const s = 2 * Math.sqrt(1 + r22 - r00 - r11);
-    out_r[0] = (r20 + r02) / s;
-    out_r[1] = (r21 + r12) / s;
-    out_r[2] = 0.25 * s;
-    out_r[3] = (r01 - r10) / s;
-  }
+  rotationToQuat(out_r, r00, r01, r02, r10, r11, r12, r20, r21, r22);
 }
 
 /** out = 4x4 rotation matrix from quaternion (no translation, no scale). Returns out. */

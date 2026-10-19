@@ -3,13 +3,12 @@ import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { createFixedRuntimePackSnapshot } from '@forgeax/engine-import';
 import {
   createRuntimePackPublication,
-  encodePackBlob,
   type FixedPackPublication,
   preparePackProgram,
 } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { type Context, inspectPluginFiber, type PluginPrograms } from '@forgeax/engine-plugin';
-import { ok } from '@forgeax/engine-types';
+import { encodeBase64, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { defined } from '../../../assets-runtime/src/__tests__/assert-defined.js';
 import { scriptablePackFingerprint } from '../../../import/src/scriptable-pack-fingerprint.js';
@@ -143,7 +142,7 @@ it.each([
           },
         ],
         blobs: {
-          'attachment.bin': encodePackBlob(corrupt ? new Uint8Array([19, 27, 53, 91, 212]) : bytes),
+          'attachment.bin': encodeBase64(corrupt ? new Uint8Array([19, 27, 53, 91, 212]) : bytes),
         },
       }),
     ),

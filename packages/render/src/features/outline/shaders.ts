@@ -67,7 +67,7 @@ const composite = /* wgsl */ `${vertex}
   return color;
 }`;
 const depthRead = { key: 'scene-depth', sampleType: 'depth' } as const;
-export const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
+const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
   {
     kind: 'fullscreen-program' as const,
     name: 'forgeax.outline.depth',

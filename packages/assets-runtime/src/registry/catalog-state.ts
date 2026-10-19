@@ -4,10 +4,10 @@ import type {
   CatalogDelta,
   CatalogDiagnostic,
   CatalogEntry,
-  CatalogRevisionWindow,
   ResourceRevision,
   RuntimeAssetBinding,
 } from '@forgeax/engine-types';
+import { checkCatalogRevisionContinuity } from '@forgeax/engine-types';
 import type { CatalogSource } from '../catalog-source';
 
 export interface CatalogReplicaSnapshot {
@@ -79,73 +79,6 @@ function diagnosticForDegradedRows(): CatalogDiagnostic {
 
 function hasIdentityChanges(delta: CatalogDelta): boolean {
   return delta.added.length > 0 || delta.changed.length > 0 || delta.removed.length > 0;
-}
-
-function revisionDiagnostic(
-  revisions: CatalogRevisionWindow,
-  hasChanges: boolean,
-): CatalogDiagnostic | undefined {
-  const baselineByRoot = new Map(revisions.baseline.map((point) => [point.rootId, point]));
-  const currentByRoot = new Map(revisions.current.map((point) => [point.rootId, point]));
-
-  for (const point of revisions.current) {
-    const baseline = baselineByRoot.get(point.rootId);
-    if (baseline === undefined) {
-      return {
-        code: 'catalog-revision-conflict',
-        severity: 'blocking',
-        expected: 'every current root to have a verified baseline',
-        actual: point.rootId,
-        hint: 'restore the latest verified snapshot for this root before applying the delta',
-        authority: 'catalog',
-      };
-    }
-    if (point.revision < baseline.revision) {
-      return {
-        code: 'catalog-revision-stale',
-        severity: 'blocking',
-        expected: 'current revision to be at least the verified baseline',
-        actual: `${baseline.revision} -> ${point.revision}`,
-        hint: 'discard the stale update and request a fresh catalog snapshot',
-        authority: 'catalog',
-      };
-    }
-    if (point.revision === baseline.revision && hasChanges) {
-      return {
-        code: 'catalog-revision-conflict',
-        severity: 'blocking',
-        expected: 'a changed delta to advance the root revision',
-        actual: `${baseline.revision} -> ${point.revision}`,
-        hint: 'keep the verified baseline and serialize concurrent updates before retrying',
-        authority: 'catalog',
-      };
-    }
-    if (point.revision > baseline.revision + 1) {
-      return {
-        code: 'catalog-revision-conflict',
-        severity: 'blocking',
-        expected: 'the next revision to be exactly baseline + 1',
-        actual: `${baseline.revision} -> ${point.revision}`,
-        hint: 'request the missing revisions or rebuild from the latest verified snapshot',
-        authority: 'catalog',
-      };
-    }
-  }
-
-  for (const point of revisions.baseline) {
-    if (!currentByRoot.has(point.rootId)) {
-      return {
-        code: 'catalog-revision-conflict',
-        severity: 'blocking',
-        expected: 'every baseline root to be present in the current revision set',
-        actual: point.rootId,
-        hint: 'do not apply a partial root set over the verified baseline',
-        authority: 'catalog',
-      };
-    }
-  }
-
-  return undefined;
 }
 
 function rowRevisionDiagnostic(
@@ -435,7 +368,7 @@ export class CatalogReplica {
         ? diagnosticForScopeMismatch()
         : delta.revisions === undefined
           ? rowRevisionDiagnostic(this.entries, delta)
-          : (revisionDiagnostic(delta.revisions, hasIdentityChanges(delta)) ??
+          : (checkCatalogRevisionContinuity(delta.revisions, hasIdentityChanges(delta)) ??
             rowRevisionDiagnostic(this.entries, delta));
     const degradedRows = delta.authority === 'degraded' && hasIdentityChanges(delta);
     if (diagnostic === undefined && !degradedRows) return delta;

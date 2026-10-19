@@ -1,6 +1,7 @@
 import type { RhiComputePassEncoder, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
 import { GLOBAL_SDF_SAMPLE_WGSL, type GlobalSdfQueryInputs } from './global-sdf-query';
 import { ProbeRayStatus } from './probe-rays';
 import { RAY_REFERENCE_LIMIT } from './scene';
@@ -10,7 +11,7 @@ import { RAY_REFERENCE_LIMIT } from './scene';
  * miss/hit/negativeStart/stepBudget, missingField/outsideRegion/masked/unknown.
  * Clearance is a sampled SWRT diagnostic, never solid-exterior truth. */
 export const PROBE_ORIGIN_SUPPORT_STRIDE = 96;
-export type ProbeOriginSupportInputs = Readonly<
+type ProbeOriginSupportInputs = Readonly<
   Record<
     'probes' | 'candidate' | 'emission' | 'hits' | 'voxels' | 'grid' | 'diagnostics',
     GlobalSdfQueryInputs['rays']
@@ -152,24 +153,12 @@ export function createProbeOriginSupportRecorder(device: RhiDevice, module: Shad
         const name = names[binding];
         if (name === undefined) return fail('complete support bindings');
         const range = input[name];
-        const alignment =
-          binding === 5
-            ? device.limits.minUniformBufferOffsetAlignment
-            : device.limits.minStorageBufferOffsetAlignment;
-        const limit =
-          binding === 5
-            ? device.limits.maxUniformBufferBindingSize
-            : device.limits.maxStorageBufferBindingSize;
         if (
-          !Number.isSafeInteger(range.offset ?? 0) ||
-          (range.offset ?? 0) < 0 ||
-          (range.offset ?? 0) % alignment !== 0 ||
+          !isBufferOffsetAligned(device.limits, range.offset ?? 0, binding === 5) ||
           !Number.isSafeInteger(range.size) ||
           range.size <= 0 ||
           range.size !== sizes[binding] ||
-          range.size > limit ||
-          !Number.isSafeInteger((range.offset ?? 0) + range.size) ||
-          (range.offset ?? 0) + range.size > device.limits.maxBufferSize ||
+          !isBufferRangeWithinLimits(device.limits, range, binding === 5) ||
           (name === 'voxels' &&
             (range.size % 16 !== 0 || range.size < 4 ** 3 * 16 || range.size > 128 ** 3 * 16))
         )

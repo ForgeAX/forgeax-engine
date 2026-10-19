@@ -137,8 +137,8 @@ describe('RecorderSession contract', () => {
       .unwrap();
     const encoder = device.createCommandEncoder({}).unwrap();
     encoder.copyBufferToTexture(
-      { buffer: buffer as unknown as GPUBuffer, bytesPerRow: 256, rowsPerImage: 4 },
-      { texture: texture as unknown as GPUTexture },
+      { buffer: buffer, bytesPerRow: 256, rowsPerImage: 4 },
+      { texture: texture },
       { width: 4, height: 4 },
     );
     device.queue.submit([encoder.finish().unwrap()]).unwrap();

@@ -37,6 +37,21 @@ describe('parseCubeLut', () => {
     expect(parsed.value.values.slice(-3)).toEqual(new Float32Array([1, 1, 1]));
   });
 
+  it('carries rounded RGB mantissas into the next binary16 exponent', () => {
+    const parsed = parseCubeLut(
+      cubeSource(16, {
+        rows: Array.from({ length: 16 ** 3 }, () => '0.49999 0.9999 0.00006103'),
+      }),
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const bytes = cubeLutBytes(parsed.value);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect([0, 2, 4, 6].map((offset) => view.getUint16(offset, true))).toEqual([
+      0x3800, 0x3c00, 0x0400, 0x3c00,
+    ]);
+  });
+
   it('emits deterministic linear rgba16float bytes with alpha one', () => {
     const parsed = parseCubeLut(cubeSource(16), 'fixture/deterministic.cube');
     expect(parsed.ok).toBe(true);

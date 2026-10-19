@@ -19,6 +19,7 @@ import { probeLocalization } from '../../../templates/game-3d/scripts/localizati
 import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
 import { serializeBrowserConsoleValue } from './serialize-browser-console-value.mjs';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
+import { decodeCatalogWire } from '@forgeax/engine/pack';
 import { GameProjectSchema } from '@forgeax/engine/project';
 import { createOwnedProcessGroupStopper } from '../../shared/scripts/rhi-debug-process.mjs';
 import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
@@ -811,9 +812,7 @@ async function waitForServerReady() {
     }
     if (body !== undefined) {
       if (response.ok) {
-        if (!Array.isArray(JSON.parse(body).entries)) {
-          throw new Error('Preview catalog response has no entries array');
-        }
+        decodeCatalogWire(JSON.parse(body)).unwrap();
         return;
       }
       if (response.status !== 503) {
@@ -1473,8 +1472,8 @@ async function smokeGame3d(evidence) {
 }
 
 async function smokeEmptyStartupReadiness(evidence) {
-  const catalog = await (await fetch(`${ORIGIN}${CATALOG_URL}`)).json();
-  const scene = catalog.entries.find((entry) => entry.guid === '019fb7ce-1000-7000-8000-000000000001');
+  const catalog = decodeCatalogWire(await (await fetch(`${ORIGIN}${CATALOG_URL}`)).json()).unwrap();
+  const scene = catalog.find((entry) => entry.guid === '019fb7ce-1000-7000-8000-000000000001');
   if (scene?.kind !== 'scene' || typeof scene.packageUrl !== 'string') {
     throw new Error('empty startup disposal requires the ordinary scene Catalog entry');
   }

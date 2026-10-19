@@ -39,26 +39,6 @@ export interface ProjectPortOptions {
   readonly strictPort: boolean;
 }
 
-export function parseProjectPortOption(
-  value: string | undefined,
-  provided: boolean,
-): CommandResult<number | undefined> {
-  if (!provided) return { ok: true, value: undefined };
-  if (value !== undefined && /^(0|[1-9]\d*)$/.test(value)) {
-    const port = Number(value);
-    if (Number.isSafeInteger(port) && port <= 65_535) return { ok: true, value: port };
-  }
-  return {
-    ok: false,
-    error: {
-      code: 'cli-parse-error',
-      expected: '--port to be 0 or an integer from 1 to 65535',
-      hint: 'Omit --port for strict 5173, pass a positive port for a strict binding, or pass 0 for an OS-assigned port.',
-      detail: { option: '--port', received: value ?? null },
-    },
-  };
-}
-
 export function resolveProjectPort(port: number | undefined): ProjectPortOptions {
   return { port: port ?? 5173, strictPort: port !== 0 };
 }
@@ -105,8 +85,6 @@ export type CaptureBackend = 'auto' | 'software' | 'hardware';
 export interface BrowserCaptureOptions extends ProjectCommandOptions {
   /** Prefer a rendering lane, or let the browser choose and report it. */
   readonly backend?: CaptureBackend;
-  /** Backwards-compatible alias for `backend: 'software'`. */
-  readonly software?: boolean;
   readonly output?: string;
   readonly browser?: string;
   readonly width?: number;
@@ -122,12 +100,6 @@ export interface BrowserCaptureOptions extends ProjectCommandOptions {
   readonly carrier?: BrowserCarrierAdapter;
   readonly carrierRun?: BrowserCarrierRunIdentity;
   readonly carrierGeneration?: number;
-}
-
-/** @deprecated Use BrowserCaptureOptions with `backend: 'software'`. */
-export interface SoftwareCaptureOptions extends BrowserCaptureOptions {
-  readonly software: true;
-  readonly backend?: 'software';
 }
 
 export interface AssetAddOptions extends ProjectCommandOptions {

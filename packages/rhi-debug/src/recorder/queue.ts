@@ -1,6 +1,11 @@
 // @forgeax/engine-rhi-debug/src/recorder/queue -- queue proxy owner.
 
-import type { Buffer, CommandBuffer, RhiQueue } from '@forgeax/engine-rhi';
+import {
+  type Buffer,
+  type CommandBuffer,
+  type RhiQueue,
+  textureCopyOrigin,
+} from '@forgeax/engine-rhi';
 import { projectTextureExtent, textureBlockLayout } from '../texel-layout';
 import type { RhiCallEventWriteTexture } from '../types';
 import type { RecorderInternal } from './core';
@@ -25,14 +30,12 @@ function rememberTinyTextureUpload(
   const extent = projectTextureExtent(entry?.size);
   const copy = projectTextureExtent(copySize);
   const block = textureBlockLayout(entry?.format);
-  const origin = destination.origin;
-  const zeroOrigin =
-    origin === undefined ||
-    (Array.isArray(origin)
-      ? origin.every((value) => value === 0)
-      : origin.x === 0 && origin.y === 0 && origin.z === 0);
+  const origin = textureCopyOrigin(destination.origin);
+  const zeroOrigin = origin.x === 0 && origin.y === 0 && origin.z === 0;
   if (
     entry?.kind !== 'texture' ||
+    extent === undefined ||
+    copy === undefined ||
     (entry.usage & (0x08 | 0x10)) !== 0 ||
     extent.width !== 1 ||
     extent.height !== 1 ||

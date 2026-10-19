@@ -213,9 +213,9 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
       ],
       encode: ({ encoder, resources }) =>
         encoder.copyTextureToBuffer(
-          { texture: resources.texture(directional.texture).unwrap() as unknown as GPUTexture },
+          { texture: resources.texture(directional.texture).unwrap() },
           {
-            buffer: resources.buffer(output).unwrap() as unknown as GPUBuffer,
+            buffer: resources.buffer(output).unwrap(),
             bytesPerRow: 256,
             rowsPerImage: MAP_SIZE,
           },

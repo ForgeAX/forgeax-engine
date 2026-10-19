@@ -1,5 +1,5 @@
 {
-  "contentKey": "3b4a8e190d5a761eceeb17f0f7c4671ee6c9a73724fca9dfae9a14585cfb9004",
+  "contentKey": "6be7b83c68d0ade8a3307f0843651a57b2fc1aaf33f08848286481ecd5578ec6",
   "inputHashes": {
     "package.json": "d3b03f83b5eea2983e163ef512f04618c7cd3220d26da0e5cfe0f367813d1643",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
@@ -9,8 +9,8 @@
     "scripts/bindings.Cargo.toml": "5c8aa40676e47a57d7498379df646c4539f5d493c4424cbea51f4a02aeabc534",
     "scripts/Cargo.lock": "c9ad0e8a54d33b98b7f1594cac10c84f0a692776c7f46eb2b9b8a105433aac50",
     "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
-    "patches/parry.patch": "a85d603bb3f2bc9fbbf396c21862c6c837eafb53a6e0736af0b76147d8de1949",
-    "patches/rapier.patch": "0c5ca4ac857f1e9a00192b698a1f327c366774b6b5be8798f20d6e99da97b5c2"
+    "patches/parry.patch": "64f91b23f50ea034a407563b74cf68d342645f7167850be9bb5161c6a67cef35",
+    "patches/rapier.patch": "b06f3fef45f83b1672708e1623540739d798e9bab4220acab00e1feba31e6b91"
   },
   "source": {
     "rapier": {
@@ -33,9 +33,9 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "3eb0f4702de8c0fef2e511a5bef9311215cd0c80ab5bce18525fa7c184bf5268",
-    "rapier.d.mts": "f5c9797763824968e7e72a018524622bbc9b4fadfc343e41fd4b7fc92a069fc8",
-    "rapier.mjs": "6dac292ea1bbaf14da1e7c4272396ebe8632bb4d48ad20d81e6259998f876ce1",
-    "rapier.wasm": "c63820c66463549632e00c8c6398eb4f557f8ac463fd759a1541baf5c5e77552"
+    "rapier-native.mjs": "78d89136023d9dc8fafc0c4965f9b539252432e8a29b1d0cce660e1add7d4bff",
+    "rapier.d.mts": "7eeced2f0f6d734861bb21aee4a50478735974301eac956197f683367ca8d640",
+    "rapier.mjs": "f74ff1a0877df5455ac4c81832b20f831b43117ad5693406af35bc1e94c2bd80",
+    "rapier.wasm": "01920266cb20311ec56cf75e81a3a30776a374eded9ba66753b4c6d72a10e813"
   }
 }

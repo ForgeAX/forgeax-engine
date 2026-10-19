@@ -4,7 +4,7 @@ import {
   createDecalGeometry,
   createPlaneGeometry,
 } from '@forgeax/engine-geometry';
-import { mat4 } from '@forgeax/engine-math';
+import { halfFloat, mat4 } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -18,7 +18,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -152,7 +151,7 @@ export async function verifyDecals(
     const view = new DataView(hdr.bytes.buffer, hdr.bytes.byteOffset, hdr.bytes.byteLength);
     for (let y = 0; y < 128; y++)
       for (let x = 0; x < 512; x++)
-        pixels.push(halfToFloat(view.getUint16(y * hdr.metadata.bytesPerRow + x * 2, true)));
+        pixels.push(halfFloat.f16ToF32(view.getUint16(y * hdr.metadata.bytesPerRow + x * 2, true)));
     // Display preview of the actual HDR readback; assertions use unclamped linear samples.
     const rgba = Uint8Array.from(pixels, (value, index) => {
       if (index % 4 === 3) return 255;
@@ -308,7 +307,7 @@ export async function verifyDecals(
       const view = new DataView(a.bytes.buffer, a.bytes.byteOffset, a.bytes.byteLength);
       for (let y = 0; y < 128; y++)
         for (let x = 0; x < 512; x++)
-          pixels.push(halfToFloat(view.getUint16(y * 128 * 8 + x * 2, true)));
+          pixels.push(halfFloat.f16ToF32(view.getUint16(y * 128 * 8 + x * 2, true)));
       const maximum = pixels.reduce((m, v, i) => Math.max(m, Math.abs(v - (live[i] as number))), 0);
       expect(maximum).toBeLessThanOrEqual(0.002);
       report.push({

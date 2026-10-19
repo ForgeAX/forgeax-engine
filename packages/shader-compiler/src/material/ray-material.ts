@@ -11,14 +11,15 @@ import {
   type MaterialTable,
   ok,
   type Result,
+  resolveMaterialAsset,
   selectMaterialStaticContract,
+  stripWgslComments,
 } from '@forgeax/engine-types';
 import { compileShader } from '../compile.js';
 import type { ShaderError } from '../errors.js';
 import { composeSurfaceSource, digestMaterialSourceClosure } from './compose.js';
 import { generateParameterModule } from './cook.js';
 import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
-import { resolveMaterialAsset } from './resolve.js';
 import type { MaterialSourceCatalog } from './source-catalog.js';
 
 // Ray compute cannot use screen derivatives. Project Surface closures without
@@ -28,7 +29,7 @@ const SCREEN_DERIVATIVE_RE =
   /\b(?:dpdx|dpdy|fwidth)(?:Coarse|Fine)?\s*\(|\btextureSample(?:Bias)?\s*\(/;
 
 function surfaceUsesScreenDerivatives(source: string): boolean {
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  const code = stripWgslComments(source);
   return SCREEN_DERIVATIVE_RE.test(code) && !/\bRAY_SURFACE_CONTEXT\b/.test(code);
 }
 

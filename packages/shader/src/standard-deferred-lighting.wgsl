@@ -251,7 +251,7 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
   let directAo = mix(1.0, screenAo, clamp(params.occlusion.x, 0.0, 1.0));
   let diffuse = environment.diffuse * ao + direct.diffuse * directAo;
   return DeferredOutput(vec4<f32>((environment.diffuse + environment.specular) * ao + direct.radiance * directAo, 0.0),
-    vec4<f32>(environment.specular * ao, 1.0), vec4<f32>(environment.response * response.a, response.a), vec4<f32>(diffuse, 0.0));
+    vec4<f32>(environment.specular * ao, 1.0), vec4<f32>(environment.response.rgb * response.a, environment.response.a), vec4<f32>(diffuse, 0.0));
 }
 
 @fragment

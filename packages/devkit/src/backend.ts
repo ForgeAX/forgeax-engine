@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { basename, dirname, resolve } from 'node:path';
@@ -315,10 +316,7 @@ export const devKitBackendServerPlugin = {
       sockets.close();
       await new Promise<void>((resolveClosed) => http.close(() => resolveClosed()));
     });
-    await new Promise<void>((resolveReady, reject) => {
-      http.once('error', reject);
-      http.listen(0, '127.0.0.1', resolveReady);
-    });
+    await once(http.listen(0, '127.0.0.1'), 'listening');
     const address = http.address();
     if (!address || typeof address === 'string') throw new Error('Backend did not bind a TCP port');
     ctx.provide('devkitBackendServer', { endpoint: `ws://127.0.0.1:${address.port}/host`, token });

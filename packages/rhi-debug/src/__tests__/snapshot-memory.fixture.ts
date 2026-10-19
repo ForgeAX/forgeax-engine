@@ -210,7 +210,7 @@ export async function verifySnapshotMemory() {
 }
 
 export async function verifyCancelledSnapshotHash() {
-  const recorder = wrap(webgpu.rhi);
+  const recorder = wrap(webgpu.rhi, webgpu.createShaderModule);
   const device = (await (await recorder.requestAdapter()).unwrap().requestDevice()).unwrap();
   const buffer = device.createBuffer({ size: 16, usage: 0x80 | 0x0c }).unwrap();
   let release!: () => void;

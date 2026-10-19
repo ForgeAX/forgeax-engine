@@ -30,10 +30,24 @@ branch on `error.code` and repair a diagnosable stale edge, mirror mismatch, or
 cycle through `World.set`/`World.removeComponent` (or the owning structural
 command) before retrying while the World is healthy.
 
+## Affine authoring
+
+`Transform` stores one authored local transform: `pos`, `quat`, `scale`, and
+`shear` (default `[0, 0, 0]`). The matrix is `T * R * H * S`, where H is the
+upper-triangular shear with XY, XZ, YZ entries. Existing TRS edits retain the
+current shear unless the author explicitly resets it. Propagation and fixed-step
+presentation both use this composition; `GlobalTransform` stays derived.
+
+`mat4.decomposeAffine` converts a finite nonsingular authored matrix into these
+fields without discarding shear. A false result leaves its output arguments
+unchanged; the consumer owns the structured admission error. This does not
+promise that consumers requiring rigid or orthogonal transforms, such as a
+specific collision-shape implementation, can accept arbitrary shear.
+
 ## Simulation and presentation poses
 
 `Transform` and `GlobalTransform.world` remain the exact simulation pose. Scene
-samples marked local TRS between the final two fixed ticks using
+samples marked local translation, rotation, scale and shear between the final two fixed ticks using
 `FixedTime.overstep / FixedTime.delta`; rendering never writes that pose back
 into Physics or animation. Update propagation runs after the fixed block.
 

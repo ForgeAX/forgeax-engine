@@ -37,7 +37,10 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
     )
     .unwrap();
   const sun = world
-    .spawn({ component: DirectionalLight, data: { intensity: 1, direction: [0, -1, 0] } })
+    .spawn({
+      component: DirectionalLight,
+      data: { castShadow: true, intensity: 1, direction: [0, -1, 0] },
+    })
     .unwrap();
   const lamp = world
     .spawn(

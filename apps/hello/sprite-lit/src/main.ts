@@ -132,7 +132,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // three-lights + ab-compare spawn all 3. plan-strategy D-3 + D-8.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       // Outgoing direction: down + slightly forward, simulating a warm key
       // light overhead. The shader negates internally for L vector.
       direction: [0.0, -1.0, -0.3],
@@ -168,7 +168,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       },
       {
         component: SpotLight,
-        data: {
+        data: { castShadow: true,
           direction: [-0.8, -0.4, -0.4],
           color: [0.3, 1.0, 1.0],
           intensity: 4.0,

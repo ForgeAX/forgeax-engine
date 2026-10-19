@@ -8,7 +8,7 @@ import {
   getShaderCompilerFingerprint,
 } from '@forgeax/engine-shader-compiler';
 import type { MaterialParticleInput, ParticleEffectProgramV3, Result } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { err, ok, stripWgslComments, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 import type { ParticleEmitterSourceV3 } from '@forgeax/engine-vfx';
 import {
   PARTICLE_CODE_DEFAULT_MODULE_ID,
@@ -21,6 +21,7 @@ import {
   type VfxGpuEmitterProgramV3,
   type VfxGpuProgramV3,
   type VfxGpuRendererReflectionV3,
+  type VfxValueType,
 } from '@forgeax/engine-vfx';
 import { VFX_FORCE_FIELDS_WGSL } from './force-fields.js';
 import {
@@ -41,7 +42,6 @@ import {
   type VfxReflectionError,
 } from './reflection.js';
 import { SCENE_SDF_RUNTIME_WGSL } from './scene-sdf.js';
-import { stripWgslComments } from './wgsl-comments.js';
 
 // Build-host lifetime, bounded by the shared compiler's 128-entry / 16 MiB budget.
 // Every cook still validates source metadata and derives a fresh artifact.
@@ -874,21 +874,8 @@ function createParticleDataInterfaceRuntimeV3(
     .join('\n');
 }
 
-function wgslDefault(type: string): string {
-  switch (type) {
-    case 'f32':
-    case 'i32':
-    case 'u32':
-      return '0';
-    case 'vec2<f32>':
-      return 'vec2<f32>(0.0)';
-    case 'vec3<f32>':
-      return 'vec3<f32>(0.0)';
-    case 'vec4<f32>':
-      return 'vec4<f32>(0.0)';
-    default:
-      return '0';
-  }
+function wgslDefault(type: VfxValueType): string {
+  return WGSL_NUMERIC_LAYOUT[type].size === 4 ? '0' : `${type}(0.0)`;
 }
 
 type ExecutedParticleRendererSemantic = Extract<

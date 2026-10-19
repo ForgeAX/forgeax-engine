@@ -1,7 +1,7 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 import { concatParts, digestParts, encodeTapeParts, sliceParts } from '../protocol/codec';
-import { EVENT_SEMANTICS, resourceKindForEvent } from '../protocol/event-semantics';
+import { createdHandles, resourceKindForEvent } from '../protocol/event-semantics';
 import type { BootstrapResource, Tape as V7Tape } from '../protocol/types';
 import type { DebugRhiInstance } from '../recorder';
 import type { HandleId, Tape as LegacyTape, RhiCallEvent } from '../types';
@@ -130,7 +130,7 @@ function toV7Tape(
     }
     if (!bootstrapEvents.has(event)) continue;
     const kind = resourceKindForEvent(event.kind);
-    const [handleId] = EVENT_SEMANTICS[event.kind].created(event);
+    const [handleId] = createdHandles(event);
     if (handleId === undefined || kind === undefined || bootstrapIds.has(handleId)) continue;
     bootstrapIds.add(handleId);
     bootstrap.push({

@@ -4,8 +4,6 @@ import {
   createCarrierStateMachine,
 } from '@forgeax/engine-tool-runtime';
 
-export { type CarrierProvider, createCarrierProvider } from './carrier-provider.js';
-
 export interface CarrierRendezvousOptions {
   readonly presentation: 'hidden' | 'visible';
   readonly projectId: string;

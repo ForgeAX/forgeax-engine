@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // Same-page Chrome journey for a failed RenderFeature plan -> repaired plan.
 // The page exposes only the consumer's public install seam and readback hook;
 // no renderer or graph internals are reached here.
@@ -11,7 +12,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { writeReferencePng } from '../../../../shared/png-codec.mjs';
+
 import { createOwnedProcessGroupStopper } from '../../../../shared/scripts/rhi-debug-process.mjs';
 import { extractViteLocalUrl } from './vite-local-url.mjs';
 import { pnpmCommand } from '../../../../../scripts/lib/pnpm-command.mjs';
@@ -66,7 +67,7 @@ function changedBytes(before, after) {
 
 function writeCapturePng(label, capture) {
   const path = resolve(ARTIFACT_DIR, `${label}.png`);
-  writeFileSync(path, writeReferencePng(capture.pixels, capture.width, capture.height));
+  writeFileSync(path, encodePng(capture.width, capture.height, capture.pixels));
   return path;
 }
 

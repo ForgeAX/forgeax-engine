@@ -270,6 +270,9 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
         ...(desc.sampleCount !== undefined ? { sampleCount: desc.sampleCount } : {}),
         ...(desc.mipLevelCount !== undefined ? { mipLevelCount: desc.mipLevelCount } : {}),
         usage: promotedUsage,
+        ...(desc.textureBindingViewDimension === undefined
+          ? {}
+          : { textureBindingViewDimension: desc.textureBindingViewDimension }),
         resource: texResource,
       });
       pushEvent(s, event);

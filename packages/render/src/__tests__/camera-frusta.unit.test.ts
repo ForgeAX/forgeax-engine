@@ -134,6 +134,33 @@ describe('CameraSnapshot frustum policy', () => {
     ).toBe(true);
   });
 
+  it.each([
+    'perspective',
+    'orthographic',
+  ] as const)('culls with both axes of an off-axis %s lens', (projection) => {
+    const base = camera({
+      projection,
+      fov: Math.PI / 2,
+      aspect: 1,
+      near: 0.1,
+      far: 10,
+      orthoLeft: -1,
+      orthoRight: 1,
+      orthoBottom: -1,
+      orthoTop: 1,
+    });
+    const centered = buildCameraFrusta([base])[0] as frustum.Frustum;
+    const shifted = buildCameraFrusta([
+      { ...base, projectionOffset: [2, -2] },
+    ])[0] as frustum.Frustum;
+    const newlyVisible = bounds(-2.1, 1.9, -1.01, -1.9, 2.1, -0.99);
+    const formerlyVisible = bounds(-0.1, -0.1, -1.01, 0.1, 0.1, -0.99);
+    expect(frustum.intersectsBox(centered, newlyVisible)).toBe(false);
+    expect(frustum.intersectsBox(shifted, newlyVisible)).toBe(true);
+    expect(frustum.intersectsBox(centered, formerlyVisible)).toBe(true);
+    expect(frustum.intersectsBox(shifted, formerlyVisible)).toBe(false);
+  });
+
   it('does not add validation for malformed camera input', () => {
     const malformed = buildCameraFrusta([camera({ aspect: Number.NaN })])[0];
 

@@ -377,6 +377,7 @@ describe.skipIf(!browserReady)('composite + skybox + cross-world mesh (ENGINE-fi
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [-0.4, -0.7, -1],

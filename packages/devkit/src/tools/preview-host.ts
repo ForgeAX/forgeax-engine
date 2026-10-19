@@ -22,46 +22,6 @@ export interface PreviewHostRequest {
   readonly carrier?: PreviewCarrierRoute;
 }
 
-export interface PreviewHostMechanisms {
-  readonly runId: string;
-  readonly projectRoot: string;
-  readonly backend: 'webgpu';
-  readonly signal: AbortSignal;
-}
-
-export interface PreviewHostSession {
-  readonly withSession: <T>(
-    execute: (mechanisms: PreviewHostMechanisms) => Promise<T>,
-  ) => Promise<T>;
-}
-
-/**
- * Creates the physical host lease. Domain identity stays in the executor;
- * this seam carries only browser, backend, and lexical run ownership.
- */
-export function createPreviewHostSession(input: {
-  readonly runId: string;
-  readonly projectRoot: string;
-  readonly signal: AbortSignal;
-}): PreviewHostSession {
-  let active = true;
-  return {
-    async withSession(execute) {
-      if (!active || input.signal.aborted) throw new Error('preview-host-session-terminal');
-      try {
-        return await execute({
-          runId: input.runId,
-          projectRoot: input.projectRoot,
-          backend: 'webgpu',
-          signal: input.signal,
-        });
-      } finally {
-        active = false;
-      }
-    },
-  };
-}
-
 export interface PreviewCarrierRoute {
   readonly lookup: () => CarrierOffer | undefined;
   readonly lease: (request: CarrierLeaseRequest) => CarrierResult<{ readonly leaseId: string }>;

@@ -421,3 +421,8 @@ producer: transport drains `drainIntents()` and returns `acceptResults()`.
 Browser native objects and Promises stay in the Host implementation.
 
 Action deadzones are resolved by `deriveActionStates` at frame sampling. `getAxis` and `getVector` consume only those states, and `snapshotFromSample(sample, states, previousSnapshot?)` retains no input configuration. Author configuration changes take effect on the next sample.
+
+Gesture recognition keeps one per-pointer record for its long-press timer and
+swipe history. Every frame copies that record before processing events; release
+and cancel retire it together. The browser backend reads continuous gesture
+values from the returned recognizer state and forwards the separate frame events.

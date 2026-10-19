@@ -7,6 +7,7 @@ import {
   ok,
   type Result,
   type StandardLayerPlan,
+  stripWgslComments,
 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -102,11 +103,6 @@ export interface SurfaceComposition {
    * COLOR_0 fetch and interpolants.
    */
   readonly readsVertexColor: boolean;
-}
-
-/** Strip WGSL comments so documentation never counts as a read. */
-function stripWgslComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
 }
 
 /** True when the Surface source refers to the `vertexColor` SurfaceInput field. */

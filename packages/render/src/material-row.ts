@@ -23,7 +23,9 @@ function admittedDefaults(
   if (getAdmittedParamSchemaInterface(schema) === undefined) return undefined;
   let defaults = schemaDefaults.get(schema);
   if (defaults === undefined) {
-    defaults = new Map(schema.map((entry) => [entry.name, entry.default]));
+    defaults = new Map(
+      schema.map((entry) => [entry.name, 'default' in entry ? entry.default : undefined]),
+    );
     schemaDefaults.set(schema, defaults);
   }
   return defaults;
@@ -54,7 +56,7 @@ function numericFallback(
     case 'emissive':
       return material.emissive ?? [0, 0, 0];
     case 'emissiveIntensity':
-      return material.emissiveIntensity ?? 0;
+      return material.emissiveIntensity;
     case 'occlusionStrength':
       return material.occlusionStrength ?? 1;
     case 'normalScale':
@@ -79,9 +81,12 @@ function numericValue(
     const materialValue = numericFallback(name, material);
     if (materialValue !== undefined) return materialValue;
   }
+  const entry = defaults === undefined ? schema.find((entry) => entry.name === name) : undefined;
   const defaultValue =
     defaults === undefined
-      ? schema.find((entry) => entry.name === name)?.default
+      ? entry !== undefined && 'default' in entry
+        ? entry.default
+        : undefined
       : defaults.get(name);
   if (isNumericValue(defaultValue)) return defaultValue;
   return undefined;

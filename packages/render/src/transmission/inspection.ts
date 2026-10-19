@@ -1,4 +1,4 @@
-import { textureFormatBlock } from '@forgeax/engine-types';
+import { mipDimension, textureFormatBlock } from '@forgeax/engine-types';
 import type {
   TransmissionBackdropExtent,
   TransmissionBackdropTopology,
@@ -79,10 +79,6 @@ function assertExtent(extent: TransmissionBackdropExtent): void {
   }
 }
 
-function mipExtent(value: number, level: number): number {
-  return Math.max(1, Math.floor(value / 2 ** level));
-}
-
 export function estimateTransmissionBackdropBytes(
   extent: TransmissionBackdropExtent,
   mipCount: number,
@@ -94,7 +90,7 @@ export function estimateTransmissionBackdropBytes(
 
   let bytes = 0;
   for (let level = 0; level < mipCount; level += 1) {
-    bytes += mipExtent(extent.width, level) * mipExtent(extent.height, level);
+    bytes += mipDimension(extent.width, level) * mipDimension(extent.height, level);
   }
   return bytes * textureFormatBlock(format).bytesPerBlock;
 }

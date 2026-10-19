@@ -106,10 +106,7 @@ export {
   standardSharedTransmissionDefines,
   standardTextureMask,
 } from './material-schemas.js';
-export {
-  registerDefaultSpriteLit,
-  type SpriteLitCaps,
-} from './register-default-sprite-lit.js';
+export { registerDefaultSpriteLit } from './register-default-sprite-lit.js';
 export { registerDefaultStandardPbrSkin } from './register-default-standard-pbr-skin.js';
 export const RECT_AREA_LTC_SHADER_MODULE = 'forgeax::lighting-rect-area' as const;
 export {
@@ -471,6 +468,7 @@ export {
   createMaterialShaderProgram,
   type MaterialShaderProgram,
   materialShaderUvSetCount,
+  materialShaderVertexInputRequired,
   type PipelineGroup2Contract,
 } from './material/program.js';
 export {

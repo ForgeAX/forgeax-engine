@@ -8,6 +8,7 @@ import {
   DdcGenerationSession,
   ddcOutputDigest,
 } from '@forgeax/engine-ddc';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
@@ -157,14 +158,10 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     plugin.configureServer(target);
     const binding = createStandaloneRuntimeAssetBinding('producer-readiness');
     await plugin.rebind(binding, [assets]);
-    const index = JSON.parse(String((await request(target, binding.catalogUrl)).body)) as {
-      entries: Array<{
-        guid: string;
-        lifecycle?: string;
-        packageUrl: string;
-      }>;
-    };
-    const row = index.entries.find((entry) => entry.guid.toLowerCase() === GUID);
+    const index = decodeCatalogWire(
+      JSON.parse(String((await request(target, binding.catalogUrl)).body)),
+    ).unwrap();
+    const row = index.find((entry) => entry.guid.toLowerCase() === GUID);
 
     expect(row?.lifecycle).toBe('current');
     expect(row?.packageUrl).toBe(
@@ -222,12 +219,10 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       }),
     );
     firstPlugin.configureServer(firstTarget);
-    const firstIndex = JSON.parse(
-      String((await request(firstTarget, binding.catalogUrl)).body),
-    ) as {
-      entries: Array<{ guid: string; packageUrl: string }>;
-    };
-    const firstRow = firstIndex.entries.find((entry) => entry.guid.toLowerCase() === GUID);
+    const firstIndex = decodeCatalogWire(
+      JSON.parse(String((await request(firstTarget, binding.catalogUrl)).body)),
+    ).unwrap();
+    const firstRow = firstIndex.find((entry) => entry.guid.toLowerCase() === GUID);
     expect(firstRow).toBeDefined();
     const imported = await request(firstTarget, `${binding.importUrlBase}/${GUID}`, 'POST');
     expect(imported.statusCode).toBe(200);
@@ -269,12 +264,10 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       }),
     );
     secondPlugin.configureServer(secondTarget);
-    const secondIndex = JSON.parse(
-      String((await request(secondTarget, binding.catalogUrl)).body),
-    ) as {
-      entries: Array<{ guid: string; packageUrl: string }>;
-    };
-    const secondRow = secondIndex.entries.find((entry) => entry.guid.toLowerCase() === GUID);
+    const secondIndex = decodeCatalogWire(
+      JSON.parse(String((await request(secondTarget, binding.catalogUrl)).body)),
+    ).unwrap();
+    const secondRow = secondIndex.find((entry) => entry.guid.toLowerCase() === GUID);
     const secondPackResponse = await request(secondTarget, secondRow?.packageUrl ?? '');
     expect(secondPackResponse.statusCode).toBe(200);
     expect(JSON.parse(String(secondPackResponse.body))).toEqual(firstPack);
@@ -372,10 +365,10 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       }),
     );
     plugin.configureServer(target);
-    const index = JSON.parse(String((await request(target, binding.catalogUrl)).body)) as {
-      entries: Array<{ guid: string; packageUrl: string }>;
-    };
-    const row = index.entries.find((entry) => entry.guid.toLowerCase() === GUID);
+    const index = decodeCatalogWire(
+      JSON.parse(String((await request(target, binding.catalogUrl)).body)),
+    ).unwrap();
+    const row = index.find((entry) => entry.guid.toLowerCase() === GUID);
     expect(row).toBeDefined();
     if (row === undefined) return;
     const artifactUrl = new URL(`${GUID}/body.bin`, `http://forgeax.test${row.packageUrl}`)
@@ -611,11 +604,11 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     plugin.configureServer(target);
     const binding = createStandaloneRuntimeAssetBinding('producer-readiness-multiple');
     await plugin.rebind(binding, [assets]);
-    const index = JSON.parse(String((await request(target, binding.catalogUrl)).body)) as {
-      entries: Array<{ guid: string; lifecycle?: string; packageUrl: string }>;
-    };
+    const index = decodeCatalogWire(
+      JSON.parse(String((await request(target, binding.catalogUrl)).body)),
+    ).unwrap();
     for (const guid of [GUID, SECOND_GUID]) {
-      const row = index.entries.find((entry) => entry.guid.toLowerCase() === guid);
+      const row = index.find((entry) => entry.guid.toLowerCase() === guid);
       expect(row?.lifecycle).toBe('current');
       expect((await request(target, row?.packageUrl ?? '')).statusCode).toBe(200);
     }
@@ -686,12 +679,12 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       expect((await request(target, `${binding.importUrlBase}/${guid}`, 'POST')).statusCode).toBe(
         200,
       );
-      const index = JSON.parse(String((await request(target, binding.catalogUrl)).body)) as {
-        entries: Array<{ guid: string; packageUrl: string }>;
-      };
+      const index = decodeCatalogWire(
+        JSON.parse(String((await request(target, binding.catalogUrl)).body)),
+      ).unwrap();
       // Both the earlier and newly published closures must remain fetchable.
       for (const acceptedGuid of guid === GUID ? [GUID] : [GUID, SECOND_GUID]) {
-        const row = index.entries.find((entry) => entry.guid === acceptedGuid);
+        const row = index.find((entry) => entry.guid === acceptedGuid);
         expect(row).toBeDefined();
         const pack = JSON.parse(String((await request(target, row?.packageUrl ?? '')).body)) as {
           assets: Array<{ artifacts: { body: { path: string } } }>;
@@ -828,10 +821,11 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       expect(JSON.parse(await readFile(primaryPackPath, 'utf8')).assets[0].payload.revision).toBe(
         'revision-old',
       );
-      const failedCatalog = JSON.parse(
-        String((await request(target, binding.catalogUrl)).body),
-      ) as { entries: Array<{ guid: string; packageUrl: string }> };
-      const failedRow = failedCatalog.entries.find((entry) => entry.guid === GUID);
+      // Inspect accepted rows while the publication failure keeps the scope degraded.
+      const failedCatalog = decodeCatalogWire(
+        JSON.parse(String((await request(target, binding.catalogUrl)).body)).entries,
+      ).unwrap();
+      const failedRow = failedCatalog.find((entry) => entry.guid === GUID);
       expect(failedRow?.packageUrl).toContain(`${GUID}.pack.json`);
       expect(
         JSON.parse(String((await request(target, failedRow?.packageUrl ?? '')).body)).assets[0]

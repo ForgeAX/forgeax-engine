@@ -283,7 +283,7 @@ world.spawn(
 );
 world.spawn({
   component: DirectionalLight,
-  data: {
+  data: { castShadow: true,
     direction: [-0.3, -0.8, -1],
     color: [1, 1, 1],
     intensity: 1,

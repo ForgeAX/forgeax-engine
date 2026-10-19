@@ -55,7 +55,7 @@ function destroyInstanceBufferEntries(
  * Minimal error-registry surface accepted by disposeInstanceBuffers —
  * only needs `fire`, matching RhiErrorListenerRegistry (feat-20260619 D-6).
  */
-export interface InstanceBufferCacheErrorSink {
+interface InstanceBufferCacheErrorSink {
   fire(e: { code: string }): void;
 }
 

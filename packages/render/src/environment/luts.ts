@@ -161,6 +161,7 @@ export function addAtmosphereLuts(
               camera.captureProjection === undefined ? null : Array.from(camera.captureProjection),
               camera.fov,
               camera.aspect,
+              ...(camera.projectionOffset ?? [0, 0]),
               camera.near,
               camera.far,
               camera.projection,

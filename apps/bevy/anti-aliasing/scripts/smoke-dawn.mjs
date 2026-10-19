@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-anti-aliasing headless dawn smoke (pixel falsifier + structural gate).
 // Strategy: render one shared sharp-shape scene through No AA, MSAA, and FXAA.
@@ -7,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -171,8 +172,8 @@ const artifactDir = resolve(here, '..', 'artifacts');
 mkdirSync(artifactDir, { recursive: true });
 const nonePng = resolve(artifactDir, 'aa-none.png');
 const fxaaPng = resolve(artifactDir, 'aa-fxaa.png');
-writeFileSync(nonePng, writeReferencePng(modePixels[0], WIDTH, HEIGHT));
-writeFileSync(fxaaPng, writeReferencePng(modePixels[2], WIDTH, HEIGHT));
+writeFileSync(nonePng, encodePng(WIDTH, HEIGHT, modePixels[0]));
+writeFileSync(fxaaPng, encodePng(WIDTH, HEIGHT, modePixels[2]));
 const modeDiffs = modePixels.map((pixels) => diff(modePixels[0], pixels));
 const distinctModes = modeDiffs.filter((value) => value.mean > 0.05 && value.changedPixels > 10).length;
 const passNames = renderer.inspect().perFramePassNames;

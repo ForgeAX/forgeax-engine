@@ -7,25 +7,25 @@ import {
   validateTemplateDescriptor,
 } from './descriptor.js';
 
-export interface ProjectIdentity {
+interface ProjectIdentity {
   readonly id: string;
   readonly name: string;
   readonly packageName: string;
 }
 
-export interface ProjectIdentityOverrides {
+interface ProjectIdentityOverrides {
   readonly id?: string;
   readonly name?: string;
   readonly packageName?: string;
 }
 
-export interface ProjectIdentityInput {
+interface ProjectIdentityInput {
   readonly targetBasename: string;
   readonly descriptor: Pick<TemplateDescriptor, 'defaultIdentity'>;
   readonly overrides?: ProjectIdentityOverrides;
 }
 
-export type ProjectIdentityError = {
+type ProjectIdentityError = {
   readonly code: 'project-identity-invalid';
   readonly expected: string;
   readonly hint: string;
@@ -145,7 +145,7 @@ export async function readTemplateDescriptor(templateRoot: string): Promise<Temp
   }
 }
 
-export type TemplateMaterializeError = {
+type TemplateMaterializeError = {
   readonly code: 'template-materialize-failed';
   readonly expected: string;
   readonly hint: string;

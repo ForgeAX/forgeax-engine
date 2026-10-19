@@ -11,7 +11,7 @@ export interface CubeCaptureWork extends CubeCameraFaceView {
   readonly candidateGeneration: number;
 }
 
-export interface CubeCaptureInspection {
+interface CubeCaptureInspection {
   readonly target: RenderTarget;
   readonly activeGeneration: number;
   readonly candidateGeneration?: number;
@@ -21,13 +21,13 @@ export interface CubeCaptureInspection {
   readonly nestedRejections: number;
 }
 
-export interface CubeCaptureSchedulerOptions {
+interface CubeCaptureSchedulerOptions {
   readonly maxFacesPerFrame?: number;
 }
 
-export type CubeCaptureRenderableKind = 'opaque' | 'transparent' | 'environment' | 'debug' | 'ui';
+type CubeCaptureRenderableKind = 'opaque' | 'transparent' | 'environment' | 'debug' | 'ui';
 
-export interface CubeCaptureRenderable {
+interface CubeCaptureRenderable {
   readonly kind: CubeCaptureRenderableKind;
   readonly target?: RenderTarget;
 }
@@ -45,7 +45,7 @@ export function selectCubeCaptureRenderables(
   );
 }
 
-export interface CubeCaptureScheduler {
+interface CubeCaptureScheduler {
   beginFrame(): void;
   cancel(target: RenderTarget): void;
   invalidate(target: RenderTarget): void;

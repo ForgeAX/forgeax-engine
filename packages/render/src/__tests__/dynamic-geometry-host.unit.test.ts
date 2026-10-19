@@ -516,12 +516,6 @@ describe('dynamic geometry ECS publication host', () => {
       },
       device.caps,
     );
-    const invalidated: number[] = [];
-    const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
-      invalidated.push(handle);
-      invalidateMesh(handle, worldId);
-    });
     const world = new World();
     const oldHandle = world.allocSharedRef('MeshAsset', mesh());
     const firstMesh = mesh();
@@ -603,14 +597,16 @@ describe('dynamic geometry ECS publication host', () => {
     expect(host.dynamicGeometryReceipt(firstAccepted.value)).toBeDefined();
 
     expect(host.retireDynamicGeometry(firstAccepted.value).ok).toBe(true);
-    expect(invalidated).toEqual([]);
+    expect(store.getMeshGpuHandles(firstHandle, world)).toBeDefined();
     completeFirst();
     await Promise.resolve();
-    expect(invalidated).toEqual([]);
+    expect(store.getMeshGpuHandles(firstHandle, world)).toBeDefined();
     completeSecond();
     await Promise.resolve();
-    expect(invalidated).toEqual([firstHandle]);
+    expect(store.getMeshGpuHandles(firstHandle, world)).toBeUndefined();
+    expect(store.getMeshGpuHandles(secondHandle, world)).toBeDefined();
     expect(host.cancelDynamicGeometry(secondAccepted.value).ok).toBe(true);
+    expect(store.getMeshGpuHandles(secondHandle, world)).toBeUndefined();
   });
 
   it('tracks a live entity after another entity advances topology', async () => {
@@ -625,12 +621,6 @@ describe('dynamic geometry ECS publication host', () => {
       },
       device.caps,
     );
-    const invalidated: number[] = [];
-    const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
-      invalidated.push(handle);
-      invalidateMesh(handle, worldId);
-    });
     const world = new World();
     const oldA = world.allocSharedRef('MeshAsset', mesh());
     const candidateAMesh = mesh();
@@ -718,17 +708,20 @@ describe('dynamic geometry ECS publication host', () => {
 
     expect(world.set(entityA, MeshFilter, { assetHandle: oldA }).ok).toBe(true);
     expect(host.retireDynamicGeometry(acceptedA.value).ok).toBe(true);
-    expect(invalidated).toEqual([]);
+    expect(store.getMeshGpuHandles(candidateA, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateB, world)).toBeDefined();
     completeFirst();
     await Promise.resolve();
-    expect(invalidated).toEqual([]);
+    expect(store.getMeshGpuHandles(candidateA, world)).toBeDefined();
+    expect(store.getMeshGpuHandles(candidateB, world)).toBeDefined();
     completeSecond();
     await Promise.resolve();
-    expect(invalidated).toContain(candidateA);
+    expect(store.getMeshGpuHandles(candidateA, world)).toBeUndefined();
+    expect(store.getMeshGpuHandles(candidateB, world)).toBeDefined();
 
     expect(world.set(entityB, MeshFilter, { assetHandle: oldB }).ok).toBe(true);
     expect(host.retireDynamicGeometry(acceptedB.value).ok).toBe(true);
-    expect(invalidated).toContain(candidateB);
+    expect(store.getMeshGpuHandles(candidateB, world)).toBeUndefined();
   });
 
   it('keeps shared residency for another candidate while a receipt is pending', async () => {
@@ -743,12 +736,6 @@ describe('dynamic geometry ECS publication host', () => {
       },
       device.caps,
     );
-    const invalidated: number[] = [];
-    const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
-      invalidated.push(handle);
-      invalidateMesh(handle, worldId);
-    });
     const world = new World();
     const oldA = world.allocSharedRef('MeshAsset', mesh());
     const oldB = world.allocSharedRef('MeshAsset', mesh());
@@ -816,12 +803,10 @@ describe('dynamic geometry ECS publication host', () => {
     // cannot evict H while A's submitted frame still owns the cache entry.
     expect(host.cancelDynamicGeometry(preparedB.value).ok).toBe(true);
     expect(store.getMeshGpuHandles(sharedHandle, world)).toBeDefined();
-    expect(invalidated).toEqual([]);
 
     completeA();
     await Promise.resolve();
     expect(store.getMeshGpuHandles(sharedHandle, world)).toBeUndefined();
-    expect(invalidated).toEqual([sharedHandle]);
   });
 
   it('keeps pending retirements inside the count and byte budget', async () => {
@@ -836,12 +821,6 @@ describe('dynamic geometry ECS publication host', () => {
       },
       device.caps,
     );
-    const invalidated: number[] = [];
-    const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
-      invalidated.push(handle);
-      invalidateMesh(handle, worldId);
-    });
     const lifecycle = createDynamicGeometryLifecycle();
     const world = new World();
     const liveHandle = world.allocSharedRef('MeshAsset', mesh());
@@ -927,7 +906,6 @@ describe('dynamic geometry ECS publication host', () => {
     });
     await Promise.resolve();
     await vi.waitFor(() => expect(lifecycle.inspect().meshBytes).toBe(0));
-    expect(invalidated).toHaveLength(32);
     expect(handles.every((handle) => store.getMeshGpuHandles(handle, world) === undefined)).toBe(
       true,
     );

@@ -39,6 +39,12 @@ an authoring map's attributes derives a different mask without retaining the map
 or its buffers. Layout offsets, formats, and digests still derive from the one
 canonical attribute schema.
 
+`unpackInterleavedVertexAttributes` copies the complete attribute set into one
+owned backing buffer with nonoverlapping typed views. Respect each view's byte
+offset and length. Transferring that buffer transfers every lane together;
+separate decodes and the original packed vertices keep independent storage.
+Retaining one lane retains its sibling storage for that decoded mesh.
+
 ## MeshBuilder
 
 `MeshBuilder` is the incremental authoring owner for custom geometry. Append
@@ -560,4 +566,8 @@ preserve the typed payload and validate it against source geometry using
 `validateMeshCollisionAttachment`; stale or malformed products are errors,
 not implicit recooks. This pure producer owns no native hull or physics state.
 
-`unpackInterleavedVertexAttributes(vertices, projection)` copies Geometry-projected bytes into independent typed attributes, including uint16 skin indices. It derives vertex count from stride, rejects incomplete vertices, and preserves byte offsets. Semantic finite-value validation and error projection remain with each binary consumer. The same kernel serves Geometry decoding and the runtime mesh-bin loader.
+`unpackInterleavedVertexAttributes(vertices, projection)` copies Geometry-projected bytes into independent typed attributes, including uint16 skin indices. It derives vertex count from stride, rejects incomplete vertices, and preserves byte offsets. The shared `unpackMeshBin` decoder owns finite-value validation, metadata admission and `MeshBinAssetError` projection. Both Geometry decoding and the Assets Runtime mesh loader consume that result; malformed binary tables cannot bypass validation through a second parser.
+
+Mesh material slot projection lives in `mesh-material-slots`: runtime/sidecar
+conversion and accepted reimport application share default GUID decoding.
+Removed slots stay unbound, and submesh indices follow the reconciled mapping.

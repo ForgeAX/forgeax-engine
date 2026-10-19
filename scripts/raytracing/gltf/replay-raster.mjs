@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { encodePng } from '@forgeax/engine-image/png';
 import { chromium } from 'playwright';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+
 import browserLaunch from '../../ci/browser-launch.json' with { type: 'json' };
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -155,7 +156,7 @@ try {
     if (label.endsWith('.rgba'))
       await writeFile(
         resolve(directory, `${name}-${label.replace('.rgba', '.png')}`),
-        writeReferencePng(data, result.width, result.height),
+        encodePng(result.width, result.height, data),
       );
   }
   delete result.outputs;

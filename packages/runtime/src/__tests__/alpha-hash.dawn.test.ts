@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   summarizeFrame,
 } from '@forgeax/engine-rhi-debug';
@@ -102,11 +102,11 @@ it.each([
             let covered = 0,
               maximumReactive = 0;
             for (let offset = 0; offset < temporal.bytes.byteLength; offset += 8) {
-              if (halfToFloat(values.getUint16(offset + 4, true)) < 0) continue;
+              if (halfFloat.f16ToF32(values.getUint16(offset + 4, true)) < 0) continue;
               covered++;
               maximumReactive = Math.max(
                 maximumReactive,
-                halfToFloat(values.getUint16(offset + 6, true)),
+                halfFloat.f16ToF32(values.getUint16(offset + 6, true)),
               );
             }
             writeFileSync(

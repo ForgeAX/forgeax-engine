@@ -94,11 +94,12 @@ describe('GPU-driven View Dawn', () => {
   // A 64-texel PCF3 map: one texel of filter radius plus the two-texel margin.
   const pcf3 = shadowCameraCullDilation(1, 0, 64)?.ndcDilation ?? Number.NaN;
 
+  // Windows Dawn exceeded Vitest's 30-second default on two consecutive cold runs.
   it('culls a shadow caster only when every receiver it can darken is hidden', async () => {
     await expect(
       runGpuDrivenShadowCameraCullEvidence({ light: 'camera', wall: 'left', ndcDilation: pcf3 }),
     ).resolves.toEqual({ visible: 2, cameraCulled: 1 });
-  });
+  }, 60_000);
 
   it('keeps a hidden caster whose receiver prism reaches visible ground', async () => {
     // The x = -1 caster is behind the wall (the camera-light case above culls

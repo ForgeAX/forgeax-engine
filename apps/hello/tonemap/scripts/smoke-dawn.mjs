@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // hello-tonemap headless smoke (feat-20260519-tonemap-reinhard-mvp / M4 /
 // T-M4.2; AC-07 / AC-08 / AC-09).
 //
@@ -31,7 +32,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeReferencePng, readReferencePng } from '../../../shared/png-codec.mjs';
+import { readReferencePng } from '../../../shared/png-codec.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -232,7 +233,7 @@ void okResult(
 void okResult(
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.4, -0.6, -0.7],
       color: [1, 1, 1],
       intensity: 2,
@@ -397,7 +398,7 @@ if (!(inBand(br) && inBand(bg) && inBand(bb))) {
 }
 
 if (!existsSync(REFERENCE_PNG_PATH)) {
-  const png = writeReferencePng(tightRgba, WIDTH, HEIGHT);
+  const png = encodePng(WIDTH, HEIGHT, tightRgba);
   writeFileSync(REFERENCE_PNG_PATH, png);
   console.error(
     `[smoke] AC-09 reference PNG WRITTEN to ${REFERENCE_PNG_PATH} (no prior baseline). ` +

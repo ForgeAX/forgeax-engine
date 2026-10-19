@@ -29,7 +29,9 @@ describe('browser WebSocket connector contract', () => {
     const listener = await commands.startWebSocketListener();
     try {
       const factory = await connectorFactory();
-      const connector = factory(listener.url);
+      // Structural option variables may contain extra fields; the explicit URL remains authoritative.
+      const options = { maxQueuedEvents: 32, url: 'ws://127.0.0.1:1' };
+      const connector = factory(listener.url, options);
       const firstResult = await connector.connect(new AbortController().signal);
       expect(firstResult.ok).toBe(true);
       if (!firstResult.ok) return;

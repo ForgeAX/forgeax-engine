@@ -267,3 +267,35 @@ describe('f32ToF16Bytes', () => {
 });
 
 }
+describe('binary16 scalar and bulk contract', () => {
+  it.each([
+    [0, 0x0000], [-0, 0x8000], [1, 0x3c00], [-1, 0xbc00],
+    [2 ** -24, 0x0001], [-(2 ** -24), 0x8001],
+    [2 ** -25, 0x0001], [-(2 ** -25), 0x8001],
+    [2 ** -14 - 2 ** -25, 0x0400],
+    [0.49999, 0x3800], [0.9999, 0x3c00], [1 + 2 ** -11, 0x3c01],
+    [65504, 0x7bff], [65520, 0x7c00],
+    [Infinity, 0x7c00], [-Infinity, 0xfc00], [NaN, 0x7e00],
+  ])('encodes %s as %s through both entry points', (value, bits) => {
+    expect(halfFloat.f32ToF16(value)).toBe(bits);
+    const storage = new Float32Array([123, value, 456]);
+    const bytes = halfFloat.f32ToF16Bytes(new Uint8Array(storage.buffer, 4, 4));
+    expect(bytes).toHaveLength(2);
+    expect(new DataView(bytes.buffer).getUint16(0, true)).toBe(bits);
+    expect(storage[0]).toBe(123);
+    expect(storage[2]).toBe(456);
+  });
+
+  it('round-trips every finite binary16 representation, including signed zero', () => {
+    const mismatches: number[] = [];
+    for (let bits = 0; bits <= 0xffff; bits++) {
+      if ((bits & 0x7c00) === 0x7c00) continue;
+      if (halfFloat.f32ToF16(halfFloat.f16ToF32(bits)) !== bits) mismatches.push(bits);
+    }
+    expect(mismatches).toEqual([]);
+    expect(Object.is(halfFloat.f16ToF32(0x8000), -0)).toBe(true);
+    expect(halfFloat.f16ToF32(0x7c00)).toBe(Infinity);
+    expect(halfFloat.f16ToF32(0xfc00)).toBe(-Infinity);
+    expect(halfFloat.f16ToF32(0x7e00)).toBeNaN();
+  });
+});

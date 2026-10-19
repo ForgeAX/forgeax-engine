@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import process from 'node:process';
 // AC-10 / w23 (feat-20260515-buffer-array-vocab-collapse M5): assert that
 // `FixedArrayView<T>` / `VarArrayView<T>` value-shape exports cannot be
 // re-imported anywhere in the live source tree. The view classes were
@@ -26,17 +27,11 @@
 // is the structural fail-fast against re-introduction.
 //
 // Pattern + zero-dep stdio mirrors scripts/grep/check-asset-registry-instanced-removed.mjs.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import process from 'node:process';
+import { grepSourceFiles } from './source-files.mjs';
 
 const ROOTS = ['packages', 'apps', 'templates'];
 
 const SELF_EXEMPT = new Set(['scripts/grep/check-no-managed-array-view-import.mjs']);
-
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.cache', 'test-output']);
-
-const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
 
 // Match `import` / `export ... from` statements that name VarArrayView or
 // FixedArrayView in their named-binding list. The regex is anchored on the
@@ -45,51 +40,13 @@ const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']
 const RE_IMPORT_NAMED =
   /\b(?:import|export)\s+(?:type\s+)?\{[^}]*\b(VarArrayView|FixedArrayView)\b[^}]*\}\s*(?:from\s*['"][^'"]+['"])?/m;
 
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
-}
-
 const hits = [];
 
-function walk(dir) {
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
+for (const { path: p, code: stripped } of grepSourceFiles(ROOTS, { exempt: SELF_EXEMPT })) {
+  const m = stripped.match(RE_IMPORT_NAMED);
+  if (m) {
+    hits.push({ path: p, literal: m[1], snippet: m[0].slice(0, 200) });
   }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    let st;
-    try {
-      st = statSync(p);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) {
-      walk(p);
-      continue;
-    }
-    const ext = p.slice(p.lastIndexOf('.'));
-    if (!CODE_EXTS.has(ext)) continue;
-    if (SELF_EXEMPT.has(p)) continue;
-    let text;
-    try {
-      text = readFileSync(p, 'utf8');
-    } catch {
-      continue;
-    }
-    const stripped = stripComments(text);
-    const m = stripped.match(RE_IMPORT_NAMED);
-    if (m) {
-      hits.push({ path: p, literal: m[1], snippet: m[0].slice(0, 200) });
-    }
-  }
-}
-
-for (const root of ROOTS) {
-  walk(root);
 }
 
 if (hits.length > 0) {

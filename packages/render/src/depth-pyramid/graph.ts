@@ -29,7 +29,7 @@ import { createDepthPyramidProgramResolver } from './programs';
  * (SSR); `furthest` feeds occlusion culling, where a texel may only hide
  * geometry that lies behind every sample it covers.
  */
-export type DepthPyramidReduction = 'closest' | 'furthest';
+type DepthPyramidReduction = 'closest' | 'furthest';
 
 /** Graph resource/pass prefix and shader entry suffix per reduction. */
 const REDUCTION_NAMES: Readonly<
@@ -62,7 +62,7 @@ interface DepthPyramidGraphInputBase {
  * Only the furthest reduction seeds from multisampled depth: occlusion needs
  * every sample, while screen-space tracers read the resolved depth.
  */
-export type DepthPyramidGraphInputs = DepthPyramidGraphInputBase &
+type DepthPyramidGraphInputs = DepthPyramidGraphInputBase &
   (
     | { readonly reduction?: 'closest' }
     | { readonly reduction: 'furthest'; readonly multisampled?: boolean }

@@ -2,7 +2,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { RenderTarget } from '../targets/contracts';
 import type { RenderTargetPhysical } from '../targets/physical';
 
-export interface PlanarCapture {
+interface PlanarCapture {
   readonly camera: CameraSnapshot;
   readonly target: RenderTarget;
   readonly physical: RenderTargetPhysical;

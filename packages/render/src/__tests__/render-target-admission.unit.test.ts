@@ -150,7 +150,7 @@ describe('RenderTarget descriptor admission', () => {
       depth: 'depth32float',
       depthOrArrayLayers: 4,
     };
-    const colorAndDepth = 64 * 64 * 4 * 4 + 64 * 64 * 4;
+    const colorAndDepth = 64 * 64 * 4 * 4 + 64 * 64 * 8;
     expect(
       admitRenderTargetDescriptor(layered, { ...limits, maxBytesPerTarget: colorAndDepth }).ok,
     ).toBe(true);

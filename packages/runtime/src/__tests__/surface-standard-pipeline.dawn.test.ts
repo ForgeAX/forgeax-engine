@@ -4,6 +4,7 @@ import { createServer as createTcpServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from '@forgeax/engine-ecs';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DynamicResolution,
@@ -12,7 +13,7 @@ import {
   type Renderer,
 } from '@forgeax/engine-render';
 import type { DeviceLostInfo } from '@forgeax/engine-rhi';
-import { attachRecorder, halfToFloat, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
+import { attachRecorder, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import * as captureWebgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -1212,14 +1213,14 @@ describe('Standard Surface runtime Dawn publication', () => {
           const values = new DataView(motionBuffer.getMappedRange());
           for (let index = 0; index < 4; index++) {
             // temporal-v1 stores log2(1 + view depth) in its half-float Z lane.
-            const depth = 2 ** halfToFloat(values.getUint16(index * 256 + 4, true)) - 1;
+            const depth = 2 ** halfFloat.f16ToF32(values.getUint16(index * 256 + 4, true)) - 1;
             expect(depth, `${SURFACE_CASES[index]?.id}: actual temporal coverage`).toBeCloseTo(
               6,
               2,
             );
             for (const channel of [0, 1]) {
               expect(
-                Math.abs(halfToFloat(values.getUint16(index * 256 + channel * 2, true))),
+                Math.abs(halfFloat.f16ToF32(values.getUint16(index * 256 + channel * 2, true))),
                 `${SURFACE_CASES[index]?.id}: stationary motion`,
               ).toBeLessThan(0.001);
             }

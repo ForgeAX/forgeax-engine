@@ -56,8 +56,8 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(entries.imports['forgeax_pbr::lighting_spot_projector']).toContain(
       'fn sampleStandardSpotProjector',
     );
-    expect(entries.bloomDownsample.source).toContain('bloom');
-    expect(entries.bloomUpsample.source).toContain('bloom');
+    expect(entries.bloomHorizontal.source).toContain('bloom');
+    expect(entries.bloomVertical.source).toContain('bloom');
     expect(entries.depthPyramidSeed.source).toContain(
       '#define_import_path forgeax_depth_pyramid::seed',
     );

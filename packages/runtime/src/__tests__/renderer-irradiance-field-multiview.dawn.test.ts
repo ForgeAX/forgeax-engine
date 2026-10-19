@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { encodePng } from '@forgeax/engine-image/png';
 import { Camera, CameraView } from '@forgeax/engine-render';
-import { attachRecorder, buildFrameModel, decodeTape, encodePng } from '@forgeax/engine-rhi-debug';
+import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';

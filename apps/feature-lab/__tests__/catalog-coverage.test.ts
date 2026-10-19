@@ -18,6 +18,8 @@ const GATE_PROVED_ROWS = new Set([
   // Renderer internals observed only through perf and pixel-parity gates.
   'Render bundle reuse',
   'Custom ShadowCaster pass',
+  // Fresh-device field composition and native contact replay, documented in README.
+  'Managed scene SDF collision',
   'GPU-driven custom Surface ABI',
   'Native wgpu/Ray Query spike',
   // Worker execution tiers and frame pacing.
@@ -29,12 +31,16 @@ const GATE_PROVED_ROWS = new Set([
   'Static plugin programs',
   // Native Host/Worker and producer-served Range fixtures; see README gate routes.
   'Gamepad feedback',
+  // Native PCM, sample-clock and bus-ramp fixtures need their owning Host gates.
+  'Acoustic regions',
+  'Quantized layered music',
   'Long audio windows',
   // Preview and workspace hosts.
   'Tool Preview Host',
   'Resident Host Pack selection',
   'Bound Preview host',
   'Project preview',
+  'Cached asset thumbnails',
   'Material preview',
   'Mesh preview',
   'Texture preview',

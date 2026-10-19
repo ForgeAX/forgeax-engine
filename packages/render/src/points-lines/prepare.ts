@@ -17,7 +17,7 @@ export interface PointsLinesGpuResourceAdapter<Resource> {
   destroy(resource: Resource): void;
 }
 
-export interface PointsLinesPreparedResource<Resource> {
+interface PointsLinesPreparedResource<Resource> {
   readonly resource: Resource;
   readonly geometry: PointsLinesExpandedGeometry;
   readonly snapshot: PointsLinesRetainedSnapshot;
@@ -25,7 +25,7 @@ export interface PointsLinesPreparedResource<Resource> {
   readonly lastKnownGood: true;
 }
 
-export interface PointsLinesPreparationOptions<Resource> {
+interface PointsLinesPreparationOptions<Resource> {
   readonly cache: PointsLinesExpansionCache;
   readonly adapter: PointsLinesGpuResourceAdapter<Resource>;
 }
@@ -43,7 +43,7 @@ export interface PointsLinesLanePreparationAdapter<Resource> {
   inspect(): PointsLinesPreparationInspection<Resource>;
 }
 
-export interface PointsLinesPreparationInspection<Resource> {
+interface PointsLinesPreparationInspection<Resource> {
   readonly status: 'empty' | 'resident' | 'rebuild-pending';
   readonly lastKnownGood: boolean;
   readonly liveResource: Resource | undefined;

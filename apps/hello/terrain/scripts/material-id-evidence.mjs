@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -20,7 +21,7 @@ import { terrainDerivedClosureValid } from '@forgeax/engine-terrain';
 import { derive, projectMaterialParameterSchema } from '@forgeax/engine-types';
 import { AssetGuid } from '@forgeax/engine-pack/source';
 import { materialTerrainGuid } from '../src/identity.ts';
-import { writeReferencePng, readReferencePng } from '../../../shared/png-codec.mjs';
+import { readReferencePng } from '../../../shared/png-codec.mjs';
 import { terrainHarness } from './harness.mjs';
 
 const mode = process.argv[2] ?? 'effects';
@@ -175,7 +176,7 @@ async function capture(h, recorder, encoding, renderPath, root, caseName) {
   const name = caseName ?? `${renderPath}-${encoding}-auto`;
   writeFileSync(resolve(dir, `${name}.rhitape`), artifact.bytes);
   const live = await h.pixels();
-  writeFileSync(resolve(dir, `${name}-capture.png`), writeReferencePng(live, 960, 540));
+  writeFileSync(resolve(dir, `${name}-capture.png`), encodePng(960, 540, live));
   const tape = decodeTape(artifact.bytes).unwrap(),
     model = buildFrameModel(tape);
   const blobs = new Map(tape.blobs.map((b) => [b.hash, b.bytes]));
@@ -300,7 +301,7 @@ async function capture(h, recorder, encoding, renderPath, root, caseName) {
       for (let i = 0; i < pixels.length; i += 4)
         [pixels[i], pixels[i + 2]] = [pixels[i + 2], pixels[i]];
     comparison = difference(live, pixels);
-    writeFileSync(resolve(dir, `${name}-replay.png`), writeReferencePng(pixels, 960, 540));
+    writeFileSync(resolve(dir, `${name}-replay.png`), encodePng(960, 540, pixels));
     assert(
       comparison.peakByteDifference <= 2,
       'fresh unmodified replay must reproduce actual live output',
@@ -426,7 +427,7 @@ try {
             verified = await h.verify(receipt);
           writeFileSync(
             resolve(dir, `${name}${mode === 'perf' ? `-${run}` : ''}.png`),
-            writeReferencePng(pixels, 960, 540),
+            encodePng(960, 540, pixels),
           );
           const entry = {
             renderPath,
@@ -479,7 +480,7 @@ try {
             const diff = Uint8Array.from(pixels, (_, i) =>
               i % 4 === 3 ? 255 : Math.min(255, Math.abs(pixels[i] - ref.pixels[i]) * 32),
             );
-            writeFileSync(resolve(dir, `${name}-diff-x32.png`), writeReferencePng(diff, 960, 540));
+            writeFileSync(resolve(dir, `${name}-diff-x32.png`), encodePng(960, 540, diff));
             if (comparison.peakByteDifference > 2 && recorder) {
               entry.capture = await capture(
                 h,

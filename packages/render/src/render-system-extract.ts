@@ -182,6 +182,7 @@ import {
   tonemapToU32,
   transparencyFromF32,
   validateCameraBloom,
+  validateCameraProjectionOffset,
   validateDynamicResolutionCamera,
 } from './components';
 import { validateBarrelDistortionParameters } from './components/barrel-distortion';
@@ -678,6 +679,8 @@ export interface ExtractedLights {
  * pipeline; no independent ECS system).
  */
 export interface SkylightSnapshot {
+  /** Direction-independent diffuse irradiance; independent of IBL color/intensity. */
+  readonly ambientIrradiance?: readonly [number, number, number];
   /** Fixed world-space environment capture origin from the Skylight Transform. */
   readonly capturePosition?: readonly [number, number, number];
   // 0 = no equirect supplied -> solid-color ambient via the white fallback
@@ -2149,6 +2152,13 @@ export function materialNormalScale(
     : [1, 1];
 }
 
+const standardRoughness = STANDARD_PIPELINE_PARAM_SCHEMA.find(
+  (entry) => entry.name === 'roughness',
+);
+const DEFAULT_MATERIAL_ROUGHNESS = Number(
+  standardRoughness?.type === 'f32' ? standardRoughness.default : undefined,
+);
+
 /** Value projection shared by primary and secondary material extraction. */
 export function materialValueSnapshot(
   values: Readonly<Record<string, unknown>>,
@@ -2176,7 +2186,7 @@ export function materialValueSnapshot(
   return {
     baseColor: vec3.create(baseColor?.[0] ?? 1, baseColor?.[1] ?? 1, baseColor?.[2] ?? 1),
     metallic: typeof values.metallic === 'number' ? values.metallic : 0,
-    roughness: typeof values.roughness === 'number' ? values.roughness : 0.5,
+    roughness: typeof values.roughness === 'number' ? values.roughness : DEFAULT_MATERIAL_ROUGHNESS,
     normalScale: materialNormalScale(values),
     ...(specularColor !== undefined && {
       specularColor: [specularColor[0] ?? 1, specularColor[1] ?? 1, specularColor[2] ?? 1] as const,
@@ -2984,20 +2994,20 @@ export function buildPointShadowMatrices(lightPos: Vec3, near: number, far: numb
  * lightViewProj matrices, so the merge layer MUST recompute using the surfaced
  * camera — see {@link computeDirectionalCsm}.
  */
-export interface CsmCameraData {
-  readonly world: Float32Array;
-  readonly fov: number;
-  readonly aspect: number;
-  readonly near: number;
-  readonly far: number;
-  readonly projection: 'perspective' | 'orthographic';
-  readonly orthoLeft: number;
-  readonly orthoRight: number;
-  readonly orthoBottom: number;
-  readonly orthoTop: number;
-  /** Stereo eye off-axis term; cascades fit the eye's sheared frustum. */
-  readonly eye?: CameraSnapshot['eye'];
-}
+export type CsmCameraData = Pick<
+  CameraSnapshot,
+  | 'world'
+  | 'fov'
+  | 'aspect'
+  | 'near'
+  | 'far'
+  | 'projection'
+  | 'orthoLeft'
+  | 'orthoRight'
+  | 'orthoBottom'
+  | 'orthoTop'
+  | 'projectionOffset'
+>;
 
 /**
  * bug-20260710-editor-cross-world-shadow: the raw directional-shadow config a
@@ -3060,8 +3070,12 @@ function cascadeSliceSphere(
   if (camera.projection === 'orthographic') {
     const halfWidth = (camera.orthoRight - camera.orthoLeft) * 0.5;
     const halfHeight = (camera.orthoTop - camera.orthoBottom) * 0.5;
-    offsetX = (camera.orthoRight + camera.orthoLeft) * 0.5;
-    offsetY = (camera.orthoTop + camera.orthoBottom) * 0.5;
+    offsetX =
+      (camera.orthoRight + camera.orthoLeft) * 0.5 -
+      (camera.projectionOffset?.[0] ?? 0) * halfWidth;
+    offsetY =
+      (camera.orthoTop + camera.orthoBottom) * 0.5 -
+      (camera.projectionOffset?.[1] ?? 0) * halfHeight;
     depth = (near + far) * 0.5;
     radius = Math.hypot(halfWidth, halfHeight, (far - near) * 0.5);
   } else {
@@ -3069,11 +3083,12 @@ function cascadeSliceSphere(
     const tanX = tanY * camera.aspect;
     const slope = tanX * tanX + tanY * tanY;
     depth = Math.min(far, (near + far) * 0.5 * (1 + slope));
-    // An off-axis eye shears the slice sideways: centre on the sheared axis and
-    // widen by the worst-case shear so the radius stays orientation-invariant.
-    const shear = (camera.eye?.frustumShift ?? 0) * tanX;
-    offsetX = shear * depth;
-    radius = Math.sqrt((far - depth) ** 2 + far * far * slope) + Math.abs(shear) * far;
+    // Off-axis lenses shear both axes; retain an orientation-invariant enclosure.
+    const shearX = -(camera.projectionOffset?.[0] ?? 0) * tanX;
+    const shearY = -(camera.projectionOffset?.[1] ?? 0) * tanY;
+    offsetX = shearX * depth;
+    offsetY = shearY * depth;
+    radius = Math.sqrt((far - depth) ** 2 + far * far * slope) + Math.hypot(shearX, shearY) * far;
   }
   const right = vec3.normalize(
     vec3.create(),
@@ -3408,7 +3423,7 @@ function collectCameraSnapshots(world: World): CameraSnapshot[] {
       cam.temperature !== 6504 ||
       cam.tint !== 0 ||
       cam.colorLut !== 0 ||
-      cam.colorLutStrength !== 0;
+      cam.colorLutStrength !== Camera.fields.colorLutStrength.default;
     const output = hasNonDefaultOutput
       ? {
           exposure: cameraExposureFromColumns(cam),
@@ -3457,6 +3472,7 @@ function collectCameraSnapshots(world: World): CameraSnapshot[] {
       fov: cam.fov,
       aspect: cam.aspect,
       autoAspect: cam.autoAspect,
+      projectionOffset: validateCameraProjectionOffset(cam.projectionOffset),
       near: cam.near,
       far: cam.far,
       projection,
@@ -3477,13 +3493,13 @@ function collectCameraSnapshots(world: World): CameraSnapshot[] {
         cam.bloom,
         cam.bloomThreshold,
         cam.bloomIntensity,
-        cam.bloomSoftKnee,
-        cam.bloomScatter,
+        cam.bloomSmoothWidth,
+        cam.bloomRadius,
       ),
       bloomThreshold: cam.bloomThreshold,
       bloomIntensity: cam.bloomIntensity,
-      bloomSoftKnee: cam.bloomSoftKnee,
-      bloomScatter: cam.bloomScatter,
+      bloomSmoothWidth: cam.bloomSmoothWidth,
+      bloomRadius: cam.bloomRadius,
       clearColor: [
         cam.clearColor[0] ?? 0,
         cam.clearColor[1] ?? 0,
@@ -3519,6 +3535,10 @@ function collectCameraSnapshots(world: World): CameraSnapshot[] {
               intensity: ambientOcclusion.intensity,
               directLightingStrength: ambientOcclusion.directLightingStrength,
               quality: ambientOcclusion.quality,
+              thickness: ambientOcclusion.thickness,
+              distanceExponent: ambientOcclusion.distanceExponent,
+              distanceFallOff: ambientOcclusion.distanceFallOff,
+              resolutionScale: ambientOcclusion.resolutionScale,
             },
           }),
       ...(screenSpaceReflection === undefined

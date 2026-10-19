@@ -338,19 +338,19 @@ import { RenderGraph } from '../graph.js';
       g.addResource('fxaaIntermediate', { kind: 'texture', lifetime: 'transient' });
       g.addResource('hdrColor', { kind: 'texture', lifetime: 'transient' });
       g.addResource('hdrComposited', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomDownsample0', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomDownsample1', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomUpsample0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomHorizontal0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomHorizontal1', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomVertical0', { kind: 'texture', lifetime: 'transient' });
       g.addPass('shadow', { reads: [], writes: ['shadowDepth'] });
       g.addPass('main', { reads: ['shadowDepth'], writes: ['hdrColor', 'depth'] });
-      g.addPass('bloom-downsample-0', { reads: ['hdrColor'], writes: ['bloomDownsample0'] });
-      g.addPass('bloom-downsample-1', {
-        reads: ['bloomDownsample0'],
-        writes: ['bloomDownsample1'],
+      g.addPass('bloom-horizontal-0', { reads: ['hdrColor'], writes: ['bloomHorizontal0'] });
+      g.addPass('bloom-horizontal-1', {
+        reads: ['bloomHorizontal0'],
+        writes: ['bloomHorizontal1'],
       });
-      g.addPass('bloom-upsample-0', { reads: ['bloomDownsample1'], writes: ['bloomUpsample0'] });
+      g.addPass('bloom-vertical-0', { reads: ['bloomHorizontal1'], writes: ['bloomVertical0'] });
       g.addPass('bloom-composite', {
-        reads: ['hdrColor', 'bloomUpsample0'],
+        reads: ['hdrColor', 'bloomVertical0'],
         writes: ['hdrComposited'],
       });
       g.addPass('tonemap', { reads: ['hdrComposited'], writes: [] });
@@ -364,11 +364,11 @@ import { RenderGraph } from '../graph.js';
       const g = new RenderGraph();
       g.addResource('hdrColor', { kind: 'texture', lifetime: 'transient' });
       g.addResource('hdrComposited', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomUpsample0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomVertical0', { kind: 'texture', lifetime: 'transient' });
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
-      g.addPass('bloom-upsample-0', { reads: [], writes: ['bloomUpsample0'] });
+      g.addPass('bloom-vertical-0', { reads: [], writes: ['bloomVertical0'] });
       g.addPass('bloom-composite', {
-        reads: ['hdrColor', 'bloomUpsample0'],
+        reads: ['hdrColor', 'bloomVertical0'],
         writes: ['hdrComposited'],
       });
       g.addPass('tonemap', { reads: ['hdrComposited'], writes: [] });
@@ -386,18 +386,18 @@ import { RenderGraph } from '../graph.js';
       const g = new RenderGraph();
       g.addResource('hdrColor', { kind: 'texture', lifetime: 'transient' });
       g.addResource('hdrComposited', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomDownsample0', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomDownsample1', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomUpsample0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomHorizontal0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomHorizontal1', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomVertical0', { kind: 'texture', lifetime: 'transient' });
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
-      g.addPass('bloom-downsample-0', { reads: ['hdrColor'], writes: ['bloomDownsample0'] });
-      g.addPass('bloom-downsample-1', {
-        reads: ['bloomDownsample0'],
-        writes: ['bloomDownsample1'],
+      g.addPass('bloom-horizontal-0', { reads: ['hdrColor'], writes: ['bloomHorizontal0'] });
+      g.addPass('bloom-horizontal-1', {
+        reads: ['bloomHorizontal0'],
+        writes: ['bloomHorizontal1'],
       });
-      g.addPass('bloom-upsample-0', { reads: ['bloomDownsample1'], writes: ['bloomUpsample0'] });
+      g.addPass('bloom-vertical-0', { reads: ['bloomHorizontal1'], writes: ['bloomVertical0'] });
       g.addPass('bloom-composite', {
-        reads: ['hdrColor', 'bloomUpsample0'],
+        reads: ['hdrColor', 'bloomVertical0'],
         writes: ['hdrComposited'],
       });
 
@@ -405,9 +405,9 @@ import { RenderGraph } from '../graph.js';
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const order = r.value.passes.map((p) => p.name);
-      const downsample0Idx = order.indexOf('bloom-downsample-0');
-      const downsample1Idx = order.indexOf('bloom-downsample-1');
-      const upsample0Idx = order.indexOf('bloom-upsample-0');
+      const downsample0Idx = order.indexOf('bloom-horizontal-0');
+      const downsample1Idx = order.indexOf('bloom-horizontal-1');
+      const upsample0Idx = order.indexOf('bloom-vertical-0');
       const compIdx = order.indexOf('bloom-composite');
       expect(downsample0Idx).toBeLessThan(downsample1Idx);
       expect(downsample1Idx).toBeLessThan(upsample0Idx);
@@ -415,8 +415,8 @@ import { RenderGraph } from '../graph.js';
     });
 
     it('uses hdrComposited to make the temporal version explicit', () => {
-      // bloom-downsample-0 reads the hdrColor version written by main.
-      // bloom-composite reads hdrColor + bloomUpsample0, writes hdrComposited.
+      // bloom-horizontal-0 reads the hdrColor version written by main.
+      // bloom-composite reads hdrColor + bloomVertical0, writes hdrComposited.
       // tonemap reads hdrComposited.
       // The chain: main -> downsample-0 -> downsample-1 -> upsample-0 -> composite -> tonemap.
       // The hdrComposited resource name makes the post-composite version explicit while keeping the real
@@ -425,18 +425,18 @@ import { RenderGraph } from '../graph.js';
       const g = new RenderGraph();
       g.addResource('hdrColor', { kind: 'texture', lifetime: 'transient' });
       g.addResource('hdrComposited', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomDownsample0', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomDownsample1', { kind: 'texture', lifetime: 'transient' });
-      g.addResource('bloomUpsample0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomHorizontal0', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomHorizontal1', { kind: 'texture', lifetime: 'transient' });
+      g.addResource('bloomVertical0', { kind: 'texture', lifetime: 'transient' });
       g.addPass('main', { reads: [], writes: ['hdrColor'] });
-      g.addPass('bloom-downsample-0', { reads: ['hdrColor'], writes: ['bloomDownsample0'] });
-      g.addPass('bloom-downsample-1', {
-        reads: ['bloomDownsample0'],
-        writes: ['bloomDownsample1'],
+      g.addPass('bloom-horizontal-0', { reads: ['hdrColor'], writes: ['bloomHorizontal0'] });
+      g.addPass('bloom-horizontal-1', {
+        reads: ['bloomHorizontal0'],
+        writes: ['bloomHorizontal1'],
       });
-      g.addPass('bloom-upsample-0', { reads: ['bloomDownsample1'], writes: ['bloomUpsample0'] });
+      g.addPass('bloom-vertical-0', { reads: ['bloomHorizontal1'], writes: ['bloomVertical0'] });
       g.addPass('bloom-composite', {
-        reads: ['hdrColor', 'bloomUpsample0'],
+        reads: ['hdrColor', 'bloomVertical0'],
         writes: ['hdrComposited'],
       });
       g.addPass('tonemap', { reads: ['hdrComposited'], writes: [] });
@@ -445,9 +445,9 @@ import { RenderGraph } from '../graph.js';
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       const order = r.value.passes.map((p) => p.name);
-      const downsample0Idx = order.indexOf('bloom-downsample-0');
-      const downsample1Idx = order.indexOf('bloom-downsample-1');
-      const upsample0Idx = order.indexOf('bloom-upsample-0');
+      const downsample0Idx = order.indexOf('bloom-horizontal-0');
+      const downsample1Idx = order.indexOf('bloom-horizontal-1');
+      const upsample0Idx = order.indexOf('bloom-vertical-0');
       const compIdx = order.indexOf('bloom-composite');
       const tmapIdx = order.indexOf('tonemap');
       expect(downsample0Idx).toBeLessThan(downsample1Idx);

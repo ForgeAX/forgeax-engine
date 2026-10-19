@@ -17,6 +17,7 @@ import {
   DevKitWorkspaceError,
   type DevKitWorkspaceProviderOptions,
 } from './workspace-provider.js';
+import { createWorkspaceThumbnails } from './workspace-thumbnails.js';
 
 export const ENGINE_WORKSPACE_CALL_SERVICE = 'engine.workspace.call';
 export const ENGINE_WORKSPACE_CAPABILITIES_SERVICE = 'engine.workspace.capabilities';
@@ -50,13 +51,19 @@ export const devKitWorkspacePlugin = {
     const backend = options.hostBinding.backend;
     const api = ctx.get('toolApi') as ToolApi;
     let catalogEpoch = 0;
+    let thumbnailEpoch = 0;
+    const thumbnails = new Map<
+      EngineWorkspaceRuntime,
+      ReturnType<typeof createWorkspaceThumbnails>
+    >();
     const publish = () =>
-      backend.transport.publish(
-        ENGINE_WORKSPACE_STATE_TOPIC,
-        snapshotEngineWorkspace(runtime, catalogEpoch),
-      );
+      backend.transport.publish(ENGINE_WORKSPACE_STATE_TOPIC, {
+        ...snapshotEngineWorkspace(runtime, catalogEpoch),
+        thumbnailEpoch,
+      });
     const notePublished = () => {
       catalogEpoch += 1;
+      for (const owner of thumbnails.values()) owner.refresh();
       publish();
     };
     const runtimes = new Set<EngineWorkspaceRuntime>();
@@ -80,6 +87,13 @@ export const devKitWorkspacePlugin = {
           }),
       );
       runtimes.add(session);
+      thumbnails.set(
+        session,
+        createWorkspaceThumbnails(session, () => {
+          thumbnailEpoch++;
+          publish();
+        }),
+      );
       return session;
     };
     const runtime = createRuntime();
@@ -120,8 +134,14 @@ export const devKitWorkspacePlugin = {
       EngineWorkspaceRuntime,
       ReturnType<typeof createEngineWorkspaceTools>
     >();
+    const thumbnailTool = (session: EngineWorkspaceRuntime) => {
+      const owner = thumbnails.get(session);
+      if (!owner) throw new Error('Workspace thumbnail owner unavailable');
+      return owner.tool;
+    };
     const tools = [
       ...createEngineWorkspaceTools(runtime, publish),
+      thumbnailTool(runtime),
       ...createWorkspaceLiveTools(),
       ...createOperationHistoryTools(),
     ].map((tool) => ({
@@ -189,13 +209,21 @@ export const devKitWorkspacePlugin = {
             };
           let handlers = sessionTools.get(session);
           if (!handlers) {
-            handlers = createEngineWorkspaceTools(session, publish);
+            handlers = [...createEngineWorkspaceTools(session, publish), thumbnailTool(session)];
             sessionTools.set(session, handlers);
           }
           const handler = handlers.find(
             (candidate) => candidate.descriptor.id === tool.descriptor.id,
           );
-          if (handler) return handler.execute(args, context);
+          if (handler) {
+            const result = await handler.execute(args, context);
+            if (
+              tool.descriptor.id === 'engine.project.open' ||
+              tool.descriptor.id === 'engine.project.close'
+            )
+              thumbnails.get(session)?.refresh();
+            return result;
+          }
         }
         return tool.execute(args, context);
       },
@@ -281,6 +309,8 @@ export const devKitWorkspacePlugin = {
       entries.delete(caller.connectionId);
       if (entry && !entry.project) {
         runtimes.delete(entry);
+        void thumbnails.get(entry)?.close();
+        thumbnails.delete(entry);
         void entry.dispose().catch(() => {});
       }
     });
@@ -292,6 +322,8 @@ export const devKitWorkspacePlugin = {
       capabilities();
       disconnect();
       await provider.revoke('Engine workspace plugin disposed');
+      await Promise.all([...thumbnails.values()].map((owner) => owner.close()));
+      thumbnails.clear();
       await Promise.all([...runtimes].map((session) => session.dispose()));
       runtimes.clear();
       entries.clear();

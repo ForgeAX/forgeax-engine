@@ -10,7 +10,10 @@ const productHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: monorepoRo
 
 export default defineConfig({
   plugins: [forgeaxShader() as never],
-  define: { __FORGEAX_PRODUCT_HEAD__: JSON.stringify(productHead) },
+  define: {
+    __FORGEAX_PRODUCT_HEAD__: JSON.stringify(productHead),
+    'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': JSON.stringify(process.env.FORGEAX_ENGINE_RHI_DEBUG ?? '0'),
+  },
   server: { fs: { allow: [monorepoRoot] } },
   preview: { port: 4176, strictPort: true },
   build: {
@@ -19,6 +22,9 @@ export default defineConfig({
       input: {
         main: resolve(here, 'index.html'),
         lightingDemo: resolve(here, 'lighting-demo.html'),
+        renderDefaults: resolve(here, 'render-defaults.html'),
+        sceneAuthoring: resolve(here, 'scene-authoring.html'),
+        environmentResponse: resolve(here, 'environment-response.html'),
       },
     },
   },

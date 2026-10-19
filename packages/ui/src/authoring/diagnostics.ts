@@ -1,4 +1,17 @@
 import type { ImportDiagnostic, ImportSourceRange } from '@forgeax/engine-types';
+import type { UiAuthoringCategory } from './profile.js';
+
+/** Common parser output; HTML and CSS retain their own grammar and source ranges. */
+export interface UiAuthoringParse {
+  readonly sourcePath: string;
+  readonly source: string;
+  readonly category: UiAuthoringCategory;
+  readonly diagnostics: readonly ImportDiagnostic[];
+  readonly references: readonly {
+    readonly value: string;
+    readonly range: ImportSourceRange;
+  }[];
+}
 
 export function sourceRange(source: string, start: number, end = start + 1): ImportSourceRange {
   const boundedStart = Math.max(0, Math.min(start, source.length));

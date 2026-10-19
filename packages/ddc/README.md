@@ -186,3 +186,10 @@ The closed configuration and lifecycle codes are:
 - [ ] Guess a project root from `cwd`, a basename, `roots[0]`, game id, or URL.
 
 The package owns derived evidence only. Source authority, Pack publication, Catalog projection, browser binding, and final release archives remain separate owners.
+
+Publication tuples are constructed by Types `createAssetPublication`; DDC validates their shared output-set digest and owns staging, commit, cancellation and current/last-known-good state. It does not maintain another envelope builder.
+
+Errors and status layers use the same `DdcRecoveryAction` contract, including
+lease release. Their browser projections share path redaction. Construct
+`DdcStoreError` with `{ code, detail, ... }`; entry-store failures use this same
+structured input as lifecycle and session failures.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-lines headless dawn smoke — proves Bevy 3d/lines:
 // green line-list + blue line-strip render via unlit material.
@@ -8,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
@@ -157,7 +158,7 @@ for (let i = 0; i < pixels.length; i += 4) {
 // --- write reference PNG ---
 const refPngPath = resolve(here, '..', 'artifacts', 'lines-ref.png');
 mkdirSync(dirname(refPngPath), { recursive: true });
-writeFileSync(refPngPath, writeReferencePng(pixels, WIDTH, HEIGHT));
+writeFileSync(refPngPath, encodePng(WIDTH, HEIGHT, pixels));
 
 // --- results ---
 const checks = [

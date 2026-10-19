@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-window-resizing headless dawn smoke — proves Bevy window/window_resizing
 // behavior: canvas resize, renderer survives, camera aspect syncs.
@@ -8,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 160;
@@ -200,7 +201,7 @@ renderTarget = null;
 // --- write reference PNG ---
 const refPngPath = resolve(here, '..', 'artifacts', 'window-resizing-ref.png');
 mkdirSync(dirname(refPngPath), { recursive: true });
-writeFileSync(refPngPath, writeReferencePng(initialPixels, WIDTH, HEIGHT));
+writeFileSync(refPngPath, encodePng(WIDTH, HEIGHT, initialPixels));
 
 // --- results ---
 const checks = [

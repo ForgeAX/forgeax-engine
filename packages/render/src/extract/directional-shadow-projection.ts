@@ -15,7 +15,7 @@ export interface DirectionalShadowCascadeFit {
 }
 
 /** Host projection sent to the shared View UBO. */
-export interface DirectionalShadowProjection {
+interface DirectionalShadowProjection {
   readonly splitPlanes: Float32Array;
   readonly directionalShadowQuality: DirectionalShadowQuality;
 }

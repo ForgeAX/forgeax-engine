@@ -1,12 +1,14 @@
 import { vec3 } from '@forgeax/engine-math';
 import {
   createStandardPbrArtifactReceipt,
+  DEFAULT_UNLIT_PARAM_SCHEMA,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
 import { derive, type ParamSchemaEntry, ParamSchemaProjectionOwner } from '@forgeax/engine-types';
 import { assert, describe, expect, it } from 'vitest';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from '../material-row';
-import type { MaterialSnapshot } from '../render-system-extract';
+import { buildPbrMaterialUboPayload } from '../record/main-pass-material';
+import { type MaterialSnapshot, materialValueSnapshot } from '../render-system-extract';
 
 const snapshot = (): MaterialSnapshot => ({
   baseColor: vec3.create(0.25, 0.5, 0.75),
@@ -19,6 +21,44 @@ const float = (row: Uint8Array | undefined, offset = 0) => {
 };
 
 describe('material row defaults', () => {
+  it('uses the built-in Unlit ABI when an authored material omits its parameter schema', () => {
+    const material: MaterialSnapshot = {
+      ...materialValueSnapshot({ baseColor: [1, 0.15, 0.15] }),
+      materialShaderId: 'forgeax::default-unlit',
+      paramSnapshot: { baseColor: [1, 0.15, 0.15] },
+    };
+    const row = buildPbrMaterialUboPayload(material);
+    const members = derive(DEFAULT_UNLIT_PARAM_SCHEMA).numericMembers;
+    for (const name of ['alphaCutoff', 'alphaHash', 'shading']) {
+      const member = members.find((member) => member.name === name);
+      assert(member, `Unlit member ${name} must be present`);
+      expect(float(row, member.offset), name).toBe(0);
+    }
+  });
+
+  it('projects omitted Standard roughness and emission consistently into CPU and GPU material rows', () => {
+    const derived = derive(STANDARD_PIPELINE_PARAM_SCHEMA);
+    const offset = (name: string) => {
+      const member = derived.numericMembers.find((member) => member.name === name);
+      assert(member, `Numeric member ${name} must be present`);
+      return member.offset;
+    };
+    for (const intensity of [undefined, 0, 2]) {
+      const material = materialValueSnapshot({
+        emissive: [0.8, 0.3, 0.1],
+        ...(intensity === undefined ? {} : { emissiveIntensity: intensity }),
+      });
+      expect(material.roughness).toBe(1);
+      for (const row of [
+        packStandardPbrMaterialRow(createStandardPbrArtifactReceipt(), material),
+        buildPbrMaterialUboPayload(material),
+      ]) {
+        expect(float(row, offset('roughness'))).toBe(1);
+        expect(float(row, offset('emissiveIntensity'))).toBe(intensity ?? 1);
+      }
+    }
+  });
+
   it('packs admitted defaults with the same numeric WGSL encodings as raw schemas', () => {
     const schema: ParamSchemaEntry[] = [
       { name: 'color', type: 'vec4', default: [0.25, 0.5, 0.75, 1] },

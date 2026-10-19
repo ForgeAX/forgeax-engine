@@ -40,8 +40,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
     "@zappar/msdf-generator": "1.2.4"
   },
   "devDependencies": {

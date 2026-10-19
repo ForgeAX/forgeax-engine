@@ -2,7 +2,7 @@ import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { structuredPluginError } from './structured-plugin-error.js';
 
-export interface PackBuildInputOptions {
+interface PackBuildInputOptions {
   readonly roots?: readonly string[] | undefined;
   readonly base?: string | undefined;
 }

@@ -1,7 +1,7 @@
 #define_import_path forgeax_pbr::standard_lighting
 #import forgeax_view::common::{view, lightingChannelsMatch}
 #import forgeax_pbr::ibl_shared::{fresnelSchlickRoughness, standardDiffuseWeight}
-#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular, projectSpecularRadiance}
+#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular, environmentScattering}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactor}
@@ -11,7 +11,7 @@
 
 struct SkylightUniforms {
   intensity : f32,
-  // Scalar tint lanes preserve the 64-byte host uniform layout.
+  // Scalar tint lanes preserve the host uniform offsets.
   colorR : f32,
   colorG : f32,
   colorB : f32,
@@ -19,12 +19,14 @@ struct SkylightUniforms {
   // xyz: global diffuse scale; w: deferred reflection environment index.
   diffuseScale : vec4<f32>,
   diffuseRotation : vec4<f32>,
+  ambientIrradiance : vec4<f32>,
 };
 
 struct StandardEnvironment {
   diffuse : vec3<f32>,
   specular : vec3<f32>,
-  response : vec3<f32>,
+  // RGB: directional single scattering; A: energy available to multiple scattering.
+  response : vec4<f32>,
 };
 
 fn evaluateStandardEnvironment(
@@ -55,12 +57,22 @@ fn evaluateStandardEnvironment(
   let tint = vec3<f32>(sky.colorR, sky.colorG, sky.colorB);
   let diffuseScale = select(tint * sky.intensity, sky.diffuseScale.xyz, sky.intensity < 0.0);
   let fresnel = fresnelSchlickRoughness(max(dot(normal, direction), 0.0), f0, roughness);
-  let kD = standardDiffuseWeight(max(dot(normal, direction), 0.0), f0, roughness, metallic);
+  let scattering = environmentScattering(max(dot(normal, direction), 0.001), roughness, f0, brdfLut, irradianceSampler);
+  let kD = max(vec3<f32>(0.0), vec3<f32>(1.0) - scattering.single - scattering.multi) * (1.0 - metallic);
   var diffuse = kD * irradiance * albedo * diffuseScale;
   if (localBlend > 0.0) {
     diffuse = evaluateProbeDiffuse(sh, localBlend, normal, irradiance * diffuseScale,
       kD / max(vec3<f32>(1.0 - metallic), vec3<f32>(0.0001)), albedo, metallic);
   }
+  // Multiple scattering uses the diffuse angular distribution, including local SH.
+  // Keeping it outside the directional response preserves it on an SSR hit.
+  var multiIrradiance = irradiance * diffuseScale;
+  if (localBlend > 0.0) {
+    multiIrradiance = evaluateProbeDiffuse(sh, localBlend, normal, multiIrradiance,
+      vec3<f32>(1.0), vec3<f32>(1.0), 0.0);
+  }
+  diffuse += scattering.multi * multiIrradiance;
+  diffuse += sky.ambientIrradiance.xyz * albedo * (1.0 - metallic) * 0.3183098861837907;
   // Diffuse transmission gathers irradiance arriving on the opposite
   // hemisphere (Unreal's two-sided foliage sky term samples at -N). The
   // albedo already carries (1 - metallic), so only the Fresnel gate remains.
@@ -76,7 +88,7 @@ fn evaluateStandardEnvironment(
     }
   }
   return StandardEnvironment(diffuse, specular * decodeSpecularEnvironmentScale(tint, sky.intensity),
-    projectSpecularRadiance(vec3<f32>(1.0), normal, direction, roughness, f0, brdfLut, irradianceSampler));
+    vec4<f32>(scattering.single, scattering.missingEnergy));
 }
 
 struct StandardDirect {

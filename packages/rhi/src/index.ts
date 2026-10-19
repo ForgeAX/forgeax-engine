@@ -222,29 +222,15 @@ export interface Texture {
   readonly [RhiTextureBrand]: void;
 }
 
-/** RHI-safe source for a texture-to-buffer copy. */
-export interface TextureCopySource {
+/** Texture subresource for queue writes and encoder copies, using an opaque RHI handle. */
+export type TexelCopyTextureInfo = Omit<GPUTexelCopyTextureInfo, 'texture'> & {
   readonly texture: Texture;
-  readonly mipLevel?: number | undefined;
-  readonly origin?: GPUOrigin3D | undefined;
-  readonly aspect?: GPUTextureAspect | undefined;
-}
+};
 
-/** RHI-safe destination for a texture-to-buffer copy. */
-export interface BufferCopyDestination {
+/** Buffer layout for encoder copies, using an opaque RHI handle. */
+export type TexelCopyBufferInfo = Omit<GPUTexelCopyBufferInfo, 'buffer'> & {
   readonly buffer: Buffer;
-  readonly offset?: number | undefined;
-  readonly bytesPerRow: number;
-  readonly rowsPerImage?: number | undefined;
-}
-
-/** RHI-owned destination for queue.writeTexture. The resource handle remains opaque. */
-export interface TextureWriteDestination {
-  readonly texture: Texture;
-  readonly mipLevel?: number | undefined;
-  readonly origin?: GPUOrigin3D | undefined;
-  readonly aspect?: GPUTextureAspect | undefined;
-}
+};
 
 /** RHI-owned destination for queue.copyExternalImageToTexture. */
 export type ExternalImageTextureDestination = Omit<
@@ -1886,7 +1872,7 @@ export interface RhiQueue {
    *   }
    */
   writeTexture(
-    destination: TextureWriteDestination,
+    destination: TexelCopyTextureInfo,
     data: ArrayBufferView | ArrayBuffer,
     dataLayout: Pick<GPUTexelCopyBufferLayout, 'offset' | 'bytesPerRow' | 'rowsPerImage'>,
     size: GPUExtent3DStrict,
@@ -2016,8 +2002,8 @@ export interface RhiCommandEncoder {
    *   encoder.copyBufferToTexture(srcInfo, dstInfo, [w, h, 1]);
    */
   copyBufferToTexture(
-    source: GPUTexelCopyBufferInfo,
-    destination: GPUTexelCopyTextureInfo,
+    source: TexelCopyBufferInfo,
+    destination: TexelCopyTextureInfo,
     copySize: GPUExtent3DStrict,
   ): void;
   /** Copy a Texture sub-region to a Buffer sub-region.
@@ -2029,20 +2015,8 @@ export interface RhiCommandEncoder {
    *   encoder.copyTextureToBuffer(srcInfo, dstInfo, [w, h, 1]);
    */
   copyTextureToBuffer(
-    source: GPUTexelCopyTextureInfo,
-    destination: GPUTexelCopyBufferInfo,
-    copySize: GPUExtent3DStrict,
-  ): void;
-  /** Opaque RHI handle form for renderer-owned readback. */
-  copyTextureToBuffer(
-    source: TextureCopySource,
-    destination: BufferCopyDestination,
-    copySize: GPUExtent3DStrict,
-  ): void;
-  /** Union form for decorators that transparently forward either handle form. */
-  copyTextureToBuffer(
-    source: GPUTexelCopyTextureInfo | TextureCopySource,
-    destination: GPUTexelCopyBufferInfo | BufferCopyDestination,
+    source: TexelCopyTextureInfo,
+    destination: TexelCopyBufferInfo,
     copySize: GPUExtent3DStrict,
   ): void;
   /** Copy a Texture sub-region to a Texture sub-region.
@@ -2054,8 +2028,8 @@ export interface RhiCommandEncoder {
    *   encoder.copyTextureToTexture(srcInfo, dstInfo, [w, h, 1]);
    */
   copyTextureToTexture(
-    source: GPUTexelCopyTextureInfo,
-    destination: GPUTexelCopyTextureInfo,
+    source: TexelCopyTextureInfo,
+    destination: TexelCopyTextureInfo,
     copySize: GPUExtent3DStrict,
   ): void;
   /** Fill a Buffer sub-region with zeros.
@@ -2403,7 +2377,18 @@ export type {
   RhiWebgpuRuntimeCause,
   RhiWebgpuRuntimeDetail,
 } from './errors.js';
-export { err, ok, RhiError, validateDrawArgs } from './errors.js';
+export {
+  commandEncoderFinished,
+  err,
+  limitExceeded,
+  ok,
+  queueSubmitFailed,
+  queueWriteBufferOutOfBounds,
+  RhiError,
+  renderPassNotEnded,
+  shaderCompileFailed,
+  validateDrawArgs,
+} from './errors.js';
 export {
   type AccelerationStructureBindingLayout,
   type AccelerationStructureBuildPreference,
@@ -2527,3 +2512,5 @@ export function cubeArrayDepthFaceView(
     mipLevelCount: 1,
   };
 }
+
+export { textureCopyOrigin, textureReadbackLayout } from './texture-copy-layout';

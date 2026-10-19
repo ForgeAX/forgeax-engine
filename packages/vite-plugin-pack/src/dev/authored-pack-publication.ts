@@ -3,7 +3,6 @@ import type {
   AcceptedPublicationStore,
   ScriptablePackPublicationSnapshot,
 } from '@forgeax/engine-ddc';
-import { createAcceptedPublication } from '@forgeax/engine-ddc';
 import type { ImporterRegistry, ImportRunnerFs } from '@forgeax/engine-import';
 import {
   canonicalScriptableSourcePath,
@@ -37,12 +36,13 @@ import {
   type ScriptablePackModuleExecutorPool,
 } from '@forgeax/engine-pack/source-node';
 import type { AssetPublicationEnvelope, PackIndexEntry } from '@forgeax/engine-types';
+import { createAssetPublication } from '@forgeax/engine-types';
 import type { PluginPackInternalOptions } from '../plugin-contract.js';
 import { structuredPluginError } from '../structured-plugin-error.js';
 import type { PluginServerState } from './plugin-server.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
 
-export interface AuthoredPackPublicationContext {
+interface AuthoredPackPublicationContext {
   readonly opts: PluginPackInternalOptions;
   readonly transportBase?: string | undefined;
   readonly metaPackBodies: PluginServerState['metaPackBodies'];
@@ -581,7 +581,7 @@ async function publishWithExecutors(
       )}`.replace(/[^a-zA-Z0-9._-]/g, '-');
       const generation =
         (context.publicationStore.observe(entry.sourcePath).current?.generation ?? 0) + 1;
-      const candidate = createAcceptedPublication({
+      const candidate = createAssetPublication({
         sourcePath: entry.sourcePath,
         sourceRevision: product.inputFingerprint,
         generation,

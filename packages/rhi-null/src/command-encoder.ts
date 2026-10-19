@@ -15,7 +15,6 @@
 import type {
   BlasBuildEntry,
   Buffer,
-  BufferCopyDestination,
   CommandBuffer,
   ComputePassDescriptor,
   QuerySet,
@@ -25,10 +24,11 @@ import type {
   RhiComputePassEncoder,
   RhiError as RhiErrorType,
   RhiRenderPassEncoder,
-  TextureCopySource,
+  TexelCopyBufferInfo,
+  TexelCopyTextureInfo,
   TlasBuildEntry,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
+import { commandEncoderFinished, renderPassNotEnded } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import type { Bookkeeper } from './bookkeeping';
 import type { RhiNullDevice } from './device';
@@ -141,8 +141,8 @@ export class RhiNullCommandEncoder implements RhiCommandEncoder {
   }
 
   copyBufferToTexture(
-    source: GPUTexelCopyBufferInfo,
-    destination: GPUTexelCopyTextureInfo,
+    source: TexelCopyBufferInfo,
+    destination: TexelCopyTextureInfo,
     _copySize: GPUExtent3DStrict,
   ): void {
     this.reference(source.buffer, 'Buffer');
@@ -150,8 +150,8 @@ export class RhiNullCommandEncoder implements RhiCommandEncoder {
   }
 
   copyTextureToBuffer(
-    source: GPUTexelCopyTextureInfo | TextureCopySource,
-    destination: GPUTexelCopyBufferInfo | BufferCopyDestination,
+    source: TexelCopyTextureInfo,
+    destination: TexelCopyBufferInfo,
     _copySize: GPUExtent3DStrict,
   ): void {
     this.reference(source.texture, 'Texture');
@@ -159,8 +159,8 @@ export class RhiNullCommandEncoder implements RhiCommandEncoder {
   }
 
   copyTextureToTexture(
-    source: GPUTexelCopyTextureInfo,
-    destination: GPUTexelCopyTextureInfo,
+    source: TexelCopyTextureInfo,
+    destination: TexelCopyTextureInfo,
     _copySize: GPUExtent3DStrict,
   ): void {
     this.reference(source.texture, 'Texture');
@@ -186,23 +186,9 @@ export class RhiNullCommandEncoder implements RhiCommandEncoder {
   insertDebugMarker(_markerLabel: string): void {}
 
   finish(): Result<CommandBuffer, RhiErrorType> {
-    if (this.finished)
-      return err(
-        new RhiError({
-          code: 'command-encoder-finished',
-          expected: 'an unfinished command encoder',
-          hint: 'create a new command encoder via device.createCommandEncoder() for each submission',
-        }),
-      );
+    if (this.finished) return err(commandEncoderFinished());
     if (this.encodingError !== undefined) return err(this.encodingError);
-    if (this.openPasses !== 0)
-      return err(
-        new RhiError({
-          code: 'render-pass-not-ended',
-          expected: 'all command encoder passes have ended',
-          hint: 'end the active render or compute pass before calling finish()',
-        }),
-      );
+    if (this.openPasses !== 0) return err(renderPassNotEnded());
     const live = this.bookkeeper.dependencies([...this.references]);
     if (!live.ok) return live;
     this.finished = true;
@@ -212,12 +198,7 @@ export class RhiNullCommandEncoder implements RhiCommandEncoder {
   }
 
   private assertUnfinished(): void {
-    if (this.finished)
-      throw new RhiError({
-        code: 'command-encoder-finished',
-        expected: 'an unfinished command encoder',
-        hint: 'create a new command encoder before recording more commands',
-      });
+    if (this.finished) throw commandEncoderFinished();
   }
 
   private reference(handle: unknown, kind: string): void {

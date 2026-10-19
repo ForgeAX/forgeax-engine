@@ -278,3 +278,35 @@ fn evaluate_surface(input : SingleLayerMediumSurfaceInput) -> SingleLayerMediumS
     });
   });
 });
+
+it('compiles dynamic accessors for all field shapes using the admitted offsets', async () => {
+  const { deriveMaterialDynamicInputLayout } = await import('@forgeax/engine-types');
+  const layout = deriveMaterialDynamicInputLayout({
+    ...dynamicInput,
+    maxRecords: 1,
+    fields: [
+      { name: 'scalar', type: 'f32' },
+      { name: 'id', type: 'u32' },
+      { name: 'pair', type: 'vec2<f32>' },
+      { name: 'triple', type: 'vec3<f32>' },
+      { name: 'tail', type: 'f32' },
+      { name: 'quad', type: 'vec4<f32>' },
+    ],
+  }).unwrap();
+  const accessor = generateMaterialDynamicInputAccessor(layout);
+  expect(accessor).toContain('words : array<u32, 12>');
+  expect(accessor).toContain(
+    'vec3<f32>(bitcast<f32>(raw.words[4]), bitcast<f32>(raw.words[5]), bitcast<f32>(raw.words[6]))',
+  );
+  expect(accessor).toContain('bitcast<f32>(raw.words[7])');
+  expect(accessor).toContain(
+    'vec4<f32>(bitcast<f32>(raw.words[8]), bitcast<f32>(raw.words[9]), bitcast<f32>(raw.words[10]), bitcast<f32>(raw.words[11]))',
+  );
+  const compiled = await compileShader(`${accessor}
+@group(0) @binding(0) var<storage, read_write> outputValue : f32;
+@compute @workgroup_size(1) fn main() {
+  let record = read_waterEvents(0u);
+  outputValue = record.scalar + f32(record.id) + record.pair.y + record.triple.z + record.tail + record.quad.w;
+}`);
+  expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+});

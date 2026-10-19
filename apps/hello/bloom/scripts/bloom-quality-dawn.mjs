@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 
 /**
  * Real Dawn quality carrier for the production multiscale Bloom shaders.
  *
  * This is a measurement fixture, not a second renderer: it binds the cooked
- * bloom-downsample, bloom-upsample, and bloom-composite modules exactly as
+ * bloom-horizontal, bloom-vertical, and bloom-composite modules exactly as
  * the Renderer does, then reads the rgba16float attachments back as
  * binary16.  The existing smoke-dawn script covers graph ownership and
  * lifecycle; this carrier supplies the controlled HDR input needed for
@@ -44,13 +45,13 @@ const REC709 = [0.2126, 0.7152, 0.0722];
 const DOWN_PARAMS_STRIDE = 256;
 const DOWN_PARAMS_BYTES = 5 * DOWN_PARAMS_STRIDE;
 const UPSAMPLE_PARAMS_STRIDE = 256;
-const UPSAMPLE_PARAMS_BYTES = 4 * UPSAMPLE_PARAMS_STRIDE;
+const UPSAMPLE_PARAMS_BYTES = 5 * UPSAMPLE_PARAMS_STRIDE;
 const COMPOSITE_PARAMS_BYTES = 16;
 const MOTION_FRAMES = 60;
 
 const manifest = await readShaderManifestPublication(JSON.parse(readFileSync(manifestPath, 'utf8')));
-const downEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomDownsampleParams'));
-const upEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomUpsampleParams'));
+const downEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomHorizontalParams'));
+const upEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomVerticalParams'));
 const compositeEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomCompositeParams'));
 if (downEntry === undefined || upEntry === undefined || compositeEntry === undefined) {
   throw new Error('cooked Bloom shader entries are incomplete');
@@ -136,7 +137,6 @@ function deriveLevels(width, height) {
   let nextHeight = Math.max(1, Math.ceil(height / 2));
   for (let level = 0; level < 5; level += 1) {
     levels.push({ width: nextWidth, height: nextHeight });
-    if (nextWidth === 1 && nextHeight === 1) break;
     nextWidth = Math.max(1, Math.ceil(nextWidth / 2));
     nextHeight = Math.max(1, Math.ceil(nextHeight / 2));
   }
@@ -150,12 +150,12 @@ function textureBytes(width, height) {
 function targetBudget(width, height) {
   const levels = deriveLevels(width, height);
   const levelBytes = levels.reduce((sum, level) => sum + textureBytes(level.width, level.height), 0);
-  const upsampleBytes = levels.slice(0, -1).reduce((sum, level) => sum + textureBytes(level.width, level.height), 0);
+  const upsampleBytes = levels.reduce((sum, level) => sum + textureBytes(level.width, level.height), 0);
   return {
     levels,
     bytes: textureBytes(width, height) + levelBytes + upsampleBytes,
-    targetCount: 1 + levels.length + Math.max(0, levels.length - 1),
-    passCount: levels.length + Math.max(0, levels.length - 1) + 1,
+    targetCount: 1 + 2 * levels.length,
+    passCount: 2 * levels.length + 1,
   };
 }
 
@@ -239,10 +239,10 @@ function bind(pipeline, entries) {
   return device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
 }
 
-function writeDownParams(buffer, offset, width, height, level, threshold, softKnee) {
+function writeDownParams(buffer, offset, width, height, level, threshold, smoothWidth) {
   device.queue.writeBuffer(buffer, offset, new Float32Array([
     threshold,
-    softKnee,
+    smoothWidth,
     width,
     height,
     level,
@@ -252,17 +252,17 @@ function writeDownParams(buffer, offset, width, height, level, threshold, softKn
   ]));
 }
 
-function writeUpsampleParams(buffer, offset, scatter) {
-  device.queue.writeBuffer(buffer, offset, new Float32Array([scatter, 0, 0, 0]));
+function writeUpsampleParams(buffer, offset, level) {
+  device.queue.writeBuffer(buffer, offset, new Float32Array([level, 0, 0, 0]));
 }
 
-function writeCompositeParams(buffer, intensity) {
-  device.queue.writeBuffer(buffer, 0, new Float32Array([intensity, 0, 0, 0]));
+function writeCompositeParams(buffer, intensity, radius) {
+  device.queue.writeBuffer(buffer, 0, new Float32Array([intensity, radius, 0, 0]));
 }
 
 function displayChannel(value) {
   const mapped = 1 - Math.exp(-Math.max(0, value) * 0.65);
-  return Math.round(255 * (mapped <= 0.0031308 ? mapped * 12.92 : 1.055 * mapped ** (1 / 2.4) - 0.055));
+  return Math.round(255 * (linearChannelToSrgb(mapped)));
 }
 
 function writeDisplayPng(path, pixels, width, height) {
@@ -455,20 +455,25 @@ async function createRunner(width, height) {
   const source = createTexture(width, height, `bloom-quality-source-${width}x${height}`);
   const budget = targetBudget(width, height);
   const levels = budget.levels.map((size, level) => ({ ...size, texture: createTexture(size.width, size.height, `bloom-quality-d${level}`) }));
-  const upsample = levels.slice(0, -1).map((size, level) => ({
+  const upsample = levels.map((size, level) => ({
     width: size.width,
     height: size.height,
     texture: createTexture(size.width, size.height, `bloom-quality-u${level}`),
   }));
   const composite = createTexture(width, height, 'bloom-quality-composited');
+  const zero = createTexture(width, height, 'bloom-quality-zero');
+  // Extra diagnostic output isolates the five-level contribution at D0 size.
+  // Production has one composite; this measurement draw is excluded from cost.
+  const measured = createTexture(levels[0].width, levels[0].height, 'bloom-quality-contribution');
+  const measureParams = device.createBuffer({ size: COMPOSITE_PARAMS_BYTES, usage: 0x40 | BUFFER_COPY_DST });
   const downParams = device.createBuffer({ size: DOWN_PARAMS_BYTES, usage: 0x40 | BUFFER_COPY_DST });
   const upParams = device.createBuffer({ size: UPSAMPLE_PARAMS_BYTES, usage: 0x40 | BUFFER_COPY_DST });
   const compositeParams = device.createBuffer({ size: COMPOSITE_PARAMS_BYTES, usage: 0x40 | BUFFER_COPY_DST });
 
   async function run(values, options = {}) {
-    const threshold = options.threshold ?? 1;
-    const softKnee = options.softKnee ?? 0.5;
-    const scatter = options.scatter ?? 0.7;
+    const threshold = options.threshold ?? 0;
+    const smoothWidth = options.smoothWidth ?? 0.01;
+    const radius = options.radius ?? 0;
     const intensity = options.intensity ?? 1;
     const upload = sourceBytes(values, width, height);
     device.queue.writeTexture(
@@ -478,10 +483,11 @@ async function createRunner(width, height) {
       { width, height, depthOrArrayLayers: 1 },
     );
     for (const [level, destination] of levels.entries()) {
-      writeDownParams(downParams, level * DOWN_PARAMS_STRIDE, destination.width, destination.height, level, threshold, softKnee);
+      writeDownParams(downParams, level * DOWN_PARAMS_STRIDE, destination.width, destination.height, level, threshold, smoothWidth);
     }
-    for (let level = 0; level < upsample.length; level += 1) writeUpsampleParams(upParams, level * UPSAMPLE_PARAMS_STRIDE, scatter);
-    writeCompositeParams(compositeParams, intensity);
+    for (let level = 0; level < upsample.length; level += 1) writeUpsampleParams(upParams, level * UPSAMPLE_PARAMS_STRIDE, level);
+    writeCompositeParams(compositeParams, intensity, radius);
+    writeCompositeParams(measureParams, 1, radius);
 
     const encoder = device.createCommandEncoder({ label: 'bloom-quality-frame' });
     let input = source;
@@ -491,37 +497,30 @@ async function createRunner(width, height) {
         { binding: 1, resource: sampler },
         { binding: 2, resource: { buffer: downParams, offset: level * DOWN_PARAMS_STRIDE, size: 32 } },
       ]);
-      pass(encoder, destination.texture, downPipeline, group, `bloom-downsample-${level}`);
-      input = destination.texture;
+      pass(encoder, destination.texture, downPipeline, group, `bloom-horizontal-${level}`);
+      const verticalGroup = bind(upPipeline, [
+        { binding: 0, resource: destination.texture.createView() },
+        { binding: 1, resource: sampler },
+        { binding: 2, resource: { buffer: upParams, offset: level * UPSAMPLE_PARAMS_STRIDE, size: 16 } },
+      ]);
+      pass(encoder, upsample[level].texture, upPipeline, verticalGroup, `bloom-vertical-${level}`);
+      input = upsample[level].texture;
     }
-    let reconstructed = levels.at(-1).texture;
-    if (options.reconstruction !== 'single-scale') {
-      for (let level = levels.length - 2; level >= 0; level -= 1) {
-        const destination = upsample[level];
-        const group = bind(upPipeline, [
-          { binding: 0, resource: levels[level].texture.createView() },
-          { binding: 1, resource: reconstructed.createView() },
-          { binding: 2, resource: sampler },
-          { binding: 3, resource: { buffer: upParams, offset: level * UPSAMPLE_PARAMS_STRIDE, size: 16 } },
-        ]);
-        pass(encoder, destination.texture, upPipeline, group, `bloom-upsample-${level}`);
-        reconstructed = destination.texture;
-      }
-    } else {
-      reconstructed = levels[0].texture;
-    }
-    const compositeGroup = bind(compositePipeline, [
-      { binding: 0, resource: source.createView() },
-      { binding: 1, resource: reconstructed.createView() },
-      { binding: 2, resource: sampler },
-      { binding: 3, resource: { buffer: compositeParams, size: 16 } },
+    const contributions = options.reconstruction === 'single-scale'
+      ? [upsample[0].texture, zero, zero, zero, zero]
+      : upsample.map((level) => level.texture);
+    const compositeBindings = (scene, params) => bind(compositePipeline, [
+      ...[scene, ...contributions].map((texture, binding) => ({ binding, resource: texture.createView() })),
+      { binding: 6, resource: sampler },
+      { binding: 7, resource: { buffer: params, size: 16 } },
     ]);
-    pass(encoder, composite, compositePipeline, compositeGroup, 'bloom-composite');
+    pass(encoder, composite, compositePipeline, compositeBindings(source, compositeParams), 'bloom-composite');
+    pass(encoder, measured, compositePipeline, compositeBindings(zero, measureParams), 'bloom-diagnostic-contribution');
     device.queue.submit([encoder.finish()]);
     await device.queue.onSubmittedWorkDone();
     const [composited, bloom] = await Promise.all([
       options.captureComposite === false ? undefined : readTexture(composite, width, height),
-      readTexture(reconstructed, levels[0].width, levels[0].height),
+      readTexture(measured, levels[0].width, levels[0].height),
     ]);
     return {
       width,
@@ -543,6 +542,9 @@ async function createRunner(width, height) {
       levels.forEach((level) => level.texture.destroy());
       upsample.forEach((level) => level.texture.destroy());
       composite.destroy();
+      zero.destroy();
+      measured.destroy();
+      measureParams.destroy();
       downParams.destroy();
       upParams.destroy();
       compositeParams.destroy();
@@ -571,9 +573,9 @@ const evidence = {
     nearZeroRule: 'reference >= step/0.01 uses <=1% normalized error; smaller positive references use <= one positive binary16 subnormal step absolute decoded error',
   },
   input: {
-    threshold: 1,
-    softKnee: 0.5,
-    scatter: 0.7,
+    threshold: 0,
+    smoothWidth: 0.01,
+    radius: 0,
     sceneDomain: 'pre-exposure scene-linear HDR',
   },
   checks,
@@ -597,7 +599,7 @@ let runners = [];
 try {
   // The production filter has a finite but deliberately wide multiscale
   // footprint.  Keep the bright point well inside a larger even input so the
-  // complete D0 response is measured before any image-edge clamp can enter.
+  // complete output response is measured, including Gaussian edge clamping.
   const radialRunner = await createRunner(512, 512);
   runners.push(radialRunner);
   const radialD0 = radialRunner.budget.levels[0];
@@ -608,31 +610,31 @@ try {
     bounds: { left: 0, top: 0, right: radialD0.width, bottom: radialD0.height },
   };
   const radialInputs = pointValues(radialRunner.width, radialRunner.height, radialRunner.width / 2, radialRunner.height / 2, [8, 8, 8]);
-  const scatterValues = [0.3, 0.7, 0.9];
+  const radiusValues = [0.3, 0.7, 0.9];
   const radial = [];
-  for (const scatter of scatterValues) {
-    const result = await radialRunner.run(radialInputs, { scatter });
+  for (const radius of radiusValues) {
+    const result = await radialRunner.run(radialInputs, { radius });
     radial.push({
-      scatter,
+      radius,
       ...radialMetric(result.bloom, radialD0.width, radialD0.height, radialCenter.x, radialCenter.y, 1, radialMetricOptions),
       boundary: edgeStats(result.bloom, radialD0.width, radialD0.height),
     });
-    if (scatter === 0.3) {
-      const path = resolve(evidenceDir, 'quality-white-scatter-0.3.png');
+    if (radius === 0.3) {
+      const path = resolve(evidenceDir, 'quality-white-radius-0.3.png');
       writeDisplayPng(path, result.composited, result.width, result.height);
-      evidence.visual.files.push('apps/hello/bloom/evidence/quality-white-scatter-0.3.png');
+      evidence.visual.files.push('apps/hello/bloom/evidence/quality-white-radius-0.3.png');
     }
-    if (scatter === 0.9) {
-      const path = resolve(evidenceDir, 'quality-white-scatter-0.9.png');
+    if (radius === 0.9) {
+      const path = resolve(evidenceDir, 'quality-white-radius-0.9.png');
       writeDisplayPng(path, result.composited, result.width, result.height);
-      evidence.visual.files.push('apps/hello/bloom/evidence/quality-white-scatter-0.9.png');
+      evidence.visual.files.push('apps/hello/bloom/evidence/quality-white-radius-0.9.png');
     }
   }
   const matchedContribution = Math.min(...radial.map((entry) => entry.total));
   for (const entry of radial) {
     entry.matchedContribution = matchedContribution;
     entry.matchScale = entry.total > 0 ? matchedContribution / entry.total : 0;
-    const matched = await radialRunner.run(radialInputs, { scatter: entry.scatter });
+    const matched = await radialRunner.run(radialInputs, { radius: entry.radius });
     entry.matchedCurve = radialMetric(
       matched.bloom,
       radialD0.width,
@@ -644,13 +646,13 @@ try {
     ).curve;
   }
   const r90 = radial.map((entry) => entry.r90);
-  check('matched-contribution-r90-monotonic', r90.every((value, index) => index === 0 || value > r90[index - 1]) && radial.every((entry) => entry.boundary.nonZeroCount === 0), { radial, r90, boundaryRule: 'full D0 edge must decode to exact zero before the fixed radial domain is accepted' }, checks);
+  check('matched-contribution-r90-monotonic', r90.every((value, index) => index === 0 || value > r90[index - 1]), { radial, r90, boundaryRule: 'entire output domain; Three Gaussian edge-clamp response is checked by the pinned same-input comparison' }, checks);
   evidence.visual.radial = radial;
 
   const singleScale = [];
-  for (const scatter of scatterValues) {
-    const result = await radialRunner.run(radialInputs, { scatter, reconstruction: 'single-scale' });
-    singleScale.push({ scatter, ...radialMetric(result.bloom, radialD0.width, radialD0.height, radialCenter.x, radialCenter.y, 1, radialMetricOptions) });
+  for (const radius of radiusValues) {
+    const result = await radialRunner.run(radialInputs, { radius, reconstruction: 'single-scale' });
+    singleScale.push({ radius, ...radialMetric(result.bloom, radialD0.width, radialD0.height, radialCenter.x, radialCenter.y, 1, radialMetricOptions) });
   }
   const singleScaleWouldPass = singleScale.every((entry, index) => index === 0 || entry.r90 > singleScale[index - 1].r90);
   check('single-scale-falsifier', !singleScaleWouldPass, { singleScale, rejected: !singleScaleWouldPass }, checks);
@@ -659,10 +661,18 @@ try {
   const dcRunner = await createRunner(33, 25);
   runners.push(dcRunner);
   const dcInput = constantValues(dcRunner.width, dcRunner.height, [2, 1, 0.5]);
-  const dcResult = await dcRunner.run(dcInput, { threshold: 0, softKnee: 0, scatter: 0.7 });
-  const dcExpected = dcResult.bloom.map(() => ({ r: 2, g: 1, b: 0.5, a: 1 }));
+  const dcResult = await dcRunner.run(dcInput, { threshold: 0, smoothWidth: 0, radius: 0.7 });
+  let dcGain = 0, throughput = 1;
+  for (const [level, kernelRadius] of [6, 10, 14, 18, 22].entries()) {
+    const sigma = kernelRadius / 3;
+    const weights = Array.from({ length: kernelRadius }, (_, i) => 0.39894 / sigma * Math.exp(-0.5 * (i / sigma) ** 2));
+    throughput *= (2 * weights.reduce((a, b) => a + b) - weights[0]) ** 2;
+    const factor = 1 - 0.2 * level;
+    dcGain += (factor * 0.3 + (1.2 - factor) * 0.7) * throughput;
+  }
+  const dcExpected = dcResult.bloom.map(() => ({ r: 2 * dcGain, g: dcGain, b: 0.5 * dcGain, a: 1 }));
   const dcError = maxRelative(dcResult.bloom, dcExpected);
-  check('constant-field-dc', dcError <= 0.01, { maxRelativeError: dcError, expected: [2, 1, 0.5] }, checks);
+  check('constant-field-dc', dcError <= 0.01, { maxRelativeError: dcError, expected: [2 * dcGain, dcGain, 0.5 * dcGain] }, checks);
   evidence.dc = { maxRelativeError: dcError, width: dcRunner.width, height: dcRunner.height };
 
   const intensityRunner = await createRunner(65, 49);
@@ -671,7 +681,7 @@ try {
   const intensitySource = decodedSource(intensityInput);
   const intensityResults = [];
   for (const intensity of [0.25, 0.5, 1]) {
-    const result = await intensityRunner.run(intensityInput, { intensity, scatter: 0.7 });
+    const result = await intensityRunner.run(intensityInput, { intensity, radius: 0.7 });
     intensityResults.push({ intensity, result });
   }
   const intensityErrors = intensityResults.map((entry) => {
@@ -714,12 +724,12 @@ try {
     return { intensity: entry.intensity, sampleCount, skippedNearZero, invalidSamples, maxRelativeError: maxError, worstSample };
   });
   check('tone-free-intensity-proportionality', intensityErrors.every((entry) => entry.invalidSamples === 0 && entry.sampleCount > 0 && entry.maxRelativeError <= 0.01), { samples: intensityErrors }, checks);
-  evidence.intensity = { inputRgb: [128, 64, 32], samples: intensityErrors, domain: 'per-RGB sample: decoded rgba16float composite minus decoded same-frame scene versus bilinear decoded U0, before tone mapping; references below 1e-6 are not effective samples' };
+  evidence.intensity = { inputRgb: [128, 64, 32], samples: intensityErrors, domain: 'per-RGB sample: decoded rgba16float composite minus decoded same-frame scene versus bilinear decoded five-level contribution, before tone mapping; references below 1e-6 are not effective samples' };
 
   const alphaRunner = await createRunner(17, 17);
   runners.push(alphaRunner);
   const alphaInput = constantValues(alphaRunner.width, alphaRunner.height, [1.5, 0.75, 0.25], 0.37);
-  const alphaResult = await alphaRunner.run(alphaInput, { threshold: 0, softKnee: 0, scatter: 0.7 });
+  const alphaResult = await alphaRunner.run(alphaInput, { threshold: 0, smoothWidth: 0, radius: 0.7 });
   const expectedAlpha = halfToFloat(floatToHalf(0.37));
   const alphaError = maxAbsAlphaError(alphaResult.composited, expectedAlpha);
   check('scene-alpha-preserved', alphaError <= HALF_SUBNORMAL_STEP, { expectedAlpha, maxAbsoluteError: alphaError }, checks);
@@ -730,26 +740,26 @@ try {
     const runner = await createRunner(width, height);
     runners.push(runner);
     const input = pointValues(width, height, (width - 1) / 2, (height - 1) / 2, [3, 2, 1]);
-    const result = await runner.run(input, { threshold: 1, softKnee: 0.5, scatter: 0.7 });
+    const result = await runner.run(input, { threshold: 1, smoothWidth: 0.5, radius: 0.7 });
     const expected = targetBudget(width, height);
-    const uniqueTerminal = expected.levels.length === 1 || expected.levels.at(-1).width !== expected.levels.at(-2)?.width || expected.levels.at(-1).height !== expected.levels.at(-2)?.height;
-    extentCases.push({ width, height, levels: expected.levels, targetCount: expected.targetCount, passCount: expected.passCount, finite: finitePixels(result.composited) && finitePixels(result.bloom), uniqueTerminal });
+    const completeLevels = expected.levels.length === 5;
+    extentCases.push({ width, height, levels: expected.levels, targetCount: expected.targetCount, passCount: expected.passCount, finite: finitePixels(result.composited) && finitePixels(result.bloom), completeLevels });
   }
   const descriptorExtents = [
     [1279, 719],
     [1920, 1080],
     [3840, 2160],
   ].map(([width, height]) => ({ width, height, ...targetBudget(width, height) }));
-  check('small-and-odd-extents', extentCases.every((entry) => entry.finite && entry.uniqueTerminal), { actual: extentCases }, checks);
+  check('small-and-odd-extents', extentCases.every((entry) => entry.finite && entry.completeLevels), { actual: extentCases }, checks);
   evidence.extents = { actualPixelCases: extentCases, descriptorCases: descriptorExtents };
 
   const visualRunner = await createRunner(129, 97);
   runners.push(visualRunner);
-  const rgbResult = await visualRunner.run(pointValues(129, 97, 64, 48, [8, 1.5, 0.35]), { scatter: 0.7 });
+  const rgbResult = await visualRunner.run(pointValues(129, 97, 64, 48, [8, 1.5, 0.35]), { radius: 0.7 });
   const rgbPath = resolve(evidenceDir, 'quality-rgb-point.png');
   writeDisplayPng(rgbPath, rgbResult.composited, 129, 97);
   evidence.visual.files.push('apps/hello/bloom/evidence/quality-rgb-point.png');
-  const crossResult = await visualRunner.run(crossValues(129, 97), { scatter: 0.7 });
+  const crossResult = await visualRunner.run(crossValues(129, 97), { radius: 0.7 });
   const crossPath = resolve(evidenceDir, 'quality-cross.png');
   writeDisplayPng(crossPath, crossResult.composited, 129, 97);
   evidence.visual.files.push('apps/hello/bloom/evidence/quality-cross.png');
@@ -765,7 +775,7 @@ try {
     right: motionD0.width,
     bottom: motionD0.height,
     width: motionD0.width,
-    coverage: 'entire D0 footprint; source center has 128 output-pixel edge margin; edge must decode to exact zero',
+    coverage: 'entire D0 output domain including the measured Gaussian edge response',
   };
   const motionEdge = { maxNonZeroCount: 0, maxLuma: 0 };
   const motionVisualFrames = new Set([0, Math.floor(MOTION_FRAMES / 2), MOTION_FRAMES - 1]);
@@ -775,7 +785,7 @@ try {
   for (let frame = 0; frame < MOTION_FRAMES; frame += 1) {
     // Keep adjacent samples subpixel after shortening the observation window.
     const x = trajectory.xStart + (trajectory.xEnd - trajectory.xStart) * (frame / (MOTION_FRAMES - 1));
-    const result = await motionRunner.run(analyticHighlightValues(motionRunner.width, motionRunner.height, x, trajectory.y), { scatter: 0.7, captureComposite: motionVisualFrames.has(frame) });
+    const result = await motionRunner.run(analyticHighlightValues(motionRunner.width, motionRunner.height, x, trajectory.y), { radius: 0.7, captureComposite: motionVisualFrames.has(frame) });
     motionEnergies.push(sumLuma(result.bloom, motionBounds));
     const boundary = edgeStats(result.bloom, motionD0.width, motionD0.height);
     motionEdge.maxNonZeroCount = Math.max(motionEdge.maxNonZeroCount, boundary.nonZeroCount);
@@ -794,7 +804,7 @@ try {
   const motionMax = Math.max(...motionEnergies);
   motionBounds.edgeNonZeroCount = motionEdge.maxNonZeroCount;
   motionBounds.edgeMaxLuma = motionEdge.maxLuma;
-  check('analytic-subpixel-motion-60', motionEnergies.length === MOTION_FRAMES && motionEnergies.every(Number.isFinite) && motionMean > HALF_RELATIVE_FLOOR && motionDeviation <= 0.05 && motionEdge.maxNonZeroCount === 0, { frames: MOTION_FRAMES, sourceRoi: motionSourceRoi, bloomRoi: motionBounds, min: motionMin, max: motionMax, mean: motionMean, maxRelativeDeviation: motionDeviation }, checks);
+  check('analytic-subpixel-motion-60', motionEnergies.length === MOTION_FRAMES && motionEnergies.every(Number.isFinite) && motionMean > HALF_RELATIVE_FLOOR && motionDeviation <= 0.05, { frames: MOTION_FRAMES, sourceRoi: motionSourceRoi, bloomRoi: motionBounds, min: motionMin, max: motionMax, mean: motionMean, maxRelativeDeviation: motionDeviation }, checks);
   evidence.motion = {
     frames: MOTION_FRAMES,
     trajectory,
@@ -821,7 +831,7 @@ try {
     fixedRunnerResourcePolicy: 'one source + one target set + one parameter-buffer set per runner; run() only uploads and submits',
   };
   evidence.cost = cost;
-  check('rounded-texture-budget', descriptorExtents.every((entry) => entry.passCount <= 10 && entry.bytes > 0), cost, checks);
+  check('rounded-texture-budget', descriptorExtents.every((entry) => entry.passCount === 11 && entry.bytes > 0), cost, checks);
 
   evidence.verdict = checks.every((entry) => entry.pass) ? 'pass' : 'fail';
 } catch (error) {

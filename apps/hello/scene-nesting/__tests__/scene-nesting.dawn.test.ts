@@ -226,7 +226,7 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
     );
     world.spawn({
       component: DirectionalLight,
-      data: {
+      data: { castShadow: true,
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [-0.3, -1.0, -0.5],

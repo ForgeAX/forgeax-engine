@@ -55,7 +55,6 @@ describe('stock VFX read-only depth demand', () => {
     { colorAttachments: [{ target: 'other', loadOp: 'load', storeOp: 'store' }] },
     { colorAttachments: [{ target: 'color', loadOp: 'clear', storeOp: 'store' }] },
     { colorAttachments: [{ target: 'color', loadOp: 'load', storeOp: 'discard' }] },
-    { depthStencilAttachment: undefined },
     { depthStencilAttachment: { target: 'other', depthLoadOp: 'load', depthStoreOp: 'store' } },
     { depthStencilAttachment: { target: 'depth', depthLoadOp: 'clear', depthStoreOp: 'store' } },
     { depthStencilAttachment: { target: 'depth', depthLoadOp: 'load', depthStoreOp: 'discard' } },
@@ -73,6 +72,13 @@ describe('stock VFX read-only depth demand', () => {
   ] satisfies Partial<Raster>[])('keeps the original barrier for %j', (change) => {
     const source = [pass(0, true), { ...pass(1), ...change }, pass(2, true)];
     expect(coalesceNativeReadOnlyDepthPasses(source, readOnly)).toHaveLength(3);
+  });
+
+  it('keeps the original barrier when a pass has no depth attachment', () => {
+    const { depthStencilAttachment: _depth, ...withoutDepth } = pass(1);
+    expect(
+      coalesceNativeReadOnlyDepthPasses([pass(0, true), withoutDepth, pass(2, true)], readOnly),
+    ).toHaveLength(3);
   });
 
   it('retains compute, copy and shadow boundaries', () => {

@@ -119,9 +119,10 @@ function buildUrp(
   });
   const needsTemporalIntermediate = temporalDemand.targetCount === 1;
   const sceneFormat =
-    hdr || linearLdr || rawOnly || needsTemporalIntermediate || topology.singleLayerMedium === true
+    context.forwardOutput?.format ??
+    (hdr || linearLdr || rawOnly || needsTemporalIntermediate || topology.singleLayerMedium === true
       ? 'rgba16float'
-      : topology.surface.storageFormat;
+      : topology.surface.storageFormat);
 
   const depth = target(graph, 'scene-depth', {
     format: 'depth32float-stencil8',
@@ -150,7 +151,7 @@ function buildUrp(
           format: sceneFormat,
           size: internalSize,
           sampleCount: 1,
-          domain: 'linear-ldr',
+          domain: context.forwardOutput?.domain ?? 'linear-ldr',
           ...(sceneFormat === topology.surface.storageFormat &&
           topology.surface.storageFormat !== topology.surface.viewFormat
             ? { viewFormats: [topology.surface.viewFormat] }
@@ -170,7 +171,7 @@ function buildUrp(
         format: sceneFormat,
         size: internalSize,
         sampleCount: 4,
-        domain: 'linear-ldr',
+        domain: context.forwardOutput?.domain ?? 'linear-ldr',
         ...(sceneFormat === topology.surface.storageFormat &&
         topology.surface.storageFormat !== topology.surface.viewFormat
           ? { viewFormats: [topology.surface.viewFormat] }
@@ -186,7 +187,7 @@ function buildUrp(
             format: scene.value.format,
             size: internalSize,
             sampleCount: msaa ? 4 : 1,
-            domain: 'linear-ldr',
+            domain: context.forwardOutput?.domain ?? 'linear-ldr',
           });
           if (!nearestLayer.ok) return nearestLayer;
           const nearestDepth = target(graph, 'single-layer-medium-nearest-depth', {
@@ -539,12 +540,8 @@ function buildUrp(
   );
   if (!features.ok) return features;
 
-  if (hdr || linearLdr || rawOnly) {
-    const observation = addTypedFrameObservationPass(
-      graph,
-      sceneResolvedForLater,
-      'forgeax::standard',
-    );
+  if (context.forwardOutput === undefined && (hdr || linearLdr || rawOnly)) {
+    const observation = addTypedFrameObservationPass(graph, sceneResolvedForLater);
     if (!observation.ok) return observation;
   }
   if (reflectionFallback.value?.sampleCount === 1) {
@@ -554,6 +551,15 @@ function buildUrp(
     );
     if (!fallbackObservation.ok) return fallbackObservation;
   }
+
+  if (context.forwardOutput !== undefined)
+    return context.forwardOutput.build(
+      context,
+      topology,
+      sceneResolvedForLater,
+      depth.value,
+      surface.value,
+    );
 
   const post = addStandardPost(
     context,

@@ -5,7 +5,10 @@ import { rhi } from '../index';
 async function requestDevice(): Promise<RhiDevice | undefined> {
   const adapter = await rhi.requestAdapter();
   if (!adapter.ok) {
-    expect(adapter.error.code).toBe('rhi-not-available');
+    // requestAdapter initializes the WASM module itself. Dawn's navigator.gpu
+    // does not supply the browser GL surface that this backend enumerates.
+    expect(adapter.error.code).toBe('adapter-unavailable');
+    expect(adapter.error.hint).toContain('wgpu-wasm');
     return undefined;
   }
   const device = await adapter.value.requestDevice();

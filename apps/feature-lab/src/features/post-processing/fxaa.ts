@@ -8,7 +8,7 @@ export default defineFeature({
   catalog: 'FXAA',
   kind: 'visual',
   summary:
-    'Camera.antialias = ANTIALIAS_FXAA runs one fullscreen FXAA pass after tonemapping, with no TAA history.',
+    'Camera.antialias = ANTIALIAS_FXAA runs the Three r184 six-step FXAA search after tonemapping, with no TAA history.',
   expect:
     'ON: the thin white and red bars have smooth, slightly soft edges. OFF: every shallow bar shows hard stair-step jaggies and broken dotted segments.',
   setup({ world }) {

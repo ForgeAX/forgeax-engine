@@ -535,6 +535,49 @@ describe('meta import artifact publication rollback', () => {
     );
   });
 
+  it('stages an image import without traversing unrelated catalog payloads before commit', async () => {
+    root = await mkdtemp(join(tmpdir(), 'forgeax-meta-import-staged-catalog-'));
+    const source = join(root, 'staged.hdr');
+    await writeFile(source, tinyHdr(41));
+    let payloadReads = 0;
+    const unrelated: PackIndexEntry = {
+      guid: '00000000-0000-4000-8000-000000000099',
+      kind: 'texture',
+      sourcePath: 'assets/unrelated.png',
+      packageUrl: '/__forgeax-ddc/unrelated.pack.json',
+      sourceOverrides: {
+        surface: {
+          get roughness() {
+            payloadReads += 1;
+            return 0.8;
+          },
+        },
+      },
+    };
+    const projection = imageCatalogProjection(source);
+    const pending = new Map<string, import('@forgeax/engine-import').ImportPublicationInput>();
+    const deltas: unknown[] = [];
+    const staged = imageContext({
+      root,
+      declaration: imageMeta(source),
+      projection: { ...projection, entries: [...projection.entries, unrelated] },
+      pendingImportPublications: pending,
+      publishCatalogDelta: (delta) => deltas.push(delta),
+    });
+
+    const rows = await startMetaImport(`${source}.meta.json`, staged.context);
+
+    expect(rows.map((row) => row.guid)).toEqual([IMAGE_GUID]);
+    expect(pending.size).toBe(1);
+    expect(staged.projection.entries.find((row) => row.guid === unrelated.guid)).toBe(unrelated);
+    expect(deltas).toEqual([]);
+    expect(payloadReads).toBe(0);
+    assertArtifactClosure(
+      staged.context.metaPackBodies.get(`/__forgeax-ddc/${IMAGE_GUID}.pack.json`) ?? '',
+      staged.context.devArtifactBodies,
+    );
+  });
+
   it('keeps accepted maps outside staged, aborted, discarded, and failed outer commits', async () => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-meta-import-staged-controls-'));
     const assets = join(root, 'assets');

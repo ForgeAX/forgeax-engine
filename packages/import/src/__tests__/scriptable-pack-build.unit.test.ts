@@ -58,8 +58,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       maxConcurrency: 2,
     });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect([...entered]).toEqual(['a', 'b', 'c', 'd']);
+      await expect.poll(() => [...entered]).toEqual(['a', 'b', 'c', 'd']);
     } finally {
       release();
       const result = await pending;

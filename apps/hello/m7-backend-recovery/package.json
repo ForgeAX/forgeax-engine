@@ -103,6 +103,7 @@
     }
   },
   "devDependencies": {
+    "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-rhi-null": "workspace:*",
     "@forgeax/engine-rhi-webgpu": "workspace:*",

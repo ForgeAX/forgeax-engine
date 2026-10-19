@@ -293,9 +293,9 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
       ],
       encode: ({ encoder, resources }) => {
         encoder.copyTextureToBuffer(
-          { texture: resources.texture(output).unwrap() as unknown as GPUTexture },
+          { texture: resources.texture(output).unwrap() },
           {
-            buffer: resources.buffer(readback).unwrap() as unknown as GPUBuffer,
+            buffer: resources.buffer(readback).unwrap(),
             bytesPerRow: 256,
             rowsPerImage: 1,
           },

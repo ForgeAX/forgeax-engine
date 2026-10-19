@@ -44,8 +44,15 @@ try {
     // Change only the disposable project; keep every authored light and cascade.
     const scenePath = join(root, 'assets/scene.pack.ts');
     const scene = await readFile(scenePath, 'utf8');
-    assert.ok(scene.includes('mapSize: 1024,'), 'view-ci-shadow-fixture-changed');
-    await writeFile(scenePath, scene.replace('mapSize: 1024,', 'mapSize: 256,'));
+    const directional = scene.match(/DirectionalLight:\s*\{([^{}]*)\}/);
+    assert.ok(directional, 'view-ci-shadow-fixture-changed');
+    const body = directional[1];
+    const explicitSize = body.match(/\bmapSize:\s*(\d+)\s*,/);
+    assert.ok(!/\bmapSize\s*:/.test(body) || explicitSize, 'view-ci-shadow-fixture-changed');
+    const bounded = explicitSize
+      ? body.replace(explicitSize[0], `mapSize: ${Math.min(Number(explicitSize[1]), 256)},`)
+      : ` mapSize: 256,${body}`;
+    await writeFile(scenePath, scene.replace(directional[0], directional[0].replace(body, bounded)));
   }
   const manifest = JSON.parse(await readFile(join(checkout, 'templates/game-3d/forge.json'), 'utf8'));
   await writeFile(join(root, 'forge.json'), JSON.stringify(manifest));
@@ -284,7 +291,13 @@ try {
     }, { capture: true });
   });
   const canvas = game.locator('canvas');
-  await canvas.click();
+  const bounds = await canvas.boundingBox();
+  assert.ok(bounds?.width && bounds?.height);
+  const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  await page.waitForFunction(({ x, y, targetId }) => document.elementFromPoint(x, y)?.getAttribute('data-forgeax-scene-play') === targetId,
+    { ...center, targetId: playArgs.targetId });
+  // Game UI can cover its canvas; use the same visible document gesture as a player.
+  await page.mouse.click(center.x, center.y);
   const walk = async () => {
     const frame = await game.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted));
     await page.keyboard.down('w');

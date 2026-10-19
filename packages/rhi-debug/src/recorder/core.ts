@@ -1,3 +1,4 @@
+import { textureReadbackLayout } from '@forgeax/engine-rhi';
 // @forgeax/engine-rhi-debug/src/recorder/core -- recorder state and event ownership.
 
 /// <reference types="@webgpu/types" />
@@ -12,7 +13,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { type CaptureFailureDetail, createRhiDebugError, type RhiDebugError } from '../errors';
 import { digestBytes } from '../protocol/codec';
-import { EVENT_SEMANTICS } from '../protocol/event-semantics';
+import { handleAccess } from '../protocol/event-semantics';
 import { computeTextureLayout, projectTextureExtent, textureBlockLayout } from '../texel-layout';
 import type {
   HandleId,
@@ -62,6 +63,7 @@ export interface SnapshotResourceDescriptor {
   readonly format?: GPUTextureFormat;
   readonly sampleCount?: number;
   readonly mipLevelCount?: number;
+  readonly textureBindingViewDimension?: GPUTextureViewDimension;
   readonly usage: number;
 }
 
@@ -77,7 +79,9 @@ export function snapshotResourceBytes(entry: SnapshotResourceDescriptor) {
   }
   if (!isSnapshottableTexture(entry.format, entry.size, entry.sampleCount))
     return { payload: 0, staging: 0 };
-  const { width, height, layerCount } = projectTextureExtent(entry.size);
+  const extent = projectTextureExtent(entry.size);
+  if (extent === undefined) return { payload: 0, staging: 0 };
+  const { width, height, layerCount } = extent;
   const layout = computeTextureLayout(
     entry.format,
     width,
@@ -86,12 +90,26 @@ export function snapshotResourceBytes(entry: SnapshotResourceDescriptor) {
     entry.mipLevelCount ?? 1,
   );
   if (layout === undefined) return { payload: 0, staging: 0 };
+  // Depth slices are read serially through RGBA32F; only the largest padded
+  // buffer is live at once. The matching output texture has the same texel size.
+  if (entry.format === 'depth32float')
+    return {
+      payload: layout.totalBytes,
+      staging: layout.slices.reduce(
+        (peak, slice) =>
+          Math.max(
+            peak,
+            textureReadbackLayout(slice.width, slice.height, {
+              blockWidth: 1,
+              blockHeight: 1,
+              bytesPerBlock: 16,
+            }).byteLength,
+          ),
+        0,
+      ),
+    };
   const staging = layout.slices.reduce(
-    (bytes, slice) =>
-      bytes +
-      Math.ceil((Math.ceil(slice.width / layout.blockWidth) * layout.bytesPerBlock) / 256) *
-        256 *
-        Math.ceil(slice.height / layout.blockHeight),
+    (bytes, slice) => bytes + textureReadbackLayout(slice.width, slice.height, layout).byteLength,
     0,
   );
   return { payload: layout.totalBytes, staging };
@@ -122,14 +140,14 @@ function isDepthOrStencilFormat(format: GPUTextureFormat | undefined): boolean {
  */
 function isSnapshottableTexture(
   format: GPUTextureFormat | undefined,
-  _size: number | GPUExtent3DStrict | undefined,
+  size: number | GPUExtent3DStrict | undefined,
   sampleCount?: number,
 ): boolean {
   if (isDepthOrStencilFormat(format) && format !== 'depth32float') return false;
   // Multisample textures reject queue.writeTexture; skip (resolved target seeds).
   if (sampleCount !== undefined && sampleCount > 1) return false;
   // Round-trippable iff its texel-block footprint is known.
-  return textureBlockLayout(format) !== undefined;
+  return textureBlockLayout(format) !== undefined && projectTextureExtent(size) !== undefined;
 }
 
 /** Add COPY_SRC to a buffer usage unless it is a mappable (MAP_READ/WRITE) buffer. */
@@ -508,7 +526,7 @@ function reconcileSwapchainViewFormats(s: RecorderInternal): void {
 
 function hasBootstrapDependency(s: RecorderInternal, handleId: HandleId): boolean {
   for (const event of s.bootstrapCreates.values()) {
-    if (EVENT_SEMANTICS[event.kind].read(event).includes(handleId)) return true;
+    if (handleAccess(event).read.includes(handleId)) return true;
   }
   return false;
 }

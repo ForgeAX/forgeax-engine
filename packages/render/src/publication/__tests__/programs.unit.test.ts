@@ -49,10 +49,8 @@ it('admits a cold publication once and retains its validated program and schema 
   const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
   const row = structuredClone(program());
   const admit = vi.spyOn(ShaderRegistry.prototype, 'installMaterialArtifact');
-  const reflect = vi.spyOn(ShaderRegistry.prototype, 'materialProgram');
   installPublicationPrograms(assets, [row]);
   expect(admit).toHaveBeenCalledTimes(1);
-  expect(reflect).toHaveBeenCalledTimes(1);
   const validation = admit.mock.contexts[0];
   if (!(validation instanceof ShaderRegistry)) throw new Error('Missing validation registry');
   const validated = validation.findMaterialArtifact(row.key).unwrap();
@@ -68,6 +66,21 @@ it('admits a cold publication once and retains its validated program and schema 
     derivations: 0,
     projections: 1,
   });
+});
+
+it('reuses startup program analysis inside isolated Worker publication validation', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const assets = new AssetRegistry(registry);
+  const row = structuredClone(program());
+  const warmed = registry.materialProgram(row.shader.source);
+  installPublicationPrograms(assets, [row]);
+  expect(registry.findMaterialArtifact(row.key).unwrap().program).toBe(warmed);
+  const changed = {
+    ...program('forgeax::new-source'),
+    shader: { ...row.shader, source: `${row.shader.source}\n// changed source` },
+  };
+  installPublicationPrograms(assets, [changed]);
+  expect(registry.findMaterialArtifact(changed.key).unwrap().program).not.toBe(warmed);
 });
 
 it('fully admits the same publication in a new registry', () => {
@@ -176,6 +189,7 @@ fn sample() -> vec4f { return textureSample(baseColorTexture, tex_sampler, vec2f
       paramSchema: [],
     },
   };
+  assets.shaderRegistry.materialProgram(invalid.shader.source);
   expect(() => installPublicationPrograms(assets, [fresh, invalid])).toThrow('samples texture');
   expect(assets.shaderRegistry.findMaterialArtifact(fresh.key).ok).toBe(false);
   expect(assets.getMaterialArtifact(fresh.key)).toBeUndefined();

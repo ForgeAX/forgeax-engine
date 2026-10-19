@@ -104,7 +104,10 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
       )
       .unwrap();
     world
-      .spawn({ component: DirectionalLight, data: { direction: [0, 0, -1], intensity: 3 } })
+      .spawn({
+        component: DirectionalLight,
+        data: { castShadow: true, direction: [0, 0, -1], intensity: 3 },
+      })
       .unwrap();
     const frame = async (capture: boolean) => {
       world.update(1 / 60).unwrap();

@@ -21,7 +21,7 @@ const MOCK_STINGRAY_MATERIAL: FbxRawMaterial = {
 
 describe('parseMaterial stingray-pbs', () => {
   it('maps StingrayPBS base_color directly to baseColorFactor', () => {
-    const pod: MaterialPod = parseMaterial(MOCK_STINGRAY_MATERIAL, 0);
+    const pod: MaterialPod = parseMaterial(MOCK_STINGRAY_MATERIAL);
     expect(pod.baseColorFactor[0]).toBeCloseTo(0.8);
     expect(pod.baseColorFactor[1]).toBeCloseTo(0.6);
     expect(pod.baseColorFactor[2]).toBeCloseTo(0.4);
@@ -29,17 +29,17 @@ describe('parseMaterial stingray-pbs', () => {
   });
 
   it('maps StingrayPBS metallic directly to metallicFactor', () => {
-    const pod = parseMaterial(MOCK_STINGRAY_MATERIAL, 0);
+    const pod = parseMaterial(MOCK_STINGRAY_MATERIAL);
     expect(pod.metallicFactor).toBeCloseTo(0.9);
   });
 
   it('maps StingrayPBS roughness directly to roughnessFactor', () => {
-    const pod = parseMaterial(MOCK_STINGRAY_MATERIAL, 0);
+    const pod = parseMaterial(MOCK_STINGRAY_MATERIAL);
     expect(pod.roughnessFactor).toBeCloseTo(0.3);
   });
 
   it('preserves material name', () => {
-    const pod = parseMaterial(MOCK_STINGRAY_MATERIAL, 0);
+    const pod = parseMaterial(MOCK_STINGRAY_MATERIAL);
     expect(pod.name).toBe('StingrayPBS_Mat');
   });
 
@@ -49,7 +49,7 @@ describe('parseMaterial stingray-pbs', () => {
       kind: 'stingray-pbs',
       stingrayProps: {},
     };
-    const pod = parseMaterial(minimal, 1);
+    const pod = parseMaterial(minimal);
     expect(pod.baseColorFactor[0]).toBeCloseTo(0.5);
     expect(pod.baseColorFactor[1]).toBeCloseTo(0.5);
     expect(pod.baseColorFactor[2]).toBeCloseTo(0.5);

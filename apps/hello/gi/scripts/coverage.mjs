@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { World } from '@forgeax/engine-ecs';
+import { mipDimension } from '@forgeax/engine-types';
 import * as gi from './gi-dawn.mjs';
 import { contactSheet, writePng } from './gi-metrics.mjs';
 
@@ -309,7 +310,7 @@ function textureBytes(d) {
   const [w, h = 1, layers = 1] = size;
   let bytes = 0;
   for (let m = 0; m < (d.mipLevelCount ?? 1); m++)
-    bytes += Math.max(1, w >> m) * Math.max(1, h >> m) * layers * texelBytes(d.format);
+    bytes += mipDimension(w, m) * mipDimension(h, m) * layers * texelBytes(d.format);
   return bytes;
 }
 const groupOf = (label = '') =>

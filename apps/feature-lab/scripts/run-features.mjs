@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 // Feature Lab runner: boots every feature (or those matching FEATURE_LAB_FILTER)
 // in a fresh page, then
 //   - visual: screenshots ON and OFF after FEATURE_LAB_FRAMES frames and requires
@@ -29,14 +30,11 @@ const loadTimeout = Number(process.env.FEATURE_LAB_LOAD_TIMEOUT_MS ?? 60_000);
 mkdirSync(outDir, { recursive: true });
 
 async function reservePort() {
-  return await new Promise((resolvePort, reject) => {
-    const probe = createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      probe.close(() => resolvePort(String(address.port)));
-    });
-  });
+  const probe = createServer();
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
+  const address = probe.address();
+  await new Promise((resolveClose) => probe.close(resolveClose));
+  return String(address.port);
 }
 
 async function waitForServer(url, server) {

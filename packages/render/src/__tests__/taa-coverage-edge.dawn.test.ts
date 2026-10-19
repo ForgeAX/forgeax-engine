@@ -173,7 +173,7 @@ async function resolveCoverage(source: string, edge: boolean) {
   }
 }
 
-it('accumulates mixed coverage while preserving uniform disocclusion and fast-motion/reactive/reset guards', async () => {
+it('accumulates mixed coverage while preserving subpixel motion, uniform disocclusion and reactive/reset guards', async () => {
   const source = readFileSync(resolve('packages/shader/src/taa-resolve.wgsl'), 'utf8').replace(
     /^#define_import_path.*$/gm,
     '',
@@ -187,7 +187,19 @@ it('accumulates mixed coverage while preserving uniform disocclusion and fast-mo
     3,
   );
   expect(stationary[8]).toBeCloseTo(1 / 255, 7);
-  for (const result of edge.slice(1)) {
+  // 0.125 UV at a 3-pixel input is 0.375 px, not fast motion. Three's
+  // pixel-space speed and subpixel phase raise the current weight continuously.
+  const moving = edge[2];
+  if (moving === undefined) throw new Error('Missing moving coverage sample');
+  const currentWeight = 0.05 + 0.25 * (0.375 / 0.75) + 0.375 / 128;
+  expect(moving[0]).toBeCloseTo(
+    ((0.5 * currentWeight) / 1.5 + (0.25 * (1 - currentWeight)) / 1.25) /
+      (currentWeight / 1.5 + (1 - currentWeight) / 1.25),
+    3,
+  );
+  expect(moving[8]).toBe(0);
+  for (const result of [edge[1], edge[3], edge[4]]) {
+    if (result === undefined) throw new Error('Missing rejected coverage sample');
     expect(result[0]).toBe(0.5);
     expect(result[8]).toBe(0);
   }

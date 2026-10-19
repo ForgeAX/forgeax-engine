@@ -23,14 +23,16 @@ never the reverse.
 - **`pickDisplay` / `computeDisplayScreenRay`** — explicit display-space
   entrypoints. They consume the effective `BarrelDistortionMapping` from the
   submitted frame, map the displayed physical pixel once, then use the existing
-  unwarped camera math. The submitted mapping is mandatory, including its
+  unwarped camera math. Display rays need no World or camera entity; display
+  vertex queries take a World only for candidate geometry. The submitted mapping is mandatory, including its
   identity case; absent, retired, lost, or zero-size frame contexts return a
   miss. Legacy `pick` and `viewportToWorld` remain unwarped APIs.
 - **`pickVertexDisplay` / `pickVertexOnEntityDisplay`** — display-space vertex
   queries. They project each candidate back through the same scene-to-display
   inverse before applying the optional physical-pixel radius and sorting, so a
   nonlinear warp cannot change which vertex is closest merely by correcting the
-  pointer.
+  pointer. All four display entrypoints share submitted-frame admission and
+  ray construction; both vertex scopes share display-distance filtering.
 
 > [!WARNING]
 > An omitted `barrelDistortion` field means that no accepted submitted display

@@ -329,7 +329,7 @@ globalThis.fetch = originalFetch;
 const d = [-0.3, -1.0, -0.3];
 const invLen = 1 / Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 world.spawn(
-  { component: DirectionalLight, data: {
+  { component: DirectionalLight, data: { castShadow: true,
     direction: [d[0] * invLen, d[1] * invLen, d[2] * invLen],
     color: [1.0, 0.95, 0.85], intensity: 3.0,
     mapSize: testQuality.shadowMapSize, shadowDistance: 36, depthBias: 0.00001,

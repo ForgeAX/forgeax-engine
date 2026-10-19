@@ -58,17 +58,18 @@ const CONTAINER_BOXES = [
 ];
 const DEG2RAD = Math.PI / 180;
 
-// Bloom pass names expected in the bounded ten-pass chain when Bloom is enabled.
+// Bloom pass names expected in the bounded eleven-pass chain when Bloom is enabled.
 const BLOOM_PASS_NAMES = [
-  'bloom-downsample-0',
-  'bloom-downsample-1',
-  'bloom-downsample-2',
-  'bloom-downsample-3',
-  'bloom-downsample-4',
-  'bloom-upsample-3',
-  'bloom-upsample-2',
-  'bloom-upsample-1',
-  'bloom-upsample-0',
+  'bloom-horizontal-0',
+  'bloom-vertical-0',
+  'bloom-horizontal-1',
+  'bloom-vertical-1',
+  'bloom-horizontal-2',
+  'bloom-vertical-2',
+  'bloom-horizontal-3',
+  'bloom-vertical-3',
+  'bloom-horizontal-4',
+  'bloom-vertical-4',
   'bloom-composite',
 ];
 const OUTPUT_TRANSFORM_PASS_NAME = 'output-transform';
@@ -388,8 +389,8 @@ const cameraEntity = world
         bloom: BLOOM_ENABLED,
         bloomThreshold: 1.0,
         bloomIntensity: 1.0,
-        bloomSoftKnee: 0.5,
-        bloomScatter: 0.7,
+        bloomSmoothWidth: 0.01,
+        bloomRadius: 0,
       },
     },
   )

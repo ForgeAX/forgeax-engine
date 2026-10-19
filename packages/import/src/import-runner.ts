@@ -31,6 +31,7 @@ import type {
   ImportError as ImportErrorType,
   ImportedArtifactBody,
   ImportProduct,
+  ImportSubAsset,
   ProviderProvenance,
   ResourceRevision,
   SourceOverrideMap,
@@ -157,13 +158,11 @@ export interface RunImportMeta {
   readonly sourceOverrides?: SourceOverrideMap;
   /** Skip the normalized DDC pack when a downstream finalizer owns publication. */
   readonly buildPack?: boolean;
-  readonly subAssets: ReadonlyArray<{
-    readonly guid: string;
-    readonly sourceIndex: number;
-    readonly kind: string;
-    readonly sourceKey?: string;
-    readonly relations?: readonly AssetRelation[];
-  }>;
+  readonly subAssets: ReadonlyArray<
+    ImportSubAsset & {
+      readonly relations?: readonly AssetRelation[];
+    }
+  >;
 }
 
 function declarationFields(

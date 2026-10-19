@@ -47,8 +47,8 @@ function identityCamera(): CameraSnapshot {
     bloom: 'off' as CameraSnapshot['bloom'],
     bloomThreshold: 1,
     bloomIntensity: 1,
-    bloomSoftKnee: 0.5,
-    bloomScatter: 0.7,
+    bloomSmoothWidth: 0.01,
+    bloomRadius: 0,
     clearColor: [0, 0, 0, 1],
   };
 }

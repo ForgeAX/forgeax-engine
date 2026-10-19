@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -132,21 +133,14 @@ let serverOutput = '';
 let cleanupStarted = false;
 
 async function reservePort() {
-  return await new Promise((resolvePort, reject) => {
-    const probe = createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      const port = typeof address === 'object' && address !== null ? address.port : 0;
-      probe.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolvePort(port);
-      });
-    });
+  const probe = createServer();
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
+  const address = probe.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise((resolveClose, reject) => {
+    probe.close((error) => error ? reject(error) : resolveClose());
   });
+  return port;
 }
 
 async function waitForServer() {
@@ -278,20 +272,23 @@ try {
   await waitForSubmitted(3);
   const baselineRepeat = await captureStage('on-repeat', undefined, false);
 
-  await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('scatter-low'));
-  const scatterLowValue = 0.25;
-  const scatterLowSet = await page.evaluate((value) => globalThis.__bloomCarrierProbe.setBloomScatter(value), scatterLowValue);
+  // Radius redistributes a fixed five-level contribution. Probe the full domain;
+  // Gaussian shape/r90 and numerical agreement are owned by the production-kernel
+  // quality carrier and pinned Three comparison, not an on/off amplitude bound.
+  await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('radius-low'));
+  const radiusLowValue = 0;
+  const radiusLowSet = await page.evaluate((value) => globalThis.__bloomCarrierProbe.setBloomRadius(value), radiusLowValue);
   await waitForSubmitted(3);
-  const scatterLow = await captureStage('scatter-low');
-  scatterLow.action = { ok: scatterLowSet, scatter: scatterLowValue };
+  const radiusLow = await captureStage('radius-low');
+  radiusLow.action = { ok: radiusLowSet, radius: radiusLowValue };
 
-  await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('scatter-high'));
-  const scatterHighValue = 0.95;
-  const scatterHighSet = await page.evaluate((value) => globalThis.__bloomCarrierProbe.setBloomScatter(value), scatterHighValue);
+  await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('radius-high'));
+  const radiusHighValue = 1;
+  const radiusHighSet = await page.evaluate((value) => globalThis.__bloomCarrierProbe.setBloomRadius(value), radiusHighValue);
   await waitForSubmitted(3);
-  const scatterHigh = await captureStage('scatter-high');
-  scatterHigh.action = { ok: scatterHighSet, scatter: scatterHighValue };
-  await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloomScatter(0.7));
+  const radiusHigh = await captureStage('radius-high');
+  radiusHigh.action = { ok: radiusHighSet, radius: radiusHighValue };
+  await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloomRadius(0));
   await waitForSubmitted(3);
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('off'));
@@ -336,7 +333,7 @@ try {
   if (recordedOnStage === undefined || offStage === undefined || resizeStage === undefined || reenabledStage === undefined || recoveryStageEvidence === undefined) {
     throw new Error('Bloom lifecycle stages are incomplete');
   }
-  const validBloomStage = (stage) => stage.inspection.bloom.enabled === true && stage.inspection.bloom.graphStatus === 'valid' && stage.inspection.bloom.passCount === 10;
+  const validBloomStage = (stage) => stage.inspection.bloom.enabled === true && stage.inspection.bloom.graphStatus === 'valid' && stage.inspection.bloom.passCount === 11;
   const assertContribution = (label, diff) => {
     if (diff.diffPixelCount < ROI_MIN_DIFF_PIXELS || diff.maxDelta < ROI_MIN_MAX_DELTA || diff.meanDelta < ROI_MIN_MEAN_DELTA) {
       throw new Error(`Bloom ${label} scene ROI did not meet predeclared RGB thresholds: ${JSON.stringify(diff)}`);
@@ -352,8 +349,11 @@ try {
     onVsOff,
     resizeOffVsReenabled,
     reenabledVsRecovery,
-    scatterLowVsHigh: rgbDiff(resolve(repoRoot, scatterLow.sceneReadback.path), resolve(repoRoot, scatterHigh.sceneReadback.path)),
-    thresholds: { minDiffPixelCount: ROI_MIN_DIFF_PIXELS, minMaxDelta: ROI_MIN_MAX_DELTA, minMeanDelta: ROI_MIN_MEAN_DELTA },
+    radiusLowVsHigh: rgbDiff(resolve(repoRoot, radiusLow.sceneReadback.path), resolve(repoRoot, radiusHigh.sceneReadback.path)),
+    thresholds: {
+      onOff: { minDiffPixelCount: ROI_MIN_DIFF_PIXELS, minMaxDelta: ROI_MIN_MAX_DELTA, minMeanDelta: ROI_MIN_MEAN_DELTA },
+      radiusUpdate: { minDiffPixelCount: ROI_MIN_DIFF_PIXELS, minMeanDelta: ROI_MIN_MEAN_DELTA },
+    },
   };
   evidence.baselineRepeat = {
     inspection: baselineRepeat.inspection,
@@ -369,20 +369,23 @@ try {
   if (evidence.structuredErrors.length > 0) throw new Error(`browser renderer errors: ${JSON.stringify(evidence.structuredErrors)}`);
   if (visibleStages.length < 4) throw new Error(`expected visible readback in four stages, got ${visibleStages.length}`);
   if (bloomOnStages.length < 3) throw new Error('Bloom was not enabled in on, re-enabled, and surface-reconfigure stages');
-  if (!validBloomStage(recordedOnStage) || !validBloomStage(reenabledStage) || !validBloomStage(recoveryStageEvidence)) throw new Error('Bloom enabled stages did not report a valid ten-pass graph');
+  if (!validBloomStage(recordedOnStage) || !validBloomStage(reenabledStage) || !validBloomStage(recoveryStageEvidence)) throw new Error('Bloom enabled stages did not report a valid eleven-pass graph');
   if (!isZeroBloom(offStage) || !isZeroBloom(resizeStage)) throw new Error('Bloom off stages retained non-zero graph or resource counters');
   if (!isZeroBloom(intensityZero) || intensityZero.action?.ok !== true) throw new Error('Bloom intensity-zero stage retained non-zero graph or failed to apply the update');
   if (recordedOnStage.inspection.hud !== 'Bloom: ON' || offStage.inspection.hud !== 'Bloom: OFF' || intensityZero.inspection.hud !== 'Bloom: OFF' || reenabledStage.inspection.hud !== 'Bloom: ON' || recoveryStageEvidence.inspection.hud !== 'Bloom: ON') throw new Error('Bloom HUD did not match renderer inspection state');
   if (evidence.stages.length !== 7) throw new Error(`expected exactly seven lifecycle/quality stages, got ${evidence.stages.length}`);
-  if (!validBloomStage(baselineRepeat)) throw new Error('Bloom baseline repeat did not retain a valid ten-pass graph');
+  if (!validBloomStage(baselineRepeat)) throw new Error('Bloom baseline repeat did not retain a valid eleven-pass graph');
   if (resizeStage.sceneReadback.width === recordedOnStage.sceneReadback.width && resizeStage.sceneReadback.height === recordedOnStage.sceneReadback.height) throw new Error('resize stage PNG dimensions did not change');
   if (reenabledStage.inspection.bloom.targetBytes === recordedOnStage.inspection.bloom.targetBytes) throw new Error('re-enabled Bloom targetBytes did not reflect the resized presentation extent');
   if (recoveryStageEvidence.recovery?.release?.ok !== true || recoveryStageEvidence.recovery?.restore?.ok !== true) throw new Error('Bloom surface release/restore reconfiguration was not successful');
   if (baselineDiff.diffPixelCount !== 0 || baselineDiff.maxDelta !== 0 || baselineDiff.meanDelta !== 0) throw new Error(`Bloom baseline repeat was not stable in the scene ROI: ${JSON.stringify(baselineDiff)}`);
   assertContribution('on/off contribution', onVsOff);
   assertContribution('resize off/re-enabled contribution', resizeOffVsReenabled);
-  if (!scatterLowSet || !scatterHighSet) throw new Error('scatter quality stages did not apply their camera updates');
-  assertContribution('scatter quality contribution', evidence.contribution.scatterLowVsHigh);
+  if (!radiusLowSet || !radiusHighSet) throw new Error('radius quality stages did not apply their camera updates');
+  const radiusResponse = evidence.contribution.radiusLowVsHigh;
+  if (radiusResponse.diffPixelCount < ROI_MIN_DIFF_PIXELS || radiusResponse.meanDelta < ROI_MIN_MEAN_DELTA) {
+    throw new Error(`Bloom radius update did not change the scene ROI: ${JSON.stringify(radiusResponse)}`);
+  }
   if (reenabledVsRecovery.diffPixelCount !== 0 || reenabledVsRecovery.maxDelta !== 0 || reenabledVsRecovery.meanDelta !== 0) throw new Error(`Bloom surface reconfiguration changed the scene ROI: ${JSON.stringify(reenabledVsRecovery)}`);
   if (evidence.stages.some((stage) => stage.inspection.bloom.graphStatus === 'invalid')) throw new Error('Bloom graph inspection was invalid');
   evidence.verdict = 'pass';

@@ -206,6 +206,14 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
                     frameWorldIdentity: frame?.worldIdentity,
                     frameId: frame?.frameId,
                     deviceGeneration: frame?.deviceGeneration,
+                    frameExtent:
+                      frame?.barrelDistortion === undefined
+                        ? undefined
+                        : {
+                            width: frame.barrelDistortion.width,
+                            height: frame.barrelDistortion.height,
+                          },
+                    canvasExtent: { width: canvas.width, height: canvas.height },
                   },
                 );
               const hit = pickDisplay(

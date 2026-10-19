@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -5,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { resolveBrowserWebGpuLaunch } from '../../../shared/scripts/rhi-debug-verify.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { measureMotionRecovery } from './check-motion-recovery.mjs';
 
 // Uses the real dev-server Pack path and the public App paused-frame driver.
@@ -68,7 +69,7 @@ try {
       const pixels = new Uint8Array(Buffer.from(encoded,'base64'));
       assert.equal(pixels.length,1024*1024*4);
       path=resolve(directory,`${name}.png`);
-      writeFileSync(path,writeReferencePng(pixels,1024,1024));
+      writeFileSync(path,encodePng(1024, 1024, pixels));
     }
     return {path,before:before.temporal,after:after.temporal,ssr:{before:before.ssr,after:after.ssr},execution:{before:before.execution,after:after.execution}};
   };

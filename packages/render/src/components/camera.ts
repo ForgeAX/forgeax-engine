@@ -72,7 +72,8 @@ export type CameraErrorCode =
   | 'camera-tonemap-invalid'
   | 'camera-antialias-invalid'
   | 'camera-bloom-invalid'
-  | 'camera-transparency-invalid';
+  | 'camera-transparency-invalid'
+  | 'camera-projection-invalid';
 
 export interface CameraErrorDetail {
   readonly field: string;
@@ -425,7 +426,7 @@ export function transparencyFromF32(value: number): Transparency {
  *
  * Two members:
  *   `'off'` - default; no bloom post-processing (zero-overhead opt-out path)
- *   `'on'`  - five-level HDR extraction/downsample/tent-upsample pipeline
+ *   `'on'`  - five-level HDR highpass/Gaussian/composite pipeline
  *
  * Bloom is a discrete enum (0/1) — illegal values fail-fast with the closed
  * CameraError contract (charter P3), matching antialiasFromF32 precedent.
@@ -443,12 +444,12 @@ export const CAMERA_BLOOM_INTENSITY_MAX = 8;
 /** Bloom threshold is expressed in scene-linear Rec.709 luminance. */
 export const CAMERA_BLOOM_THRESHOLD_MIN = 0;
 export const CAMERA_BLOOM_THRESHOLD_MAX = 65504;
-/** Soft-knee transition width relative to the threshold. */
-export const CAMERA_BLOOM_SOFT_KNEE_MIN = 0;
-export const CAMERA_BLOOM_SOFT_KNEE_MAX = 1;
-/** Coarse pyramid contribution. This is a blend, not a blur radius. */
-export const CAMERA_BLOOM_SCATTER_MIN = 0;
-export const CAMERA_BLOOM_SCATTER_MAX = 0.95;
+/** Absolute luminance interval above the threshold used by the smooth highpass. */
+export const CAMERA_BLOOM_SMOOTH_WIDTH_MIN = 0;
+export const CAMERA_BLOOM_SMOOTH_WIDTH_MAX = 1;
+/** Mix each Gaussian level's weight toward its complementary radius weight. */
+export const CAMERA_BLOOM_RADIUS_MIN = 0;
+export const CAMERA_BLOOM_RADIUS_MAX = 1;
 
 /**
  * Map a `camera.bloom` numeric value to the closed `BloomEnabled` string-literal
@@ -483,8 +484,8 @@ export function validateCameraBloom(
   bloom: number,
   threshold: number,
   intensity: number,
-  softKnee: number,
-  scatter: number,
+  smoothWidth: number,
+  radius: number,
 ): BloomEnabled {
   const enabled = bloomEnabledFromF32(bloom);
   validateBloomRange(
@@ -500,12 +501,12 @@ export function validateCameraBloom(
     CAMERA_BLOOM_INTENSITY_MAX,
   );
   validateBloomRange(
-    'bloomSoftKnee',
-    softKnee,
-    CAMERA_BLOOM_SOFT_KNEE_MIN,
-    CAMERA_BLOOM_SOFT_KNEE_MAX,
+    'bloomSmoothWidth',
+    smoothWidth,
+    CAMERA_BLOOM_SMOOTH_WIDTH_MIN,
+    CAMERA_BLOOM_SMOOTH_WIDTH_MAX,
   );
-  validateBloomRange('bloomScatter', scatter, CAMERA_BLOOM_SCATTER_MIN, CAMERA_BLOOM_SCATTER_MAX);
+  validateBloomRange('bloomRadius', radius, CAMERA_BLOOM_RADIUS_MIN, CAMERA_BLOOM_RADIUS_MAX);
   return enabled;
 }
 
@@ -516,9 +517,11 @@ export function validateCameraBloom(
  * Camera transform comes from the entity's `Transform` (AI users
  * spawn camera entities with both components: see example below).
  *
- * Defaults (do not auto-apply; spawn explicitly for the perspective quartet):
- *   fov        = pi/4       - 45-degree vertical field of view
- *   aspect     = 16/9       - widescreen aspect (use canvas.width / canvas.height)
+ * Required perspective inputs (the perspective factory enforces these):
+ *   fov                    - vertical field of view in radians
+ *   aspect                 - target width / height
+ *
+ * Schema defaults:
  *   near       = 0.1
  *   far        = 2000
  *   projection = 0          - CAMERA_PROJECTION_PERSPECTIVE (layer-2)
@@ -589,6 +592,8 @@ export const Camera = defineComponent('Camera', {
   near: { type: 'f32', default: 0.1 },
   far: { type: 'f32', default: 2000 },
   projection: { type: 'f32', default: 0 },
+  /** Additive NDC offset: +X moves the image right, +Y moves it up. */
+  projectionOffset: { type: 'array<f32, 2>', default: new Float32Array([0, 0]) },
   left: { type: 'f32', default: -1 },
   right: { type: 'f32', default: 1 },
   bottom: { type: 'f32', default: -1 },
@@ -603,15 +608,15 @@ export const Camera = defineComponent('Camera', {
   temperature: { type: 'f32', default: 6504 },
   tint: { type: 'f32', default: 0 },
   colorLut: { type: 'shared<TextureAsset>', default: 0 as never },
-  colorLutStrength: { type: 'f32', default: 0 },
+  colorLutStrength: { type: 'f32', default: 1 },
   antialias: { type: 'f32', default: 0 },
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },
-  bloomThreshold: { type: 'f32', default: 1.0 },
+  bloomThreshold: { type: 'f32', default: 0 },
   bloomIntensity: { type: 'f32', default: 1.0 },
-  bloomSoftKnee: { type: 'f32', default: 0.5 },
-  bloomScatter: { type: 'f32', default: 0.7 },
+  bloomSmoothWidth: { type: 'f32', default: 0.01 },
+  bloomRadius: { type: 'f32', default: 0 },
   // M1 target camera role: zero means this camera is eligible for display;
   // non-zero shared targets are auxiliary producers whose views and receipt
   // promotion remain owned by Renderer.
@@ -651,6 +656,24 @@ export const Camera = defineComponent('Camera', {
 // lives exclusively in the Camera component definition above.
 export type CameraData = ShapeOf<SchemaOf<typeof Camera>>;
 type CameraPod = CameraData;
+
+/** Validate and detach the two shared lens offsets before extraction/publication. */
+export function validateCameraProjectionOffset(
+  value: ArrayLike<number>,
+): readonly [number, number] {
+  if (
+    value.length !== 2 ||
+    ![value[0], value[1]].every((v) => Number.isFinite(Math.fround(v ?? NaN)))
+  )
+    throw cameraError(
+      'camera-projection-invalid',
+      'projectionOffset',
+      value,
+      'two finite Float32 NDC offsets',
+      'use [0, 0] for a centered lens or finite X/Y offsets for an off-axis lens',
+    );
+  return [value[0] as number, value[1] as number];
+}
 
 /** Project the Camera SoA columns back into the public closed union. */
 export function cameraExposureFromColumns(
@@ -714,7 +737,8 @@ function cameraColorGradingColumns(
   const exposure = opts.exposure ?? { kind: 'manual', multiplier: 1 };
   const temperature = opts.temperature ?? 6504;
   const tint = opts.tint ?? 0;
-  const colorLutStrength = opts.colorLutStrength ?? 0;
+  const colorLutStrength =
+    opts.colorLutStrength ?? (Camera.fields.colorLutStrength.default as number);
   validateCameraColorGrading(temperature, tint, colorLutStrength);
   return {
     ...cameraExposureColumns(exposure),
@@ -735,7 +759,7 @@ function cameraColorGradingColumns(
 //
 // Import as:
 //   import { Camera, perspective, orthographic } from '@forgeax/engine-render';
-//   world.spawn({ component: Camera, data: perspective({ fov: 60, aspect: 4/3 }) });
+//   world.spawn({ component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 4/3 }) });
 //
 // Charter P1 progressive disclosure: Barrel re-exports put perspective
 // / orthographic next to Camera in IDE autocomplete.
@@ -755,6 +779,7 @@ interface CameraPerspectiveOpts {
   aspect: number;
   near?: number;
   far?: number;
+  projectionOffset?: readonly [number, number];
   /**
    * feat-20260617-host-engine-contract-and-video-cutscene / M3: when true
    * (the schema default), the aspect-sync sidecar on the createApp(canvas)
@@ -779,6 +804,7 @@ interface CameraOrthographicOpts {
   top: number;
   near?: number;
   far?: number;
+  projectionOffset?: readonly [number, number];
   exposure?: CameraExposure;
   temperature?: number;
   tint?: number;
@@ -853,6 +879,11 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
     ...(opts.far === undefined ? {} : { far: opts.far }),
     projection: CAMERA_PROJECTION_PERSPECTIVE,
     ...(opts.autoAspect !== undefined ? { autoAspect: opts.autoAspect } : {}),
+    ...(opts.projectionOffset === undefined
+      ? {}
+      : {
+          projectionOffset: new Float32Array(validateCameraProjectionOffset(opts.projectionOffset)),
+        }),
     ...cameraColorGradingColumns(opts),
   };
 }
@@ -893,6 +924,11 @@ export function orthographic(opts: CameraOrthographicOpts): CameraPod {
     right: opts.right,
     bottom: opts.bottom,
     top: opts.top,
+    ...(opts.projectionOffset === undefined
+      ? {}
+      : {
+          projectionOffset: new Float32Array(validateCameraProjectionOffset(opts.projectionOffset)),
+        }),
     ...cameraColorGradingColumns(opts),
   };
 }

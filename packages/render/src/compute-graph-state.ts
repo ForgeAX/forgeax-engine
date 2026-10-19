@@ -26,7 +26,7 @@ export interface ComputeState {
   readonly bindGroups: WeakMap<object, unknown>;
 }
 
-export type ComputeBinding =
+type ComputeBinding =
   | {
       readonly binding: number;
       readonly resource: { readonly kind: 'textureView'; readonly value: TextureView };

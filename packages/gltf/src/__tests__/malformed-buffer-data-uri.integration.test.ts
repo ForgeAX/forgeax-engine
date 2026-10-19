@@ -8,7 +8,7 @@ import type { ImportContext } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { extractImageBytes } from '../extract-image-bytes.js';
 import { gltfImporter } from '../gltf-importer.js';
-import { parseGltfForImporter } from '../parse-gltf.js';
+import { parseGltf } from '../parse-gltf.js';
 
 const SOURCE = 'malformed-buffer.gltf';
 const MESH_GUID = '019f0000-0000-7000-8000-000000000088';
@@ -66,7 +66,7 @@ describe('malformed glTF buffer data URI recovery', () => {
     const registry = new ImporterRegistry();
     registry.register(gltfImporter);
 
-    const parsed = await parseGltfForImporter(
+    const parsed = await parseGltf(
       JSON.parse(new TextDecoder().decode(malformedSource)) as object,
       async () => new ArrayBuffer(0),
       SOURCE,

@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -11,7 +12,7 @@ import { quat } from '@forgeax/engine-math';
 import { Terrain } from '@forgeax/engine-terrain';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 
 const dir = resolve(process.env.TERRAIN_RECEIVER_ARTIFACT_DIR ?? resolve(import.meta.dirname, '../.forgeax-debug/receiver-quality'));
@@ -66,7 +67,7 @@ try {
         actualBiasHelpers,
         terrainWorks: terrain.map((w) => ({ index: w.workIndex, shaders: w.pipeline.shaders.map((s) => s.entryPoint), attachments: w.attachments, indexBuffer: w.indexBuffer })) });
       const bytes = await h.pixels();
-      writeFileSync(resolve(dir, `${name}.png`), writeReferencePng(bytes, 640, 480));
+      writeFileSync(resolve(dir, `${name}.png`), encodePng(640, 480, bytes));
       return bytes;
     };
     try {
@@ -93,7 +94,7 @@ try {
             const delta = difference(on, off); report.cases.push({ name, completedWarmupFrames: 60, completedCaseFrames: h.completed - before, coveredPixels: covered, ...delta }); save();
             assert(covered >= report.budgets.minimumCoveredPixels, 'black/cull-only comparisons never pass');
             if (delta.peakByteDifference > report.budgets.unoccludedPlanePeakByteDifference) report.failures.push(`${name}: unoccluded plane ${JSON.stringify(delta)}`);
-            if (filter === 'pcf3' && phase === 0) { writeFileSync(resolve(dir, `${name}.png`), writeReferencePng(on, 640, 480)); writeFileSync(resolve(dir, `${name}-reference.png`), writeReferencePng(off, 640, 480)); }
+            if (filter === 'pcf3' && phase === 0) { writeFileSync(resolve(dir, `${name}.png`), encodePng(640, 480, on)); writeFileSync(resolve(dir, `${name}-reference.png`), encodePng(640, 480, off)); }
           }
         }
       }
@@ -115,8 +116,8 @@ try {
         const on = await capture(name);
         h.app.world.set(light, DirectionalLight, { castShadow: false }).unwrap(); await h.frame();
         const off = await h.pixels(); const delta = difference(on, off);
-        writeFileSync(resolve(dir, `${name}.png`), writeReferencePng(on, 640, 480));
-        writeFileSync(resolve(dir, `${name}-reference.png`), writeReferencePng(off, 640, 480));
+        writeFileSync(resolve(dir, `${name}.png`), encodePng(640, 480, on));
+        writeFileSync(resolve(dir, `${name}-reference.png`), encodePng(640, 480, off));
         report.cases.push({ name, filter, cosine, tangentSign, intensity: 300, completedWarmupFrames: 60, ...delta }); save();
         if (delta.peakByteDifference > report.budgets.unoccludedPlanePeakByteDifference) report.failures.push(`${name}: unoccluded grazing plane ${JSON.stringify(delta)}`);
       }
@@ -133,8 +134,8 @@ try {
       await h.frame(); const off = await h.pixels(); const delta = difference(on, off);
       report.cases.push({ name: `${renderPath}-real-caster`, ...delta }); save();
       assert(delta.changedChannels >= report.budgets.casterMinimumChangedChannels && delta.peakByteDifference >= report.budgets.casterMinimumPeakByteDifference, 'a real caster must retain an actual shadow');
-      writeFileSync(resolve(dir, `${renderPath}-real-caster.png`), writeReferencePng(on, 640, 480));
-      writeFileSync(resolve(dir, `${renderPath}-caster-disabled.png`), writeReferencePng(off, 640, 480));
+      writeFileSync(resolve(dir, `${renderPath}-real-caster.png`), encodePng(640, 480, on));
+      writeFileSync(resolve(dir, `${renderPath}-caster-disabled.png`), encodePng(640, 480, off));
       for (const tangentSign of [-1, 1]) {
         const cosine = 0.0099, distance = 150;
         const l = [-cosine * Math.SQRT1_2, cosine * Math.SQRT1_2, -tangentSign * Math.sqrt(1 - cosine * cosine)];
@@ -149,8 +150,8 @@ try {
         const on = await capture(name);
         h.app.world.set(h.subjects.walker, ShadowParticipation, { cast: false }).unwrap();
         await h.frame(); const off = await h.pixels(); const delta = difference(on, off);
-        writeFileSync(resolve(dir, `${name}.png`), writeReferencePng(on, 640, 480));
-        writeFileSync(resolve(dir, `${name}-reference.png`), writeReferencePng(off, 640, 480));
+        writeFileSync(resolve(dir, `${name}.png`), encodePng(640, 480, on));
+        writeFileSync(resolve(dir, `${name}-reference.png`), encodePng(640, 480, off));
         report.cases.push({ name, cosine, tangentSign, casterPosition: position, casterRadius: 1, receiverNormalClearance: cosine * distance, completedWarmupFrames: 60, ...delta }); save();
         if (delta.changedChannels < report.budgets.casterMinimumChangedChannels || delta.peakByteDifference < report.budgets.casterMinimumPeakByteDifference)
           report.failures.push(`${name}: grazing real caster shadow missing ${JSON.stringify(delta)}`);
@@ -183,7 +184,7 @@ try {
             const on=await capture(name,false);
             h.app.world.set(caster,ShadowParticipation,{cast:false}).unwrap();await h.frame();
             const off=await h.pixels();const delta=difference(on,off);
-            writeFileSync(resolve(dir,`${name}-reference.png`),writeReferencePng(off,640,480));
+            writeFileSync(resolve(dir,`${name}-reference.png`),encodePng(640, 480, off));
             report.cases.push({name,gap,casterRadius:1,casterPosition:[1.5,1+gap,3.5],casterMobility:'static',completedWarmupFrames:60,...delta});save();
             if(delta.changedChannels<report.budgets.casterMinimumChangedChannels||delta.peakByteDifference<report.budgets.casterMinimumPeakByteDifference)report.failures.push(`${name}: near-contact real caster shadow missing ${JSON.stringify(delta)}`);
           }

@@ -5,6 +5,18 @@ setLocale('en');
 
 const parent = '01900000-0000-7000-8000-000000000101';
 let revision = 1;
+const thumbnailRevision = new URLSearchParams(location.search).has('thumbnail-revision');
+let catalogEpoch = 0;
+let thumbnailEpoch = 0;
+let holdThumbnails = false;
+let thumbnailColor = 'red';
+const pendingThumbnails: (() => void)[] = [];
+const thumbnailAssets = thumbnailRevision ? ['image-guid', 'other-image'].map(guid => ({ guid, kind: 'texture', name: guid, sourcePath: 'content/images.pack.ts', lifecycle: 'current' })) : [];
+function thumbnailPng() {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 4;
+  const context = canvas.getContext('2d')!; context.fillStyle = thumbnailColor; context.fillRect(0, 0, 4, 4);
+  return canvas.toDataURL();
+}
 let revealCount = 0;
 let target = { targetId: 'project-target', worldId: 'project-world' };
 let executions: any[] = [];
@@ -22,14 +34,18 @@ const pack = { source: { packageId: parent, source: 'Box generator', kind: 'scri
   { name: 'enabled', type: 'bool', default: true },
 ] } };
 const asset = { guid: 'plugin-guid', kind: 'plugin', name: 'Counter behavior', sourcePath: 'content/behavior.pack.ts' };
-const state = () => ({ revision, project: { id: 'project', root: '/fixture', assetRoots: ['content'], name: 'Runtime content fixture' }, projectTarget: target, assets: [asset, ...outputs] });
+const state = () => ({ revision, project: { id: 'project', root: '/fixture', assetRoots: ['content'], name: 'Runtime content fixture' }, projectTarget: target, catalogEpoch, thumbnailEpoch, assets: [asset, ...outputs, ...thumbnailAssets] });
 const changed = () => { revision++; for (const listener of listeners) listener(state()); };
 const client = {
   transport: { connected: true, async request() { return null; } },
   subscribe(listener: (state: unknown) => void) { listeners.add(listener); listener(state()); return () => listeners.delete(listener); },
   onDisconnect() { return () => {}; },
   async getState() { return state(); },
-  async listAssets() { changed(); return { assets: [asset, ...outputs] }; },
+  async listAssets() { changed(); return { catalogEpoch, thumbnailEpoch, assets: [asset, ...outputs, ...thumbnailAssets] }; },
+  async thumbnails(_projectId: string, guids: string[]) {
+    if (holdThumbnails) await new Promise<void>(done => { pendingThumbnails.push(done); });
+    return { thumbnails: guids.map(guid => ({ guid, state: 'ready', dataUrl: thumbnailPng() })) };
+  },
   async call(operation: string, args: any, options: any = {}) {
     const call = { operation, args, aborted: false, completed: false }; calls.push(call);
     options.signal?.addEventListener('abort', () => { call.aborted = true; }, { once: true });
@@ -64,5 +80,8 @@ const client = {
     throw new Error(`Unexpected fixture operation ${operation}`);
   },
 };
-Object.assign(globalThis, { runtimeContentFixture: { calls, revealed() { return revealCount; }, completeInspection() { deferInspection = false; completeInspection?.(); }, completeGeneration() { completeGeneration?.(); }, failSave() { failSave = true; }, deferGeneration() { deferGeneration = true; }, replaceTarget() { target = { targetId: 'replacement', worldId: 'replacement-world' }; executions = []; outputs = []; changed(); } } });
+Object.assign(globalThis, { runtimeContentFixture: { calls,
+  reviseThumbnail() { thumbnailColor = 'blue'; holdThumbnails = true; catalogEpoch++; changed(); },
+  notifyThumbnail() { thumbnailEpoch++; changed(); },
+  completeThumbnails() { holdThumbnails = false; for (const done of pendingThumbnails.splice(0)) done(); }, revealed() { return revealCount; }, completeInspection() { deferInspection = false; completeInspection?.(); }, completeGeneration() { completeGeneration?.(); }, failSave() { failSave = true; }, deferGeneration() { deferGeneration = true; }, replaceTarget() { target = { targetId: 'replacement', worldId: 'replacement-world' }; executions = []; outputs = []; changed(); } } });
 await mountContentBrowserPanel({ client, mountElement: document.getElementById('app')!, revealPanel: async () => { revealCount++; return true; } });

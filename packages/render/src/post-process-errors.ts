@@ -191,9 +191,10 @@ const POST_PROCESS_POLICY = {
     },
   },
   'ssao-parameter-invalid': {
-    expected: 'finite non-negative SSAO intensity and low, medium, or high quality',
+    expected:
+      'valid AO algorithm, quality, finite non-negative thickness/exponent/intensity, falloff in [0, 1] and resolutionScale in [0.25, 1]',
     hint: () =>
-      'Set ssao.algorithm to ssao or gtao, ssao.intensity to a finite non-negative value and ssao.quality to low, medium, or high.',
+      'Inspect detail.paramName; use algorithm gtao or ssao, quality low/medium/high, non-negative finite intensity/thickness/distanceExponent, distanceFallOff in [0, 1], resolutionScale in [0.25, 1].',
   },
   'ssao-radius-non-positive': {
     expected: 'SSAO radius must be > 0',
@@ -201,7 +202,7 @@ const POST_PROCESS_POLICY = {
       const d = detail as SsaoRadiusNonPositiveDetail;
       return (
         `SSAO parameter '${d.paramName}' is ${d.value}, must be greater than 0. ` +
-        `Set config.ssao.${d.paramName} to a positive value (default 0.5) or disable SSAO with config.ssao.enabled = false.`
+        `Set config.ssao.${d.paramName} to a positive value (default 0.25) or disable SSAO with config.ssao.enabled = false.`
       );
     },
   },
@@ -211,7 +212,7 @@ const POST_PROCESS_POLICY = {
       const d = detail as SsaoBiasNegativeDetail;
       return (
         `SSAO parameter '${d.paramName}' is ${d.value}, must be >= 0. ` +
-        `Set config.ssao.${d.paramName} to a non-negative value (default 0.025) or disable SSAO.`
+        `Set config.ssao.${d.paramName} to a non-negative value (default 0) or disable SSAO.`
       );
     },
   },

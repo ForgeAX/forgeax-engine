@@ -27,18 +27,20 @@ export type {
 } from './window';
 
 import {
-  GPUBufferUsageFlags,
-  GPUColorWriteFlags,
   GPUInternalError,
-  GPUMapModeFlags,
   GPUOutOfMemoryError,
   GPUPipelineError,
-  GPUShaderStageFlags,
-  GPUTextureUsageFlags,
   GPUUncapturedErrorEvent,
   GPUValidationError,
   NativeGPU,
 } from './gpu';
+import {
+  GPUBufferUsageFlags,
+  GPUColorWriteFlags,
+  GPUMapModeFlags,
+  GPUShaderStageFlags,
+  GPUTextureUsageFlags,
+} from './objects';
 
 export { NATIVE_ADDON_PATH } from './binding';
 export type { NativeGPU, NativeGPUAdapter, NativeGPUDevice } from './gpu';

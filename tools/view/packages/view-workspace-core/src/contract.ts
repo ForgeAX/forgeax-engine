@@ -149,6 +149,8 @@ export const VIEW_WORKSPACE_DOMAIN_OPERATION_EFFECTS = Object.freeze({
   'preview.close': 'command',
   'preview.capture': 'command',
   'preview.resize': 'command',
+  'preview.texture.get': 'query',
+  'preview.texture.set': 'command',
   'camera.get': 'query',
   'camera.begin': 'command',
   'camera.update': 'command',
@@ -602,3 +604,4 @@ export function serializeWorkspaceState(state: WorkspaceState): WorkspaceState {
     ...(state.thumbnailEpoch === undefined ? {} : { thumbnailEpoch: state.thumbnailEpoch }),
   });
 }
+export type { TextureViewInfo, TextureViewOptions } from '@forgeax/engine/app';

@@ -40,7 +40,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { deflateSync } from 'node:zlib';
+import { encodePng } from '@forgeax/engine-image/png';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -66,87 +66,6 @@ const BASELINE_DIR = resolve(
 const BASELINE_PNG_PATH = resolve(BASELINE_DIR, 'spot-shadow.ref.png');
 
 const SMOKE_WALL_BUDGET_MS = Number.parseInt(process.env.SMOKE_WALL_BUDGET_MS ?? '45000', 10);
-
-// --- Minimal PNG encoder (no dependencies; mirrors hello-debug-draw smoke) ---
-
-function crc32(buf) {
-  let crc = -1;
-  for (let i = 0; i < buf.length; i++) {
-    crc ^= buf[i];
-    for (let j = 0; j < 8; j++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-    }
-  }
-  return (crc ^ -1) >>> 0;
-}
-
-function writeU32(arr, off, val) {
-  arr[off] = (val >>> 24) & 0xff;
-  arr[off + 1] = (val >>> 16) & 0xff;
-  arr[off + 2] = (val >>> 8) & 0xff;
-  arr[off + 3] = val & 0xff;
-}
-
-function writePng(width, height, rgba) {
-  const rawData = new Uint8Array(height * (1 + width * 4));
-  for (let y = 0; y < height; y++) {
-    const rowOff = y * (1 + width * 4);
-    rawData[rowOff] = 0; // filter: None
-    for (let x = 0; x < width; x++) {
-      const src = (y * width + x) * 4;
-      const dst = rowOff + 1 + x * 4;
-      rawData[dst] = rgba[src];
-      rawData[dst + 1] = rgba[src + 1];
-      rawData[dst + 2] = rgba[src + 2];
-      rawData[dst + 3] = rgba[src + 3];
-    }
-  }
-  const compressed = deflateSync(rawData);
-
-  const ihdrData = new Uint8Array(13);
-  writeU32(ihdrData, 0, width);
-  writeU32(ihdrData, 4, height);
-  ihdrData[8] = 8; // bit depth
-  ihdrData[9] = 6; // color type: RGBA
-  ihdrData[10] = 0;
-  ihdrData[11] = 0;
-  ihdrData[12] = 0;
-
-  const chunks = [];
-  function addChunk(type, data) {
-    const typeBytes = new Uint8Array(4);
-    typeBytes[0] = type.charCodeAt(0);
-    typeBytes[1] = type.charCodeAt(1);
-    typeBytes[2] = type.charCodeAt(2);
-    typeBytes[3] = type.charCodeAt(3);
-    const typeAndData = Buffer.concat([typeBytes, data]);
-    const c = crc32(typeAndData);
-    const len = data.length;
-    const buf = new Uint8Array(12 + len);
-    writeU32(buf, 0, len);
-    buf.set(typeBytes, 4);
-    buf.set(data, 8);
-    writeU32(buf, 8 + len, c);
-    chunks.push(buf);
-  }
-
-  addChunk('IHDR', ihdrData);
-  addChunk('IDAT', compressed);
-  addChunk('IEND', new Uint8Array(0));
-
-  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-  const totalLen = 8 + chunks.reduce((s, c) => s + c.length, 0);
-  const out = Buffer.alloc(totalLen);
-  sig.forEach((b, i) => {
-    out[i] = b;
-  });
-  let off = 8;
-  for (const chunk of chunks) {
-    out.set(chunk, off);
-    off += chunk.length;
-  }
-  return out;
-}
 
 // --- 1. dawn.node binding setup ----------------------------------------------
 
@@ -321,7 +240,7 @@ for (const pos of CUBE_POSITIONS) {
 if (!FALSIFY_NO_COMBINED_LIGHTS) {
   world.spawn({
     component: DirectionalLight,
-    data: { direction: [-0.2, -1, -0.3], color: [1, 1, 1], intensity: 0.5 },
+    data: { castShadow: true, direction: [-0.2, -1, -0.3], color: [1, 1, 1], intensity: 0.5 },
   });
 } else {
   console.log('[smoke] FALSIFY=no-directional-point-lights -- directional and four point lights omitted');
@@ -425,7 +344,7 @@ world.spawn(
   },
   {
     component: SpotLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.6 / SPOT_DIR_LEN, -1 / SPOT_DIR_LEN, 0],
       color: [1, 1, 1],
       intensity: 40,
@@ -585,7 +504,7 @@ if (SMOKE_WRITE_BASELINE) {
     }
   }
   mkdirSync(BASELINE_DIR, { recursive: true });
-  writeFileSync(BASELINE_PNG_PATH, writePng(WIDTH, HEIGHT, rgba));
+  writeFileSync(BASELINE_PNG_PATH, encodePng(WIDTH, HEIGHT, rgba));
   console.log(`[smoke] baseline written to ${BASELINE_PNG_PATH}`);
 }
 

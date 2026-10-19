@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '../result.js';
+import { WGSL_NUMERIC_LAYOUT } from '../wgsl-numeric-layout.js';
 
 /** Built-in Surface model templates. Content still owns the imported Surface. */
 export const MATERIAL_SURFACE_MODELS = ['standard', 'single-layer-medium'] as const;
@@ -8,7 +9,7 @@ export type MaterialSurfaceModel = (typeof MATERIAL_SURFACE_MODELS)[number];
 export const SINGLE_LAYER_MEDIUM_SURFACE_MODEL = 'single-layer-medium' as const;
 
 /** POD scalar/vector shapes accepted by a read-only dynamic record. */
-export type MaterialDynamicFieldType = 'f32' | 'u32' | 'vec2<f32>' | 'vec3<f32>' | 'vec4<f32>';
+export type MaterialDynamicFieldType = keyof typeof FIELD_FACTS;
 
 export interface MaterialDynamicInputField {
   readonly name: string;
@@ -42,15 +43,9 @@ export interface MaterialDynamicInputLayoutField extends MaterialDynamicInputFie
 }
 
 /** Compiler-derived record layout shared by CPU encoding and WGSL accessors. */
-export interface MaterialDynamicInputLayout {
-  readonly name: string;
+export interface MaterialDynamicInputLayout extends Omit<MaterialDynamicInputSchema, 'fields'> {
   readonly stride: number;
   readonly fields: readonly MaterialDynamicInputLayoutField[];
-  readonly maxRecords: number;
-  readonly maxDomains: number;
-  readonly maxPageBytes: number;
-  readonly maxBindings: number;
-  readonly maxEventsPerSample: number;
   readonly identity: string;
 }
 
@@ -70,46 +65,19 @@ export interface MaterialDynamicInputLayoutError {
 }
 
 function isMaterialDynamicFieldType(value: unknown): value is MaterialDynamicFieldType {
-  return (
-    value === 'f32' ||
-    value === 'u32' ||
-    value === 'vec2<f32>' ||
-    value === 'vec3<f32>' ||
-    value === 'vec4<f32>'
-  );
+  return typeof value === 'string' && Object.hasOwn(FIELD_FACTS, value);
 }
 
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-const FIELD_FACTS: Readonly<
-  Record<MaterialDynamicFieldType, { readonly size: number; readonly alignment: number }>
-> = {
-  f32: { size: 4, alignment: 4 },
-  u32: { size: 4, alignment: 4 },
-  'vec2<f32>': { size: 8, alignment: 8 },
+const FIELD_FACTS = {
+  f32: WGSL_NUMERIC_LAYOUT.f32,
+  u32: WGSL_NUMERIC_LAYOUT.u32,
+  'vec2<f32>': WGSL_NUMERIC_LAYOUT['vec2<f32>'],
   // WGSL vec3 values occupy a 16-byte aligned slot in a storage struct.
-  'vec3<f32>': { size: 12, alignment: 16 },
-  'vec4<f32>': { size: 16, alignment: 16 },
+  'vec3<f32>': WGSL_NUMERIC_LAYOUT['vec3<f32>'],
+  'vec4<f32>': WGSL_NUMERIC_LAYOUT['vec4<f32>'],
 };
-
-function materialDynamicFieldFacts(
-  type: unknown,
-): { readonly size: number; readonly alignment: number } | undefined {
-  switch (type) {
-    case 'f32':
-      return FIELD_FACTS.f32;
-    case 'u32':
-      return FIELD_FACTS.u32;
-    case 'vec2<f32>':
-      return FIELD_FACTS['vec2<f32>'];
-    case 'vec3<f32>':
-      return FIELD_FACTS['vec3<f32>'];
-    case 'vec4<f32>':
-      return FIELD_FACTS['vec4<f32>'];
-    default:
-      return undefined;
-  }
-}
 
 function alignTo(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
@@ -233,7 +201,8 @@ export function deriveMaterialDynamicInputLayout(
         ),
       );
     }
-    if (!isMaterialDynamicFieldType(field.type)) {
+    const fieldType: unknown = field.type;
+    if (!isMaterialDynamicFieldType(fieldType)) {
       return err(
         layoutError(
           'invalid-field',
@@ -244,18 +213,7 @@ export function deriveMaterialDynamicInputLayout(
         ),
       );
     }
-    const facts = materialDynamicFieldFacts(field.type);
-    if (facts === undefined) {
-      return err(
-        layoutError(
-          'invalid-field',
-          'each dynamic field uses a supported scalar or vector type',
-          'use f32, u32, vec2<f32>, vec3<f32>, or vec4<f32>',
-          `fields[${index}].type`,
-          field.type,
-        ),
-      );
-    }
+    const facts = FIELD_FACTS[fieldType];
     names.add(field.name);
     maxAlignment = Math.max(maxAlignment, facts.alignment);
     const offset = alignTo(cursor, facts.alignment);

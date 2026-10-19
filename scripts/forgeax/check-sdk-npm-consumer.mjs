@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -193,7 +194,7 @@ const registry = createServer(async (request, response) => {
     response.writeHead(502).end(cause instanceof Error ? cause.message : String(cause));
   }
 });
-await new Promise((accept) => registry.listen(0, '127.0.0.1', accept));
+await once(registry.listen(0, '127.0.0.1'), 'listening');
 const address = registry.address();
 const port = typeof address === 'object' && address !== null ? address.port : 0;
 const registryUrl = `http://127.0.0.1:${port}/`;

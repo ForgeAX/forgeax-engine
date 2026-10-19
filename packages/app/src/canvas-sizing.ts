@@ -52,8 +52,9 @@ export function syncCanvasDrawingBuffer(
 export function measureCanvasDrawingBuffer(
   canvas: CanvasSurface,
   maxCanvasPixelRatio?: number,
+  display?: { readonly width: number; readonly height: number },
 ): { readonly width: number; readonly height: number } {
-  const measured = measurement(canvas, maxCanvasPixelRatio);
+  const measured = measurement(canvas, maxCanvasPixelRatio, display);
   return measured === undefined
     ? retainedSize(canvas)
     : { width: measured.width, height: measured.height };
@@ -132,10 +133,15 @@ function hasPositiveExtent(width: number, height: number): boolean {
   return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
 }
 
-function measurement(canvas: CanvasSurface, maxCanvasPixelRatio?: number) {
-  // Layout reads can synchronize pending style changes. Reuse one current snapshot
-  // within this measurement; the next frame still observes resize and visibility.
-  const { clientWidth, clientHeight } = canvas;
+function measurement(
+  canvas: CanvasSurface,
+  maxCanvasPixelRatio?: number,
+  display?: { readonly width: number; readonly height: number },
+) {
+  // A browser host can consume its existing native display notification instead
+  // of synchronizing unrelated pending layout on every Worker admission.
+  const clientWidth = display === undefined ? canvas.clientWidth : display.width;
+  const clientHeight = display === undefined ? canvas.clientHeight : display.height;
   if (!hasPositiveExtent(clientWidth, clientHeight)) return undefined;
   const previous = measurements.get(canvas);
   const bufferMirrorsLayout =

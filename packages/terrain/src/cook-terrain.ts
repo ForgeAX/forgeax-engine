@@ -1,4 +1,5 @@
 import {
+  numMipLevels,
   ok,
   type Result,
   type TerrainError,
@@ -99,7 +100,7 @@ export function cookTerrain(
         format: 'rgba8unorm',
         data,
         colorSpace: 'linear',
-        mips: { kind: 'packed', levelCount: Math.log2(n) + 1 },
+        mips: { kind: 'packed', levelCount: numMipLevels({ width: n, height: n }) },
       });
       sections.push({
         x: sx * quads * source.spacing,

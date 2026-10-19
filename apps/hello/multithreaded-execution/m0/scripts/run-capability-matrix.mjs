@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -147,10 +148,7 @@ function iframePage(deployment, childOrigin) {
 }
 
 async function listen(server) {
-  await new Promise((resolvePromise, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolvePromise);
-  });
+  await once(server.listen(0, '127.0.0.1'), 'listening');
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('M0 server has no TCP port');
   return `http://127.0.0.1:${address.port}`;

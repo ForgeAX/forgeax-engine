@@ -1916,6 +1916,7 @@ export function runRenderFeatureFrame(
               owner: input.owner,
               frameNumber: input.frameNumber,
               caps: input.caps,
+              ...renderMaterialContext(input.caps, input.limits),
               views: inputs.map((view) => ({
                 identity: view.identity,
                 render: view.render,

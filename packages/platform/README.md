@@ -16,6 +16,14 @@ or treats a host callback as GPU completion.
 once and rejects backward/invalid time without updating its last valid baseline.
 Native clock exceptions retain their cause; no wall-clock fallback exists.
 
+`createPlatformLifecycle()` owns subscriber leases, pending-frame cancellation,
+one-shot asynchronous frame delivery and disposal fencing for both native bindings.
+Bindings retain native tokens inside cancellation closures. `bind(subscribe)`
+provides a release stack: register each release before its native acquisition.
+The lifecycle unwinds that stack in reverse order on acquisition failure or
+`dispose()`, preserving both startup and cleanup causes. Display and clock facts
+remain host-owned.
+
 `releasePlatformResources` attempts every supplied release. If any fails, it throws
 a structured `PlatformError` containing an `AggregateError` of original causes.
 Native release leases and `dispose()` use this exceptional teardown boundary; normal

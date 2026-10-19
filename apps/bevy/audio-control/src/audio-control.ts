@@ -42,6 +42,6 @@ export function buildAudioControlWorld(world: World, aspect: number): AudioContr
     { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
     { component: MeshRenderer, data: { materials: [floorMaterial] } },
   );
-  world.spawn({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 2 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.5, -1, -0.3], color: [1, 1, 1], intensity: 2 } });
   return { camera, music };
 }

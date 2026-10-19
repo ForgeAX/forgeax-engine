@@ -8,7 +8,7 @@ it('runs point power laws and preserves default/Spot near floors on the real GPU
   if (adapter === null) throw new Error('point decay requires a real Dawn adapter');
   const device = await adapter.requestDevice();
   const cases = [0, 1.4, 2, 4, Math.fround(3.4028234663852886e38)].flatMap((decay) =>
-    [0, 0.001, 0.01, 0.04, 0.5, 1, 2, 14.9, 15, 16].flatMap((distance) =>
+    [0, 0.001, 0.01, 0.04, 0.5, 1, 2, 14.9, 15, 16, 2000, 5000].flatMap((distance) =>
       [0, 1 / 225].map((inverseRange) => ({ decay, distance, inverseRange })),
     ),
   );
@@ -56,7 +56,8 @@ it('runs point power laws and preserves default/Spot near floors on the real GPU
         let spotDistance = max(row.x, 0.04);
         let spot = evalSpotAttenuation(vec3<f32>(0.0, 0.0, spotDistance), vec3<f32>(0.0, 0.0, -1.0), vec3<f32>(0.0), 0.95, 0.8, row.z);
         result[id.x * 2u] = vec4<f32>(surface, volume.x, spot, original(spotDistance * spotDistance, row.z, 1e-4));
-        result[id.x * 2u + 1u] = vec4<f32>(original(squared, row.z, 1e-4), original(squared, row.z, 1e-5), 0.0, 0.0);
+        let angle = 0.49 + f32(id.x % 3u) * 0.01;
+        result[id.x * 2u + 1u] = vec4<f32>(original(squared, row.z, 1e-4), original(squared, row.z, 1e-5), evalSpotCone(0.5, 0.5, angle), evalSpotCone(0.6, 0.4, angle));
       }`,
     });
     expect(
@@ -98,6 +99,9 @@ it('runs point power laws and preserves default/Spot near floors on the real GPU
         if (row.decay === 2) expect(actual).toBe(values[index * 8 + 4 + channel]);
       }
       expect(values[index * 8 + 2]).toBe(values[index * 8 + 3]);
+      expect(values[index * 8 + 6]).toBe(index % 3 === 0 ? 0 : 1);
+      const t = (0.49 + (index % 3) * 0.01 - 0.4) / 0.2;
+      expect(values[index * 8 + 7]).toBeCloseTo(t * t * (3 - 2 * t), 5);
     }
     expect(validation).toEqual([]);
   } finally {

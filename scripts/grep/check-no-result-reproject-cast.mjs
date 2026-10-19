@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import process from 'node:process';
 // AC-06 / AC-07 (feat-small-20260516-result-err-reproject-cast-cleanup w2):
 // permanent anti-pattern guard — assert that the dead reproject cast literal
 // `as unknown as Result<` cannot re-appear in the live ECS source tree.
@@ -18,67 +19,23 @@
 //   - this gate file itself
 //
 // Pattern + zero-dep stdio mirrors scripts/grep/check-no-buffer-colon-keyword.mjs.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import process from 'node:process';
+import { grepSourceFiles } from './source-files.mjs';
 
 const ROOTS = ['packages/ecs/src'];
 
 const SELF_EXEMPT = new Set(['scripts/grep/check-no-result-reproject-cast.mjs']);
 
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.cache', 'test-output']);
-
-const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
-
 const RE_LITERAL = /as unknown as Result</g;
-
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
-}
 
 const hits = [];
 
-function walk(dir) {
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
+for (const { path: p, code: stripped } of grepSourceFiles(ROOTS, { exempt: SELF_EXEMPT })) {
+  RE_LITERAL.lastIndex = 0;
+  let m = RE_LITERAL.exec(stripped);
+  while (m !== null) {
+    hits.push({ path: p, literal: m[0] });
+    m = RE_LITERAL.exec(stripped);
   }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    let st;
-    try {
-      st = statSync(p);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) {
-      walk(p);
-      continue;
-    }
-    const ext = p.slice(p.lastIndexOf('.'));
-    if (!CODE_EXTS.has(ext)) continue;
-    if (SELF_EXEMPT.has(p)) continue;
-    let text;
-    try {
-      text = readFileSync(p, 'utf8');
-    } catch {
-      continue;
-    }
-    const stripped = stripComments(text);
-    RE_LITERAL.lastIndex = 0;
-    let m = RE_LITERAL.exec(stripped);
-    while (m !== null) {
-      hits.push({ path: p, literal: m[0] });
-      m = RE_LITERAL.exec(stripped);
-    }
-  }
-}
-
-for (const root of ROOTS) {
-  walk(root);
 }
 
 if (hits.length > 0) {

@@ -8,12 +8,12 @@ describe('selected volumetric light resolution', () => {
   it('selects a real DirectionalLight or SpotLight entity', () => {
     const world = new World();
     const directional = world
-      .spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } })
+      .spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0, -1, 0] } })
       .unwrap();
     const spot = world
       .spawn(
         { component: Transform, data: { pos: [0, 2, 0] } },
-        { component: SpotLight, data: { direction: [0, -1, 0] } },
+        { component: SpotLight, data: { castShadow: true, direction: [0, -1, 0] } },
       )
       .unwrap();
 
@@ -35,8 +35,8 @@ describe('selected volumetric light resolution', () => {
     const both = world
       .spawn(
         { component: Transform, data: { pos: [0, 2, 0] } },
-        { component: DirectionalLight, data: { direction: [0, -1, 0] } },
-        { component: SpotLight, data: { direction: [0, -1, 0] } },
+        { component: DirectionalLight, data: { castShadow: true, direction: [0, -1, 0] } },
+        { component: SpotLight, data: { castShadow: true, direction: [0, -1, 0] } },
       )
       .unwrap();
     const otherWorld = new World();
@@ -44,7 +44,7 @@ describe('selected volumetric light resolution', () => {
     otherWorld.spawn();
     otherWorld.spawn();
     const foreign = otherWorld
-      .spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } })
+      .spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0, -1, 0] } })
       .unwrap();
 
     expect(resolveSelectedVolumetricLight(world, ordinary)).toMatchObject({

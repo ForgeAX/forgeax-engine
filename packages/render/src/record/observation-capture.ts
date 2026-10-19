@@ -3,7 +3,9 @@ import {
   RhiError,
   type Texture,
   type TextureFormat,
+  textureReadbackLayout,
 } from '@forgeax/engine-rhi';
+import { textureFormatBlock } from '@forgeax/engine-types';
 import type { FrameObservationDomain } from '../render-contract';
 import type { RenderSystemRuntime } from './render-context';
 
@@ -44,16 +46,14 @@ export function encodeFrameObservationCapture(
       hint: 'retain the actual raster projection with its graph copy',
     });
   }
-  const bytesPerTexel =
-    input.format === 'rgba32uint' || input.format === 'rgba32float'
-      ? 16
-      : input.format === 'rgba16float'
-        ? 8
-        : 4;
-  const bytesPerRow = Math.ceil((input.width * bytesPerTexel) / 256) * 256;
+  const { bytesPerRow, byteLength } = textureReadbackLayout(
+    input.width,
+    input.height,
+    textureFormatBlock(input.format),
+  );
   const created = runtime.device.createBuffer({
     label: `${input.domain}-observation-readback`,
-    size: bytesPerRow * input.height,
+    size: byteLength,
     usage: 0x08 | 0x01,
     mappedAtCreation: false,
   });

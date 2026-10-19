@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { create, globals } from '@forgeax/engine-dawn-node';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+import { encodePng } from '@forgeax/engine-image/png';
+
 import {
   createRayReferenceQuery,
   traceReferenceRay,
@@ -279,7 +280,7 @@ await writeFile(
     rays,
   }),
 );
-await writeFile(resolve(out, 'sparse-coverage.png'), writeReferencePng(pixels, width, height));
+await writeFile(resolve(out, 'sparse-coverage.png'), encodePng(width, height, pixels));
 const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
 const fresh = (await (await gpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
 const replay = (

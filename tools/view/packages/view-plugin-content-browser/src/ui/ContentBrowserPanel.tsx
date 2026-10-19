@@ -333,8 +333,8 @@ export function ContentBrowserPanel({
   const gridGuids = layout === 'column' ? [] : visibleAssetGuids;
   const detailGuid = detailPanelOpen && previewItem?.type === 'asset' ? previewItem.guid : null;
   const visibleGuids = [...new Set([...gridGuids, ...(detailGuid ? [detailGuid] : [])])];
-  const targetKey = JSON.stringify([snapshot.projectTarget?.targetId, snapshot.projectTarget?.generation, snapshot.browserGeneration]);
-  const requestKey = JSON.stringify([project?.id, targetKey, snapshot.catalogEpoch, visibleGuids.map(guid => [guid, assetFacts.get(guid)])]);
+  const targetKey = JSON.stringify([snapshot.projectTarget?.targetId, snapshot.projectTarget?.generation, snapshot.browserGeneration, snapshot.catalogEpoch]);
+  const requestKey = JSON.stringify([project?.id, targetKey, visibleGuids.map(guid => [guid, assetFacts.get(guid)])]);
   const thumbnailEpoch = snapshot.thumbnailEpoch ?? -1;
   useEffect(() => {
     if (!client || !connected || !project?.id || visibleGuids.length === 0) {

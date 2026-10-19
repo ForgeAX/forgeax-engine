@@ -42,7 +42,7 @@ interface TimedPass {
   readonly queryIndex: number;
 }
 
-export interface GpuTimingPassTimestampWrites {
+interface GpuTimingPassTimestampWrites {
   readonly querySet: QuerySet;
   readonly beginningOfPassWriteIndex: number;
   readonly endOfPassWriteIndex: number;

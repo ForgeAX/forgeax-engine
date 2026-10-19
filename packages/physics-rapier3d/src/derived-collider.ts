@@ -110,7 +110,11 @@ export function createDerivedCollider(
     if (delta)
       return world.createColliderFromVoxelEdits(desc, source, delta.removed, delta.added, body);
   }
-  return world.createCollider(desc, body);
+  const collider = world.createCollider(desc, body);
+  // The native collider and our normalized input own geometry and recovery.
+  // Rapier can reconstruct its optional JS shape on a later public read.
+  collider.clearShapeCache();
+  return collider;
 }
 
 /** Recognize complete boxes only, without snapping or expanding any input corner. */
@@ -250,9 +254,6 @@ export function createDerivedColliderDesc(
     .setCollisionGroups(shape.collisionGroups ?? 0xffffffff)
     .setSolverGroups(shape.solverGroups ?? 0xffffffff)
     .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS)
-    .setActiveHooks(
-      RAPIER.ActiveHooks.FILTER_CONTACT_PAIRS | RAPIER.ActiveHooks.FILTER_INTERSECTION_PAIRS,
-    )
     .setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL)
     .setEnabled(false);
   if (shape.isSensor === true) desc.setSensor(true);

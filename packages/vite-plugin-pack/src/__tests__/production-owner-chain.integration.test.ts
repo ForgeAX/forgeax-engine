@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
@@ -96,10 +97,8 @@ describe('plugin production owner chain', () => {
 
     const response = await request(server, binding.catalogUrl);
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(String(response.body)) as {
-      readonly entries: readonly { readonly guid: string }[];
-    };
-    expect(body.entries.map((entry) => entry.guid.toLowerCase())).toContain(guid);
+    const body = decodeCatalogWire(JSON.parse(String(response.body))).unwrap();
+    expect(body.map((entry) => entry.guid.toLowerCase())).toContain(guid);
 
     await plugin.closeBundle();
     const closed = await request(server, binding.catalogUrl);

@@ -1,7 +1,7 @@
 #define_import_path forgeax_pbr::clearcoat
 
-// Clearcoat is the terminal physical layer. Its Fresnel term owns both the
-// attenuation of lower layers and the weight of the coat radiance.
+// Clearcoat is the terminal physical layer. Fresnel attenuates lower layers;
+// coatRadiance already includes its BRDF Fresnel and is weighted only by coverage.
 // The root supplies clearcoatRoughness and clearcoatNormalScale after their
 // texture projections; this module deliberately owns only layer energy.
 fn evaluateClearcoatFresnel(viewCosine : f32, clearcoatFactor : f32) -> f32 {
@@ -20,5 +20,5 @@ fn evaluateClearcoatLayer(
 ) -> vec3<f32> {
   let fresnel = evaluateClearcoatFresnel(viewCosine, clearcoatFactor);
   let attenuatedBase = baseRadiance * (1.0 - fresnel);
-  return attenuatedBase + coatRadiance * fresnel;
+  return attenuatedBase + coatRadiance * clamp(clearcoatFactor, 0.0, 1.0);
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
@@ -6,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const WIDTH = testQuality.viewport.width;
 const HEIGHT = testQuality.viewport.height;
@@ -116,7 +117,7 @@ for (let y = 0; y < HEIGHT; y += 1) framePixels.set(padded.subarray(y * bytesPer
 
 const pngPath = process.env.SMOKE_PNG_OUT ?? resolve(root, 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngPath), { recursive: true });
-writeFileSync(pngPath, writeReferencePng(framePixels, WIDTH, HEIGHT));
+writeFileSync(pngPath, encodePng(WIDTH, HEIGHT, framePixels));
 let visiblePixels = 0;
 let chromaticPixels = 0;
 const colors = new Set();

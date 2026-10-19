@@ -1,11 +1,9 @@
 import {
+  createPlatformLifecycle,
   type DisplayFacts,
   type Platform,
   type PlatformError,
-  type PlatformEvent,
-  type PlatformRelease,
   platformError,
-  releasePlatformResources,
 } from '@forgeax/engine-platform';
 import { ok, type Result } from '@forgeax/engine-types';
 import { createWechatClock } from './clock.js';
@@ -68,13 +66,11 @@ export function createWechatPlatform(
   } catch (cause) {
     return platformError('platform-operation-failed', { operation: 'initialize', cause });
   }
-  let disposed = false;
+  const lifetime = createPlatformLifecycle();
   let visible = true;
-  const releases = new Set<PlatformRelease>();
-  const listeners = new Set<(event: PlatformEvent) => void>();
 
   function display(): Result<DisplayFacts, PlatformError> {
-    if (disposed) return platformError('platform-disposed', { operation: 'display' });
+    if (lifetime.disposed) return platformError('platform-disposed', { operation: 'display' });
     try {
       const info = wx.getWindowInfo();
       const { windowWidth: width, windowHeight: height, pixelRatio } = info;
@@ -117,20 +113,7 @@ export function createWechatPlatform(
   const initialDisplay = display();
   if (!initialDisplay.ok) return initialDisplay;
 
-  const emit = (event: PlatformEvent) => {
-    if (disposed) return;
-    const failures: unknown[] = [];
-    for (const listener of [...listeners]) {
-      if (!disposed && listeners.has(listener)) {
-        try {
-          listener(event);
-        } catch (cause) {
-          failures.push(cause);
-        }
-      }
-    }
-    if (failures.length > 0) throw new AggregateError(failures, 'Platform event listener failed');
-  };
+  const { emit } = lifetime;
   const show = () => {
     visible = true;
     emit({ kind: 'visibility', visible });
@@ -149,8 +132,7 @@ export function createWechatPlatform(
       kind: 'memory-pressure',
       level: event.level === 10 ? 'moderate' : event.level === 15 ? 'critical' : 'unknown',
     });
-  const nativeReleases: PlatformRelease[] = [];
-  try {
+  const subscribed = lifetime.bind((nativeReleases) => {
     nativeReleases.push(() => wx.offShow(show));
     wx.onShow(show);
     nativeReleases.push(() => wx.offHide(hide));
@@ -164,76 +146,24 @@ export function createWechatPlatform(
       nativeReleases.push(() => wx.offMemoryWarning?.(memory));
       wx.onMemoryWarning(memory);
     }
-  } catch (cause) {
-    disposed = true;
-    let cleanupCause: unknown;
-    try {
-      releasePlatformResources(nativeReleases.reverse());
-    } catch (failure) {
-      cleanupCause = failure;
-    }
-    return platformError('platform-operation-failed', {
-      operation: 'subscribe',
-      cause,
-      ...(cleanupCause === undefined ? {} : { cleanupCause }),
-    });
-  }
+  });
+  if (!subscribed.ok) return subscribed;
 
   return ok({
     canvas: target,
     now: () =>
-      disposed ? platformError('platform-disposed', { operation: 'clock.now' }) : clock.now(),
+      lifetime.disposed
+        ? platformError('platform-disposed', { operation: 'clock.now' })
+        : clock.now(),
     display,
-    visible: () => !disposed && visible,
-    requestFrame(callback) {
-      if (disposed) return platformError('platform-disposed', { operation: 'requestFrame' });
-      let live = true;
-      let id: unknown;
-      let requesting = true;
-      let synchronous = false;
-      const release = () => {
-        if (!live) return;
-        live = false;
-        releases.delete(release);
-        releasePlatformResources([() => host.cancelAnimationFrame(id)]);
-      };
-      try {
-        id = host.requestAnimationFrame(() => {
-          if (requesting) {
-            synchronous = true;
-            return;
-          }
-          if (!live || disposed) return;
-          live = false;
-          releases.delete(release);
-          callback();
-        });
-        requesting = false;
-        if (synchronous) {
-          release();
-          throw new Error('Native requestAnimationFrame must invoke asynchronously');
-        }
-      } catch (cause) {
-        live = false;
-        return platformError('platform-operation-failed', { operation: 'requestFrame', cause });
-      }
-      releases.add(release);
-      return ok(release);
-    },
-    subscribe(listener) {
-      if (disposed) return platformError('platform-disposed', { operation: 'subscribe' });
-      const subscription = (event: PlatformEvent) => listener(event);
-      listeners.add(subscription);
-      return ok(() => {
-        listeners.delete(subscription);
-      });
-    },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      listeners.clear();
-      releasePlatformResources([...releases, ...nativeReleases.reverse()]);
-    },
+    visible: () => !lifetime.disposed && visible,
+    requestFrame: (callback) =>
+      lifetime.requestFrame((frame) => {
+        const id = host.requestAnimationFrame(frame);
+        return () => host.cancelAnimationFrame(id);
+      }, callback),
+    subscribe: lifetime.subscribe,
+    dispose: lifetime.dispose,
   });
 }
 export type {

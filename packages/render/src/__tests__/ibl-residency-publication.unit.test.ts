@@ -11,7 +11,7 @@ describe('IBL residency publication', () => {
     const sourceReady = source.indexOf("status: 'ready'", precomputeCall);
     const cubeRegistration = source.indexOf('const cubeHandle = regResult.value;', precomputeCall);
     const mapPublication = source.indexOf(
-      'this.cubemapIdempotentMap.set(sourceId, cubeHandle);',
+      'this.cubemapIdempotentMap.set(sourceId, cubeHandle, namespace);',
       precomputeCall,
     );
     expect(precomputeCall).toBeGreaterThan(-1);
@@ -31,10 +31,7 @@ describe('IBL residency publication', () => {
   it('promotes the IBL candidate only after the completion fence', () => {
     const runStart = iblSource.indexOf('export async function runIblPrecompute(');
     const fence = iblSource.indexOf('await device.queue.onSubmittedWorkDone()', runStart);
-    const promotion = iblSource.indexOf(
-      'cache.irradianceTexture = promoted.irradianceTexture',
-      runStart,
-    );
+    const promotion = iblSource.indexOf('const promoted: IblPrecomputeOutput =', runStart);
     const ready = source.indexOf("status: 'ready'", source.indexOf('_uploadCubemapFromEquirect'));
     expect(runStart).toBeGreaterThan(-1);
     expect(fence).toBeGreaterThan(runStart);
@@ -49,7 +46,10 @@ describe('IBL residency publication', () => {
     const call = source.indexOf('const runResult = await runIblPrecompute({');
     const success = source.indexOf('if (!runResult.ok)', call);
     const ready = source.indexOf("status: 'ready'", call);
-    const map = source.indexOf('this.cubemapIdempotentMap.set(sourceId, cubeHandle);', call);
+    const map = source.indexOf(
+      'this.cubemapIdempotentMap.set(sourceId, cubeHandle, namespace);',
+      call,
+    );
     expect(call).toBeGreaterThan(-1);
     expect(success).toBeGreaterThan(call);
     expect(ready).toBeGreaterThan(success);
@@ -69,10 +69,7 @@ describe('IBL residency publication', () => {
 
   it('does not promote or increment counters after a failed stage', () => {
     const runStart = iblSource.indexOf('export async function runIblPrecompute(');
-    const promotion = iblSource.indexOf(
-      'cache.irradianceTexture = promoted.irradianceTexture',
-      runStart,
-    );
+    const promotion = iblSource.indexOf('const promoted: IblPrecomputeOutput =', runStart);
     const counters = iblSource.indexOf('cache.irradianceBakeCount += 1', runStart);
     const stageFailure = iblSource.indexOf('return err(badAlloc', runStart);
     expect(stageFailure).toBeGreaterThan(runStart);

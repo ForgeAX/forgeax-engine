@@ -71,8 +71,7 @@ it.each([false, true])('bounds announced and unannounced attachments and release
 it('does not admit raw messages or future queued bytes from a refused attachment', () => {
   const transport = listener(), healthy = transport.connect(), excess = transport.connect();
   const session = new NetSession({ endpoint: transport.endpoint, maxRawMessages: 8, recovery: { maxSessions: 1 } });
-  const failure = new EndpointError({ code: 'send-failed', expected: 'disconnect the refused attachment',
-    hint: 'repair the endpoint', detail: { peerId: 3 as PeerId, cause: 'disconnect refused' } });
+  const failure = new EndpointError({ code: 'send-failed', detail: { peerId: 3 as PeerId, cause: 'disconnect refused' } });
   const disconnect = transport.endpoint.disconnect;
   transport.endpoint.disconnect = peer => peer === 3 ? err(failure) : disconnect(peer);
   try {

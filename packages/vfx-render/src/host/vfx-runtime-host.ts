@@ -40,6 +40,10 @@ import {
 import type { ParticleRenderCameraSource } from '../feature/camera.js';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature.js';
 import {
+  createHostMaterialSource,
+  selectParticleMaterialContext,
+} from '../feature/material-source.js';
+import {
   createVfxDataInterfaceRegistry,
   type VfxDataInterfaceRegistry,
 } from './data-interface-providers.js';
@@ -337,9 +341,9 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
       : { isolateViewGraph: options.isolateViewGraph }),
     ...(options.sceneSdf === undefined ? {} : { sceneSdf: options.sceneSdf }),
     dataInterfaces,
-    material: {
-      read: (world, guid) => readRenderAsset(world, guid, 'material'),
-      captureFrame: (world) => {
+    material: createHostMaterialSource(
+      (world, guid) => readRenderAsset(world, guid, 'material'),
+      (world) => {
         const assets = worlds.get(world)?.assets;
         if (assets === undefined) return false;
         // Do not invoke a custom accessor merely to discover capture support.
@@ -353,7 +357,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
           )?.value === stockMaterialProjection
         );
       },
-      projection: (world, material) => {
+      (world, material, context) => {
         const assets = worlds.get(world)?.assets;
         if (assets === undefined || !('getMaterialProjectionForPayload' in assets))
           return undefined;
@@ -367,7 +371,8 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
             pass.name !== 'forward' && pass.name !== 'deferred' && pass.name !== 'shadow-caster',
         );
         if (passes.length === 0) return undefined;
-        if (passes.length === projection.passes.length) return projection;
+        if (passes.length === projection.passes.length)
+          return selectParticleMaterialContext(projection, context);
         // Selection's legacy/modern address policy is derived across all passes.
         // Preserve mixed legacy inputs when removing raster rows could change it.
         const modern = (rows: MaterialRenderProjection['passes']) =>
@@ -381,10 +386,10 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
             ),
           );
         return modern(passes) === modern(projection.passes)
-          ? { ...projection, passes }
+          ? selectParticleMaterialContext({ ...projection, passes }, context)
           : projection;
       },
-    },
+    ),
     mesh: { read: (world, guid) => readRenderAsset(world, guid, 'mesh') },
     texture: { read: (world, guid) => readRenderAsset(world, guid, 'texture') },
     playerConsumption: {

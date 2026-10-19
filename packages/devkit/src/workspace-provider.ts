@@ -1389,6 +1389,26 @@ export function createDevKitWorkspaceProvider(
               return command('entity.focus', { ...input, targetId: previewTargetId, previewOwner });
             },
           },
+          ...(previewAsset?.kind === 'texture' || previewAsset?.kind === 'equirect'
+            ? {
+                texture: {
+                  get: () => {
+                    assertPreviewOpen();
+                    return command(
+                      'preview.texture.get',
+                      previewInput({ targetId: previewTargetId }),
+                    ) as Promise<import('@forgeax/engine-app').TextureViewInfo>;
+                  },
+                  set: (options) => {
+                    assertPreviewOpen();
+                    return command('preview.texture.set', {
+                      ...previewInput({ targetId: previewTargetId }),
+                      options,
+                    }) as Promise<import('@forgeax/engine-app').TextureViewInfo>;
+                  },
+                },
+              }
+            : {}),
           getCamera: (cameraInput) => {
             assertPreviewOpen();
             return command('camera.get', previewInput(cameraInput), cameraInput.signal);

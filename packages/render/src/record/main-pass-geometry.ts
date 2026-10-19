@@ -48,6 +48,7 @@ import {
   instancePreviousPairing,
   planInstanceUpload,
 } from '../instances';
+import { transformRenderState } from '../material-render-state';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 import {
   classifyOitDraw,
@@ -234,16 +235,22 @@ export function isHdrGeometryTarget(
 function gpuDrivenDrawIndicesBySubmesh(
   source: RenderableSnapshot,
   mesh: _InternalRenderPipelineContext['validatedOrdered'][number]['mesh'],
-): ReadonlyMap<number, number> | undefined {
+  indices: (number | undefined)[],
+): readonly (number | undefined)[] | undefined {
   const draws = source.gpuDrivenDraws;
   if (draws === undefined || draws.length === 0) return undefined;
-  const indices = new Map<number, number>();
+  indices.length = 0;
   let hasStableSourceIdentity = false;
   for (const [compactIndex, draw] of draws.entries()) {
     const drawItemIndex = draw.drawItemIndex;
     if (drawItemIndex === undefined) continue;
     hasStableSourceIdentity = true;
-    if (mesh.submeshes[drawItemIndex] !== undefined) indices.set(drawItemIndex, compactIndex);
+    if (
+      mesh.submeshes[drawItemIndex] !== undefined &&
+      Number.isInteger(drawItemIndex) &&
+      drawItemIndex >= 0
+    )
+      indices[drawItemIndex] = compactIndex;
   }
   if (hasStableSourceIdentity) return indices;
 
@@ -263,7 +270,7 @@ function gpuDrivenDrawIndicesBySubmesh(
       draw.materialSlot === submesh.materialSlot &&
       draw.topology === submesh.topology
     ) {
-      indices.set(submeshIndex, drawCursor);
+      if (Number.isInteger(submeshIndex) && submeshIndex >= 0) indices[submeshIndex] = drawCursor;
       drawCursor += 1;
     }
   }
@@ -533,6 +540,88 @@ export function resolveGeometryMaterialVariantSet(
   return variantSetFromVertexLayoutProjection(projection, variantSet);
 }
 
+function geometrySkinBindGroup(
+  c: _InternalRenderPipelineContext,
+  skinSlice: RenderableSnapshot['skin'],
+  meshBinding: ReturnType<typeof meshSsboBufferBinding>,
+  contract: MaterialShaderPipelineEntry['group2Contract'],
+): BindGroup | null {
+  const { pipelineState, runtime, frameState, bindGroupCounts } = c;
+  const skinAllocator = pipelineState.skinPaletteAllocator;
+  if (skinAllocator === null || skinSlice === undefined) return null;
+  if (contract !== 'skin' && contract !== 'skin-cluster') return null;
+  const layout =
+    contract === 'skin-cluster'
+      ? pipelineState.hdrpSkinMeshBindGroupLayout
+      : pipelineState.pbrSkinMeshBindGroupLayout;
+  if (layout === null) return null;
+  const hdrpBuffers =
+    contract === 'skin-cluster'
+      ? getOrCreateHdrpBuffers(runtime, frameState.installedPipelineConfig?.clusterGrid)
+      : null;
+  if (contract === 'skin-cluster' && hdrpBuffers === null) return null;
+  const meshBindSize = runtime.device.caps.storageBuffer
+    ? MESH_PER_ENTITY_STRIDE
+    : MESH_UBO_FULL_ARRAY_BYTES;
+  const skinStats = (pipelineState as { _skinBgCacheStats?: { miss: number; hit: number } })
+    ._skinBgCacheStats;
+  const skinMissesBefore = bindGroupCounts.createBindGroup;
+  const bindGroup = getOrCreateFromChain(
+    frameState.meshBindGroupCache,
+    [
+      layout,
+      meshBinding.buffer,
+      skinSlice.buffer,
+      ...(hdrpBuffers === null ? [] : [hdrpBuffers]),
+      ...(hdrpBuffers === null || c.hdrpSsaoBlurredView === undefined
+        ? []
+        : [c.hdrpSsaoBlurredView]),
+    ],
+    'pbr-skin-mesh',
+    () => {
+      if (hdrpBuffers !== null) {
+        const result = createHdrpSkinUnifiedBindGroup(
+          runtime,
+          hdrpBuffers,
+          layout,
+          meshBinding.buffer,
+          skinSlice.buffer,
+          skinAllocator.bindingWindowBytes,
+          c.hdrpSsaoBlurredView === undefined
+            ? { enabled: false }
+            : { enabled: true, ssaoBlurredView: c.hdrpSsaoBlurredView },
+        );
+        if (result === null) {
+          throw new RhiError({
+            code: 'webgpu-runtime-error',
+            expected: 'HDRP clustered skin BindGroup creation succeeds',
+            hint: 'inspect prior errorRegistry events for createBindGroup failure detail',
+          });
+        }
+        return result;
+      }
+      const result = runtime.device.createBindGroup({
+        label: 'pbr-skin-mesh-bg',
+        layout,
+        entries: createPbrSkinMeshBindGroupEntries(
+          meshBinding.buffer,
+          meshBindSize,
+          skinSlice.buffer,
+          skinAllocator.bindingWindowBytes,
+        ),
+      });
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    bindGroupCounts,
+  );
+  if (skinStats !== undefined) {
+    if (bindGroupCounts.createBindGroup > skinMissesBefore) skinStats.miss += 1;
+    else skinStats.hit += 1;
+  }
+  return bindGroup;
+}
+
 /**
  * feat-20260704 M3/w19: per-entity geometry (main colour) draw loop, extracted
  * verbatim from recordMainPass. Walks `c.validatedOrdered`, selects the
@@ -583,7 +672,6 @@ export function recordGeometryDraws(
     runtime,
     pipelineState,
     frameState,
-    bindGroupCounts,
     dispatchCounts,
     tonemapActive,
     msaaActive,
@@ -929,7 +1017,7 @@ export function recordGeometryDraws(
         }
       : geometryRenderStateForTopology(smTopology, selectedRenderState);
     let pipelineRenderState = geometryRenderStateForPass(
-      basePipelineRenderState,
+      transformRenderState(basePipelineRenderState, entry.source.transform.world),
       passKind,
       coverageOnly,
     );
@@ -1169,6 +1257,8 @@ export function recordGeometryDraws(
       hint: 'use preparation-only mode without a render pass or supply the draw material resolver',
     });
 
+  // Rebuilt per source and owned by this invocation, including nested recording.
+  const drawIndicesScratch: (number | undefined)[] = [];
   entries: for (let i = 0; i < validatedOrdered.length; i++) {
     const entry = validatedOrdered[i];
     if (entry === undefined) continue;
@@ -1351,21 +1441,8 @@ export function recordGeometryDraws(
     // tuple follows the skin group2 offset contract. Defaults to the
     // length-1 non-skin shape; the skin branch below re-computes with the
     // per-entity `entry.source.skin.byteOffset` cursor.
-    const meshBinding = meshSsboBufferBinding(
-      pipelineState.meshStorageBuffer,
-      i * MESH_PER_ENTITY_STRIDE,
-    );
-    const directMeshGroup =
-      pipelineState.meshStorageBuffer.pages === undefined
-        ? meshBindGroup
-        : meshSlotBindGroup(
-            runtime.device,
-            c.frameState,
-            pipelineState,
-            c.bindGroupCounts,
-            i * MESH_PER_ENTITY_STRIDE,
-          );
-    meshGroup2DynamicOffsets[0] = meshBinding.byteOffset;
+    let meshBinding: ReturnType<typeof meshSsboBufferBinding> | undefined;
+    let directMeshGroup = meshBindGroup;
     let group2DynamicOffsets: readonly number[] = meshGroup2DynamicOffsets;
     const isSkinEntry = entry.source.skin !== undefined;
     // feat-20260612-skin-palette-per-frame-upload M1 / m1-3 + M6: the
@@ -1382,86 +1459,8 @@ export function recordGeometryDraws(
     // failed to allocate (no buffer field). dynOffset[1] = byteOffset
     // is 0 on the uniform path (entry already covers the full buffer)
     // and walks 0, 1536, 3072, ... on the storage path.
-    const skinAllocator = pipelineState.skinPaletteAllocator;
     const skinSlice = entry.source.skin;
-    // The selected pipeline owns group(2). Resolve the palette binding lazily
-    // for each submesh: one mesh may mix direct and clustered skin programs.
-    const skinBindGroupFor = (
-      contract: MaterialShaderPipelineEntry['group2Contract'],
-    ): BindGroup | null => {
-      if (skinAllocator === null || skinSlice === undefined) return null;
-      if (contract !== 'skin' && contract !== 'skin-cluster') return null;
-      const layout =
-        contract === 'skin-cluster'
-          ? pipelineState.hdrpSkinMeshBindGroupLayout
-          : pipelineState.pbrSkinMeshBindGroupLayout;
-      if (layout === null) return null;
-      const hdrpBuffers =
-        contract === 'skin-cluster'
-          ? getOrCreateHdrpBuffers(runtime, frameState.installedPipelineConfig?.clusterGrid)
-          : null;
-      if (contract === 'skin-cluster' && hdrpBuffers === null) return null;
-      const meshBindSize = runtime.device.caps.storageBuffer
-        ? MESH_PER_ENTITY_STRIDE
-        : MESH_UBO_FULL_ARRAY_BYTES;
-      const skinStats = (pipelineState as { _skinBgCacheStats?: { miss: number; hit: number } })
-        ._skinBgCacheStats;
-      const skinMissesBefore = bindGroupCounts.createBindGroup;
-      const bindGroup = getOrCreateFromChain(
-        frameState.meshBindGroupCache,
-        [
-          layout,
-          meshBinding.buffer,
-          skinSlice.buffer,
-          ...(hdrpBuffers === null ? [] : [hdrpBuffers]),
-          ...(hdrpBuffers === null || c.hdrpSsaoBlurredView === undefined
-            ? []
-            : [c.hdrpSsaoBlurredView]),
-        ],
-        'pbr-skin-mesh',
-        () => {
-          if (hdrpBuffers !== null) {
-            const result = createHdrpSkinUnifiedBindGroup(
-              runtime,
-              hdrpBuffers,
-              layout,
-              meshBinding.buffer,
-              skinSlice.buffer,
-              skinAllocator.bindingWindowBytes,
-              c.hdrpSsaoBlurredView === undefined
-                ? { enabled: false }
-                : { enabled: true, ssaoBlurredView: c.hdrpSsaoBlurredView },
-            );
-            if (result === null) {
-              throw new RhiError({
-                code: 'webgpu-runtime-error',
-                expected: 'HDRP clustered skin BindGroup creation succeeds',
-                hint: 'inspect prior errorRegistry events for createBindGroup failure detail',
-              });
-            }
-            return result;
-          }
-          const result = runtime.device.createBindGroup({
-            label: 'pbr-skin-mesh-bg',
-            layout,
-            entries: createPbrSkinMeshBindGroupEntries(
-              meshBinding.buffer,
-              meshBindSize,
-              skinSlice.buffer,
-              skinAllocator.bindingWindowBytes,
-            ),
-          });
-          if (!result.ok) throw result.error;
-          return result.value;
-        },
-        bindGroupCounts,
-      );
-      if (skinStats !== undefined) {
-        if (bindGroupCounts.createBindGroup > skinMissesBefore) skinStats.miss += 1;
-        else skinStats.hit += 1;
-      }
-      return bindGroup;
-    };
+
     // feat-20260520-2d-sprite-layer-mvp M-3 / w25 (@fallback sprite
     // bucket): sprite entries get a per-entity material BindGroup so
     // each sprite carries its own texture binding at @group(1) @binding(2).
@@ -1502,7 +1501,11 @@ export function recordGeometryDraws(
     // — the same placeholders the unlit path already used. The generic
     // branch below builds the per-submesh BG.
     let perSubmeshBg: BindGroup | null = null;
-    const gpuDrivenDrawIndices = gpuDrivenDrawIndicesBySubmesh(entry.source, entry.mesh);
+    const gpuDrivenDrawIndices = gpuDrivenDrawIndicesBySubmesh(
+      entry.source,
+      entry.mesh,
+      drawIndicesScratch,
+    );
     const gpuOwnedDraws = c.gpuDrivenDrawReceipts?.ownedDraws.get(entry.source);
     // feat-20260608 M4 / w16: per-submesh pipeline selection + draw loop.
     // Each submesh carries its own topology, so pipeline selection is per-submesh.
@@ -1516,7 +1519,10 @@ export function recordGeometryDraws(
       if (sm === undefined) continue;
       const matSlotIdx = sm.materialSlot;
       const submeshMaterial = matsForRebind[matSlotIdx] ?? entry.source.material;
-      const compactDrawIndex = gpuDrivenDrawIndices?.get(smIdx);
+      const compactDrawIndex =
+        gpuDrivenDrawIndices !== undefined && Object.hasOwn(gpuDrivenDrawIndices, smIdx)
+          ? gpuDrivenDrawIndices[smIdx]
+          : undefined;
       if (matchedMaterials !== null) {
         const materialHandles = matchedMaterials.get(entry.renderableIndex);
         const materialHandle = submeshMaterial.materialHandle ?? 0;
@@ -1602,7 +1608,23 @@ export function recordGeometryDraws(
         }
         // GPU ownership is per submesh. Prepare CPU buffers only after the
         // exact claim, material-pass and transparency filters leave a draw.
+        meshBinding ??= meshSsboBufferBinding(
+          pipelineState.meshStorageBuffer,
+          i * MESH_PER_ENTITY_STRIDE,
+        );
+        const drawMeshBinding = meshBinding;
         if (baseInstanceDraws === undefined) {
+          directMeshGroup =
+            pipelineState.meshStorageBuffer.pages === undefined
+              ? meshBindGroup
+              : meshSlotBindGroup(
+                  runtime.device,
+                  c.frameState,
+                  pipelineState,
+                  c.bindGroupCounts,
+                  i * MESH_PER_ENTITY_STRIDE,
+                );
+          meshGroup2DynamicOffsets[0] = drawMeshBinding.byteOffset;
           if (entry.mesh.vertexBuffer !== lastVertexBuffer) {
             pass.setVertexBuffer(0, entry.mesh.vertexBuffer.handle);
             lastVertexBuffer = entry.mesh.vertexBuffer;
@@ -1788,12 +1810,12 @@ export function recordGeometryDraws(
             ? clusteredMeshSlotBindGroup(c, i * MESH_PER_ENTITY_STRIDE)
             : meshGroup2;
         const selectedGroup = isSkinEntry
-          ? skinBindGroupFor(materialGroup2Contract)
+          ? geometrySkinBindGroup(c, skinSlice, drawMeshBinding, materialGroup2Contract)
           : selectMaterialGroup2(entryMeshGroup2, directMeshGroup, materialGroup2Contract);
         if (selectedGroup === null) continue;
         group2BindGroup = selectedGroup;
         group2DynamicOffsets = isSkinEntry
-          ? pbrSkinMeshDynamicOffsets(meshBinding.byteOffset, skinSlice?.byteOffset ?? 0)
+          ? pbrSkinMeshDynamicOffsets(drawMeshBinding.byteOffset, skinSlice?.byteOffset ?? 0)
           : meshGroup2DynamicOffsets;
         if (diagnosticsEnabled && submeshMaterial.textureHandles !== undefined) {
           console.error(

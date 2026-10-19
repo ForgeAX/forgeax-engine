@@ -291,8 +291,6 @@ it('sends a fresh epoch baseline after a rejected transport write instead of a g
       return err(
         new EndpointError({
           code: 'send-failed',
-          expected: 'accepted endpoint write',
-          hint: 'retry with a fresh baseline',
           detail: { peerId, cause: 'deterministic rejected write' },
         }),
       );

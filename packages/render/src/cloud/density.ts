@@ -1,5 +1,5 @@
 import { CLOUD_VERTICAL_CELLS } from '@forgeax/engine-shader';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, fnv1a32, ok, type Result } from '@forgeax/engine-types';
 import { CloudLayerCacheInvalidError, type CloudLayerError } from '../errors/cloud';
 import {
   CLOUD_QUALITY_PROFILES,
@@ -381,11 +381,7 @@ function cacheIndex(resolution: number, x: number, y: number, z: number): number
 function digestBytes(data: Uint8Array): string {
   // FNV-1a is stable and intentionally cheap; this is an identity receipt,
   // not a cryptographic integrity boundary.
-  let hash = 0x811c9dc5;
-  for (const byte of data) {
-    hash ^= byte;
-    hash = Math.imul(hash, 0x01000193);
-  }
+  const hash = fnv1a32(data);
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 

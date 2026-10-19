@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, relative, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { startVitest } from 'vitest/node';
 import { createZip } from './archive.js';
 import type { PluginSourceInventory } from './build/plugin-assets.js';
 import { verifyDist } from './dist.js';
+import { isFilesystemPathWithin } from './filesystem-path.js';
 import { buildProject, startDevProjectWithHost, startPreviewProjectWithHost } from './host.js';
 import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from './package-documents.js';
 import { commandError, readProjectFacts } from './project.js';
@@ -25,6 +26,7 @@ export {
 } from './assets.js';
 export type { DoctorReport } from './bootstrap-commands.js';
 export { doctorCommand, initCommand, newCommand } from './bootstrap-commands.js';
+export { browserCaptureCommand } from './browser-capture.js';
 export {
   engineDoctorCommand,
   engineStatusCommand,
@@ -64,7 +66,6 @@ export {
 export { sdkInstallCommand } from './sdk-install.js';
 export { shaderCheckCommand } from './shader-check.js';
 export { skillInstallCommand, skillVerifyCommand } from './skill-install.js';
-export { browserCaptureCommand, softwareCaptureCommand } from './software-capture.js';
 
 import {
   type RhiDebugOperationContext,
@@ -121,11 +122,7 @@ export async function packageCommand(
     return packageOutputError(output, format);
   }
   const distRoot = resolve(facts.value.root, 'dist');
-  const outputRelativeToDist = relative(distRoot, output);
-  if (
-    outputRelativeToDist === '' ||
-    (!outputRelativeToDist.startsWith('..') && outputRelativeToDist !== '..')
-  ) {
+  if (isFilesystemPathWithin(distRoot, output)) {
     return {
       ok: false,
       error: {

@@ -25,7 +25,7 @@ type TexturePreparation = Extract<
   { ok: true }
 >['value'];
 
-export interface RayDiffuseFrameInput {
+interface RayDiffuseFrameInput {
   readonly runtime: RenderSystemInternals;
   readonly scene: PersistentGpuDrivenState;
   readonly worlds: readonly RenderResourceScope[];

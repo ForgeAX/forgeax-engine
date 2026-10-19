@@ -147,3 +147,102 @@ it('projects the current Host audio consumer and resolves the native factory on 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('projects the main-realm audio engine used by the native backend into GameHost', async () => {
+  const { WebAudioEngine, webAudioPlugin } = await import('@forgeax/engine-audio-webaudio');
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-main-audio-'));
+  const context = new Context();
+  let host: { audio?: InstanceType<typeof WebAudioEngine> } | undefined;
+  try {
+    await mkdir(resolve(root, 'assets'));
+    await writeFile(resolve(root, 'package.json'), '{"name":"main-audio","type":"module"}');
+    await writeFile(
+      resolve(root, 'forge.json'),
+      JSON.stringify({
+        id: 'main-audio',
+        name: 'Main audio',
+        schemaVersion: '3.0.0',
+        roots: {},
+      }),
+    );
+    const facts = await readProjectFacts(root);
+    if (!facts.ok) throw facts.error;
+    const config = await createViteConfig(facts.value, 'build');
+    const generated = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
+    const start = generated.indexOf('    const runtimePacks = workerExecution ?');
+    const end = generated.indexOf('    appState.current = app;', start);
+    const hostStart = generated.indexOf('gameHostPlugin({', end) + 'gameHostPlugin('.length;
+    const hostEnd = generated.indexOf('}));', hostStart) + 1;
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    expect(hostStart).toBeGreaterThan(end);
+    expect(hostEnd).toBeGreaterThan(hostStart);
+    const source = `(async () => {
+      ${generatedPlayerQueries(generated)}
+      ${generated.slice(start, end)}
+      publishHost(${generated.slice(hostStart, hostEnd)});
+    })()`
+      .replaceAll('import.meta.env.DEV', 'false')
+      .replaceAll('import.meta.url', "'https://game.example/main.js'");
+    const transformed = await transformWithOxc(source, 'main-audio.ts', { lang: 'ts' });
+    await runInNewContext(transformed.code, {
+      ctx: context,
+      URL,
+      URLSearchParams,
+      location: { search: '' },
+      crypto: { randomUUID: () => 'main-audio' },
+      workerExecution: false,
+      bootstrapRoot: 'project-bootstrap',
+      workspaceMode: false,
+      workspaceGame: false,
+      resource: undefined,
+      recipeValue: null,
+      canvas: {},
+      animation: undefined,
+      initialAssembly: { sessionGeneration: 1 },
+      gameChannel: undefined,
+      pointerLockAllowed: undefined,
+      bundler: {},
+      profiler: undefined,
+      document: { baseURI: 'https://game.example/', body: {}, querySelector: () => null },
+      controlMode: {},
+      assets: {},
+      uiRoot: undefined,
+      HTMLElement: class {},
+      runtimeScopeBinding: { scopeId: 'main-audio' },
+      assetCatalog: {},
+      createRuntimePackOptions: async () => ({}),
+      enginePrograms: () => ({}),
+      createGameVfx: () => undefined,
+      WebAudioEngine,
+      webAudioPlugin,
+      audioPlugin: () => ({ name: 'test-audio-systems', apply() {} }),
+      skinningPlugin: () => ({ name: 'test-skinning', apply() {} }),
+      createApp: async (
+        _canvas: unknown,
+        options: { plugins: import('@forgeax/engine-plugin').Plugin[] },
+      ) => {
+        for (const plugin of options.plugins) await context.plugin(plugin).await();
+        return { ok: true, value: {} };
+      },
+      publishHost: (value: typeof host) => {
+        host = value;
+      },
+    });
+    expect(host?.audio).toBeInstanceOf(WebAudioEngine);
+    const audio = host?.audio;
+    const backend = context.get('audio');
+    if (!audio || !backend) throw new Error('Main Host audio is missing');
+    audio
+      .configureBuses([
+        { id: 'master', parent: null },
+        { id: 'game', parent: 'master' },
+      ])
+      .unwrap();
+    backend.setAcousticRoutes(99, { fallback: 0, buses: [{ bus: 'game', gain: 1 }] });
+    expect(backend.getState().lastError).toBeNull();
+  } finally {
+    await context.fiber.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -2,7 +2,7 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { RhiError, err as rhiErr, ok as rhiOk } from '@forgeax/engine-rhi';
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createHdrpClusterMembershipBindGroupLayoutDescriptor,
   getOrCreateHdrpBuffers,
@@ -14,16 +14,20 @@ import {
   COOKIE_SLICE_MIP_CHAIN_BYTES,
 } from '../prepare/extended-lighting/resources';
 import {
+  buildPerFrameBindGroups,
   writeHdrpClusterAndSsaoBuffers,
   writeLightModifierTextures,
 } from '../record/frame-lighting';
 import type { RenderFrameState } from '../record/frame-snapshot';
+import { computeProjectionMatrix } from '../record/helpers';
 import type {
   PipelineState,
   RenderSystemInternals,
   RenderSystemRuntime,
 } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
+import { getOrCreateSsaoBuffers } from '../ssao-buffers';
+import { createTemporalView } from '../temporal/view';
 
 function camera(): CameraSnapshot {
   return {
@@ -45,8 +49,8 @@ function camera(): CameraSnapshot {
     bloom: 'off',
     bloomThreshold: 1,
     bloomIntensity: 1,
-    bloomSoftKnee: 0.5,
-    bloomScatter: 0.7,
+    bloomSmoothWidth: 0.01,
+    bloomRadius: 0,
     clearColor: [0, 0, 0, 1],
   };
 }
@@ -93,6 +97,88 @@ function internalsWithFirstWriteFailure() {
 }
 
 describe('Standard Cluster upload ownership', () => {
+  it.each([
+    'perspective',
+    'orthographic',
+    'stereo',
+    'capture',
+  ] as const)('uploads the sampled %s projection to SSAO before graph recording', async (kind) => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const errors: unknown[] = [];
+    const internals = {
+      device,
+      errorRegistry: { fire: (error: unknown) => errors.push(error) },
+    } as unknown as RenderSystemInternals;
+    const sampledCamera: CameraSnapshot = {
+      ...camera(),
+      world: mat4.identity(mat4.create()),
+      projection: kind === 'orthographic' ? 'orthographic' : 'perspective',
+      ...(kind === 'stereo'
+        ? { eye: { side: 'left' as const }, projectionOffset: [-0.04, 0] as const }
+        : {}),
+      ...(kind === 'capture'
+        ? { captureProjection: mat4.orthographicReverseZ(mat4.create(), -2, 3, -4, 5, 0.3, 70) }
+        : {}),
+      temporal: createTemporalView({ antialias: 'taa', width: 320, height: 200, frameIndex: 3 }),
+    };
+    const prepared = prepareStandardLighting({
+      directional: undefined,
+      local: [],
+      view: mat4.identity(mat4.create()),
+      projection: computeProjectionMatrix(sampledCamera),
+      near: 0.1,
+      far: 100,
+      grid: { x: 2, y: 2, z: 2 },
+      lightCount: 1,
+      renderPath: 'forward',
+    }).unwrap();
+    const transport = selectStandardClusterTransport(
+      { compute: false, storageBuffer: true, membershipPipelineReady: false },
+      prepared,
+    ).unwrap();
+    const ssao = getOrCreateSsaoBuffers(internals);
+    if (ssao === null) throw new Error('SSAO allocation failed');
+    const writes = vi.spyOn(device.queue, 'writeBuffer');
+    const result = writeHdrpClusterAndSsaoBuffers(
+      internals,
+      {
+        hdrpClusterMembership: null,
+        installedPipelineConfig: {
+          ssao: {
+            enabled: true,
+            algorithm: 'gtao',
+            quality: 'low',
+            radius: 2,
+            bias: 0.1,
+            intensity: 0.75,
+          },
+        },
+      } as unknown as RenderFrameState,
+      sampledCamera,
+      prepared,
+      transport,
+    );
+    expect(result.ok).toBe(true);
+    const upload = writes.mock.calls.find(([buffer]) => buffer === ssao.uniformBuffer);
+    expect(upload).toBeDefined();
+    const payload = upload?.[2] as Float32Array;
+    const projection = computeProjectionMatrix(sampledCamera);
+    const jitter = sampledCamera.temporal?.currentJitterUv;
+    if (jitter === undefined) throw new Error('Expected sampled camera jitter');
+    // Clip translation shifts x/w and y/w independently of lens or capture kind.
+    const shift = mat4.identity(mat4.create());
+    shift[12] = jitter[0] * 2;
+    shift[13] = -jitter[1] * 2;
+    const expected = mat4.multiply(mat4.create(), shift, projection);
+    expect(payload.slice(16, 32)).toEqual(expected);
+    expect(payload.slice(32, 48)).toEqual(mat4.invert(mat4.create(), expected));
+    expect(Array.from(payload.slice(48, 53))).toEqual([0.75, 2, Math.fround(0.1), 4, 1]);
+    expect(Array.from(payload.slice(53, 56))).toEqual([1, 1, 1]);
+    expect(payload.slice(56).every((value) => value === 0)).toBe(true);
+    expect(errors).toEqual([]);
+    writes.mockRestore();
+  });
+
   it('uploads Spot and Rect light textures as full mip chains and caches the content identity', () => {
     const cookieTexture = { label: 'fallback-cookie-array' };
     const cookieMatrixBuffer = { label: 'fallback-cookie-matrices' };
@@ -433,6 +519,28 @@ describe('Standard Cluster upload ownership', () => {
       expect(firstMembership).not.toBeNull();
       if (firstMembership === null) return;
       const firstGridBuffer = firstMembership.clusterGridBuffer;
+      const projected = buildPerFrameBindGroups(
+        internals,
+        frameState,
+        { hdrpClusterMembershipBindGroupLayout: layout } as PipelineState,
+        false,
+        { createBindGroup: 0, keys: [] },
+        undefined,
+        false,
+      );
+      expect(projected.hdrpClusterMembershipBindGroup).toBeNull();
+      expect(frameState.hdrpClusterMembership).toBe(firstMembership);
+      writeHdrpClusterAndSsaoBuffers(
+        internals,
+        frameState,
+        camera(),
+        small,
+        smallTransport.value,
+        undefined,
+        true,
+        layout,
+      ).unwrap();
+      expect(frameState.hdrpClusterMembership?.bindGroup).toBe(firstMembership.bindGroup);
       const second = writeHdrpClusterAndSsaoBuffers(
         internals,
         frameState,

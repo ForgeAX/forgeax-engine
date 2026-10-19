@@ -39,6 +39,7 @@ import type { AssetRegistry, ParsedPackFile } from '../asset-registry';
 import { packEnvelopeIssue } from '../internal/pack-envelope.js';
 import { bytesOf, type PackageReadFailure, readPackage } from '../internal/package-read.js';
 import { validatePublicationReferences } from '../internal/publication-references.js';
+import { cloneRetainedPackPayload } from '../internal/retained-material-facts.js';
 import { readRetainedPackJson } from '../internal/retained-pack-json.js';
 import {
   createMaterialLoader,
@@ -1195,7 +1196,7 @@ async function loadPackV2Asset(
     {
       guid: guidKey,
       kind: asset.kind,
-      payload: structuredClone(asset.payload),
+      payload: cloneRetainedPackPayload(asset.payload),
       refs: asset.refs ?? [],
       artifacts,
       streams,

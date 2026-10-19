@@ -1,6 +1,13 @@
-import type { Result, RhiDevice, RhiError, Texture, TextureView } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-rhi';
-import type { Handle } from '@forgeax/engine-types';
+import type {
+  Result,
+  RhiCommandEncoder,
+  RhiDevice,
+  Texture,
+  TextureView,
+} from '@forgeax/engine-rhi';
+import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import { type Handle, numMipLevels } from '@forgeax/engine-types';
+import { encodeMipmaps } from './mipmap-generator';
 
 /**
  * The host-owned external image the engine copies an image from
@@ -38,10 +45,18 @@ export interface DynamicTextureDevice {
     };
     readonly format: typeof DYNAMIC_TEXTURE_FORMAT;
     readonly usage: number;
+    readonly mipLevelCount?: number;
     readonly label?: string;
   }): Result<Texture, RhiError>;
   createTextureView(texture: Texture, desc: Record<string, never>): Result<TextureView, RhiError>;
   destroyTexture(texture: Texture): Result<void, RhiError>;
+  /** Record prewarmed mips into the Renderer encoder; release scratch after submit/abort. */
+  encodeMipmaps?: (
+    encoder: RhiCommandEncoder,
+    texture: Texture,
+    width: number,
+    height: number,
+  ) => Result<() => void, RhiError>;
   readonly queue: {
     copyExternalImageToTexture(
       source: { readonly source: CopyExternalImageSource; readonly flipY?: boolean },
@@ -61,7 +76,7 @@ export function adaptDynamicTextureDevice(device: RhiDevice): DynamicTextureDevi
     createTexture: (descriptor) =>
       device.createTexture({
         ...descriptor,
-        mipLevelCount: undefined,
+        mipLevelCount: descriptor.mipLevelCount,
         sampleCount: undefined,
         dimension: undefined,
         viewFormats: undefined,
@@ -80,6 +95,8 @@ export function adaptDynamicTextureDevice(device: RhiDevice): DynamicTextureDevi
         arrayLayerCount: undefined,
       }),
     destroyTexture: (texture) => device.destroyTexture(texture),
+    encodeMipmaps: (encoder, texture, width, height) =>
+      encodeMipmaps(device, encoder, texture, { width, height, format: DYNAMIC_TEXTURE_FORMAT }),
     queue: {
       copyExternalImageToTexture: (source, destination, copySize) =>
         device.queue.copyExternalImageToTexture(
@@ -98,6 +115,8 @@ interface TransientEntry {
   view: TextureView;
   width: number;
   height: number;
+  mipLevelCount: number;
+  mipsDirty: boolean;
   version?: number | undefined;
   unsubscribe?: (() => void) | undefined;
 }
@@ -143,6 +162,7 @@ export class DynamicTextureStore {
       readonly version?: number | undefined;
       readonly signal?: AbortSignal | undefined;
       readonly flipY?: boolean;
+      readonly generateMipmaps?: boolean;
     },
   ): Result<TextureView, RhiError> | undefined {
     const device = this.device;
@@ -155,10 +175,16 @@ export class DynamicTextureStore {
       return undefined;
 
     const previous = this.entries.get(key);
-    const sameSize = previous?.width === width && previous.height === height;
+    const mipLevelCount = options?.generateMipmaps ? numMipLevels({ width, height }) : 1;
+    const sameSize =
+      previous?.width === width &&
+      previous.height === height &&
+      previous.mipLevelCount === mipLevelCount;
     if (sameSize && options?.version !== undefined && previous.version === options.version)
       return ok(previous.view);
-    const ensured = sameSize ? ok(previous) : this.createEntry(device, width, height);
+    const ensured = sameSize
+      ? ok(previous)
+      : this.createEntry(device, width, height, mipLevelCount);
     if (!ensured.ok) return ensured;
     const entry = ensured.value;
     const copied = device.queue.copyExternalImageToTexture(
@@ -171,6 +197,7 @@ export class DynamicTextureStore {
       return copied;
     }
     entry.version = options?.version;
+    entry.mipsDirty = mipLevelCount > 1;
     if (entry !== previous) {
       this.release(key);
       this.entries.set(key, entry);
@@ -182,6 +209,40 @@ export class DynamicTextureStore {
       }
     }
     return ok(entry.view);
+  }
+
+  /** Encode dirty Canvas chains before scene passes, with the outer frame's commit decision. */
+  encodeMipmaps(encoder: RhiCommandEncoder): Result<(submitted: boolean) => void, RhiError> {
+    const work: { entry: TransientEntry; version: number | undefined; release: () => void }[] = [];
+    for (const entry of this.entries.values()) {
+      if (!entry.mipsDirty) continue;
+      const encoded = this.device?.encodeMipmaps?.(
+        encoder,
+        entry.texture,
+        entry.width,
+        entry.height,
+      );
+      if (encoded === undefined || !encoded.ok) {
+        for (const item of work) item.release();
+        return (
+          encoded ??
+          err(
+            new RhiError({
+              code: 'rhi-not-available',
+              expected: 'dynamic mipmap encoder is configured',
+              hint: 'use adaptDynamicTextureDevice with prewarmed mipmap pipelines',
+            }),
+          )
+        );
+      }
+      work.push({ entry, version: entry.version, release: encoded.value });
+    }
+    return ok((submitted) => {
+      for (const { entry, version, release } of work) {
+        if (submitted && entry.version === version) entry.mipsDirty = false;
+        release();
+      }
+    });
   }
 
   /**
@@ -211,11 +272,13 @@ export class DynamicTextureStore {
     device: DynamicTextureDevice,
     width: number,
     height: number,
+    mipLevelCount: number,
   ): Result<TransientEntry, RhiError> {
     const texture = device.createTexture({
       size: { width, height, depthOrArrayLayers: 1 },
       format: DYNAMIC_TEXTURE_FORMAT,
       usage: DYNAMIC_TEXTURE_USAGE,
+      mipLevelCount,
       label: 'dynamic-texture',
     });
     if (!texture.ok) return texture;
@@ -224,6 +287,13 @@ export class DynamicTextureStore {
       device.destroyTexture(texture.value);
       return view;
     }
-    return ok({ texture: texture.value, view: view.value, width, height });
+    return ok({
+      texture: texture.value,
+      view: view.value,
+      width,
+      height,
+      mipLevelCount,
+      mipsDirty: false,
+    });
   }
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 
-it('matches the Three.js five-sample Vogel receiver with real linear depth comparison', async () => {
+it('matches Three Vogel footprints at interior and clamped texture edges with receiver correction', async () => {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('Native GPU adapter is required');
   const device = await adapter.requestDevice();
@@ -48,20 +48,25 @@ it('matches the Three.js five-sample Vogel receiver with real linear depth compa
       @group(0) @binding(2) var<storage,read_write> result: array<vec4<f32>>;
       @compute @workgroup_size(8) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let pixel = vec2<f32>(f32(id.x)*2.0+0.5, f32(id.x%7u)+0.5);
-        let uv = vec2<f32>((f32(id.x%8u)+11.37)/32.0,(f32(id.x/8u)+10.22)/32.0);
+        let positions = array<f32, 8>(0.1, 0.4, 0.9, 1.2, 15.37, 30.8, 31.6, 31.9);
+        let uv = vec2<f32>(positions[id.x%8u], positions[id.x/8u])/32.0;
         let texel = vec2<f32>(1.0/32.0);
-        let gradient = vec2<f32>(0.01,-0.02);
+        let gradient = select(vec2<f32>(0.0), vec2<f32>(0.01,-0.02), id.x%2u == 0u);
         let actual = sample_shadow_2d_vogel(depths, comparison, uv, 0, texel, 0.5, gradient, pixel);
         let phi = fract(52.9829189*fract(dot(pixel,vec2(0.06711056,0.00583715))))*6.28318530718;
         var reference = 0.0;
+        var inward = 0.0;
         for (var i=0u; i<5u; i++) {
           let radius = sqrt((f32(i)+0.5)/5.0);
           let theta = f32(i)*2.399963229728653+phi;
           let sampleUv = uv+vec2(cos(theta),sin(theta))*radius/32.0;
           reference += textureSampleCompareLevel(depths,comparison,sampleUv,0,
-            0.5+dot(gradient,(sampleUv-uv)/texel));
+            0.5+dot(gradient,(clamp(sampleUv,texel*0.5,vec2(1.0)-texel*0.5)-uv)/texel));
+          let inwardUv = clamp(sampleUv, texel, vec2(1.0)-texel);
+          inward += textureSampleCompareLevel(depths,comparison,inwardUv,0,
+            0.5+dot(gradient,(inwardUv-uv)/texel));
         }
-        result[id.x] = vec4(actual, reference*0.2, 0.0, 0.0);
+        result[id.x] = vec4(actual, reference*0.2, inward*0.2, 0.0);
       }`,
     });
     const pipeline = await device.createComputePipelineAsync({
@@ -111,8 +116,12 @@ it('matches the Three.js five-sample Vogel receiver with real linear depth compa
         expect(
           Math.abs((values[i * 4] ?? Number.NaN) - (values[i * 4 + 1] ?? Number.NaN)),
         ).toBeLessThan(1e-5);
-      expect(values[0]).toBeGreaterThan(0.1);
-      expect(values[0]).toBeLessThan(0.9);
+      // The old inward clamp must differ, so all-zero or insensitive fixtures fail.
+      let changedEdges = 0;
+      for (let i = 0; i < 64; i++) {
+        if (Math.abs((values[i * 4] ?? 0) - (values[i * 4 + 2] ?? 0)) > 0.01) changedEdges++;
+      }
+      expect(changedEdges).toBeGreaterThan(8);
     }
     expect(errors).toEqual([]);
   } finally {

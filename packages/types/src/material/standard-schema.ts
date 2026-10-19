@@ -9,7 +9,7 @@ import {
 export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'baseColor', type: 'color', default: [1, 1, 1, 1] },
   { name: 'metallic', type: 'f32', default: 0 },
-  { name: 'roughness', type: 'f32', default: 0.5 },
+  { name: 'roughness', type: 'f32', default: 1 },
   { name: 'subsurfaceRadius', type: 'vec3', default: [0, 0, 0] },
   { name: 'subsurfaceWeight', type: 'f32', default: 0 },
   { name: 'metallicChannel', type: 'f32', default: 2 },
@@ -17,7 +17,7 @@ export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'aoChannel', type: 'f32', default: 0 },
   { name: 'extraChannel', type: 'f32', default: 0 },
   { name: 'emissive', type: 'vec3', colorSpace: 'srgb', default: [0, 0, 0] },
-  { name: 'emissiveIntensity', type: 'f32', default: 0 },
+  { name: 'emissiveIntensity', type: 'f32', default: 1 },
   { name: 'occlusionStrength', type: 'f32', default: 1 },
   { name: 'alphaCutoff', type: 'f32', default: 0 },
   { name: 'specular', type: 'f32', default: 1 },
@@ -46,7 +46,7 @@ export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'iridescenceThicknessMinimum', type: 'f32', default: 100 },
   { name: 'iridescenceThicknessMaximum', type: 'f32', default: 400 },
   { name: 'sheenColor', type: 'vec3', colorSpace: 'linear', default: [0, 0, 0] },
-  { name: 'sheenRoughness', type: 'f32', default: 0 },
+  { name: 'sheenRoughness', type: 'f32', default: 1 },
   { name: 'clearcoat', type: 'f32', default: 0 },
   { name: 'clearcoatRoughness', type: 'f32', default: 0 },
   { name: 'clearcoatNormalScale', type: 'f32', default: 1 },
@@ -110,7 +110,7 @@ export function standardMaterialParameters(
     const isRequired =
       entry.name === 'baseColor' || entry.name === 'metallic' || entry.name === 'roughness';
     const defaultValue =
-      entry.type === 'texture2d' || entry.default === undefined ? {} : { default: entry.default };
+      !('default' in entry) || entry.default === undefined ? {} : { default: entry.default };
     return {
       name: entry.name,
       type,

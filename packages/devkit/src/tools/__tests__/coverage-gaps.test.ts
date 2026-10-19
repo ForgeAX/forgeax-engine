@@ -13,7 +13,6 @@ import {
 } from '../benchmark/report.js';
 import { calculateSampleStatistics } from '../benchmark/statistics.js';
 import { createServiceCache } from '../cache.js';
-import { createCarrierProvider } from '../carrier-provider.js';
 import {
   authorPluginCreateDescriptor,
   describeTool,
@@ -100,8 +99,7 @@ describe('DevKit tool coverage contracts', () => {
       now: 0,
       ttlMs: 100,
     });
-    const provider = createCarrierProvider(machine);
-    const accepted = provider.accept({
+    const accepted = machine.lease({
       consumerId: 'c',
       bearerToken: machine.offer.bearerToken,
       now: 1,
@@ -109,12 +107,12 @@ describe('DevKit tool coverage contracts', () => {
     const acceptedLeaseId = accepted.ok ? accepted.value.leaseId : undefined;
     expect(accepted).toMatchObject({ ok: true, value: { leaseId: expect.any(String) } });
     if (acceptedLeaseId !== undefined) {
-      expect(provider.started(acceptedLeaseId)).toMatchObject({ ok: true });
-      expect(provider.exit(acceptedLeaseId)).toMatchObject({ ok: true });
+      expect(machine.started(acceptedLeaseId)).toMatchObject({ ok: true });
+      expect(machine.exit(acceptedLeaseId)).toMatchObject({ ok: true });
     }
-    expect(
-      createCarrierProvider(machine).accept({ consumerId: 'wrong', bearerToken: 'wrong', now: 1 }),
-    ).toMatchObject({ ok: false });
+    expect(machine.lease({ consumerId: 'wrong', bearerToken: 'wrong', now: 1 })).toMatchObject({
+      ok: false,
+    });
     const probe = createResourceProbe();
     probe.observe('page', 'unowned');
     const owner = probe.owner('host');

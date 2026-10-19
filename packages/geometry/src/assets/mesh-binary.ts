@@ -1,9 +1,3 @@
-import {
-  decodeMeshBinHeader,
-  decodeMeshBinMorphs,
-  MESH_BIN_HEADER_BYTES,
-  type MeshBinHeader,
-} from '@forgeax/engine-pack';
 import type {
   AssetGuid,
   MeshAsset,
@@ -16,37 +10,14 @@ import type {
 import { PROCEDURAL_FLOATS_PER_VERTEX } from '../box';
 import { admitsMeshCardLayout, validateMeshCardLayout } from '../mesh-card-artifact';
 import { validateMeshCollisionAttachment } from '../mesh-collision';
-import {
-  deriveVertexLayoutProjection,
-  deriveVertexLayoutProjectionFromMask,
-  unpackInterleavedVertexAttributes,
-  type VertexLayoutProjection,
-} from '../vertex-attribute-layout';
+import { deriveVertexLayoutProjection } from '../vertex-attribute-layout';
 
-interface PackedMesh {
-  readonly version: 4 | 5;
-  readonly vertices: Float32Array;
-  readonly attributes?: VertexAttributeMap;
-  readonly indices?: Uint16Array | Uint32Array;
-  readonly submeshes?: readonly Record<string, unknown>[];
-  readonly cardLayout?: MeshCardLayout;
-  readonly collision?: unknown;
-  readonly materialSlots?: readonly {
-    readonly slotName: string;
-    readonly sourceKey?: string;
-    readonly defaultMaterialRef?: number;
-    /** Direct Pack JSON keeps the authoring GUID until the producer boundary. */
-    readonly defaultMaterial?: string;
-  }[];
-  readonly aabb?: Float32Array;
-  readonly skinIndex?: Uint16Array;
-  readonly skinWeight?: Float32Array;
-  readonly uvSetCount: number;
-  readonly floatsPerVertex: number;
-  readonly morphTargets?: readonly MorphTarget[];
-  readonly morphWeights?: Float32Array;
-  readonly projection?: VertexLayoutProjection;
-}
+import { type UnpackedMeshBin, unpackMeshBin } from './mesh-bin';
+
+type PackedMaterialSlots = readonly (UnpackedMeshBin['materialSlots'][number] & {
+  /** Direct Pack JSON keeps the authoring GUID until the producer boundary. */
+  readonly defaultMaterial?: string;
+})[];
 
 function parseGuid(value: string): AssetGuid | undefined {
   const compact = value.replaceAll('-', '');
@@ -105,134 +76,8 @@ function morphTargets(value: unknown): readonly MorphTarget[] | undefined {
   return targets;
 }
 
-function unpackMeshBinary(bytes: Uint8Array): PackedMesh | undefined {
-  const headerResult = decodeMeshBinHeader(bytes);
-  if (!headerResult.ok) return undefined;
-  const header: MeshBinHeader = headerResult.value;
-  const projectionResult = deriveVertexLayoutProjectionFromMask(header.mask);
-  if (!projectionResult.ok) return undefined;
-  const projection = projectionResult.value;
-  if (
-    projection.schemaVersion !== header.projectionVersion ||
-    projection.arrayStride !== header.stride ||
-    projection.digest !== header.digest
-  ) {
-    return undefined;
-  }
-  const payloadBytes =
-    header.vertexBytes + header.morphBytes + header.indexBytes + header.jsonBytes;
-  if (MESH_BIN_HEADER_BYTES + payloadBytes !== bytes.byteLength) return undefined;
-
-  let offset = MESH_BIN_HEADER_BYTES;
-  const vertexBytes = bytes.subarray(offset, offset + header.vertexBytes);
-  const vertices = new Float32Array(vertexBytes.byteLength / 4);
-  new Uint8Array(vertices.buffer).set(vertexBytes);
-  offset += header.vertexBytes;
-  const morphBytes = bytes.subarray(offset, offset + header.morphBytes);
-  offset += header.morphBytes;
-  let indices: Uint16Array | Uint32Array | undefined;
-  if (header.indexCount > 0) {
-    const indexBytes = bytes.subarray(offset, offset + header.indexBytes);
-    if (header.indexWidth === 2) {
-      indices = new Uint16Array(header.indexCount);
-      new Uint8Array(indices.buffer).set(indexBytes);
-    } else if (header.indexWidth === 4) {
-      indices = new Uint32Array(header.indexCount);
-      new Uint8Array(indices.buffer).set(indexBytes);
-    } else {
-      return undefined;
-    }
-    offset += header.indexBytes;
-  }
-
-  let metadata: {
-    readonly submeshes?: readonly Record<string, unknown>[];
-    readonly cardLayout?: MeshCardLayout;
-    readonly collision?: unknown;
-    readonly materialSlots?: PackedMesh['materialSlots'];
-    readonly aabb?: readonly number[];
-    readonly morphTargets?: readonly Record<string, readonly number[]>[];
-    readonly morphWeights?: readonly number[];
-    readonly morphTargetMasks?: unknown;
-  };
-  try {
-    metadata = JSON.parse(
-      new TextDecoder().decode(bytes.subarray(offset, offset + header.jsonBytes)),
-    ) as typeof metadata;
-  } catch {
-    return undefined;
-  }
-  if (
-    metadata === null ||
-    typeof metadata !== 'object' ||
-    Array.isArray(metadata) ||
-    metadata.submeshes === undefined ||
-    metadata.submeshes.length === 0 ||
-    metadata.materialSlots === undefined
-  ) {
-    return undefined;
-  }
-  const attributes = unpackInterleavedVertexAttributes(vertices, projection);
-  if (attributes === undefined) return undefined;
-  for (const value of Object.values(attributes)) {
-    if (value instanceof Float32Array && value.some((component) => !Number.isFinite(component)))
-      return undefined;
-  }
-  let decodedMorphTargets: readonly MorphTarget[] | undefined;
-  try {
-    if (header.version === 5) {
-      if (metadata.morphTargets !== undefined) return undefined;
-      decodedMorphTargets = decodeMeshBinMorphs(
-        morphBytes,
-        header.vertexCount,
-        metadata.morphTargetMasks,
-      );
-    } else {
-      if (metadata.morphTargetMasks !== undefined) return undefined;
-      decodedMorphTargets = morphTargets(metadata.morphTargets);
-    }
-  } catch {
-    return undefined;
-  }
-  if (
-    metadata.morphWeights !== undefined &&
-    (!Array.isArray(metadata.morphWeights) ||
-      !metadata.morphWeights.every(
-        (value) => typeof value === 'number' && Number.isFinite(Math.fround(value)),
-      ))
-  )
-    return undefined;
-  const morphWeightValues =
-    metadata.morphWeights === undefined ? undefined : new Float32Array(metadata.morphWeights);
-  if (
-    decodedMorphTargets !== undefined &&
-    morphWeightValues !== undefined &&
-    decodedMorphTargets.length !== morphWeightValues.length
-  ) {
-    return undefined;
-  }
-  return {
-    version: header.version,
-    vertices,
-    attributes,
-    projection,
-    ...(indices === undefined ? {} : { indices }),
-    submeshes: metadata.submeshes,
-    ...(metadata.collision === undefined ? {} : { collision: metadata.collision }),
-    ...(metadata.cardLayout === undefined ? {} : { cardLayout: metadata.cardLayout }),
-    materialSlots: metadata.materialSlots,
-    ...(metadata.aabb === undefined ? {} : { aabb: new Float32Array(metadata.aabb) }),
-    // MeshAsset.vertices remains a Float32Array, so translate the wire stride
-    // (bytes) back to the legacy float-count input expected by meshFromParts.
-    floatsPerVertex: header.stride / Float32Array.BYTES_PER_ELEMENT,
-    uvSetCount: 1,
-    ...(decodedMorphTargets === undefined ? {} : { morphTargets: decodedMorphTargets }),
-    ...(morphWeightValues === undefined ? {} : { morphWeights: morphWeightValues }),
-  };
-}
-
 function materialSlotsFor(
-  raw: PackedMesh['materialSlots'],
+  raw: PackedMaterialSlots | undefined,
   submeshes: readonly Submesh[],
   refs: readonly string[],
 ): readonly MeshMaterialSlot[] {
@@ -309,7 +154,7 @@ function meshFromParts(
     readonly submeshes?: readonly Record<string, unknown>[];
     readonly cardLayout?: MeshCardLayout;
     readonly collision?: unknown;
-    readonly materialSlots?: PackedMesh['materialSlots'];
+    readonly materialSlots?: PackedMaterialSlots;
     readonly morphTargets?: unknown;
     readonly morphWeights?: unknown;
     readonly floatsPerVertex?: number;
@@ -420,30 +265,12 @@ export function decodeMeshBinary(
   bytes: Uint8Array,
   refs: readonly string[],
 ): MeshAsset | undefined {
-  const decoded = unpackMeshBinary(bytes);
-  if (decoded === undefined) return undefined;
+  const decoded = unpackMeshBin(bytes);
+  if (!decoded.ok) return undefined;
   return meshFromParts(
     {
-      vertices: decoded.vertices,
-      ...(decoded.collision === undefined ? {} : { collision: decoded.collision }),
-      ...(decoded.cardLayout === undefined ? {} : { cardLayout: decoded.cardLayout }),
-      ...(decoded.attributes === undefined ? {} : { attributes: decoded.attributes }),
-      ...(decoded.indices === undefined ? {} : { indices: decoded.indices }),
-      ...(decoded.aabb === undefined ? {} : { aabb: decoded.aabb }),
-      ...(decoded.submeshes === undefined ? {} : { submeshes: decoded.submeshes }),
-      ...(decoded.materialSlots === undefined ? {} : { materialSlots: decoded.materialSlots }),
-      ...(decoded.morphTargets === undefined ? {} : { morphTargets: decoded.morphTargets }),
-      ...(decoded.morphWeights === undefined ? {} : { morphWeights: decoded.morphWeights }),
-      ...(decoded.skinIndex === undefined && decoded.skinWeight === undefined
-        ? {}
-        : {
-            attributes: {
-              ...(decoded.skinIndex === undefined ? {} : { skinIndex: decoded.skinIndex }),
-              ...(decoded.skinWeight === undefined ? {} : { skinWeight: decoded.skinWeight }),
-            },
-          }),
-      floatsPerVertex: decoded.floatsPerVertex,
-      uvSetCount: decoded.uvSetCount,
+      ...decoded.value,
+      floatsPerVertex: decoded.value.projection.arrayStride / Float32Array.BYTES_PER_ELEMENT,
     },
     refs,
   );
@@ -480,7 +307,7 @@ export function normalizeMeshPayload(
         ? (source.submeshes as Record<string, unknown>[])
         : [],
       ...(Array.isArray(source.materialSlots)
-        ? { materialSlots: source.materialSlots as PackedMesh['materialSlots'] }
+        ? { materialSlots: source.materialSlots as PackedMaterialSlots }
         : {}),
       ...(source.morphTargets === undefined ? {} : { morphTargets: source.morphTargets }),
       ...(source.morphWeights === undefined ? {} : { morphWeights: source.morphWeights }),

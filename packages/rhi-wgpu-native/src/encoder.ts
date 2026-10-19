@@ -1,20 +1,20 @@
+import { textureCopyOrigin } from '@forgeax/engine-rhi';
 // Command recording. Encoders record a JSON command list (the addon's `desc::Command`
 // shape) and the addon replays it into one wgpu encoder at `finish()`; pass encoders
 // append to their parent's list. Recorded objects stay referenced until `finish()` so a
 // garbage collection cannot release a native object a pending recording names.
 
+import type { NativeGPUDevice } from './gpu';
 import {
   color,
   extent,
   hideReference,
   idOf,
   type NativeAccelerationStructure,
-  type NativeGPUDevice,
   NativeGPUObject,
   type NativeGPUTexture,
   NativeGPUTextureView,
-  origin,
-} from './gpu';
+} from './objects';
 
 type Command = Record<string, unknown> & { readonly op: string };
 
@@ -59,15 +59,24 @@ class Recorder {
   }
 }
 
-/** Commands shared by render passes and render bundles. */
-class RenderCommands {
+class EncoderCommands {
   label = '';
   constructor(protected readonly recorder: Recorder) {}
 
-  setPipeline(pipeline: GPURenderPipeline): void {
-    this.recorder.push({ op: 'setPipeline', id: idOf(pipeline) }, pipeline);
+  pushDebugGroup(label: string): void {
+    this.recorder.push({ op: 'pushDebugGroup', label });
   }
 
+  popDebugGroup(): void {
+    this.recorder.push({ op: 'popDebugGroup' });
+  }
+
+  insertDebugMarker(label: string): void {
+    this.recorder.push({ op: 'insertDebugMarker', label });
+  }
+}
+
+class ProgrammableCommands extends EncoderCommands {
   setBindGroup(
     index: number,
     bindGroup: GPUBindGroup | null,
@@ -84,6 +93,13 @@ class RenderCommands {
       },
       bindGroup,
     );
+  }
+}
+
+/** Commands shared by render passes and render bundles. */
+class RenderCommands extends ProgrammableCommands {
+  setPipeline(pipeline: GPURenderPipeline): void {
+    this.recorder.push({ op: 'setPipeline', id: idOf(pipeline) }, pipeline);
   }
 
   setVertexBuffer(slot: number, buffer: GPUBuffer | null, offset = 0, size?: number): void {
@@ -125,21 +141,9 @@ class RenderCommands {
   drawIndexedIndirect(buffer: GPUBuffer, offset: number): void {
     this.recorder.push({ op: 'drawIndexedIndirect', id: idOf(buffer), offset }, buffer);
   }
-
-  pushDebugGroup(label: string): void {
-    this.recorder.push({ op: 'pushDebugGroup', label });
-  }
-
-  popDebugGroup(): void {
-    this.recorder.push({ op: 'popDebugGroup' });
-  }
-
-  insertDebugMarker(label: string): void {
-    this.recorder.push({ op: 'insertDebugMarker', label });
-  }
 }
 
-export class NativeRenderPassEncoder extends RenderCommands {
+class NativeRenderPassEncoder extends RenderCommands {
   constructor(
     recorder: Recorder,
     private readonly layout: GPURenderBundleEncoderDescriptor,
@@ -191,30 +195,9 @@ export class NativeRenderPassEncoder extends RenderCommands {
   }
 }
 
-export class NativeComputePassEncoder {
-  label = '';
-  constructor(private readonly recorder: Recorder) {}
-
+class NativeComputePassEncoder extends ProgrammableCommands {
   setPipeline(pipeline: GPUComputePipeline): void {
     this.recorder.push({ op: 'setPipeline', id: idOf(pipeline) }, pipeline);
-  }
-
-  setBindGroup(
-    index: number,
-    bindGroup: GPUBindGroup | null,
-    offsets?: Iterable<number> | Uint32Array,
-    start?: number,
-    length?: number,
-  ): void {
-    this.recorder.push(
-      {
-        op: 'setBindGroup',
-        index,
-        id: bindGroup === null ? null : idOf(bindGroup),
-        offsets: dynamicOffsets(offsets, start, length),
-      },
-      bindGroup,
-    );
   }
 
   dispatchWorkgroups(x: number, y = 1, z = 1): void {
@@ -223,18 +206,6 @@ export class NativeComputePassEncoder {
 
   dispatchWorkgroupsIndirect(buffer: GPUBuffer, offset: number): void {
     this.recorder.push({ op: 'dispatchIndirect', id: idOf(buffer), offset }, buffer);
-  }
-
-  pushDebugGroup(label: string): void {
-    this.recorder.push({ op: 'pushDebugGroup', label });
-  }
-
-  popDebugGroup(): void {
-    this.recorder.push({ op: 'popDebugGroup' });
-  }
-
-  insertDebugMarker(label: string): void {
-    this.recorder.push({ op: 'insertDebugMarker', label });
   }
 
   end(): void {
@@ -256,7 +227,7 @@ function texelCopyTexture(info: GPUTexelCopyTextureInfo) {
   return {
     texture: idOf(info.texture),
     mipLevel: info.mipLevel ?? 0,
-    origin: origin(info.origin),
+    origin: textureCopyOrigin(info.origin),
     aspect: info.aspect,
   };
 }
@@ -293,13 +264,10 @@ interface TlasBuild {
   }[];
 }
 
-export class NativeCommandEncoder {
-  label: string;
-  private readonly recorder: Recorder;
-
+export class NativeCommandEncoder extends EncoderCommands {
   constructor(device: NativeGPUDevice, label: string | undefined) {
+    super(new Recorder(device));
     this.label = label ?? '';
-    this.recorder = new Recorder(device);
   }
 
   beginRenderPass(descriptor: GPURenderPassDescriptor): NativeRenderPassEncoder {
@@ -474,18 +442,6 @@ export class NativeCommandEncoder {
       querySet,
       destination,
     );
-  }
-
-  pushDebugGroup(label: string): void {
-    this.recorder.push({ op: 'pushDebugGroup', label });
-  }
-
-  popDebugGroup(): void {
-    this.recorder.push({ op: 'popDebugGroup' });
-  }
-
-  insertDebugMarker(label: string): void {
-    this.recorder.push({ op: 'insertDebugMarker', label });
   }
 
   /** Ray Query extension: BLAS builds precede TLAS builds within one call. */

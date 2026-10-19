@@ -49,7 +49,7 @@ interface Scene {
 }
 
 async function scene(): Promise<Scene> {
-  const recorder = wrap(rayQueryInstance());
+  const recorder = wrap(rayQueryInstance(), createShaderModule);
   const device = (await (await recorder.requestAdapter()).unwrap().requestDevice()).unwrap();
   const vertices = device
     .createBuffer({ label: 'blas-vertices', size: 36, usage: BLAS_INPUT_BUFFER_USAGE | COPY_DST })

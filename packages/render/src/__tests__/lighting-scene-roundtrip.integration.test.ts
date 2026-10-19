@@ -43,6 +43,7 @@ describe('lighting scene payload roundtrip', () => {
             },
             LightProbe: { irradiance: new Float32Array(27).fill(0.25), radius: 4 },
             SpotLight: {
+              castShadow: true,
               direction: [0, -1, 0],
               iesProfile: IES_GUID,
               cookie: COOKIE_GUID,
@@ -73,7 +74,13 @@ describe('lighting scene payload roundtrip', () => {
         components: {
           RectAreaLight: { color: [1, 0.5, 0.25], intensity: 12, width: 2, height: 3, range: 8 },
           LightProbe: { irradiance: Array(27).fill(0.25), radius: 4 },
-          SpotLight: { direction: [0, -1, 0], iesProfile: 0, cookie: 1, rollDeg: 360 },
+          SpotLight: {
+            castShadow: true,
+            direction: [0, -1, 0],
+            iesProfile: 0,
+            cookie: 1,
+            rollDeg: 360,
+          },
           Transform: { scale: [2, 3, 4] },
         },
       },
@@ -106,7 +113,7 @@ describe('lighting scene payload roundtrip', () => {
       entities: {
         'entity-7': {
           components: {
-            SpotLight: { rollDeg: 360 },
+            SpotLight: { castShadow: true, rollDeg: 360 },
             Transform: { scale: [2, 3, 4] },
           },
         },
@@ -125,7 +132,7 @@ describe('lighting scene payload roundtrip', () => {
   it('keeps absent Spot handles absent instead of creating refs', () => {
     const scene = {
       kind: 'scene' as const,
-      entities: { 'entity-8': { components: { SpotLight: { rollDeg: 90 } } } },
+      entities: { 'entity-8': { components: { SpotLight: { castShadow: true, rollDeg: 90 } } } },
     };
     const externalized = externalizeSceneAsset(scene, (name) => schemas.get(name));
     expect(externalized).toEqual({
@@ -133,7 +140,9 @@ describe('lighting scene payload roundtrip', () => {
       value: {
         payload: {
           kind: 'scene',
-          entities: { 'entity-8': { components: { SpotLight: { rollDeg: 90 } } } },
+          entities: {
+            'entity-8': { components: { SpotLight: { castShadow: true, rollDeg: 90 } } },
+          },
         },
         refs: [],
       },

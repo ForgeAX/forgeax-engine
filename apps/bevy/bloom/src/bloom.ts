@@ -54,11 +54,11 @@ export function buildBloomWorld(world: World, aspect: number): BloomScene {
     }
   }
 
-  world.spawn({ component: DirectionalLight, data: { direction: [0.4, -1, 0.3], intensity: 3 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0.4, -1, 0.3], intensity: 3 } });
   const eye: [number, number, number] = [-2, 10, 16];
   const camera = world.spawn(
     { component: Transform, data: { pos: eye, quat: quat.fromLookAt(quat.create(), eye, [0, 0, 0], [0, 1, 0]), scale: [1, 1, 1] } },
-    { component: Camera, data: { ...perspective({ fov: Math.PI / 3, aspect }), tonemap: TONEMAP_REINHARD_EXTENDED, bloom: BLOOM_DISABLED, bloomThreshold: 1, bloomIntensity: 1, bloomSoftKnee: 0.5, bloomScatter: 0.7 } },
+    { component: Camera, data: { ...perspective({ fov: Math.PI / 3, aspect }), tonemap: TONEMAP_REINHARD_EXTENDED, bloom: BLOOM_DISABLED, bloomThreshold: 1, bloomIntensity: 1, bloomSmoothWidth: 0.01, bloomRadius: 0 } },
   ).unwrap();
 
   return { camera, sphereCount, emissiveCount };

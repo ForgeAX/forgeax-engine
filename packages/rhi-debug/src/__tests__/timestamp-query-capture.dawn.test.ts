@@ -1,4 +1,4 @@
-import { rhi } from '@forgeax/engine-rhi-webgpu';
+import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { describe, expect, it } from 'vitest';
 import { decodeTape } from '../protocol/codec';
 import { validateTape } from '../protocol/validation';
@@ -11,7 +11,7 @@ describe('timestamp query capture ownership', () => {
     'compute',
     'empty-compute',
   ] as const)('retains a pre-capture QuerySet for %s passes', async (kind) => {
-    const recorded = wrap(rhi);
+    const recorded = wrap(rhi, createShaderModule);
     const adapter = (await recorded.requestAdapter()).unwrap();
     const device = (
       await adapter.requestDevice({ requiredFeatures: ['timestamp-query'] })

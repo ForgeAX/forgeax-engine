@@ -4,22 +4,20 @@
 // stub (no real GPU). Mirrors the runtime-project mipmap tests, but imports the
 // relative `../mipmap-generator` so coverage attributes to src/, not dist/.
 
-import { ok as rhiOk } from '@forgeax/engine-rhi';
+import { type RhiDevice, ok as rhiOk, type ShaderModule, type Texture } from '@forgeax/engine-rhi';
+import { numMipLevels } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   blitMipmapsSync,
   generateMipmaps,
   getOrCreateMipmapPipeline,
-  type MipmapBlitDevice,
   type MipmapShaderModuleFactory,
   mipmapCacheSize,
-  numMipLevels,
   prepareMipmaps,
 } from '../mipmap-generator';
 
 let nextId = 0;
-// The device-surface shims are loosely typed (`any` descriptors) so a plain
-// { ok, value } POD satisfies them; the shader factory returns a real Result.
+// Only the observed backend operations are supplied by this test fixture.
 function ok<T>(value: T) {
   return { ok: true as const, value };
 }
@@ -29,7 +27,7 @@ type BlitLog = {
   readonly destroyed: unknown[];
 };
 
-function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): MipmapBlitDevice {
+function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): RhiDevice {
   const pass = {
     setPipeline: () => {},
     setBindGroup: () => {},
@@ -62,11 +60,11 @@ function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): MipmapBlitDevi
     },
     createCommandEncoder: () => ok(encoder),
     queue: { submit: () => ok(undefined) },
-  } as unknown as MipmapBlitDevice;
+  } as unknown as RhiDevice;
 }
 
 const stubShaderFactory: MipmapShaderModuleFactory = async () =>
-  rhiOk({ tag: `shader-${nextId++}` } as unknown);
+  rhiOk({ tag: `shader-${nextId++}` } as unknown as ShaderModule);
 
 describe('numMipLevels', () => {
   it('256x256 -> 9', () => expect(numMipLevels({ width: 256, height: 256 })).toBe(9));
@@ -121,7 +119,7 @@ describe('generateMipmaps (async build path)', () => {
     const device = makeBlitDevice();
     const res = await generateMipmaps(
       device,
-      {},
+      {} as Texture,
       { format: 'rgba8unorm', width: 1, height: 1 },
       stubShaderFactory,
     );
@@ -134,7 +132,7 @@ describe('generateMipmaps (async build path)', () => {
     const device = makeBlitDevice(renderPasses);
     const res = await generateMipmaps(
       device,
-      { tag: 'tex' },
+      {} as Texture,
       { format: 'rgba8unorm', width: 256, height: 256, levels: 1 },
       stubShaderFactory,
     );
@@ -148,7 +146,7 @@ describe('generateMipmaps (async build path)', () => {
     const device = makeBlitDevice();
     const res = await generateMipmaps(
       device,
-      { tag: 'tex' },
+      {} as Texture,
       { format: 'rgba8unorm', width: 4, height: 4 },
       stubShaderFactory,
     );
@@ -161,7 +159,7 @@ describe('generateMipmaps (async build path)', () => {
     const device = makeBlitDevice(renderPasses);
     const res = await generateMipmaps(
       device,
-      { tag: 'tex' },
+      {} as Texture,
       { format: 'rgba8unorm', width: 4, height: 4 },
       stubShaderFactory,
     );
@@ -178,7 +176,7 @@ describe('generateMipmaps (async build path)', () => {
     const prewarm = await getOrCreateMipmapPipeline(syncDevice, 'rgba8unorm', stubShaderFactory);
     expect(prewarm.ok).toBe(true);
     expect(
-      blitMipmapsSync(syncDevice, { tag: 'tex' }, { format: 'rgba8unorm', width: 4, height: 4 }).ok,
+      blitMipmapsSync(syncDevice, {} as Texture, { format: 'rgba8unorm', width: 4, height: 4 }).ok,
     ).toBe(true);
     for (const pass of syncPasses) {
       const clearValue = (pass as { colorAttachments: Array<{ clearValue: unknown }> })
@@ -194,7 +192,7 @@ describe('blitMipmapsSync (prewarmed path)', () => {
     const log: BlitLog = { copies: [], destroyed: [] };
     const device = makeBlitDevice(renderPasses, log);
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
-    const texture = { tag: 'tex' };
+    const texture = {} as Texture;
     const res = blitMipmapsSync(device, texture, { format: 'rgba8unorm', width: 8, height: 2 });
     expect(res.ok).toBe(true);
     expect(renderPasses).toHaveLength(3);
@@ -229,7 +227,7 @@ describe('blitMipmapsSync (prewarmed path)', () => {
     const log: BlitLog = { copies: [], destroyed: [] };
     const device = makeBlitDevice(renderPasses, log);
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
-    const texture = { tag: 'array' };
+    const texture = {} as Texture;
     blitMipmapsSync(device, texture, {
       format: 'rgba8unorm',
       width: 8,
@@ -260,7 +258,12 @@ describe('blitMipmapsSync (prewarmed path)', () => {
     const device = makeBlitDevice(renderPasses);
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
     expect(
-      blitMipmapsSync(device, {}, { format: 'rgba8unorm', width: 4, height: 4, arrayLayerCount }),
+      blitMipmapsSync(device, {} as Texture, {
+        format: 'rgba8unorm',
+        width: 4,
+        height: 4,
+        arrayLayerCount,
+      }),
     ).toMatchObject({ ok: false, error: { code: 'webgpu-runtime-error' } });
     expect(renderPasses).toHaveLength(0);
   });
@@ -286,11 +289,11 @@ describe('blitMipmapsSync (prewarmed path)', () => {
       return rhiOk(undefined);
     };
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
-    const prepared = prepareMipmaps(
-      device,
-      { tag: 'tex' },
-      { format: 'rgba8unorm', width: 4, height: 4 },
-    );
+    const prepared = prepareMipmaps(device, {} as Texture, {
+      format: 'rgba8unorm',
+      width: 4,
+      height: 4,
+    });
     expect(prepared.ok).toBe(true);
     expect(finishCount).toBe(0);
     expect(submitCount).toBe(0);
@@ -302,20 +305,20 @@ describe('blitMipmapsSync (prewarmed path)', () => {
   });
 
   it('returns ok immediately when levels <= 1', () => {
-    const res = blitMipmapsSync(
-      makeBlitDevice(),
-      {},
-      { format: 'rgba8unorm', width: 1, height: 1 },
-    );
+    const res = blitMipmapsSync(makeBlitDevice(), {} as Texture, {
+      format: 'rgba8unorm',
+      width: 1,
+      height: 1,
+    });
     expect(res.ok).toBe(true);
   });
 
   it('errors when the device cache was never prewarmed', () => {
-    const res = blitMipmapsSync(
-      makeBlitDevice(),
-      {},
-      { format: 'rgba8unorm', width: 4, height: 4 },
-    );
+    const res = blitMipmapsSync(makeBlitDevice(), {} as Texture, {
+      format: 'rgba8unorm',
+      width: 4,
+      height: 4,
+    });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error.code).toBe('rhi-not-available');
@@ -324,7 +327,11 @@ describe('blitMipmapsSync (prewarmed path)', () => {
   it('errors when the requested format was not prewarmed', async () => {
     const device = makeBlitDevice();
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
-    const res = blitMipmapsSync(device, {}, { format: 'bgra8unorm', width: 4, height: 4 });
+    const res = blitMipmapsSync(device, {} as Texture, {
+      format: 'bgra8unorm',
+      width: 4,
+      height: 4,
+    });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error.code).toBe('rhi-not-available');
@@ -333,11 +340,11 @@ describe('blitMipmapsSync (prewarmed path)', () => {
   it('blits the full chain once the format is prewarmed', async () => {
     const device = makeBlitDevice();
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
-    const res = blitMipmapsSync(
-      device,
-      { tag: 'tex' },
-      { format: 'rgba8unorm', width: 8, height: 8 },
-    );
+    const res = blitMipmapsSync(device, {} as Texture, {
+      format: 'rgba8unorm',
+      width: 8,
+      height: 8,
+    });
     expect(res.ok).toBe(true);
   });
 });

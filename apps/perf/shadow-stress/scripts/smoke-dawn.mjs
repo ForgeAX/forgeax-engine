@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // Dawn smoke for the built shadow stress consumer. The imported entry is the
 // same Vite bundle served by the browser path. Only requestAnimationFrame
 // receives a synthetic timestamp; performance.now stays real so the profiler
@@ -9,7 +10,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 
 const TAG = '[perf-shadow-stress/dawn]';
@@ -48,6 +49,11 @@ const gpu = create([]);
 Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: true, writable: true });
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
+// Hold real scene pipeline completion during startup to exercise readiness.
+// Startup preparation must not consume the workload's 60 measured frames.
+const PIPELINE_RELEASE_CALLBACK = 32;
+let releasePipelines;
+const pipelineRelease = new Promise((resolve) => { releasePipelines = resolve; });
 let sharedDevice;
 // Diagnostic A/B: comma-separated device features to refuse, e.g. to run the
 // capability-less path (`indirect-first-instance`) on a capable adapter.
@@ -63,6 +69,12 @@ gpu.requestAdapter = async (...args) => {
       descriptor === undefined ? descriptor : { ...descriptor, requiredFeatures },
       ...rest,
     );
+    const createPipeline = device.createRenderPipelineAsync.bind(device);
+    device.createRenderPipelineAsync = async (...args) => {
+      const pipeline = await createPipeline(...args);
+      if (globalThis.__forgeaxShadowStress !== undefined) await pipelineRelease;
+      return pipeline;
+    };
     sharedDevice ??= device;
     return device;
   };
@@ -142,7 +154,7 @@ const targetFrames = warmupFrames + profileFrames + sampleFrames + 1;
 
 let drivenRafCallbacks = 0;
 const frameDeadline = Date.now() + 600_000;
-while (evidence.frameProgress < targetFrames && Date.now() < frameDeadline) {
+while (evidence.completedFrames < targetFrames && Date.now() < frameDeadline) {
   if (evidence.appRendererErrors.length > 0) {
     fail(`renderer/app error at frame ${evidence.frameProgress}: ${JSON.stringify(evidence.appRendererErrors[0])}`);
   }
@@ -154,10 +166,11 @@ while (evidence.frameProgress < targetFrames && Date.now() < frameDeadline) {
   rafNow += 1000 / 60;
   frame.callback(rafNow);
   drivenRafCallbacks += 1;
+  if (drivenRafCallbacks === PIPELINE_RELEASE_CALLBACK) releasePipelines();
   if (drivenRafCallbacks % 4 === 0) await sharedDevice?.queue.onSubmittedWorkDone();
 }
-if (evidence.frameProgress < targetFrames) {
-  fail(`only observed ${evidence.frameProgress}/${targetFrames} engine frames after ${drivenRafCallbacks} RAF callbacks`);
+if (evidence.completedFrames < targetFrames) {
+  fail(`only observed ${evidence.completedFrames}/${targetFrames} completed frames after ${drivenRafCallbacks} RAF callbacks`);
 }
 
 // Frame wall time including queue completion: on a software adapter this
@@ -401,7 +414,7 @@ const summary = {
 };
 const result = {
   backend: 'webgpu',
-  observedFrames: evidence.frameProgress,
+  observedFrames: evidence.completedFrames,
   drivenRafCallbacks,
   profileComplete,
   summary,
@@ -411,6 +424,10 @@ const result = {
   ...(withheldFeatures.size === 0 ? {} : { withheldFeatures: [...withheldFeatures] }),
   evidence: { ...evidence, profileCapture: undefined, gpuPassNanos: undefined },
   assertions: {
+    completedReadyWindow:
+      evidence.readyFrameId !== null &&
+      evidence.completedFrames >= targetFrames &&
+      evidence.pendingMeasuredFrames === 0,
     exactPostSpawn:
       evidence.postSpawn.staticCasterCount === evidence.options.staticCasterCount &&
       evidence.postSpawn.spotShadowCount === 4 &&
@@ -458,7 +475,7 @@ const result = {
   },
 };
 writeFileSync(outputPath, JSON.stringify(result, null, 2));
-writeFileSync(screenshotPath, writeReferencePng(pixels, width, height));
+writeFileSync(screenshotPath, encodePng(width, height, pixels));
 
 const failed = Object.entries(result.assertions).filter(([, value]) => value !== true);
 if (failed.length > 0) fail(`assertions failed: ${JSON.stringify(Object.fromEntries(failed))}`);

@@ -11,6 +11,10 @@ const ao = {
   intensity: 1.4,
   directLightingStrength: 0.6,
   quality: 2,
+  thickness: 1,
+  distanceExponent: 1,
+  distanceFallOff: 1,
+  resolutionScale: 1,
 };
 const base = Object.freeze({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' as const });
 const config = Object.freeze({

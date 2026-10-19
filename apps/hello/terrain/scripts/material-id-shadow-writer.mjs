@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -26,7 +27,7 @@ import * as backend from '@forgeax/engine-rhi-webgpu';
 import { Mobility, MobilityKindValue, Transform } from '@forgeax/engine-scene';
 import { Terrain } from '@forgeax/engine-terrain';
 import { derive, projectMaterialParameterSchema } from '@forgeax/engine-types';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { materialPackageId, materialTerrainGuid } from '../src/identity.ts';
 import { terrainHarness } from './harness.mjs';
 
@@ -195,7 +196,7 @@ try {
         const name = `forward-${encoding}-${receiverCount}-roots-static-lod0-proof`;
         writeFileSync(resolve(dir, `${name}.rhitape`), artifact.bytes);
         const live = await h.pixels();
-        writeFileSync(resolve(dir, `${name}-capture.png`), writeReferencePng(live, 960, 540));
+        writeFileSync(resolve(dir, `${name}-capture.png`), encodePng(960, 540, live));
         const tape = decodeTape(artifact.bytes).unwrap();
         const model = buildFrameModel(tape);
         const asset = h.app.world.sharedRefs
@@ -441,7 +442,7 @@ try {
           );
           await nativeReplayDevice.queue.onSubmittedWorkDone();
           assert.deepEqual(replayErrors, [], 'fresh replay must remain WebGPU-validation clean');
-          writeFileSync(resolve(dir, `${name}-replay.png`), writeReferencePng(pixels, 960, 540));
+          writeFileSync(resolve(dir, `${name}-replay.png`), encodePng(960, 540, pixels));
         } finally {
           try {
             if (replay !== undefined) (await replay.dispose()).unwrap();

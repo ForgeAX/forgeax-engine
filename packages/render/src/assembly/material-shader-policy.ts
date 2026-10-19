@@ -8,17 +8,18 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { PipelineLayout, Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
-  DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   findVariantByKey,
   type MaterialShaderManifestEntry,
+  type MaterialShaderProgram,
   materialShaderUvSetCount,
+  materialShaderVertexInputRequired,
   type ShaderCatalog,
   type ShaderCatalogDevice,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardPhysicalTextureFields,
 } from '@forgeax/engine-shader';
 import type { AssetGuid as AssetGuidType, ParamSchemaEntry } from '@forgeax/engine-types';
-import { derive } from '@forgeax/engine-types';
+import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 import {
   atmosphereMaterialVisibilityLayoutEntries,
   atmosphereViewLayoutEntries,
@@ -621,9 +622,11 @@ export function isSharedMaterialUserRegionCompatible(
     schema: readonly ParamSchemaEntry[],
   ): readonly ParamSchemaEntry[] => {
     const excluded = new Set<string>(standardPhysicalTextureFields(schema));
+    if (excluded.size === 0 && getAdmittedParamSchemaInterface(schema) !== undefined) return schema;
     return schema.filter((entry) => !excluded.has(entry.name) || !entry.type.startsWith('texture'));
   };
-  const sharedSchema = withoutPhysicalMaps(DEFAULT_STANDARD_PBR_PARAM_SCHEMA);
+  // Shader already owns this immutable projection with physical maps excluded.
+  const sharedSchema = STANDARD_PIPELINE_PARAM_SCHEMA;
   const candidateSchema = withoutPhysicalMaps(paramSchema);
   const shared = buildPbrMaterialUserRegionEntries(sharedSchema);
   const candidate = buildPbrMaterialUserRegionEntries(candidateSchema);
@@ -727,30 +730,13 @@ export function resolveMaterialShaderBindingContract(
 }
 
 export function resolveMaterialShaderVertexInputContract(
-  source: string,
+  source: string | MaterialShaderProgram,
 ): MaterialShaderVertexInputContract {
-  const withoutComments = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/.*$/gmu, '');
-  const inputStructs = [...withoutComments.matchAll(/struct\s+([A-Za-z_]\w*)\s*\{([^}]*)\}/gu)]
-    .filter((match) => /@location\s*\(/u.test(match[2] ?? ''))
-    .map((match) => match[1]);
-  // WGSL vertex inputs are commonly declared in a named struct before the
-  // `@vertex` function (the engine uses `VsIn`, while package shaders often
-  // use `VertexInput`). Match the type actually passed as the first vertex
-  // parameter so fragment/output structs do not accidentally enable a
-  // vertex buffer layout for fullscreen shaders.
-  for (const inputStruct of inputStructs) {
-    if (inputStruct === undefined) continue;
-    const firstParameter = new RegExp(
-      `@vertex\\s*fn\\s+\\w+\\s*\\(\\s*\\w+\\s*:\\s*${inputStruct}\\b`,
-      'u',
-    );
-    if (firstParameter.test(withoutComments)) return 'render-material';
-  }
-  // A shader may declare a location directly on a vertex parameter rather
-  // than through a struct. Keep that contract explicit as well.
-  return /@vertex\s*fn[^{]*\([^)]*@location\s*\(/u.test(withoutComments)
-    ? 'render-material'
-    : 'none';
+  const required =
+    typeof source === 'string'
+      ? materialShaderVertexInputRequired(source)
+      : source.vertexInputRequired;
+  return required ? 'render-material' : 'none';
 }
 
 /**
@@ -949,6 +935,34 @@ export function selectPipelineLayoutForVariant(
       : state.hdrpPbrPipelineLayout;
   }
   return probeBlendVariant ? (state.pbrProbePipelineLayout ?? null) : state.pbrPipelineLayout;
+}
+
+/** Share only manifest/capability facts; callers supply the active or recovery device. */
+export function resolveCachedMaterialShaderVariant(
+  cache: WeakMap<object, Map<string, string | undefined>>,
+  requestedVariantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry | undefined,
+  device: RhiDevice,
+): string | undefined {
+  const sampledTextureLimit = device.limits.maxSampledTexturesPerShaderStage;
+  if (manifestEntry === undefined) return requestedVariantSet;
+  const variants = manifestEntry.variants;
+  let byRequest = cache.get(variants);
+  if (byRequest === undefined) {
+    byRequest = new Map();
+    cache.set(variants, byRequest);
+  }
+  const cacheKey = `${requestedVariantSet ?? '\u0000'}|${device.caps.backendKind}|${device.caps.storageBuffer ? '1' : '0'}|${sampledTextureLimit ?? '\u0000'}`;
+  if (byRequest.has(cacheKey)) return byRequest.get(cacheKey);
+  const resolved = resolveMaterialShaderVariantSet(
+    requestedVariantSet,
+    variants,
+    device.caps.backendKind,
+    device.caps.storageBuffer,
+    sampledTextureLimit,
+  );
+  byRequest.set(cacheKey, resolved);
+  return resolved;
 }
 
 /**

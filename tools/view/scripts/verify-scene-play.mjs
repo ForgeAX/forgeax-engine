@@ -59,7 +59,23 @@ export async function verifyScenePlay({ page, live, sameRun, cycles = 10 }) {
     const observed = await workspace.invoke('target.control', { ...args, mode: 'observer' });
     assert.equal(observed.mode, 'observer');
     assert.equal((await workspace.getCamera(args)).camera.control, 'observer');
-    const picked = await workspace.invoke('target.pick', { ...args, x: target.width / 2, y: target.height / 2 });
+    // Capture waits for a completed frame, but layout can resize again before
+    // picking. Reacquire only that rejected extent; other failures stay fatal.
+    const pickSignal = AbortSignal.timeout(10_000);
+    let captured;
+    let picked;
+    for (;;) {
+      pickSignal.throwIfAborted();
+      captured = await workspace.invoke('preview.capture', args, { signal: pickSignal });
+      try {
+        picked = await workspace.invoke('target.pick', { ...args, x: captured.width / 2, y: captured.height / 2 }, { signal: pickSignal });
+        break;
+      } catch (error) {
+        if (error.code !== 'view-workspace-frame-unavailable' || error.detail?.cause?.reason !== 'extent-mismatch') throw error;
+        console.error('Play pick awaiting resized frame', { cycle: cycle + 1, ...error.detail.cause });
+      }
+    }
+    assert.ok(picked.frameId >= captured.frameId, 'picking uses the captured frame or a newer submission');
     assert.equal(picked.entityId, entity.entityId, 'picking uses the submitted game frame');
     await workspace.invoke('entity.focus', { ...args, entityId: entity.entityId });
     const beforeCamera = await workspace.getCamera(args);

@@ -5,15 +5,17 @@
 import { type BindingAccess, layoutEntryAccess, wgslBindingAccess } from './binding-access';
 import { type UnseededResource, unseededResources } from './initial-contents';
 import {
-  EVENT_SEMANTICS,
+  categoryFor,
+  createdHandles,
   type EventCategory,
+  handleAccess,
   isWorkEvent,
   resourceKindForEvent,
 } from './protocol/event-semantics';
 import type { TapeWorkEntry } from './protocol/tape-index';
 import { buildTapeIndex } from './protocol/tape-index';
 import type { Tape as V7Tape } from './protocol/types';
-import { computeTextureLayout } from './texel-layout';
+import { computeTextureLayout, projectTextureExtent } from './texel-layout';
 import type { HandleId, RecordedTlasInstance, RhiCallEvent } from './types';
 
 type JsonPrimitive = string | number | boolean | null;
@@ -327,7 +329,7 @@ export function buildFrameModel(tape: V7Tape): FrameModel {
       eventIndex,
       passIndex,
       kind: event.kind,
-      category: EVENT_SEMANTICS[event.kind].category,
+      category: categoryFor(event.kind),
       isWork: isWorkEvent(event.kind),
       params: eventDescriptor(event),
       group,
@@ -388,7 +390,7 @@ export function buildFrameModel(tape: V7Tape): FrameModel {
     indexCreateEvent(event);
     const kind = resourceKindForEvent(event.kind);
     if (kind === undefined) continue;
-    for (const handleId of EVENT_SEMANTICS[event.kind].created(event)) {
+    for (const handleId of createdHandles(event)) {
       resourceRecords.set(handleId, {
         resourceId: handleId,
         kind,
@@ -414,12 +416,13 @@ export function buildFrameModel(tape: V7Tape): FrameModel {
   }
   for (const [eventIndex, event] of events.entries()) {
     const workIndex = workByEvent.get(eventIndex) ?? null;
-    for (const resourceId of EVENT_SEMANTICS[event.kind].read(event)) {
+    const access = handleAccess(event);
+    for (const resourceId of access.read) {
       const resource = resourceRecords.get(resourceId);
       if (resource !== undefined)
         resource.consumers = [...resource.consumers, { eventIndex, workIndex, access: 'read' }];
     }
-    for (const resourceId of EVENT_SEMANTICS[event.kind].written(event)) {
+    for (const resourceId of access.written) {
       const resource = resourceRecords.get(resourceId);
       if (resource !== undefined)
         resource.consumers = [...resource.consumers, { eventIndex, workIndex, access: 'write' }];
@@ -645,43 +648,6 @@ export interface ResourceLifecycleSummary {
   readonly resources: readonly ResourceLifecycleEntry[];
 }
 
-function asPositiveInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function normalizeTextureSize(
-  size: unknown,
-):
-  | { readonly width: number; readonly height: number; readonly depthOrArrayLayers: number }
-  | undefined {
-  if (typeof size === 'number') {
-    const width = asPositiveInteger(size);
-    return width === undefined ? undefined : { width, height: 1, depthOrArrayLayers: 1 };
-  }
-  if (Array.isArray(size)) {
-    const width = asPositiveInteger(size[0]);
-    const height = asPositiveInteger(size[1] ?? 1);
-    const depthOrArrayLayers = asPositiveInteger(size[2] ?? 1);
-    return width === undefined || height === undefined || depthOrArrayLayers === undefined
-      ? undefined
-      : { width, height, depthOrArrayLayers };
-  }
-  if (size !== null && typeof size === 'object') {
-    const raw = size as {
-      readonly width?: unknown;
-      readonly height?: unknown;
-      readonly depthOrArrayLayers?: unknown;
-    };
-    const width = asPositiveInteger(raw.width);
-    const height = asPositiveInteger(raw.height ?? 1);
-    const depthOrArrayLayers = asPositiveInteger(raw.depthOrArrayLayers ?? 1);
-    return width === undefined || height === undefined || depthOrArrayLayers === undefined
-      ? undefined
-      : { width, height, depthOrArrayLayers };
-  }
-  return undefined;
-}
-
 function estimateBytes(event: RhiCallEvent): ResourceByteEstimate {
   if (event.kind === 'createBuffer') {
     return { status: 'known', bytes: event.desc.size, basis: 'buffer-descriptor' };
@@ -694,9 +660,9 @@ function estimateBytes(event: RhiCallEvent): ResourceByteEstimate {
   if (dimension === '3d') {
     return { status: 'unavailable', reason: 'unsupported-texture-dimension' };
   }
-  const size = normalizeTextureSize(event.desc.size);
+  const size = projectTextureExtent(event.desc.size);
   if (size === undefined) return { status: 'unavailable', reason: 'invalid-texture-size' };
-  const layers = dimension === '1d' ? 1 : size.depthOrArrayLayers;
+  const layers = dimension === '1d' ? 1 : size.layerCount;
   const layout = computeTextureLayout(
     event.desc.format,
     size.width,
@@ -716,7 +682,7 @@ function resourceIdentity(
   event: RhiCallEvent,
 ): { readonly kind: ResourceKind; readonly handleId: HandleId } | undefined {
   const kind = lifecycleResourceKind(event.kind);
-  const [handleId] = EVENT_SEMANTICS[event.kind].created(event);
+  const [handleId] = createdHandles(event);
   return kind === undefined || handleId === undefined ? undefined : { kind, handleId };
 }
 

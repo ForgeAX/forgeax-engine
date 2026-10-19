@@ -1,6 +1,6 @@
 // Importer-independent sub-asset POD vocabulary.
 import type { AnimationTargetIdValue } from './animation-target.js';
-import type { ShadowCapsuleSet } from './media-contracts.js';
+import type { SkeletonAsset } from './media-contracts.js';
 import type { MorphTarget } from './mesh-contracts.js';
 
 // === Sub-asset POD SSOT (feat-20260615-fbx-importer-via-sdk M1 / t9) ===========
@@ -28,7 +28,7 @@ import type { MorphTarget } from './mesh-contracts.js';
 //   ScenePod         — entity hierarchy + mount points
 //   TexturePod       — external file path (cross-platform normalized)
 //   SkeletonPod      — joint count + inverse bind matrices
-//   SkinPod          — skeleton reference + joint paths
+//   SkinPod          — joint paths + vertex influences
 //   AnimationClipPod — duration + channels + samplers
 
 // === AC-01: MeshPod — pure geometric data ===
@@ -169,17 +169,9 @@ export interface TexturePod {
 // === AC-05: SkeletonPod — joint hierarchy ===
 
 /** SkeletonPod: skeleton joint data IR shared across importers. */
-export interface SkeletonPod {
-  /** Number of joints. */
-  readonly jointCount: number;
-  /** Inverse bind matrices, Float32Array of length jointCount * 16. */
-  readonly inverseBindMatrices: Float32Array;
+export interface SkeletonPod extends Omit<SkeletonAsset, 'kind'> {
   /** Per-joint name path from scene root (parallel to joints array). */
   readonly jointPaths: readonly string[];
-  /** Optional producer-authored enclosure for imported animation clips. */
-  readonly bounds?: Float32Array;
-  /** Optional bind-space capsules approximating the skinned surface for character shadows. */
-  readonly shadowCapsules?: ShadowCapsuleSet;
 }
 
 // === AC-06: SkinPod — vertex skinning data ===
@@ -194,8 +186,6 @@ export interface SkinVertexInfluencePod {
 
 /** SkinPod: vertex skinning data IR shared across importers. */
 export interface SkinPod {
-  /** GUID-like identifier for the associated SkeletonAsset (resolved at bridge time). */
-  readonly skeletonGuid: string;
   /** Joint name paths (same as SkeletonPod.jointPaths for cross-reference). */
   readonly jointPaths: readonly string[];
   /** Number of influenced vertices. */

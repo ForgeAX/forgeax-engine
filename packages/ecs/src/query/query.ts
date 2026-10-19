@@ -680,11 +680,15 @@ class ExecutableQuery<
   }
 
   private denseChangeMatches(table: Table, row: number, upperBound: number): boolean {
-    for (const componentId of this.compiled.changedIds) {
+    const changedIds = this.compiled.changedIds;
+    for (let index = 0; index < changedIds.length; index++) {
+      const componentId = changedIds[index] as ComponentId;
       const epoch = table.storage.get(componentId)?.epochs.changed[row] ?? 0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
-    for (const componentId of this.compiled.addedIds) {
+    const addedIds = this.compiled.addedIds;
+    for (let index = 0; index < addedIds.length; index++) {
+      const componentId = addedIds[index] as ComponentId;
       const epoch = table.storage.get(componentId)?.epochs.added[row] ?? 0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }

@@ -198,7 +198,7 @@ describe('SceneEntityRef instance address', () => {
           localId: 1,
           components: {
             ChildOf: { parent: 0 },
-            DirectionalLight: { pcfKernelSize: 3 },
+            DirectionalLight: { castShadow: true, pcfKernelSize: 3 },
           },
         },
       ],
@@ -218,7 +218,7 @@ describe('SceneEntityRef instance address', () => {
             '1': {
               components: {
                 ChildOf: { parent: '0' },
-                DirectionalLight: { shadowFilter: 2 },
+                DirectionalLight: { castShadow: true, shadowFilter: 2 },
               },
             },
           },

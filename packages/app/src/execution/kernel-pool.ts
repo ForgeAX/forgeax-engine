@@ -20,7 +20,7 @@ interface KernelPreflight {
   readonly status: Int32Array;
 }
 
-export interface KernelPoolOptions {
+interface KernelPoolOptions {
   readonly lanes?: number;
   readonly timeoutMs?: number;
   readonly startupTimeoutMs?: number | null;

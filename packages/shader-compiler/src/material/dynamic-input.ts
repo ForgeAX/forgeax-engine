@@ -23,22 +23,13 @@ export function generateMaterialDynamicInputAccessor(layout: MaterialDynamicInpu
     .map((field) => {
       const word = field.offset / 4;
       const read = (component: number) => `raw.words[${word + component}]`;
-      switch (field.type) {
-        case 'f32':
-          return `bitcast<f32>(${read(0)})`;
-        case 'u32':
-          return read(0);
-        case 'vec2<f32>':
-          return `vec2<f32>(bitcast<f32>(${read(0)}), bitcast<f32>(${read(1)}))`;
-        case 'vec3<f32>':
-          return `vec3<f32>(bitcast<f32>(${read(0)}), bitcast<f32>(${read(1)}), bitcast<f32>(${read(2)}))`;
-        case 'vec4<f32>':
-          return `vec4<f32>(bitcast<f32>(${read(0)}), bitcast<f32>(${read(1)}), bitcast<f32>(${read(2)}), bitcast<f32>(${read(3)}))`;
-        default: {
-          const unreachable: never = field.type;
-          return unreachable;
-        }
-      }
+      if (field.type === 'u32') return read(0);
+      if (field.type === 'f32') return `bitcast<f32>(${read(0)})`;
+      const components = Array.from(
+        { length: field.size / 4 },
+        (_, component) => `bitcast<f32>(${read(component)})`,
+      );
+      return `${field.type}(${components.join(', ')})`;
     })
     .join(',\n    ');
   return `// The raw word record makes the CPU-derived stride explicit. A WGSL

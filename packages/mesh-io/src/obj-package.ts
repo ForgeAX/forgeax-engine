@@ -25,7 +25,7 @@ export interface ObjMaterialSource {
     readonly offset: readonly [number, number];
   }[];
 }
-export interface ObjPackage {
+export interface MeshSourcePackage {
   readonly meshes: readonly ImportedMesh[];
   readonly materials: readonly ObjMaterialSource[];
   readonly textures: readonly ObjTextureSource[];
@@ -37,7 +37,7 @@ export const materialSourceKey = (name: string): string => `material:${encodeURI
 export async function parseObjPackage(
   text: string,
   read: (path: string) => Promise<Uint8Array>,
-): Promise<Result<ObjPackage, AssetError>> {
+): Promise<Result<MeshSourcePackage, AssetError>> {
   const meshes = parseObj(text);
   if (!meshes.ok) return meshes;
   const materials: ObjMaterialSource[] = [],

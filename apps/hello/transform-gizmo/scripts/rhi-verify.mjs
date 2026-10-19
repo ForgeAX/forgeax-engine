@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { startGizmoHost, waitGizmoFrames } from './browser-host.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -17,7 +18,7 @@ import {
   resolveBrowserWebGpuLaunch,
   selectCaptureWorkIndex,
 } from '../../../shared/scripts/rhi-debug-verify.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const output = resolve(process.env.GIZMO_EVIDENCE_DIR ?? 'artifacts/transform-gizmo/rhi');
 mkdirSync(output, { recursive: true });
@@ -157,168 +158,170 @@ assert.equal(
   mode === 'rotate' ? 3 : mode === 'scale' ? 7 : 10,
   'overlay draw budget',
 );
-const { freshDevice, rhiWebgpu, backend } = await bootstrapDawn(
+const { freshDevice, rhiWebgpu, backend, dispose } = await bootstrapDawn(
   'transform-gizmo',
   tape,
   process.platform === 'darwin' ? { backend: 'metal' } : {},
 );
-const opened = await openReplay(tape, {
-  device: freshDevice,
-  createShaderModule: rhiWebgpu.createShaderModule,
-});
-assert(opened.ok, JSON.stringify(opened.error));
-const replay = opened.value,
-  report = {
-    mode,
-    capture: captured,
-    backend,
-    unseededResources: model.unseededResources,
-    workCount: model.works.length,
-    resourceCount: model.resources.length,
-    // Missing bootstrap bytes are a fact, so preserve the actual frame producers.
-    initialContentAudit: model.unseededResources.map((u) => {
-      const resource = model.resources.find((r) => r.resourceId === u.resourceId);
-      const views = tape.bootstrap
-        .filter(
-          (b) => b.create.kind === 'createTextureView' && b.create.sourceHandleId === u.resourceId,
-        )
-        .map((b) => b.handleId);
-      const writes = tape.events.flatMap((event, eventIndex) => {
-        if (event.kind === 'copyBufferToBuffer' && event.destinationHandleId === u.resourceId)
-          return [{ eventIndex, event }];
-        if (
-          event.kind === 'beginRenderPass' &&
-          (views.includes(event.depthStencilViewHandleId) ||
-            event.colorAttachmentViewHandleIds.some((id) => views.includes(id)))
-        )
-          return [{ eventIndex, event }];
-        return [];
-      });
-      assert(writes.length > 0, `unseeded resource lacks a frame producer: ${u.resourceId}`);
-      if (u.kind === 'buffer')
-        assert.equal(
-          writes.reduce((sum, w) => sum + w.event.size, 0),
-          resource.descriptor.desc.size,
-          'readback is fully overwritten',
-        );
-      else {
-        const first = writes[0].event;
-        if (views.includes(first.depthStencilViewHandleId))
-          assert.equal(first.desc.depthStencilAttachment.depthLoadOp, 'clear');
-        else assert(first.desc.colorAttachments.every((a) => a.loadOp === 'clear'));
-      }
-      return { resourceId: u.resourceId, descriptor: resource.descriptor, frameProducers: writes };
-    }),
-    overlay: [],
-  };
 try {
-  for (const w of overlays) {
-    const desc = w.pipeline.descriptor.desc;
-    assert.equal(desc.depthStencil.depthWriteEnabled, false);
-    assert.equal(desc.primitive.topology, 'triangle-list');
-    const mesh = w.bindings.find((b) => b.groupIndex === 2 && b.binding === 0),
-      material = w.bindings.find((b) => b.groupIndex === 1 && b.binding === 0);
-    assert(mesh && material);
-    const offset = (b) => (b.bufferOffset ?? 0) + (b.dynamicOffset ?? 0);
-    const mb = await replay.readResourceAtWork(mesh.resourceId, w.workIndex);
-    assert(mb.ok, JSON.stringify(mb.error));
-    const pb = await replay.readResourceAtWork(material.resourceId, w.workIndex);
-    assert(pb.ok, JSON.stringify(pb.error));
-    const matrix = Array.from(
-      new Float32Array(mb.value.bytes.buffer, mb.value.bytes.byteOffset + offset(mesh), 16),
+  const opened = await openReplay(tape, {
+    device: freshDevice,
+    createShaderModule: rhiWebgpu.createShaderModule,
+  });
+  assert(opened.ok, JSON.stringify(opened.error));
+  const replay = opened.value,
+    report = {
+      mode,
+      capture: captured,
+      backend,
+      unseededResources: model.unseededResources,
+      workCount: model.works.length,
+      resourceCount: model.resources.length,
+      // Missing bootstrap bytes are a fact, so preserve the actual frame producers.
+      initialContentAudit: model.unseededResources.map((u) => {
+        const resource = model.resources.find((r) => r.resourceId === u.resourceId);
+        const views = tape.bootstrap
+          .filter(
+            (b) => b.create.kind === 'createTextureView' && b.create.sourceHandleId === u.resourceId,
+          )
+          .map((b) => b.handleId);
+        const writes = tape.events.flatMap((event, eventIndex) => {
+          if (event.kind === 'copyBufferToBuffer' && event.destinationHandleId === u.resourceId)
+            return [{ eventIndex, event }];
+          if (
+            event.kind === 'beginRenderPass' &&
+            (views.includes(event.depthStencilViewHandleId) ||
+              event.colorAttachmentViewHandleIds.some((id) => views.includes(id)))
+          )
+            return [{ eventIndex, event }];
+          return [];
+        });
+        assert(writes.length > 0, `unseeded resource lacks a frame producer: ${u.resourceId}`);
+        if (u.kind === 'buffer')
+          assert.equal(
+            writes.reduce((sum, w) => sum + w.event.size, 0),
+            resource.descriptor.desc.size,
+            'readback is fully overwritten',
+          );
+        else {
+          const first = writes[0].event;
+          if (views.includes(first.depthStencilViewHandleId))
+            assert.equal(first.desc.depthStencilAttachment.depthLoadOp, 'clear');
+          else assert(first.desc.colorAttachments.every((a) => a.loadOp === 'clear'));
+        }
+        return { resourceId: u.resourceId, descriptor: resource.descriptor, frameProducers: writes };
+      }),
+      overlay: [],
+    };
+  try {
+    for (const w of overlays) {
+      const desc = w.pipeline.descriptor.desc;
+      assert.equal(desc.depthStencil.depthWriteEnabled, false);
+      assert.equal(desc.primitive.topology, 'triangle-list');
+      const mesh = w.bindings.find((b) => b.groupIndex === 2 && b.binding === 0),
+        material = w.bindings.find((b) => b.groupIndex === 1 && b.binding === 0);
+      assert(mesh && material);
+      const offset = (b) => (b.bufferOffset ?? 0) + (b.dynamicOffset ?? 0);
+      const mb = await replay.readResourceAtWork(mesh.resourceId, w.workIndex);
+      assert(mb.ok, JSON.stringify(mb.error));
+      const pb = await replay.readResourceAtWork(material.resourceId, w.workIndex);
+      assert(pb.ok, JSON.stringify(pb.error));
+      const matrix = Array.from(
+        new Float32Array(mb.value.bytes.buffer, mb.value.bytes.byteOffset + offset(mesh), 16),
+      );
+      const baseColor = Array.from(
+        new Float32Array(pb.value.bytes.buffer, pb.value.bytes.byteOffset + offset(material), 4),
+      );
+      assert(matrix.every(Number.isFinite));
+      const retained = w.vertexBuffers.every(
+        (b) => model.resources.find((r) => r.resourceId === b.bufferHandleId)?.origin === 'bootstrap',
+      );
+      assert(retained, 'gizmo must reuse retained geometry');
+      report.overlay.push({
+        workIndex: w.workIndex,
+        eventIndex: w.eventIndex,
+        meshBinding: mesh,
+        materialBinding: material,
+        matrix,
+        baseColor,
+        retainedGeometry: retained,
+        indexCount: w.drawCall.indexCount,
+        pipeline: desc,
+      });
+    }
+    assert(
+      report.overlay.some((w) =>
+        captured.origin.every((n, i) => Math.abs(n - w.matrix[12 + i]) < 1e-4),
+      ),
+      'GPU helper pivot follows the manipulated Scene target',
     );
-    const baseColor = Array.from(
-      new Float32Array(pb.value.bytes.buffer, pb.value.bytes.byteOffset + offset(material), 4),
-    );
-    assert(matrix.every(Number.isFinite));
-    const retained = w.vertexBuffers.every(
-      (b) => model.resources.find((r) => r.resourceId === b.bufferHandleId)?.origin === 'bootstrap',
-    );
-    assert(retained, 'gizmo must reuse retained geometry');
-    report.overlay.push({
-      workIndex: w.workIndex,
-      eventIndex: w.eventIndex,
-      meshBinding: mesh,
-      materialBinding: material,
-      matrix,
-      baseColor,
-      retainedGeometry: retained,
-      indexCount: w.drawCall.indexCount,
-      pipeline: desc,
-    });
-  }
-  assert(
-    report.overlay.some((w) =>
-      captured.origin.every((n, i) => Math.abs(n - w.matrix[12 + i]) < 1e-4),
-    ),
-    'GPU helper pivot follows the manipulated Scene target',
-  );
-  if (mode === 'rotate') {
-    const matrices = report.overlay.map((w) =>
-      w.matrix.map((n) => Math.round(n * 10000)).join(','),
-    );
-    assert.equal(new Set(matrices).size, 3, 'rotation rings must retain distinct GPU matrices');
-    const colors = report.overlay.map((w) => w.baseColor.slice(0, 3).join(','));
-    assert.equal(new Set(colors).size, 3, 'rotation rings must retain distinct GPU material slots');
-  }
-  const finalIndex = selectCaptureWorkIndex(model, 'pixel');
-  const frame = await replay.inspectWork(finalIndex, ['pipeline', 'bindings', 'pixels']);
-  assert(frame.ok, JSON.stringify(frame.error));
-  const rt = frame.value.attachment;
-  assert(rt && rt.width === captured.width && rt.height === captured.height);
-  const pixels = decodeToRgba8(rt.bytes, rt.format, rt.width, rt.height);
-  assert(pixels);
-  let sum = 0,
-    max = 0,
-    coveredSum = 0,
-    coveredCount = 0,
-    over = 0;
-  for (let i = 0; i < live.length; i += 4) {
-    const covered = Math.max(live[i], live[i + 1], live[i + 2]) > 32;
-    for (let c = 0; c < 3; c++) {
-      const d = Math.abs(live[i + c] - pixels[i + c]) / 255;
-      sum += d;
-      max = Math.max(max, d);
-      if (d > 0.05) over++;
-      if (covered) {
-        coveredSum += d;
-        coveredCount++;
+    if (mode === 'rotate') {
+      const matrices = report.overlay.map((w) =>
+        w.matrix.map((n) => Math.round(n * 10000)).join(','),
+      );
+      assert.equal(new Set(matrices).size, 3, 'rotation rings must retain distinct GPU matrices');
+      const colors = report.overlay.map((w) => w.baseColor.slice(0, 3).join(','));
+      assert.equal(new Set(colors).size, 3, 'rotation rings must retain distinct GPU material slots');
+    }
+    const finalIndex = selectCaptureWorkIndex(model, 'pixel');
+    const frame = await replay.inspectWork(finalIndex, ['pipeline', 'bindings', 'pixels']);
+    assert(frame.ok, JSON.stringify(frame.error));
+    const rt = frame.value.attachment;
+    assert(rt && rt.width === captured.width && rt.height === captured.height);
+    const pixels = decodeToRgba8(rt.bytes, rt.format, rt.width, rt.height);
+    assert(pixels);
+    let sum = 0,
+      max = 0,
+      coveredSum = 0,
+      coveredCount = 0,
+      over = 0;
+    for (let i = 0; i < live.length; i += 4) {
+      const covered = Math.max(live[i], live[i + 1], live[i + 2]) > 32;
+      for (let c = 0; c < 3; c++) {
+        const d = Math.abs(live[i + c] - pixels[i + c]) / 255;
+        sum += d;
+        max = Math.max(max, d);
+        if (d > 0.05) over++;
+        if (covered) {
+          coveredSum += d;
+          coveredCount++;
+        }
       }
     }
+    const mean = sum / ((live.length / 4) * 3),
+      coveredMean = coveredSum / (coveredCount || 1);
+    report.pixels = {
+      finalWorkIndex: finalIndex,
+      alignment: 'identity',
+      mean,
+      maxChannelDelta: max,
+      coveredMean,
+      channelsOverEpsilon: over,
+      epsilon: 0.05,
+    };
+    writeFileSync(resolve(output, `${mode}-live.png`), encodePng(rt.width, rt.height, live));
+    writeFileSync(
+      resolve(output, `${mode}-replay.png`),
+      encodePng(rt.width, rt.height, pixels),
+    );
+    writeFileSync(resolve(output, `${mode}-rhi-report.json`), JSON.stringify(report, null, 2));
+    assert(mean <= 0.05 && max <= 0.05 && coveredMean <= 0.05, JSON.stringify(report.pixels));
+    console.log(
+      JSON.stringify(
+        {
+          mode,
+          digest: captured.digest,
+          draws: overlays.length,
+          pixels: report.pixels,
+          unseededResources: model.unseededResources.length,
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    (await replay.dispose()).unwrap();
   }
-  const mean = sum / ((live.length / 4) * 3),
-    coveredMean = coveredSum / (coveredCount || 1);
-  report.pixels = {
-    finalWorkIndex: finalIndex,
-    alignment: 'identity',
-    mean,
-    maxChannelDelta: max,
-    coveredMean,
-    channelsOverEpsilon: over,
-    epsilon: 0.05,
-  };
-  writeFileSync(resolve(output, `${mode}-live.png`), writeReferencePng(live, rt.width, rt.height));
-  writeFileSync(
-    resolve(output, `${mode}-replay.png`),
-    writeReferencePng(pixels, rt.width, rt.height),
-  );
-  writeFileSync(resolve(output, `${mode}-rhi-report.json`), JSON.stringify(report, null, 2));
-  assert(mean <= 0.05 && max <= 0.05 && coveredMean <= 0.05, JSON.stringify(report.pixels));
-  console.log(
-    JSON.stringify(
-      {
-        mode,
-        digest: captured.digest,
-        draws: overlays.length,
-        pixels: report.pixels,
-        unseededResources: model.unseededResources.length,
-      },
-      null,
-      2,
-    ),
-  );
 } finally {
-  await replay.dispose();
-  freshDevice.destroy?.();
+  await dispose();
 }
-process.exit(0);

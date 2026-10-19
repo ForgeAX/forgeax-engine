@@ -50,7 +50,7 @@ import type { AppDispatchError } from '../types';
  * exists; once an App handle is alive, only frame-time errors (this union)
  * reach onError.
  */
-export type ErrorFanoutListener = (err: AppDispatchError) => void;
+type ErrorFanoutListener = (err: AppDispatchError) => void;
 
 /**
  * Constructor options for ErrorFanoutRegistry. Mirrors the

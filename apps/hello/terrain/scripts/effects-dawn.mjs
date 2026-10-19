@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -20,7 +21,7 @@ import {
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 import { terrainReloadPolicy } from '../src/reload-policy.ts';
 import { installTerrainWalker } from '../src/walker.ts';
@@ -103,7 +104,7 @@ try {
         terrain.flatMap((w) => (w.indexBuffer === null ? [] : [w.indexBuffer.bufferHandleId])),
       );
       const pixels = await h.pixels();
-      writeFileSync(resolve(dir, `${name}.png`), writeReferencePng(pixels, 960, 540));
+      writeFileSync(resolve(dir, `${name}.png`), encodePng(960, 540, pixels));
       const proof = {
         name,
         digest: recorded.digest,

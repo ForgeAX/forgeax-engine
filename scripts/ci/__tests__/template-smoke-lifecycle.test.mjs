@@ -272,7 +272,7 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
     ${functionSource('async function prepareTemplateSmokeProject(slug)', 'const appendServerOutput =')}
     try {
       const root = await prepareTemplateSmokeProject('game-3d');
-      assert.equal(await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8'), original.replace('mapSize: 1024,', 'mapSize: 256,').replace('cascadeCount: 3,', 'cascadeCount: 1,'));
+      assert.equal(await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8'), original.replace('DirectionalLight: {', 'DirectionalLight: {cascadeCount: 1,mapSize: 256,'));
       assert.equal(await readFile(resolve(ROOT, 'templates/game-3d/assets/scene.pack.ts'), 'utf8'), original);
       const descriptor = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8'));
       assert.equal(descriptor.id, 'template-game-3d');
@@ -575,6 +575,7 @@ test('Preview readiness terminates when an HTTP server accepts but never respond
       `
     import { createServer } from 'node:http';
     import { setTimeout as sleep } from 'node:timers/promises';
+    import { decodeCatalogWire } from '@forgeax/engine/pack';
     const listener = createServer(() => {});
     await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
     const ORIGIN = 'http://127.0.0.1:' + listener.address().port;
@@ -611,13 +612,14 @@ test('Preview readiness waits for its Catalog and preserves terminal producer er
     import assert from 'node:assert/strict';
     import { createServer } from 'node:http';
     import { setTimeout as sleep } from 'node:timers/promises';
+    import { decodeCatalogWire } from '@forgeax/engine/pack';
     const CATALOG_URL = '/catalog.json';
     let ready = false, failed = false, reads = 0;
     const listener = createServer((req, res) => {
       if (req.url === CATALOG_URL) {
         reads++;
         res.statusCode = failed ? 500 : ready ? 200 : 503;
-        res.end(failed ? 'character.pack.ts: module initialization failed' : JSON.stringify({ entries: [] }));
+        res.end(failed ? 'character.pack.ts: module initialization failed' : JSON.stringify({ schemaVersion: 'runtime-catalog-snapshot-v1', scopeId: 'readiness', generation: 1, authority: 'authoritative', entries: [] }));
       } else res.end('<html>Listener only</html>');
     });
     await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
@@ -664,13 +666,14 @@ test('Preview waits for a slow Catalog freshness barrier without restarting requ
     import assert from 'node:assert/strict';
     import { createServer } from 'node:http';
     import { setTimeout as sleep } from 'node:timers/promises';
+    import { decodeCatalogWire } from '@forgeax/engine/pack';
     let reads = 0;
     const listener = createServer(async (_req, res) => {
       reads++;
       // Every real Catalog request fences filesystem state. It can take
       // longer than a second even after Vite's HTTP listener is ready.
       await sleep(1500);
-      res.end(JSON.stringify({ entries: [{ guid: 'slow-but-current' }] }));
+      res.end(JSON.stringify({ schemaVersion: 'runtime-catalog-snapshot-v1', scopeId: 'readiness', generation: 1, authority: 'authoritative', entries: [{ guid: 'slow-but-current' }] }));
     });
     await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
     const ORIGIN = 'http://127.0.0.1:' + listener.address().port;

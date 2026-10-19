@@ -81,19 +81,23 @@ describe('M5 handle-migration', () => {
       }
     });
 
-    it('retains a live cubemap source slot when sweeping complete handles', () => {
+    it('retains only the requested cubemap generation when sweeping complete handles', () => {
       const store = new GpuResidencyCache();
       const destroy = vi.fn(() => ({ ok: true }));
       const mockGpuTexture = { isDestroyed: false, destroy };
       const slot = 1060;
-      (store as any).cubemapGpuHandles.set(slot, {
-        texture: mockGpuTexture,
-        view: undefined,
-        faceViews: [],
-      });
+      (store as any).cubemapGpuHandles.set(
+        pack(slot, 3),
+        {
+          texture: mockGpuTexture,
+          view: undefined,
+          faceViews: [],
+        },
+        0,
+      );
       const h0 = pack(slot, 0) as Handle<'EquirectAsset', 'shared'>;
       const h3 = pack(slot, 3) as Handle<'EquirectAsset', 'shared'>;
-      expect(store.getCubemapGpuTexture(h0)).toBe(mockGpuTexture);
+      expect(store.getCubemapGpuTexture(h0)).toBeUndefined();
       expect(store.getCubemapGpuTexture(h3)).toBe(mockGpuTexture);
       expect(store.releaseUnreferenced(new Set([Number(h3)])).freed).toBe(0);
       expect(destroy).not.toHaveBeenCalled();

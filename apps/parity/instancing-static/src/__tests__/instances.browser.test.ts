@@ -179,7 +179,7 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
       );
       world.spawn({
         component: DirectionalLight,
-        data: { direction: [-0.3, -1, -0.5], color: [1, 1, 1], intensity: 1 },
+        data: { castShadow: true, direction: [-0.3, -1, -0.5], color: [1, 1, 1], intensity: 1 },
       });
 
       world.spawn(

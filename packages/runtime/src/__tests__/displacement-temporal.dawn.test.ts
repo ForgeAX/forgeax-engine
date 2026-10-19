@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -11,7 +12,6 @@ import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -60,7 +60,10 @@ it.each([
     )
     .unwrap();
   world
-    .spawn({ component: DirectionalLight, data: { direction: [0, 0, -1], intensity: 3 } })
+    .spawn({
+      component: DirectionalLight,
+      data: { castShadow: true, direction: [0, 0, -1], intensity: 3 },
+    })
     .unwrap();
   const native = renderValue(renderer.nativeDevice());
   const height = native.createTexture({ size: [8, 8], format: 'rgba8unorm', usage: 0x7 });
@@ -196,7 +199,7 @@ it.each([
           image.bytes.byteLength,
         );
         const center = Array.from({ length: 4 }, (_, lane) =>
-          halfToFloat(values.getUint16((32 * 64 + 32) * 8 + lane * 2, true)),
+          halfFloat.f16ToF32(values.getUint16((32 * 64 + 32) * 8 + lane * 2, true)),
         );
         const live = renderValue(
           await renderer.observe(receipt, { include: ['final-display'] }),

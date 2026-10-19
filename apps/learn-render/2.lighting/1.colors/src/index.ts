@@ -1455,7 +1455,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // (LO: Phong diffuse formula with `normalize(lightPos - FragPos)`).
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [LIGHT_DIR[0] ?? 0, LIGHT_DIR[1] ?? 0, LIGHT_DIR[2] ?? 0],
       color: [LIGHT_COLOR_R, LIGHT_COLOR_G, LIGHT_COLOR_B],
       intensity: 1.0,

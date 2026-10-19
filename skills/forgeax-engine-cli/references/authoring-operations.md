@@ -51,7 +51,7 @@ defineTool(descriptor, executor) colocates static metadata and execution. Execut
 The SDK command client and createBrowserCapture are composable APIs. For continuous observation, use the live instance owned by forgeax dev; scripts handle
 Playwright interaction and checkpoint compositor screenshots. This is not a Catalog operation: Page and
 session remain program-local, and programs return only JSON-safe capture rows/report paths. On exit,
-DevKit closes sessions. One-shot forgeax project capture --software reuses the browser owner.
+DevKit closes sessions. One-shot forgeax project capture --backend software reuses the browser owner.
 
 ## Composition and evidence
 

@@ -1,3 +1,4 @@
+import { mipDimension } from '@forgeax/engine-types';
 import type { ReflectionProbeUpdateIntent } from '../components/reflection-probe';
 
 export const REFLECTION_PROBE_BYTES_PER_TEXEL = 8;
@@ -115,7 +116,7 @@ export function estimateReflectionProbeBytes(
   const clamped = Math.min(resolution, maxResolution);
   let filteredTexels = 0;
   for (let mip = 0; mip < 5; mip++) {
-    const size = Math.max(1, Math.floor(clamped / 2 ** mip));
+    const size = mipDimension(clamped, mip);
     filteredTexels += size * size;
   }
   // Raw cube + two alternating filtered cubes + their depth attachments.

@@ -367,6 +367,11 @@ Relocating an unchanged checkout keeps that identity; changes to source bytes,
 imports or relative source mappings invalidate it. Extra root discovery order
 does not affect the identity.
 
+Cooked shader closures identify roots and imports by module ID. Their published
+bytes and digests survive checkout relocation; the Pack cooker resolves those
+IDs back through the current catalog for local file watching. Source-byte or
+module-ID changes still invalidate the material publication.
+
 Sources are read on every cook; material values, references, generations and
 receipts are published anew. Failed compilations are never retained as results;
 failed compositions are never retained. Returned results cannot mutate retained
@@ -456,3 +461,26 @@ The terrain material context emits an ordinary cooked Standard artifact with the
 `collectMaterialSources`. DevKit records this producer-owned membership in its shared
 source snapshot before deriving the SSR input identity. Unimported shader modules
 remain inputs because material programs can resolve them by module identifier.
+
+Boolean shader conditionals share `projectShaderConditionals` across compile
+entries, imported modules, Vite variants, and import-closure discovery. Partial
+projection preserves active backend directives; explicit author axes or `all`
+flatten active boolean branches too. Opaque expressions retain their nesting.
+
+Surface dynamic-input field types and byte footprints have one Types authority.
+The derived layout supplies CPU write widths and generated WGSL word loads;
+vec3 alignment remains 16 bytes with 12 bytes of values, and u32 stays an integer
+load. Page budgets, identities, atomic writes and GPU retirement keep their existing owners.
+
+`MATERIAL_NUMERIC_LAYOUT` supplies numeric material byte size, alignment and WGSL
+type for ABI derivation, parameter modules, reflection checks and GPU Scene rows.
+The distinct color alias and vec3 payload/alignment rules remain explicit.
+
+`MATERIAL_TEXTURE_LAYOUT` supplies sampled-view dimensions, default sample types
+and WGSL declarations. Both layout tables are immutable. Explicit comparison
+samplers emit `sampler_comparison`; automatic texture samplers stay filtering samplers.
+
+All scene-index programs share reflection admission for scene-material and
+visible-item storage addresses, read-only bindings, array strides and row span.
+Standard rows additionally validate derived members; medium templates keep their
+opaque payload without maintaining a second copy of those storage checks.

@@ -1,7 +1,7 @@
 import { loadMaterialReadyByGuid, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { AssetGuid } from '@forgeax/engine-pack';
+import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
@@ -103,10 +103,11 @@ export async function verifyMaterialPublication(options: {
       const response = await fetch(options.binding.catalogUrl);
       const body = (await response.json()) as {
         authority: string;
-        entries: PackIndexEntry[];
+        entries: unknown;
         diagnostics?: unknown[];
       };
-      return body;
+      // This probe also inspects degraded snapshots during producer recovery.
+      return { ...body, entries: decodeCatalogWire(body.entries).unwrap() };
     };
     const baseline = await catalog();
     expect(baseline.authority, inspect(baseline)).toBe('authoritative');

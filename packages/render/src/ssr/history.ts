@@ -47,8 +47,8 @@ export interface SsrHistorySlot {
 export interface SsrHistoryResources {
   readonly width: number;
   readonly height: number;
-  readonly halfWidth: number;
-  readonly halfHeight: number;
+  readonly traceWidth: number;
+  readonly traceHeight: number;
   readonly bytes: number;
   readonly descriptor: TextureDescriptor;
   readonly slots: readonly [SsrHistorySlot, SsrHistorySlot];
@@ -65,8 +65,8 @@ export interface SsrHistoryInspection {
   readonly state: SsrHistoryState;
   readonly width: number;
   readonly height: number;
-  readonly halfWidth: number;
-  readonly halfHeight: number;
+  readonly traceWidth: number;
+  readonly traceHeight: number;
   readonly format: typeof SSR_HISTORY_FORMAT;
   readonly historyCount: 0 | 2;
   readonly historyValid: boolean;
@@ -113,11 +113,11 @@ function createResources(
   width: number,
   height: number,
 ): Result<SsrHistoryResources, RhiError> {
-  const halfWidth = Math.max(1, Math.floor(width / 2));
-  const halfHeight = Math.max(1, Math.floor(height / 2));
+  const traceWidth = Math.max(1, Math.floor(width));
+  const traceHeight = Math.max(1, Math.floor(height));
   const descriptor: TextureDescriptor = {
     label: 'ssr-history-rgba16float',
-    size: { width: halfWidth, height: halfHeight, depthOrArrayLayers: 1 },
+    size: { width: traceWidth, height: traceHeight, depthOrArrayLayers: 1 },
     format: SSR_HISTORY_FORMAT,
     usage: HISTORY_USAGE,
     mipLevelCount: 1,
@@ -197,9 +197,9 @@ function createResources(
   return ok({
     width,
     height,
-    halfWidth,
-    halfHeight,
-    bytes: halfWidth * halfHeight * 12 * 2,
+    traceWidth,
+    traceHeight,
+    bytes: traceWidth * traceHeight * 12 * 2,
     descriptor,
     slots: slots as [SsrHistorySlot, SsrHistorySlot],
     paramsBuffer: params.value,
@@ -412,8 +412,8 @@ export class SsrHistoryOwner {
       state: this.state,
       width: active?.width ?? 0,
       height: active?.height ?? 0,
-      halfWidth: active?.halfWidth ?? 0,
-      halfHeight: active?.halfHeight ?? 0,
+      traceWidth: active?.traceWidth ?? 0,
+      traceHeight: active?.traceHeight ?? 0,
       format: SSR_HISTORY_FORMAT,
       historyCount: active === undefined ? 0 : 2,
       historyValid: this.valid,

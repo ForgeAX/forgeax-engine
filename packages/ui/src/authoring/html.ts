@@ -9,22 +9,16 @@ import {
 } from 'parse5';
 import type { UiBrowserExtension } from '../browser-extensions.js';
 import { parseCssAuthoring } from './css.js';
-import { sourceRange } from './diagnostics.js';
-import { UI_AUTHORING_PROFILE, type UiAuthoringCategory } from './profile.js';
+import { sourceRange, type UiAuthoringParse } from './diagnostics.js';
+import {
+  authoringUrlCategory,
+  pickAuthoringCategory,
+  UI_AUTHORING_PROFILE,
+  type UiAuthoringCategory,
+} from './profile.js';
 
 type Element = DefaultTreeAdapterTypes.Element;
 type ParentNode = DefaultTreeAdapterTypes.ParentNode;
-
-export interface HtmlAuthoringParse {
-  readonly sourcePath: string;
-  readonly source: string;
-  readonly category: UiAuthoringCategory;
-  readonly diagnostics: readonly ImportDiagnostic[];
-  readonly references: readonly {
-    readonly value: string;
-    readonly range: ReturnType<typeof sourceRange>;
-  }[];
-}
 
 const voidElements = new Set([
   'area',
@@ -77,12 +71,6 @@ function rangeOfValue(
   return offset < 0 ? attrRange : sourceRange(source, offset, offset + Math.max(value.length, 1));
 }
 
-function urlCategory(value: string): UiAuthoringCategory {
-  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|data:)/i.test(value)) return 'runtime-bound';
-  if (value.startsWith('/') || value.startsWith('../')) return 'normalizable';
-  return 'native';
-}
-
 function walk(node: ParentNode, visit: (element: Element) => void): void {
   for (const child of node.childNodes) {
     if (child.nodeName !== '#text' && child.nodeName !== '#comment' && 'tagName' in child) {
@@ -129,9 +117,9 @@ export function parseHtmlAuthoring(
   source: string,
   sourcePath: string,
   options: HtmlAuthoringOptions = {},
-): HtmlAuthoringParse {
+): UiAuthoringParse {
   const diagnostics: ImportDiagnostic[] = [];
-  const references: { value: string; range: ReturnType<typeof sourceRange> }[] = [];
+  const references: UiAuthoringParse['references'][number][] = [];
   let category: UiAuthoringCategory = 'native';
   const parts = new Set<string>();
   let inputWithoutLabel: Element | undefined;
@@ -299,9 +287,9 @@ export function parseHtmlAuthoring(
           parts.add(value);
         }
       } else if (urlAttributes.has(name) && value.length > 0) {
-        const urlClass = urlCategory(value);
+        const urlClass = authoringUrlCategory(value);
         if (!options.portableOnly && urlClass !== 'native') {
-          category = category === 'runtime-bound' ? category : urlClass;
+          category = pickAuthoringCategory(category, urlClass);
           diagnostics.push({
             code: urlClass === 'runtime-bound' ? 'runtime-url' : 'root-absolute-url',
             severity: 'error',

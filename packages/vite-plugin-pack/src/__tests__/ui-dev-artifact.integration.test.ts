@@ -3,7 +3,8 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { projectImportProductForBuild } from '@forgeax/engine-import';
-import type { PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
+import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   createAssetRegistry,
@@ -93,10 +94,10 @@ describe('UI Pack v2 artifact transport', () => {
       const base = `http://127.0.0.1:${address.port}`;
       const response = await fetch(new URL(accepted.catalogUrl, base));
       expect(response.status).toBe(200);
-      const catalog = (await response.json()) as { entries: PackIndexEntry[] };
+      const catalog = decodeCatalogWire(await response.json()).unwrap();
       registry = createAssetRegistry({
         scopeId: accepted.scopeId,
-        catalog: createCatalogSource({ entries: catalog.entries }),
+        catalog: createCatalogSource({ entries: catalog }),
         fetcher: (input, init) => fetch(new URL(String(input), base), init),
       });
       const uiKind = defineAssetKind<UiAsset, 'ui'>('ui');

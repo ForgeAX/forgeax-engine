@@ -199,7 +199,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // The solid-colour Skylight keeps the side facing away from the sun readable.
   world.spawn({
     component: DirectionalLight,
-    data: { direction: [-0.5, -1, -0.3], intensity: 2 },
+    data: { castShadow: true, direction: [-0.5, -1, -0.3], intensity: 2 },
   });
   world.spawn({ component: Skylight, data: { color: [0.75, 0.85, 1], intensity: 0.35 } });
 

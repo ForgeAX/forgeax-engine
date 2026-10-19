@@ -1,6 +1,6 @@
 // parse-skin.ts - glTF skin parser (feat-20260523-skin-skeleton-animation M0).
 //
-// Implements parseSkin(): parses glTF `skins[]` array into GltfSkeletonRecord[]
+// Implements parseSkin(): parses glTF `skins[]` array into SkeletonPod[]
 // with IBM (inverse bind matrices) and jointPaths (Name-component path from
 // scene root). Used by parseGltfWithBin to populate GltfDoc.
 //
@@ -11,7 +11,7 @@
 //   - requirements AC-10 (IR extension)
 //   - charter P3 (fail-fast on invalid data)
 
-import { parseConservativeAnimatedBounds, type ShadowCapsuleSet } from '@forgeax/engine-types';
+import { parseConservativeAnimatedBounds, type SkeletonPod } from '@forgeax/engine-types';
 import {
   type AccessorJson,
   type BufferViewJson,
@@ -22,26 +22,6 @@ import { buildNodeParentMap, resolveNamedNodePath } from './node-path.js';
 
 /** Maximum joints per skin (glTF spec practical limit). */
 const MAX_JOINTS = 256;
-
-/**
- * Skeleton intermediate representation produced by parseSkin.
- *
- * Each entry corresponds to one glTF skin[] index. `jointPaths` is a
- * parallel array to the skeleton's joints; each path is the sequence of
- * Name-component values from the scene root to the joint node.
- */
-export interface GltfSkeletonRecord {
-  /** Number of joints in this skeleton (= IBM length / 16). */
-  readonly jointCount: number;
-  /** Inverse bind matrices, Float32Array of length jointCount * 16. */
-  readonly inverseBindMatrices: Float32Array;
-  /** Per-joint Name path from scene root (parallel to joints array). */
-  readonly jointPaths: readonly string[];
-  /** Producer-authored conservative animated local bounds when supplied. */
-  readonly bounds?: Float32Array;
-  /** Bind-space shadow capsules fitted from the skinned primitives. */
-  readonly shadowCapsules?: ShadowCapsuleSet;
-}
 
 interface SkinJson {
   readonly name?: string;
@@ -106,7 +86,7 @@ function resolveJointPath(
 }
 
 /**
- * Parse glTF skins[] array into GltfSkeletonRecord[].
+ * Parse glTF skins[] array into SkeletonPod[].
  *
  * For each skin:
  * 1. Decode IBM accessor (or fill identity if absent)
@@ -119,12 +99,12 @@ export function parseSkin(
   accessors: readonly AccessorJson[],
   bufferViews: readonly BufferViewJson[],
   buffers: readonly Uint8Array[],
-): Result<readonly GltfSkeletonRecord[], GltfError> {
+): Result<readonly SkeletonPod[], GltfError> {
   if (skinsJson === undefined || skinsJson.length === 0) {
     return ok([]);
   }
 
-  const records: GltfSkeletonRecord[] = [];
+  const records: SkeletonPod[] = [];
   const parentOf = buildNodeParentMap(nodesJson);
 
   for (let skinIdx = 0; skinIdx < skinsJson.length; skinIdx++) {

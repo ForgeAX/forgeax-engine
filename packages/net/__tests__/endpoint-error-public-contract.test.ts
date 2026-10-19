@@ -4,8 +4,6 @@ import { describe, expect, it } from 'vitest';
 // exhaustively narrow EndpointError via the public entry.
 import {
   EndpointError,
-  ENDPOINT_EXPECTED,
-  ENDPOINT_ERROR_HINTS,
 } from '@forgeax/engine-net';
 import type { PeerId } from '@forgeax/engine-net';
 
@@ -36,8 +34,6 @@ describe('EndpointError public contract (barrel-only import)', () => {
 
     const err = new EndpointError({
       code: 'connection-failed',
-      expected: ENDPOINT_EXPECTED['connection-failed'],
-      hint: ENDPOINT_ERROR_HINTS['connection-failed'],
       detail: { address: 'ws://127.0.0.1:43100', cause: 'ECONNREFUSED' },
     });
     expect(handleError(err)).toContain('connection failed');
@@ -45,30 +41,9 @@ describe('EndpointError public contract (barrel-only import)', () => {
     expect(handleError(err)).toContain('ECONNREFUSED');
   });
 
-  it('all 5 error codes have non-empty expected and hint via barrel', () => {
-    // Access the tables through the barrel import only.
-    const codes: string[] = [
-      'peer-not-found',
-      'connection-closed',
-      'send-failed',
-      'already-closed',
-      'connection-failed',
-    ];
-    for (const code of codes) {
-      const expected = ENDPOINT_EXPECTED[code as keyof typeof ENDPOINT_EXPECTED];
-      const hint = ENDPOINT_ERROR_HINTS[code as keyof typeof ENDPOINT_ERROR_HINTS];
-      expect(expected).toBeTypeOf('string');
-      expect(expected.length).toBeGreaterThan(0);
-      expect(hint).toBeTypeOf('string');
-      expect(hint.length).toBeGreaterThan(0);
-    }
-  });
-
   it('constructs connection-failed with URL/listen address and cause', () => {
     const err = new EndpointError({
       code: 'connection-failed',
-      expected: ENDPOINT_EXPECTED['connection-failed'],
-      hint: ENDPOINT_ERROR_HINTS['connection-failed'],
       detail: { address: 'ws://localhost:43100', cause: 'server not running' },
     });
     expect(err.code).toBe('connection-failed');
@@ -81,8 +56,6 @@ describe('EndpointError public contract (barrel-only import)', () => {
     // type supports discriminated union narrowing via .code.
     const err = new EndpointError({
       code: 'peer-not-found',
-      expected: ENDPOINT_EXPECTED['peer-not-found'],
-      hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
       detail: { peerId: 1 as PeerId },
     });
     // Narrowing by .code gives access to per-code detail fields.

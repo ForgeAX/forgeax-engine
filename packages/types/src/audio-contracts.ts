@@ -35,14 +35,7 @@
  * | `'control-failed'` | Host filter/FFT control is invalid or its source is not retained |
  * | `'bus-not-found'` | AudioSource.bus names an ID absent from the accepted graph |
  */
-export type AudioErrorCode =
-  | 'context-creation-failed'
-  | 'decode-failed'
-  | 'context-suspended'
-  | 'invalid-clip-handle'
-  | 'bus-not-found'
-  | 'control-failed'
-  | 'stream-failed';
+export type AudioErrorCode = AudioErrorDetail['code'];
 
 /**
  * Per-code `AudioError` detail shapes -- discriminated payloads narrowed

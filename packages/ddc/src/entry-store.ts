@@ -66,7 +66,7 @@ function artifactFile(key: string): string {
 
 function validateKey(key: string): void {
   if (!/^[a-f0-9]{64}$/.test(key)) {
-    throw new DdcStoreError('ddc-entry-invalid', `invalid semantic key: ${key}`);
+    throw new DdcStoreError({ code: 'ddc-entry-invalid', detail: `invalid semantic key: ${key}` });
   }
 }
 
@@ -177,10 +177,16 @@ export class DdcEntryStore {
   public async stage(entry: DdcEntry): Promise<StagedDdcEntry> {
     validateKey(entry.key);
     if (entry.receipt.key !== entry.key || entry.receipt.guid !== entry.guid) {
-      throw new DdcStoreError('ddc-entry-invalid', 'receipt identity does not match entry');
+      throw new DdcStoreError({
+        code: 'ddc-entry-invalid',
+        detail: 'receipt identity does not match entry',
+      });
     }
     if (entry.receipt.outputDigest !== ddcOutputDigest(entry)) {
-      throw new DdcStoreError('ddc-entry-invalid', 'receipt output digest does not match entry');
+      throw new DdcStoreError({
+        code: 'ddc-entry-invalid',
+        detail: 'receipt output digest does not match entry',
+      });
     }
     const path = join(this.staging, `${entry.key}-${randomUUID()}`);
     try {
@@ -293,7 +299,7 @@ export class DdcEntryStore {
       const normalized =
         error instanceof DdcStoreError
           ? error
-          : new DdcStoreError('ddc-entry-invalid', 'entry is unreadable');
+          : new DdcStoreError({ code: 'ddc-entry-invalid', detail: 'entry is unreadable' });
       return { ok: false, error: normalized };
     }
   }
@@ -326,20 +332,26 @@ export class DdcEntryStore {
       );
       const outputDigest = `sha256:${readback.output}`;
       if (entry.receipt.outputDigest !== outputDigest) {
-        throw new DdcStoreError('ddc-entry-invalid', 'receipt output digest does not match entry');
+        throw new DdcStoreError({
+          code: 'ddc-entry-invalid',
+          detail: 'receipt output digest does not match entry',
+        });
       }
       const actual = integrityFor(entry, readback);
       if (canonicalDdcJson(actual) !== canonicalDdcJson(integrity)) {
-        throw new DdcStoreError('ddc-entry-invalid', 'entry integrity mismatch');
+        throw new DdcStoreError({ code: 'ddc-entry-invalid', detail: 'entry integrity mismatch' });
       }
       return entry;
     } catch (error) {
       if (incompleteIsError) {
         if (error instanceof DdcStoreError) throw error;
-        throw new DdcStoreError('ddc-entry-incomplete', 'staged entry is incomplete');
+        throw new DdcStoreError({
+          code: 'ddc-entry-incomplete',
+          detail: 'staged entry is incomplete',
+        });
       }
       if (error instanceof DdcStoreError) throw error;
-      throw new DdcStoreError('ddc-entry-invalid', 'entry is unreadable');
+      throw new DdcStoreError({ code: 'ddc-entry-invalid', detail: 'entry is unreadable' });
     }
   }
 }

@@ -63,7 +63,7 @@ export function bootstrap(world: World, options: DeepAgentFeedbackBootstrapOptio
     )
     .unwrap());
   owned.push(world
-    .spawn({ component: DirectionalLight, data: { direction: [-0.4, -0.8, -1], intensity: 1.2 } })
+    .spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -0.8, -1], intensity: 1.2 } })
     .unwrap());
   // Omitting equirect deliberately selects the immediate solid-color fallback.
   owned.push(world

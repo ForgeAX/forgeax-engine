@@ -18,8 +18,8 @@ import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import { createMeshSsboGrowController, INITIAL_MESH_SSBO_SLOT_COUNT } from './mesh-ssbo-grow';
 import {
   BLOOM_COMPOSITE_PARAMS_BYTES,
-  BLOOM_DOWNSAMPLE_PARAMS_BYTES,
-  BLOOM_UPSAMPLE_PARAMS_BYTES,
+  BLOOM_HORIZONTAL_PARAMS_BYTES,
+  BLOOM_VERTICAL_PARAMS_BYTES,
 } from './webgpu-ready-contract';
 import { createReadyPerPassResources } from './webgpu-ready-per-pass';
 
@@ -86,8 +86,8 @@ export function createViewPipelineState(
       ...shared,
       scope: child,
       generation: ++bloomGeneration,
-      bloomDownsampleParamsBuffer: params('bloom-downsample', BLOOM_DOWNSAMPLE_PARAMS_BYTES),
-      bloomUpsampleParamsBuffer: params('bloom-upsample', BLOOM_UPSAMPLE_PARAMS_BYTES),
+      bloomHorizontalParamsBuffer: params('bloom-horizontal', BLOOM_HORIZONTAL_PARAMS_BYTES),
+      bloomVerticalParamsBuffer: params('bloom-vertical', BLOOM_VERTICAL_PARAMS_BYTES),
       bloomCompositeParamsBuffer: params('bloom-composite', BLOOM_COMPOSITE_PARAMS_BYTES),
     };
   };

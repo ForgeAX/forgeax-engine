@@ -13,16 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  type PlatformPath,
-  relative,
-  resolve,
-  sep,
-} from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { packlist } from '@pnpm/fs.packlist';
@@ -32,6 +23,7 @@ import {
   inspectEngineWorkspace,
   readEngineBinding,
 } from './engine-binding.js';
+import { filesystemPathRelative, isFilesystemPathWithin } from './filesystem-path.js';
 import type { CommandError } from './types.js';
 
 const omitted = new Set([
@@ -146,27 +138,6 @@ interface SnapshotPlanOptions {
 class SnapshotChangedError extends Error {}
 
 const SNAPSHOT_ATTEMPTS = 3;
-
-type SnapshotPath = Pick<PlatformPath, 'isAbsolute' | 'relative' | 'resolve' | 'sep'>;
-
-/**
- * A snapshot directory is inside the project when it is the project root or a
- * descendant. Another Windows volume is outside: `path.relative` returns that
- * absolute path instead of a `..` prefix.
- */
-export function snapshotDirectoryInsideProject(
-  projectRoot: string,
-  directory: string,
-  pathApi: SnapshotPath = { isAbsolute, relative, resolve, sep },
-): boolean {
-  const relativeDirectory = pathApi.relative(
-    pathApi.resolve(projectRoot),
-    pathApi.resolve(directory),
-  );
-  if (!relativeDirectory) return true;
-  if (pathApi.isAbsolute(relativeDirectory)) return false;
-  return !relativeDirectory.startsWith(`..${pathApi.sep}`) && relativeDirectory !== '..';
-}
 
 function stamp(info: BigIntStats): { stamp: string; mode: number; size: number } {
   return {
@@ -434,8 +405,8 @@ async function pnpmContext(
       },
     );
 
-  const importerPath = relative(root, packageRoot);
-  if (isAbsolute(importerPath) || importerPath === '..' || importerPath.startsWith(`..${sep}`))
+  const importerPath = filesystemPathRelative(root, packageRoot);
+  if (importerPath === undefined)
     throw dependencyClosureError(
       'project-pnpm-importer-mismatch',
       'The package is outside its pnpm workspace root.',
@@ -647,14 +618,6 @@ function lockEntry(context: PnpmContext, name: string, specifier: string): strin
   return entry.version;
 }
 
-function pathIsInside(parent: string, child: string): boolean {
-  const relativePath = relative(resolve(parent), resolve(child));
-  return (
-    relativePath === '' ||
-    (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
-  );
-}
-
 function pnpmVirtualStoreEntry(depPath: string, maxLength: number): string | undefined {
   if (!Number.isSafeInteger(maxLength) || maxLength < 33) return undefined;
   let filename = depPath.replace(/[\\/:*?"<>|#]/g, '+');
@@ -763,7 +726,7 @@ async function verifyNpmAliasPlacement(
 
   if (
     proofKey(expectedPackageRoot) !== proofKey(actual.root) ||
-    !pathIsInside(virtualStoreRoot, actual.root) ||
+    !isFilesystemPathWithin(virtualStoreRoot, actual.root) ||
     !(await lstat(actual.path)).isSymbolicLink()
   )
     throw dependencyClosureError(
@@ -875,7 +838,7 @@ async function verifyFileDependencyPlacement(
   }
   if (
     normalizeRecordedPath(expectedPackageRoot) !== normalizeRecordedPath(actual.root) ||
-    !pathIsInside(virtualStoreRoot, actual.root) ||
+    !isFilesystemPathWithin(virtualStoreRoot, actual.root) ||
     !(await lstat(actual.path)).isSymbolicLink()
   )
     fileDependencyUnverified(
@@ -1159,7 +1122,7 @@ async function assertPublicPackageExports(packageRoot: string): Promise<void> {
       );
     const wildcardCount = [...target].filter((character) => character === '*').length;
     const absolute = resolve(packageRoot, target);
-    if (!pathIsInside(packageRoot, absolute))
+    if (!isFilesystemPathWithin(packageRoot, absolute))
       throw dependencyClosureError(
         'project-engine-export-invalid',
         'A local Engine public target escapes its package.',
@@ -1276,8 +1239,8 @@ async function planSnapshot(
     if (installedBy !== undefined) {
       // A verified workspace link belongs to the install that selected it,
       // even when the linked checkout contains its own workspace manifest.
-      const path = relative(installedBy.root, canonical);
-      if (isAbsolute(path) || path === '..' || path.startsWith(`..${sep}`))
+      const path = filesystemPathRelative(installedBy.root, canonical);
+      if (path === undefined)
         throw dependencyClosureError(
           'project-pnpm-importer-mismatch',
           'The linked package is outside its installing pnpm workspace.',
@@ -1543,7 +1506,7 @@ async function createRunSnapshotAttempt(
   readonly version: string;
   readonly dispose: () => Promise<void>;
 }> {
-  if (snapshotDirectoryInsideProject(projectRoot, directory))
+  if (isFilesystemPathWithin(projectRoot, directory))
     throw new Error('Run snapshots must be stored outside the project inputs.');
   const dispose = () => rm(directory, { recursive: true, force: true });
   try {

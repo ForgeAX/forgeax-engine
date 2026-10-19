@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `move_sprite`: a real sprite follows Time-driven motion,
@@ -7,7 +8,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = testQuality.viewport.width;
@@ -120,7 +121,7 @@ for (let i = 0; i < earlyFrame.length; i++) motionDelta += Math.abs((earlyFrame[
 motionDelta /= earlyFrame.length * 255;
 const pngPath = resolve(here, '..', 'artifacts', 'smoke-frame.png');
 mkdirSync(dirname(pngPath), { recursive: true });
-writeFileSync(pngPath, writeReferencePng(lateFrame, WIDTH, HEIGHT));
+writeFileSync(pngPath, encodePng(WIDTH, HEIGHT, lateFrame));
 console.log(`[smoke] frames=${FRAMES} minX=${minSeen.toFixed(3)} maxX=${maxSeen.toFixed(3)} reversals=${reversals} motionMeanDelta=${motionDelta.toFixed(5)} errors=${errors.length} png=${pngPath}`);
 const visible = lateFrame.some((value, index) => index % bytesPerPixel === 3 && value > 0) || earlyFrame.some((value, index) => index % bytesPerPixel === 3 && value > 0);
 if (rendererBackend(renderer) !== 'webgpu' || FRAMES < 60 || minSeen > MIN_X + 0.2 || maxSeen < MAX_X - 0.2 || reversals < 2 || motionDelta <= 0.0005 || !visible || errors.length > 0) {

@@ -1,5 +1,6 @@
+import { encodeBase64 } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { decodePackBlob, encodePackBlob, validatePackBlob } from '../blob.js';
+import { decodePackBlob, validatePackBlob } from '../blob.js';
 
 describe('portable Pack binary transport', () => {
   it('uses the host byte codec without a per-byte JavaScript expansion', () => {
@@ -9,7 +10,7 @@ describe('portable Pack binary transport', () => {
       throw new Error('large binary publication must use the available host codec');
     });
     try {
-      expect(encodePackBlob(bytes)).toBe('AID/');
+      expect(encodeBase64(bytes)).toBe('AID/');
     } finally {
       fallback.mockRestore();
     }
@@ -25,7 +26,7 @@ describe('portable Pack binary transport', () => {
     const storage = new Uint8Array(length + 7);
     for (let i = 0; i < storage.length; i++) storage[i] = i & 255;
     const bytes = storage.subarray(3, length + 3);
-    const encoded = encodePackBlob(bytes);
+    const encoded = encodeBase64(bytes);
     expect(encoded.length).toBe(Math.ceil(length / 3) * 4);
     expect(encoded).toBe(Buffer.from(bytes).toString('base64'));
     expect(
@@ -78,7 +79,7 @@ describe('portable Pack binary transport', () => {
     const bufferDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Buffer');
     Object.defineProperty(globalThis, 'Buffer', { value: undefined, configurable: true });
     try {
-      expect(encodePackBlob(bytes)).toBe('AID/');
+      expect(encodeBase64(bytes)).toBe('AID/');
       expect([...decodePackBlob('AID/')]).toEqual([...bytes]);
     } finally {
       if (descriptor) Object.defineProperty(typedArrayConstructor, 'fromBase64', descriptor);

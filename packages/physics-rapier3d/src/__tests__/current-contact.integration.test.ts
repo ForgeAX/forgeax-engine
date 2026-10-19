@@ -105,6 +105,107 @@ it('keeps current resting geometry but does not replay sleeping impulses, moved 
   expect(physics.wakeBody(1)).toMatchObject({ ok: false });
 });
 
+it('projects unique current neighbors in the requested normal direction without decoding points', async () => {
+  const { physics, raw, body } = await fixture();
+  try {
+    expect(physics.getCurrentContactNeighbors(2)).toMatchObject({ ok: false });
+    for (let step = 0; step < 180; step += 1) physics.step(1 / 60);
+    const normal = { direction: [0, -1, 0] as const, minimumDot: 0.2 };
+    const full = physics.getCurrentContacts(2).unwrap();
+    const manifoldRead = vi.spyOn(raw.narrowPhase, 'contactPair');
+    const neighbors = physics.getCurrentContactNeighbors(2, undefined, normal).unwrap();
+    expect(neighbors).toEqual({
+      fixedStep: full.fixedStep,
+      deltaTime: full.deltaTime,
+      entities: [1],
+    });
+    expect(manifoldRead).not.toHaveBeenCalled();
+    expect(physics.getCurrentContactNeighbors(1, undefined, normal).unwrap().entities).toEqual([]);
+    expect(physics.getCurrentContactNeighbors(1).unwrap().entities).toEqual([2]);
+    expect(physics.getCurrentContactNeighbors(2, 0).unwrap().entities).toEqual([]);
+    for (const minimumDot of [1, 1 - Number.EPSILON, 1 + Number.EPSILON]) {
+      expect(
+        physics
+          .getCurrentContactNeighbors(2, undefined, { direction: [0, -1, 0], minimumDot })
+          .unwrap().entities,
+      ).toEqual(minimumDot < 1 ? [1] : []);
+      expect(
+        physics
+          .getCurrentContactNeighbors(1, undefined, { direction: [0, 1, 0], minimumDot })
+          .unwrap().entities,
+      ).toEqual(minimumDot < 1 ? [2] : []);
+    }
+    for (const direction of [
+      [NaN, 0, 0],
+      [0, Infinity, 0],
+      [0, 0, -Infinity],
+    ] as const) {
+      expect(
+        physics.getCurrentContactNeighbors(2, undefined, { direction, minimumDot: 0 }),
+      ).toMatchObject({ ok: false });
+    }
+    for (const minimumDot of [NaN, Infinity, -Infinity]) {
+      expect(
+        physics.getCurrentContactNeighbors(2, undefined, { ...normal, minimumDot }),
+      ).toMatchObject({ ok: false });
+    }
+    expect(
+      physics
+        .getCurrentContactNeighbors(2, undefined, { direction: [0, -1e100, 0], minimumDot: 1e99 })
+        .unwrap().entities,
+    ).toEqual([1]);
+    expect(body.isSleeping()).toBe(true);
+    physics.wakeBody(2).unwrap();
+    expect(physics.getCurrentContactNeighbors(2)).toMatchObject({ ok: false });
+    physics.step(1 / 60);
+    expect(physics.getCurrentContactNeighbors(2, undefined, normal).unwrap().entities).toEqual([1]);
+    expect(neighbors.entities).toEqual([1]);
+    physics.removeEntity(2);
+    expect(physics.getCurrentContactNeighbors(2)).toMatchObject({
+      ok: false,
+      error: { code: 'managed-body-missing' },
+    });
+    expect(physics.getCurrentContactNeighbors(1).unwrap().entities).toEqual([]);
+    expect(physics.getCurrentContacts(1).unwrap().manifolds).toEqual([]);
+  } finally {
+    physics.dispose();
+  }
+  expect(physics.getCurrentContactNeighbors(1)).toMatchObject({ ok: false });
+});
+
+it('deduplicates collider contacts and rejects unowned or replaced native bodies', async () => {
+  const { physics, raw, body, floor } = await fixture();
+  const module = await loadRapier3D();
+  if ('code' in module) throw module;
+  try {
+    raw.createCollider(module.ColliderDesc.cuboid(0.2, 0.5, 0.2).setTranslation(0.65, 0, 0), body);
+    for (let step = 0; step < 90; step += 1) physics.step(1 / 60);
+    const full = physics.getCurrentContacts(2).unwrap().manifolds;
+    expect(full.length).toBeGreaterThan(1);
+    const normal = { direction: [0, -1, 0] as const, minimumDot: 0.2 };
+    expect(physics.getCurrentContactNeighbors(2, undefined, normal).unwrap().entities).toEqual([
+      ...new Set(full.filter((row) => -row.normal[1] > normal.minimumDot).map((row) => row.other)),
+    ]);
+    expect(physics.getCurrentContactNeighbors(1).unwrap().entities).toEqual([2]);
+    floor.collider(0).setEnabled(false);
+    expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([]);
+    floor.collider(0).setEnabled(true);
+    floor.userData = undefined;
+    expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([]);
+    floor.userData = 1;
+    expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([1]);
+    const replacement = raw.createRigidBody(
+      module.RigidBodyDesc.dynamic().setTranslation(50, 50, 0),
+    );
+    replacement.userData = 2;
+    physics.registerBody(2, replacement.handle);
+    physics.step(1 / 60);
+    expect(physics.getCurrentContactNeighbors(1).unwrap().entities).toEqual([]);
+  } finally {
+    physics.dispose();
+  }
+});
+
 it('prefilters native contacts without relying on collision event flags or publishing manifolds', async () => {
   const { physics } = await fixture();
   try {
@@ -288,6 +389,13 @@ it('preserves compound shape identity and transformed world-space solver points'
     }
     expect(maximumResidual).toBeLessThan(0.02);
     const contacts = physics.getCurrentContacts(2).unwrap();
+    expect(
+      physics
+        .getCurrentContactNeighbors(2, undefined, { direction: [0, -1, 0], minimumDot: 0.2 })
+        .unwrap().entities,
+    ).toEqual([
+      ...new Set(contacts.manifolds.filter((row) => row.normal[1] < -0.2).map((row) => row.other)),
+    ]);
     // Native clustering merges the two coplanar support manifolds into one solver manifold.
     expect(contacts.manifolds).toHaveLength(1);
     const totalImpulse = contacts.manifolds.reduce(
@@ -326,6 +434,7 @@ it('excludes sensors from physical contacts', async () => {
     physics.step(1 / 60);
     expect(raw.intersectionPair(body.collider(0), floor.collider(0))).toBe(true);
     expect(physics.getCurrentContacts(2).unwrap().manifolds).toEqual([]);
+    expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([]);
   } finally {
     physics.dispose();
   }
@@ -381,6 +490,12 @@ it.each([
       // The partner's filter must accept the query membership, too.
       expect(physics.getCurrentContacts(2, 0x00020002).unwrap().manifolds).toEqual([]);
       expect(decode).not.toHaveBeenCalled();
+      expect(
+        [...physics.getCurrentContactNeighbors(2, 0xffff001e).unwrap().entities].sort(),
+      ).toEqual([3, 4]);
+      expect(physics.getCurrentContactNeighbors(2, 0x00020002).unwrap().entities).toEqual([]);
+      expect(physics.getCurrentContactNeighbors(2, 0).unwrap().entities).toEqual([]);
+      expect(decode).not.toHaveBeenCalled();
       expect(physics.getCurrentContacts(2, 0).unwrap().manifolds).toEqual([]);
       expect(decode).not.toHaveBeenCalled();
       expect(physics.getCurrentContacts(2).unwrap()).toEqual(complete);
@@ -393,7 +508,9 @@ it.each([
   }
 });
 
-it('fails a bounded native query atomically instead of publishing partial contacts', async () => {
+it.each([
+  750, 2050,
+])('bounds each native projection atomically with %i contact partners', async (count) => {
   const module = await loadRapier3D();
   if ('code' in module) throw module;
   const physics = createRapier3DPhysicsWorld(module);
@@ -402,12 +519,12 @@ it('fails a bounded native query atomically instead of publishing partial contac
     floor.userData = 1;
     physics.raw.createCollider(module.ColliderDesc.cuboid(100, 0.2, 100), floor);
     physics.registerBody(1, floor.handle);
-    for (let index = 0; index < 750; index += 1) {
+    for (let index = 0; index < count; index += 1) {
       const body = physics.raw.createRigidBody(
         module.RigidBodyDesc.dynamic().setTranslation(
-          (index % 27) * 3 - 40,
+          (index % 46) * 3 - 70,
           0.69,
-          Math.floor(index / 27) * 3 - 40,
+          Math.floor(index / 46) * 3 - 70,
         ),
       );
       body.userData = index + 2;
@@ -420,14 +537,38 @@ it('fails a bounded native query atomically instead of publishing partial contac
       ok: false,
       error: {
         code: 'managed-physics-unavailable',
-        detail: { reason: expect.stringContaining('4096') },
+        detail: {
+          reason: expect.stringMatching(
+            /4096 native visits for entity 1: colliders=1, pairs=\d+, manifolds=\d+, points=\d+; exhausted at points/,
+          ),
+        },
       },
     });
     expect(physics.getCurrentContacts(1, 0).unwrap().manifolds).toEqual([]);
+    const neighbors = physics.getCurrentContactNeighbors(1);
+    if (count === 750)
+      expect(new Set(neighbors.unwrap().entities)).toEqual(
+        new Set(Array.from({ length: count }, (_, index) => index + 2)),
+      );
+    else
+      expect(neighbors).toMatchObject({
+        ok: false,
+        error: {
+          code: 'managed-physics-unavailable',
+          detail: {
+            reason: expect.stringContaining(
+              'colliders=1, pairs=2048, manifolds=2048, points=0; exhausted at manifolds',
+            ),
+          },
+        },
+      });
+    expect(physics.getCurrentContactNeighbors(1, 0).unwrap().entities).toEqual([]);
+    expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([1]);
     // A failed callback must release its raw temporary pointers and permit later queries/steps.
     expect(physics.getCurrentContacts(2).unwrap().manifolds).toHaveLength(1);
     physics.step(1 / 60);
     expect(physics.getCurrentContacts(2).unwrap().fixedStep).toBe(2);
+    expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([1]);
   } finally {
     physics.dispose();
   }

@@ -2,7 +2,7 @@
 // shadow-csm-component.test.ts - feat-20260613-csm-cascaded-shadow-maps-unique-shadow-path
 // M1 / w1: DirectionalLight merged shadow fields test (retargeted from deleted DirectionalLightShadow per feat-20260621 M5).
 //
-// Covers AC-01 (new field defaults: cascadeCount=4, splitLambda=0.75,
+// Covers AC-01 (new field defaults: cascadeCount=3, splitLambda=0.5,
 // cascadeBlend=0.2, mapSize=1024), AC-02 (out-of-bound validation per field
 // -> ShadowInvalidConfigError), and D-1 (legacy fixed-extent field deleted).
 
@@ -28,7 +28,7 @@ function spawnValidatedDirectional(
 
 describe('CSM component schema (w1)', () => {
   describe('AC-01: new field defaults', () => {
-    it('empty data spawn defaults cascadeCount=4, splitLambda=0.75, cascadeBlend=0.2', () => {
+    it('empty data spawn defaults cascadeCount=3, splitLambda=0.5, cascadeBlend=0.2', () => {
       const world = new World();
       const r = world.spawn({
         component: DirectionalLight,
@@ -40,8 +40,8 @@ describe('CSM component schema (w1)', () => {
       const shadow = world.get(e, DirectionalLight).unwrap();
 
       // New CSM fields (defined by M1 schema update).
-      expect((shadow as any).cascadeCount).toBe(4);
-      expect((shadow as any).splitLambda).toBeCloseTo(0.75, 5);
+      expect((shadow as any).cascadeCount).toBe(3);
+      expect((shadow as any).splitLambda).toBeCloseTo(0.5, 5);
       expect((shadow as any).cascadeBlend).toBeCloseTo(0.2, 5);
     });
 
@@ -71,7 +71,7 @@ describe('CSM component schema (w1)', () => {
       expect(shadow.mapSize).toBeCloseTo(2048, 5);
 
       // Unspecified CSM fields fall back to defaults.
-      expect((shadow as any).cascadeCount).toBe(4);
+      expect((shadow as any).cascadeCount).toBe(3);
     });
   });
 
@@ -94,6 +94,7 @@ describe('CSM component schema (w1)', () => {
     it('cascadeCount=0 -> ShadowInvalidConfigError', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         cascadeCount: 0,
       }) as unknown as ErrorShape;
@@ -107,6 +108,7 @@ describe('CSM component schema (w1)', () => {
     it('cascadeCount=5 -> ShadowInvalidConfigError (max=4)', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         cascadeCount: 5,
       }) as unknown as ErrorShape;
@@ -121,6 +123,7 @@ describe('CSM component schema (w1)', () => {
     it('splitLambda=-0.1 -> ShadowInvalidConfigError (min=0)', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         splitLambda: -0.1,
       }) as unknown as ErrorShape;
@@ -135,6 +138,7 @@ describe('CSM component schema (w1)', () => {
     it('splitLambda=1.1 -> ShadowInvalidConfigError (max=1)', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         splitLambda: 1.1,
       }) as unknown as ErrorShape;
@@ -149,6 +153,7 @@ describe('CSM component schema (w1)', () => {
     it('cascadeBlend=-0.1 -> ShadowInvalidConfigError (min=0)', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         cascadeBlend: -0.1,
       }) as unknown as ErrorShape;
@@ -163,6 +168,7 @@ describe('CSM component schema (w1)', () => {
     it('cascadeBlend=0.6 -> ShadowInvalidConfigError (max=0.5)', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         cascadeBlend: 0.6,
       }) as unknown as ErrorShape;
@@ -293,6 +299,7 @@ describe('CSM component schema (w1)', () => {
     it('mapSize=0 -> ShadowInvalidConfigError (no max field)', () => {
       const world = new World();
       const r = spawnValidatedDirectional(world, {
+        castShadow: true,
         direction: [0, -1, 0],
         mapSize: 0,
       });

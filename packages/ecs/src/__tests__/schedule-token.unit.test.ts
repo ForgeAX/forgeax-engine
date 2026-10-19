@@ -51,4 +51,43 @@ describe('ScheduleToken registration', () => {
     expect(registry[Symbol.for('forgeax.ecs.schedule-token.Update')]).toBe(Update);
     expect(registry[Symbol.for('forgeax.ecs.schedule-token.FixedUpdate')]).toBe(FixedUpdate);
   });
+
+  it('refreshes set membership after removal and keeps run conditions live each frame', () => {
+    const world = new World();
+    const calls: string[] = [];
+    let enabled = false;
+    let checks = 0;
+    const set = defineSystemSet({
+      name: 'live-set',
+      runIf: () => {
+        checks++;
+        return enabled;
+      },
+    });
+    const system = (name: string) => ({
+      name,
+      queries: [] as const,
+      fn: () => {
+        calls.push(name);
+      },
+    });
+    world.addSystems(Update, set, [system('a'), system('b')]).unwrap();
+    world.update(0).unwrap();
+    expect(calls).toEqual([]);
+    expect(checks).toBe(1);
+    enabled = true;
+    world.update(0).unwrap();
+    expect(calls).toEqual(['a', 'b']);
+    expect(checks).toBe(2);
+    world.removeSystem(Update, 'a').unwrap();
+    world.addSystem(Update, system('a')).unwrap();
+    enabled = false;
+    world.update(0).unwrap();
+    expect(calls).toEqual(['a', 'b', 'a']);
+    expect(checks).toBe(3);
+    world.replaceSystem(Update, 'b', system('b')).unwrap();
+    world.update(0).unwrap();
+    expect(calls).toEqual(['a', 'b', 'a', 'a']);
+    expect(checks).toBe(4);
+  });
 });

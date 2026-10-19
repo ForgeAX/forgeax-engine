@@ -6,7 +6,7 @@ import type { PipelineSpecError } from '../pipeline-spec';
 import { configurePipelineSurface, type PipelineState } from '../record/render-context';
 
 /** Minimum device-bound surface contract needed by lazy context configuration. */
-export interface RendererSurfaceInternals {
+interface RendererSurfaceInternals {
   readonly device: RhiDevice;
   readonly context: RhiCanvasContext;
   /** Output colour-space negotiation refreshed by every surface configure. */

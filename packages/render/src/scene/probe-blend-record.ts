@@ -3,7 +3,7 @@ export const PROBE_BLEND_RECORD_BYTE_SIZE = 160;
 export const PROBE_BLEND_RECORD_STRIDE = 256;
 
 export const PROBE_BLEND_RECORD_CAPACITY = 64;
-export const PROBE_BLEND_SENTINEL = -1;
+const PROBE_BLEND_SENTINEL = -1;
 
 export type ProbeBlendRecordSentinel =
   | 'capacity-exceeded'

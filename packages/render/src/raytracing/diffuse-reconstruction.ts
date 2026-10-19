@@ -12,8 +12,8 @@ import { rayReferenceFailure } from './scene';
 
 /** GPU history, not raw ray accumulators. Layout is DiffuseHistoryPixel in WGSL. */
 export const DIFFUSE_HISTORY_BYTES = 96;
-export const DIFFUSE_SIGNAL_BYTES = 16;
-export const DIFFUSE_RECONSTRUCTION_UNIFORM_BYTES = 48;
+const DIFFUSE_SIGNAL_BYTES = 16;
+const DIFFUSE_RECONSTRUCTION_UNIFORM_BYTES = 48;
 
 export interface DiffuseReconstructionInputs {
   readonly raw: Buffer;

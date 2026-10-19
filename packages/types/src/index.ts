@@ -4,8 +4,17 @@
 /// <reference types="@webgpu/types" />
 
 export type { AudioStreamManifest } from './asset.js';
+export {
+  type AssetPublicationInput,
+  assetPublicationGeneration,
+  assetPublicationOutputSetDigest,
+  createAssetPublication,
+} from './asset-publication.js';
+export { encodeBase64 } from './base64.js';
 export * from './core-contracts.js';
+export { fnv1a32, fnv1aUtf16 } from './fnv1a.js';
 export * from './material-program-abi.js';
+export { createMeshMaterialSlotTable, type MeshMaterialSlotSource } from './mesh-material-slots.js';
 export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.js';
 export type { PackageFetcher, PackageRequest, PackageResponse } from './package-fetch.js';
 export * from './plugin-asset.js';
@@ -27,3 +36,5 @@ export type {
   UiGpuShaders,
   UiPaintSource,
 } from './ui-paint.js';
+
+export { WGSL_NUMERIC_LAYOUT } from './wgsl-numeric-layout.js';

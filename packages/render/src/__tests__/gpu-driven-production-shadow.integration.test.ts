@@ -342,6 +342,19 @@ describe('GPU-driven production shadow projection', () => {
         }
       }
       retry.frame._commitResourceReplacement();
+
+      moved[0] = -1;
+      apply([{ kind: 'update', worldId: 0, entityKey: 1, world: moved }]);
+      const mirrored = prepare();
+      for (const projections of mirrored.frame.shadowBatchProjections?.values() ?? []) {
+        for (const projected of projections.values()) {
+          expect(projected.shadowRenderState?.frontFace).toBe(
+            projected.materialEntityKey === 1 ? 'cw' : undefined,
+          );
+        }
+      }
+      expect(mirrored.frame.shadowBatchProjections?.size).toBeGreaterThan(0);
+      mirrored.frame._commitResourceReplacement();
     } finally {
       project.mockRestore();
       production.dispose();
@@ -1544,12 +1557,15 @@ describe('GPU-driven production shadow projection', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('records exact CPU residuals with authored state (skinned=%s)', async (skinned) => {
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])('records exact CPU residuals with authored state (skinned=%s, mirrored=%s)', async (skinned, mirrored) => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap() as RhiNullDevice;
     const source = preparedSnapshot(8, 3);
+    if (mirrored) source.transform.world[0] = -1;
     const firstDraw = source.gpuDrivenDraws?.[0];
     expect(firstDraw?.prepared).toBeDefined();
     if (firstDraw === undefined || firstDraw.prepared === undefined) return;
@@ -1741,7 +1757,7 @@ describe('GPU-driven production shadow projection', () => {
     expect(recorded.has(claimedKey)).toBe(false);
     const authored = pipelineRequests.find((args) => args[0] === 'custom-shadow-caster');
     expect(authored).toBeDefined();
-    expect(authored?.[2]).toEqual({ cullMode: 'none', frontFace: 'cw' });
+    expect(authored?.[2]).toEqual({ cullMode: 'none', frontFace: mirrored ? 'ccw' : 'cw' });
     expect(authored?.[15]).toBe(skinned ? 'pbr-skin' : 'pbr');
     if (skinned) expect(authored?.[5]).toContain('SKINNING_DISABLED=false');
 

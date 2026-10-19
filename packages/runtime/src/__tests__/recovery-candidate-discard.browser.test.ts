@@ -86,6 +86,7 @@ it('discards a prepared recovery graph after its probe fails and recovers on ret
       .spawn({
         component: DirectionalLight,
         data: {
+          castShadow: true,
           mapSize: testQuality.shadowMapSize,
           cascadeCount: testQuality.cascadeCount,
           direction: [0, -1, -1],

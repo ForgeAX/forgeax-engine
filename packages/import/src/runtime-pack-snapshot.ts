@@ -1,5 +1,6 @@
 import {
   copyPackData,
+  encodePackData,
   type FixedPackPublication,
   validateFixedPackPublication,
 } from '@forgeax/engine-pack/runtime';
@@ -7,7 +8,6 @@ import type { PackInstanceJson } from '@forgeax/engine-pack/source';
 import type { Asset, AssetPublicationOutput, CatalogEntry } from '@forgeax/engine-types';
 import type { RuntimePackContent, RuntimePackSnapshot } from './runtime-pack.js';
 import { parseRuntimePackSnapshot } from './runtime-pack-content.js';
-import { encodeRuntimePackData } from './runtime-pack-data.js';
 import {
   scriptablePackFingerprint as fingerprint,
   scriptablePackFingerprintAsync as fingerprintAsync,
@@ -246,7 +246,7 @@ export async function createFixedRuntimePackSnapshot(
   const recipe: RuntimePackSavedRecipe = { fixed, outputs: publication.outputs, dependencies };
   const id = await fingerprintAsync(recipe);
   recipes[id] = recipe;
-  return encodeRuntimePackData({
+  return encodePackData({
     schemaVersion: 'runtime-pack-source/2',
     packs: [],
     instances: [],

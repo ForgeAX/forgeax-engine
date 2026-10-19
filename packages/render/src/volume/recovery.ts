@@ -27,7 +27,7 @@ export interface VolumeRecoveryState {
   readonly candidateSelectedLight?: VolumeSelectedLightFacts;
 }
 
-export type VolumeRecoveryEvent =
+type VolumeRecoveryEvent =
   | { readonly kind: 'submit-failed' }
   | { readonly kind: 'device-lost'; readonly deviceEpoch: number }
   | { readonly kind: 'accepted'; readonly generation: number };

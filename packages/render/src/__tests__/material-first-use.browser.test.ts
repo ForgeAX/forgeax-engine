@@ -54,6 +54,7 @@ it('reports a malformed first-use Standard variant through the renderer error ch
         {
           component: DirectionalLight,
           data: {
+            castShadow: true,
             mapSize: testQuality.shadowMapSize,
             cascadeCount: testQuality.cascadeCount,
             direction: [0, -1, -1],

@@ -17,8 +17,8 @@ const appRoot = resolve(here, '..');
 const manifest = await readShaderManifestPublication(
   JSON.parse(readFileSync(resolve(appRoot, 'dist/shaders/manifest.json'), 'utf8')),
 );
-const entry = manifest.entries.find((candidate) => candidate.wgsl.includes('BloomDownsampleParams'));
-if (entry === undefined) throw new Error('cooked bloom-downsample shader is missing from the manifest');
+const entry = manifest.entries.find((candidate) => candidate.wgsl.includes('BloomHorizontalParams'));
+if (entry === undefined) throw new Error('cooked bloom-horizontal shader is missing from the manifest');
 
 const { create, globals } = await import('@forgeax/engine-dawn-node');
 Object.assign(globalThis, globals);
@@ -90,7 +90,7 @@ function sourceBytes(values, width, height) {
   return { bytes, bytesPerRow };
 }
 
-function extractBloom(color, threshold, softKnee) {
+function extractBloom(color, threshold, smoothWidth) {
   const c = color.map((channel) => Math.max(channel, 0));
   const luma = Math.min(
     Math.max(
@@ -99,35 +99,16 @@ function extractBloom(color, threshold, softKnee) {
     ),
     HDR_CEILING,
   );
-  if (threshold === 0) return c;
-  const knee = threshold * softKnee;
-  if (knee === 0) {
-    const response = Math.max(luma - threshold, 0);
-    return c.map((channel) => (channel * response) / Math.max(luma, 1e-6));
-  }
-  const q = Math.min(Math.max(luma + (knee - threshold), 0), 2 * knee);
-  const soft = (q * q) / (4 * knee);
-  const response = Math.max(luma - threshold, soft);
-  return c.map((channel) => (channel * response) / Math.max(luma, 1e-6));
+  const t = smoothWidth === 0 ? Number(luma > threshold) : Math.min(1, Math.max(0, (luma - threshold) / smoothWidth));
+  return c.map((channel) => channel * t * t * (3 - 2 * t));
 }
 
-function areaAverage(values, sourceWidth, sourceHeight, targetWidth, targetHeight, x, y) {
-  const minX = (x * sourceWidth) / targetWidth;
-  const maxX = ((x + 1) * sourceWidth) / targetWidth;
-  const minY = (y * sourceHeight) / targetHeight;
-  const maxY = ((y + 1) * sourceHeight) / targetHeight;
-  let sum = 0;
-  let coverage = 0;
-  for (let sourceY = Math.floor(minY); sourceY < Math.ceil(maxY); sourceY += 1) {
-    for (let sourceX = Math.floor(minX); sourceX < Math.ceil(maxX); sourceX += 1) {
-      const weight =
-        Math.max(0, Math.min(maxX, sourceX + 1) - Math.max(minX, sourceX)) *
-        Math.max(0, Math.min(maxY, sourceY + 1) - Math.max(minY, sourceY));
-      sum += (values[sourceY * sourceWidth + sourceX] ?? 0) * weight;
-      coverage += weight;
-    }
-  }
-  return sum / coverage;
+function sampleSource(values, width, height, u, v) {
+  const x = u * width - 0.5, y = v * height - 0.5;
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const tx = x - ix, ty = y - iy;
+  const at = (x, y, c) => values[Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))][c];
+  return [0, 1, 2].map(c => (at(ix, iy, c) * (1 - tx) + at(ix + 1, iy, c) * tx) * (1 - ty) + (at(ix, iy + 1, c) * (1 - tx) + at(ix + 1, iy + 1, c) * tx) * ty);
 }
 
 async function readTarget(texture, width, height) {
@@ -162,14 +143,14 @@ async function readTarget(texture, width, height) {
   });
 }
 
-const shaderModule = device.createShaderModule({ code: entry.wgsl, label: 'bloom-downsample-odd-regression' });
+const shaderModule = device.createShaderModule({ code: entry.wgsl, label: 'bloom-horizontal-odd-regression' });
 const pipeline = device.createRenderPipeline({
   layout: 'auto',
   vertex: { module: shaderModule, entryPoint: 'vs_main' },
   fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
   primitive: { topology: 'triangle-list' },
 });
-const sampler = device.createSampler({ minFilter: 'nearest', magFilter: 'nearest' });
+const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
 const params = device.createBuffer({ size: 256, usage: 0x40 | copyDst });
 
 async function runCase(testCase) {
@@ -192,7 +173,7 @@ async function runCase(testCase) {
   );
   device.queue.writeBuffer(params, 0, new Float32Array([
     testCase.threshold ?? 0,
-    testCase.softKnee ?? 0,
+    testCase.smoothWidth ?? 0,
     testCase.targetWidth,
     testCase.targetHeight,
     0,
@@ -219,25 +200,18 @@ async function runCase(testCase) {
   device.queue.submit([encoder.finish()]);
   const actual = await readTarget(target, testCase.targetWidth, testCase.targetHeight);
   const threshold = testCase.threshold ?? 0;
-  const softKnee = testCase.softKnee ?? 0;
-  const extracted = testCase.values.map((value) => {
-    const sourceColor = asColor(value).map((channel) => halfToFloat(floatToHalf(channel ?? 0)));
-    return extractBloom(sourceColor, threshold, softKnee);
-  });
+  const smoothWidth = testCase.smoothWidth ?? 0;
+  const decoded = testCase.values.map(value => asColor(value).map(channel => halfToFloat(floatToHalf(channel ?? 0))));
   const expected = actual.map((_, index) => {
-    const x = index % testCase.targetWidth;
-    const y = Math.floor(index / testCase.targetWidth);
-    return [0, 1, 2].map((channel) =>
-      areaAverage(
-        extracted.map((color) => color[channel] ?? 0),
-        testCase.sourceWidth,
-        testCase.sourceHeight,
-        testCase.targetWidth,
-        testCase.targetHeight,
-        x,
-        y,
-      ),
-    );
+    const x = index % testCase.targetWidth, y = Math.floor(index / testCase.targetWidth);
+    const color = [0, 0, 0];
+    for (let offset = -5; offset <= 5; offset++) {
+      const u = Math.max(0.5 / testCase.targetWidth, Math.min(1 - 0.5 / testCase.targetWidth, (x + 0.5 + offset) / testCase.targetWidth));
+      const sample = extractBloom(sampleSource(decoded, testCase.sourceWidth, testCase.sourceHeight, u, (y + 0.5) / testCase.targetHeight), threshold, smoothWidth);
+      const weight = 0.39894 / 2 * Math.exp(-0.5 * (offset / 2) ** 2);
+      sample.forEach((value, channel) => { color[channel] += value * weight; });
+    }
+    return color;
   });
   source.destroy();
   target.destroy();
@@ -282,7 +256,7 @@ async function runCase(testCase) {
       }),
     ),
   );
-  return { label: testCase.label, threshold, softKnee, expected, actual, maxNormalizedError, errors };
+  return { label: testCase.label, threshold, smoothWidth, expected, actual, maxNormalizedError, errors };
 }
 
 const oddCases = [
@@ -291,7 +265,7 @@ const oddCases = [
 ];
 const extractionCases = [];
 for (const threshold of [0, 1, HDR_CEILING]) {
-  for (const softKnee of [0, 0.5, 1]) {
+  for (const smoothWidth of [0, 0.5, 1]) {
     for (const rgb of [
       [0, 0, 0],
       [0.5, 0.5, 0.5],
@@ -305,38 +279,38 @@ for (const threshold of [0, 1, HDR_CEILING]) {
       [HDR_CEILING, 0, 0],
     ]) {
       extractionCases.push({
-        label: `extraction-${threshold}-${softKnee}-${rgb.join('-')}`,
+        label: `extraction-${threshold}-${smoothWidth}-${rgb.join('-')}`,
         sourceWidth: 2,
         sourceHeight: 2,
         targetWidth: 1,
         targetHeight: 1,
         threshold,
-        softKnee,
+        smoothWidth,
         values: [rgb, rgb, rgb, rgb],
       });
     }
   }
 }
-for (const value of [0.51, 0.53, 0.55, 0.57, 0.59, 0.61, 0.63, 0.65, 0.67]) {
+for (const value of [0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.008, 0.01, 0.02]) {
   extractionCases.push({
-    label: `subnormal-knee-${value}`,
+    label: `subnormal-smooth-width-${value}`,
     sourceWidth: 2,
     sourceHeight: 2,
     targetWidth: 1,
     targetHeight: 1,
-    threshold: HDR_CEILING,
-    softKnee: 1,
+    threshold: 0,
+    smoothWidth: 1,
     values: Array.from({ length: 4 }, () => [value, value, value]),
   });
 }
 extractionCases.push({
-  label: 'per-texel-extraction-before-averaging',
+  label: 'half-grid-highpass-after-source-filter',
   sourceWidth: 2,
   sourceHeight: 2,
   targetWidth: 1,
   targetHeight: 1,
   threshold: 1,
-  softKnee: 0,
+  smoothWidth: 0,
   values: [[4, 4, 4], [0, 0, 0], [0, 0, 0], [0, 0, 0]],
 });
 const cases = [...oddCases, ...extractionCases];
@@ -344,27 +318,26 @@ const results = [];
 for (const testCase of cases) results.push(await runCase(testCase));
 
 // Exercise the continuous threshold transition with the same real cooked
-// shader.  A legacy whole-RGB `if (luma > threshold)` switch produces a
-// unit-sized jump at the threshold; the authored formula remains monotonic
-// and its adjacent decoded steps stay close to the independent oracle.
+// shader. Positive smooth width is continuous; width zero explicitly selects
+// a hard threshold. Both remain monotonic and match their independent oracle.
 const continuityCases = [
   {
     label: 'threshold-continuity-hard-knee',
     threshold: 1,
-    softKnee: 0,
+    smoothWidth: 0,
     inputs: [0.999, 1, 1.001, 1.01],
   },
   {
-    label: 'threshold-continuity-soft-knee',
+    label: 'threshold-continuity-smooth-width',
     threshold: 1,
-    softKnee: 0.5,
+    smoothWidth: 0.5,
     inputs: [0.999, 1, 1.001, 1.01],
   },
   {
-    label: 'threshold-continuity-soft-knee-start',
+    label: 'threshold-continuity-smooth-width-start',
     threshold: 1,
-    softKnee: 0.5,
-    inputs: [0.499, 0.5, 0.501, 0.51],
+    smoothWidth: 0.5,
+    inputs: [1.49, 1.499, 1.5, 1.501],
   },
 ];
 const continuityResults = [];
@@ -374,7 +347,7 @@ for (const testCase of continuityCases) {
     const result = await runCase({
       label: `${testCase.label}-${index}`,
       threshold: testCase.threshold,
-      softKnee: testCase.softKnee,
+      smoothWidth: testCase.smoothWidth,
       sourceWidth: 2,
       sourceHeight: 2,
       targetWidth: 1,
@@ -393,7 +366,7 @@ for (const testCase of continuityCases) {
   continuityResults.push({
     label: testCase.label,
     threshold: testCase.threshold,
-    softKnee: testCase.softKnee,
+    smoothWidth: testCase.smoothWidth,
     inputs: testCase.inputs,
     expected,
     actual,

@@ -912,10 +912,9 @@ describe('barrel distortion real output on Dawn', () => {
       const disabled = await drawFrame();
       const disabledInspection = fixture.renderer.inspect();
       const disabledPasses = disabledInspection.output.graphPassNames;
-      // The renderer keeps the resident LUT as an LKG resource for recovery;
-      // disabling the camera is proven by the committed graph dropping the
-      // LUT pass and by the unchanged single encoding writer below.
-      expect(disabledInspection.output.standardLut?.sourceKey).toBe(lutSourceKey);
+      // Explicitly disabling the LUT removes its active source and graph pass;
+      // the pixel checks below still prove one unchanged final encoding writer.
+      expect(disabledInspection.output.standardLut?.sourceKey).toBeNull();
       expect(disabledPasses).not.toContain('standard-color-lut');
       expect(disabledPasses.filter((name) => name === 'standard-output-encoding')).toHaveLength(1);
       expect(disabled.receipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);

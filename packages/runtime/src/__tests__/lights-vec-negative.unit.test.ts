@@ -19,7 +19,7 @@ describe('w5a -- residual per-axis light keys are compile errors (AC-04)', () =>
     world.spawn({
       component: DirectionalLight,
       // @ts-expect-error directionX/colorR were collapsed into direction/color arrays.
-      data: { direction: [0, -1, 0], directionX: 0, colorR: 1 },
+      data: { castShadow: true, direction: [0, -1, 0], directionX: 0, colorR: 1 },
     });
   });
 
@@ -28,7 +28,7 @@ describe('w5a -- residual per-axis light keys are compile errors (AC-04)', () =>
     world.spawn({
       component: SpotLight,
       // @ts-expect-error directionZ/colorG were collapsed into direction/color arrays.
-      data: { direction: [0, -1, 0], directionZ: 0, colorG: 1 },
+      data: { castShadow: true, direction: [0, -1, 0], directionZ: 0, colorG: 1 },
     });
   });
 

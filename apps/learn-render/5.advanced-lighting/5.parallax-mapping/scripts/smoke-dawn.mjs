@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/5.advanced-lighting/5.parallax-mapping/scripts/smoke-dawn.mjs
 //
 // LearnOpenGL section 5.advanced-lighting 5.parallax-mapping dawn-node smoke.
@@ -274,14 +275,8 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
-  }
+  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  framesObserved++;
 }
 const device = sharedDevice;
 if (!device) {

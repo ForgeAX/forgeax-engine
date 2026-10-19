@@ -74,7 +74,10 @@ it('submits 50k published main and shadow rows without allocating 100k material 
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: DirectionalLight, data: { intensity: 3, direction: [-0.5, -1, -0.3] } },
+        {
+          component: DirectionalLight,
+          data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3] },
+        },
       )
       .unwrap();
     for (let i = 0; i < 50000; i++) {

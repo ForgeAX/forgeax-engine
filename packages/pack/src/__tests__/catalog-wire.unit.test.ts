@@ -1,8 +1,12 @@
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import type {
   AssetPublicationEnvelope,
   CatalogEntry,
   RuntimeCatalogSnapshot,
 } from '@forgeax/engine-types';
+import { catalogOperationsFor } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { type CompactCatalogWire, decodeCatalogWire, encodeCatalogWire } from '../catalog-wire.js';
 import { createRuntimePackPublication } from '../runtime-publication.js';
@@ -76,6 +80,122 @@ function expectFailure(
 }
 
 describe('complete publication catalog transport', () => {
+  it('encodes equal envelope objects under a bounded heap without retaining duplicate strings', async () => {
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      '--experimental-strip-types',
+      '--max-old-space-size=128',
+      fileURLToPath(new URL('./catalog-wire-memory.fixture.mjs', import.meta.url)),
+    ]);
+    expect(JSON.parse(stdout)).toEqual({ rows: 4096, publications: 1, outputs: 512, shared: true });
+  }, 30_000);
+  const facts = { subject: 'internal-asset', execution: 'cooked', lifecycle: 'current' } as const;
+  const projection = { ...facts, operations: catalogOperationsFor(facts) };
+
+  it('shares complete projection values across JSON without merging row revisions or policy differences', () => {
+    const input: CatalogEntry[] = rows.map((row, index) => ({
+      ...row,
+      projection: JSON.parse(JSON.stringify(projection)),
+      revision: { digest: `revision-${index}`, observedAt: index, rootId: 'root' },
+    }));
+    input.push({
+      ...required(input[0]),
+      guid: 'reason-change',
+      projection: {
+        ...projection,
+        operations: {
+          ...projection.operations,
+          save: { ...projection.operations.save, reason: 'different producer reason' },
+        },
+      },
+    });
+    input.push({
+      ...required(input[0]),
+      guid: 'lkg',
+      projection: {
+        ...projection,
+        lastKnownGood: { packageUrl: '/prior.pack.json', receiptUrl: '/prior.receipt.json' },
+      },
+    });
+    const before = JSON.stringify(input);
+    const encoded = compact(input);
+    expect(encoded.projections).toHaveLength(3);
+    expect(encoded.entries[0]).toHaveProperty('projectionIndex', 0);
+    expect(encoded.entries[0]).not.toHaveProperty('projection');
+    const decoded = wireRoundTrip(input);
+    expect(decoded).toEqual(input);
+    expect(decoded[0]?.projection).toBe(decoded[1]?.projection);
+    expect(decoded[0]?.projection).not.toBe(decoded[2]?.projection);
+    expect(decoded[0]?.projection).not.toBe(decoded[3]?.projection);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  it('compacts repeated projections without publications and preserves producer extension fields', () => {
+    const extended = { ...projection, producerDetail: { flags: ['a', 'b'] } };
+    const input: CatalogEntry[] = rows.map(({ publication: _publication, ...row }) => ({
+      ...row,
+      projection: extended,
+    }));
+    const encoded = compact(input);
+    expect(encoded.publications).toEqual([]);
+    expect(encoded.projections).toHaveLength(1);
+    expect(wireRoundTrip(input)).toEqual(input);
+    expect(encodeCatalogWire(input.slice(0, 1))).toEqual(input.slice(0, 1));
+  });
+
+  it('rejects invalid projection tables and references without dropping or guessing producer facts', () => {
+    const encoded = compact(rows.map((row) => ({ ...row, projection })));
+    for (const projectionIndex of [undefined, null, '0', -1, 0.5, 1, Number.MAX_SAFE_INTEGER + 1]) {
+      expectFailure(
+        decodeCatalogWire({ ...encoded, entries: [{ ...encoded.entries[0], projectionIndex }] }),
+        'entries[0].projectionIndex',
+        0,
+      );
+    }
+    expectFailure(decodeCatalogWire({ ...encoded, projections: undefined }), 'projections');
+    expectFailure(decodeCatalogWire({ ...encoded, projections: [null] }), 'projections[0]', 0);
+    expectFailure(
+      decodeCatalogWire({ ...encoded, projections: new Array(1) }),
+      'projections[0]',
+      0,
+    );
+    expectFailure(
+      decodeCatalogWire({
+        ...encoded,
+        entries: encoded.entries.map(({ projectionIndex: _index, ...row }) => row),
+      }),
+      'projections[0]',
+      0,
+    );
+    expectFailure(
+      decodeCatalogWire({ ...encoded, entries: [{ ...encoded.entries[0], projection }] }),
+      'entries[0].projection',
+      0,
+    );
+    expectFailure(
+      decodeCatalogWire({ ...encoded, projections: [{ ...projection, operations: {} }] }),
+      'projections[0].operations.preview',
+      0,
+    );
+    expectFailure(
+      decodeCatalogWire({
+        ...encoded,
+        projections: [{ ...projection, lastKnownGood: { receiptUrl: '/receipt.json' } }],
+      }),
+      'projections[0].lastKnownGood.packageUrl',
+      0,
+    );
+    expect(() =>
+      encodeCatalogWire([{ ...required(rows[0]), projectionIndex: 0 } as CatalogEntry]),
+    ).toThrow(TypeError);
+    expect(() =>
+      encodeCatalogWire([{ ...required(rows[0]), projection: {} } as CatalogEntry]),
+    ).toThrow(TypeError);
+    expectFailure(
+      decodeCatalogWire({ ...encoded, schemaVersion: 'pack-index-publications/1' }),
+      'schemaVersion',
+    );
+  });
+
   it('compacts scoped rows while retaining the complete domain snapshot', () => {
     const input = snapshot(rows) as RuntimeCatalogSnapshot;
     const before = JSON.stringify(input);
@@ -221,12 +341,12 @@ describe('complete publication catalog transport', () => {
 
   it.each([
     { schemaVersion: 'other', entries: [], publications: [] },
-    { schemaVersion: 'pack-index-publications/1', entries: {}, publications: [] },
-    { schemaVersion: 'pack-index-publications/1', entries: [], publications: {} },
-    { schemaVersion: 'pack-index-publications/1', entries: [], publications: [null] },
-    { schemaVersion: 'pack-index-publications/1', entries: [], publications: [{}] },
-    { schemaVersion: 'pack-index-publications/1', entries: [null], publications: [] },
-    { schemaVersion: 'pack-index-publications/1', entries: [], publications: [], extra: true },
+    { schemaVersion: 'pack-index-tables/1', entries: {}, publications: [] },
+    { schemaVersion: 'pack-index-tables/1', entries: [], publications: {} },
+    { schemaVersion: 'pack-index-tables/1', entries: [], publications: [null] },
+    { schemaVersion: 'pack-index-tables/1', entries: [], publications: [{}] },
+    { schemaVersion: 'pack-index-tables/1', entries: [null], publications: [] },
+    { schemaVersion: 'pack-index-tables/1', entries: [], publications: [], extra: true },
   ])('rejects an unsupported or malformed compact document', (input) => {
     expectFailure(decodeCatalogWire(input));
   });

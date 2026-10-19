@@ -153,7 +153,7 @@ describe('Materials.standard multi-pass (w14)', () => {
     it('values includes metallic and roughness defaults', () => {
       const mat = Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1] });
       expect(mat.values?.metallic).toBe(0);
-      expect(mat.values?.roughness).toBe(0.5);
+      expect(mat.values?.roughness).toBe(1);
     });
 
     it('preserves texture-channel selectors and validates their closed range', () => {

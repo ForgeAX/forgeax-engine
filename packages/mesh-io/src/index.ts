@@ -9,5 +9,5 @@ export {
   svgImporter,
 } from './importer.js';
 export { importMeshFile } from './node.js';
-export { type ObjPackage, parseObjPackage } from './obj-package';
+export { type MeshSourcePackage, parseObjPackage } from './obj-package';
 export { parseObj, parseStl, parseSvg } from './parse.js';

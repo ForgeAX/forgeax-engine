@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import process from 'node:process';
 // AC-10 / w24 (feat-20260515-buffer-array-vocab-collapse M5): assert that
 // the legacy `arrayStride: { ... }` option on `defineComponent` cannot
 // re-appear at any call-site. The option-bit was deleted at M1 / w5
@@ -27,9 +28,7 @@
 //     under a `@ts-expect-error` line to lock the option-bit removal)
 //
 // Pattern + zero-dep stdio mirrors scripts/grep/check-asset-registry-instanced-removed.mjs.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import process from 'node:process';
+import { grepSourceFiles } from './source-files.mjs';
 
 const ROOTS = ['packages', 'apps', 'templates'];
 
@@ -37,10 +36,6 @@ const SELF_EXEMPT = new Set([
   'scripts/grep/check-no-array-stride-option.mjs',
   'packages/ecs/src/__tests__/define-component-options.test-d.ts',
 ]);
-
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.cache', 'test-output']);
-
-const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
 
 // Match `defineComponent(...)` calls that contain an `arrayStride:` key in
 // their options object. The lazy match must not cross `)` (call end) so that
@@ -50,51 +45,13 @@ const CODE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']
 // false-match. The `[^)]*?` bound keeps the match within a single call.
 const RE_DEFINE_COMPONENT_ARRAY_STRIDE = /defineComponent\s*\([^)]*?\{[^)]*?\barrayStride\s*:/m;
 
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
-}
-
 const hits = [];
 
-function walk(dir) {
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
+for (const { path: p, code: stripped } of grepSourceFiles(ROOTS, { exempt: SELF_EXEMPT })) {
+  const m = stripped.match(RE_DEFINE_COMPONENT_ARRAY_STRIDE);
+  if (m) {
+    hits.push({ path: p, snippet: m[0].slice(0, 200) });
   }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    let st;
-    try {
-      st = statSync(p);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) {
-      walk(p);
-      continue;
-    }
-    const ext = p.slice(p.lastIndexOf('.'));
-    if (!CODE_EXTS.has(ext)) continue;
-    if (SELF_EXEMPT.has(p)) continue;
-    let text;
-    try {
-      text = readFileSync(p, 'utf8');
-    } catch {
-      continue;
-    }
-    const stripped = stripComments(text);
-    const m = stripped.match(RE_DEFINE_COMPONENT_ARRAY_STRIDE);
-    if (m) {
-      hits.push({ path: p, snippet: m[0].slice(0, 200) });
-    }
-  }
-}
-
-for (const root of ROOTS) {
-  walk(root);
 }
 
 if (hits.length > 0) {

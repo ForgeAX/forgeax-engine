@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { createWriteStream } from 'node:fs';
 import { access, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import {
@@ -19,10 +20,10 @@ import type {
 } from '@forgeax/engine-app';
 import { WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
+import type { BrowserCapture, BrowserCaptureSession } from './browser-capture.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { readLiveProjectInputs } from './live-project-inputs.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
-import type { BrowserCapture, SoftwareBrowserSession } from './software-capture.js';
 import type {
   BrowserCarrierAdapter,
   BrowserCarrierRunIdentity,
@@ -131,7 +132,7 @@ interface LiveDevDaemonState {
   readonly animation: AnimationPlaybackOptions;
   /** Attach the existing RHI recorder to the live App when explicitly requested. */
   readonly rhiCapture: boolean;
-  session: SoftwareBrowserSession | undefined;
+  session: BrowserCaptureSession | undefined;
   projectUrl: string | undefined;
   status: LiveDevStatus;
   evalRunning: boolean;
@@ -238,7 +239,7 @@ async function writeSessionFile(state: LiveDevDaemonState): Promise<void> {
   );
 }
 
-async function waitForFirstFrame(session: SoftwareBrowserSession): Promise<boolean> {
+async function waitForFirstFrame(session: BrowserCaptureSession): Promise<boolean> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
   try {
     await realm.waitForFunction(
@@ -255,7 +256,7 @@ async function waitForFirstFrame(session: SoftwareBrowserSession): Promise<boole
   }
 }
 
-async function submittedFrameId(session: SoftwareBrowserSession): Promise<number | undefined> {
+async function submittedFrameId(session: BrowserCaptureSession): Promise<number | undefined> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
   const value = await realm.evaluate(() => document.documentElement.dataset.forgeaxFrameSubmitted);
   if (value === undefined) return undefined;
@@ -264,7 +265,7 @@ async function submittedFrameId(session: SoftwareBrowserSession): Promise<number
 }
 
 async function waitForFrameAfter(
-  session: SoftwareBrowserSession,
+  session: BrowserCaptureSession,
   previous: number | undefined,
 ): Promise<void> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
@@ -735,7 +736,7 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
   try {
     await replaceProjectProcess(state, state.status.generation);
     if (stopped()) return;
-    const { createBrowserCapture } = await import('./software-capture.js');
+    const { createBrowserCapture } = await import('./browser-capture.js');
     if (stopped()) return;
     state.browser ??= createBrowserCapture(state.executionRoot);
     state.session = await state.browser.open({
@@ -1907,7 +1908,7 @@ function pollRunObservation(state: LiveDevDaemonState): void {
         await refreshFrameStatus(state);
         const session = state.session;
         const revision = state.status.revision;
-        const { captureBrowserExecutionSurface } = await import('./software-capture.js');
+        const { captureBrowserExecutionSurface } = await import('./browser-capture.js');
         const png = await captureBrowserExecutionSurface(
           session.execution ?? { kind: 'page', ownerPage: session.page, realm: session.page },
           Date.now() + 5_000,
@@ -2092,10 +2093,7 @@ export async function runLiveDevDaemon(
       state.ownerClaimed = true;
     }
     installBridgeRelay(state);
-    await new Promise<void>((resolveListen, rejectListen) => {
-      state.server?.once('error', rejectListen);
-      state.server?.listen(port, '127.0.0.1', resolveListen);
-    });
+    await once(state.server.listen(port, '127.0.0.1'), 'listening');
     await writeSessionFile(state);
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) await stopLiveDaemon(state);
@@ -2367,15 +2365,11 @@ export async function startLiveDev(
         ),
       };
   }
-  const port = await new Promise<number>((resolvePort, rejectPort) => {
-    const server = createServer();
-    server.once('error', rejectPort);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const selected = typeof address === 'object' && address !== null ? address.port : 0;
-      server.close(() => resolvePort(selected));
-    });
-  });
+  const portProbe = createServer();
+  await once(portProbe.listen(0, '127.0.0.1'), 'listening');
+  const address = portProbe.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise<void>((resolveClose) => portProbe.close(() => resolveClose()));
   if (options.inProcess !== undefined) {
     const { inProcess, ...configuration } = options;
     inProcess.signal.throwIfAborted();

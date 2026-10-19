@@ -9,5 +9,5 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src/**/*"],
-  "references": []
+  "references": [{ "path": "../types" }]
 }

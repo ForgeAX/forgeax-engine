@@ -1,4 +1,12 @@
-import type { RhiDevice } from '@forgeax/engine-rhi';
+import {
+  err,
+  type MappedBuffer,
+  ok,
+  queueSubmitFailed,
+  type Result,
+  type RhiDevice,
+  type RhiError,
+} from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import {
@@ -120,5 +128,111 @@ it('retires buffer staging when a capture timeout cancels a pending queue drain'
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.error.detail.cause).toContain('cancelled');
   expect(destroy).toHaveBeenCalledTimes(1);
+  expect(destroy).not.toHaveBeenCalledWith(source);
+});
+
+it('unmaps a late success after a later resource-start callback has failed', async () => {
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const device = (await adapter.requestDevice()).unwrap();
+  const source = device.createBuffer({ size: 8, usage: 4 }).unwrap();
+  const create = device.createBuffer.bind(device);
+  const destroy = vi.spyOn(device, 'destroyBuffer');
+  let resolveMap!: (value: Result<MappedBuffer, RhiError>) => void;
+  const unmap = vi.fn();
+  vi.spyOn(device, 'createBuffer').mockImplementation((descriptor) => {
+    const result = create(descriptor);
+    if (result.ok) {
+      Object.defineProperty(result.value, 'mapAsync', {
+        value: () =>
+          new Promise<Result<MappedBuffer, RhiError>>((resolve) => {
+            resolveMap = resolve;
+          }),
+      });
+    }
+    return result;
+  });
+  const result = await readbackBufferBytesBatch(
+    device,
+    [
+      { handleId: 'first', buffer: source, size: 8 },
+      { handleId: 'second', buffer: source, size: 8 },
+    ],
+    {
+      onResourceStart(handleId) {
+        if (handleId === 'second') throw new Error('observer failed');
+      },
+    },
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.error.detail.cause).toContain('observer failed');
+  expect(destroy).toHaveBeenCalledTimes(2);
+  resolveMap(
+    ok(
+      Object.assign(source, {
+        unmap,
+        getMappedRange: () => {
+          throw new Error('retired mapping must not be read');
+        },
+      }) as unknown as MappedBuffer,
+    ),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(unmap).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ['buffer', 'single'],
+  ['buffer', 'batch'],
+  ['texture', 'single'],
+  ['texture', 'batch'],
+] as const)('%s %s readback stops before draining a rejected submission and retires staging', async (kind, mode) => {
+  const { device, destroy, create, drain } = await deviceWithRejectedDrain();
+  const source =
+    kind === 'buffer'
+      ? device.createBuffer({ size: 4, usage: 4 }).unwrap()
+      : device.createTexture({ size: [1, 1, 1], format: 'rgba8unorm', usage: 1 }).unwrap();
+  create.mockClear();
+  vi.spyOn(device.queue, 'submit').mockReturnValue(err(queueSubmitFailed('driver refused')));
+  const start = vi.fn();
+  if (kind === 'texture' && mode === 'single') {
+    await expect(readbackTexturePixels(device, source, 1, 1)).rejects.toThrow(
+      'queue.submit failed',
+    );
+  } else {
+    const result =
+      kind === 'buffer'
+        ? mode === 'single'
+          ? await readbackBufferBytes(device, source, 4)
+          : await readbackBufferBytesBatch(
+              device,
+              [{ handleId: 'source', buffer: source, size: 4 }],
+              { onResourceStart: start },
+            )
+        : await readbackTexturePixelsBatch(
+            device,
+            [
+              {
+                handleId: 'source',
+                texture: source,
+                bytesPerBlock: 4,
+                blockWidth: 1,
+                blockHeight: 1,
+                totalBytes: 4,
+                slices: [{ layer: 0, mip: 0, width: 1, height: 1, byteOffset: 0, byteLength: 4 }],
+              },
+            ],
+            { onResourceStart: start },
+          );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.detail.phase).toBe('copy');
+      expect(result.error.detail.cause).toContain('queue-submit-failed');
+    }
+  }
+  expect(drain).not.toHaveBeenCalled();
+  expect(start).not.toHaveBeenCalled();
+  expect(destroy).toHaveBeenCalledTimes(1);
+  expect(destroy).toHaveBeenCalledWith(create.mock.results[0]?.value.unwrap());
   expect(destroy).not.toHaveBeenCalledWith(source);
 });

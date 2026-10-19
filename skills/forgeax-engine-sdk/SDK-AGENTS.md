@@ -119,7 +119,7 @@ For advanced Linux development without a display/physical GPU, read the
 [DevKit capture contract](packages/devkit/README.md), then capture Canvas and HTML/Shadow DOM:
 
 ```bash
-pnpm exec forgeax project capture --software --require-ui \
+pnpm exec forgeax project capture --backend software --require-ui \
   --output artifacts/capture/game-ui.png --json
 ```
 

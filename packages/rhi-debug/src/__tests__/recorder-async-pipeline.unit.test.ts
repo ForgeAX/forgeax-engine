@@ -1,5 +1,5 @@
 import { ok, type RenderPipelineDescriptor } from '@forgeax/engine-rhi';
-import { rhi } from '@forgeax/engine-rhi-null';
+import { createShaderModule, rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { wrap } from '../recorder';
 
@@ -24,9 +24,12 @@ it('preserves native async completion and records the call-time descriptor once'
   });
   Object.assign(real, { createRenderPipelineAsync });
   const adapter = (await rhi.requestAdapter()).unwrap();
-  const debug = wrap({
-    requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
-  });
+  const debug = wrap(
+    {
+      requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+    },
+    createShaderModule,
+  );
   const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
   const create = device.createRenderPipelineAsync;
   if (create === undefined) throw new Error('recorder dropped async capability');
@@ -61,9 +64,12 @@ it('preserves an immediate completed recipe instead of adding a recorder microta
   const pipeline = real.createRenderPipeline(desc).unwrap();
   Object.assign(real, { createRenderPipelineAsync: () => ok(pipeline) });
   const adapter = (await rhi.requestAdapter()).unwrap();
-  const debug = wrap({
-    requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
-  });
+  const debug = wrap(
+    {
+      requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+    },
+    createShaderModule,
+  );
   const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
   const ready = device.createRenderPipelineAsync?.(desc);
   if (ready === undefined || !('ok' in ready)) throw Error('recorder delayed a completed recipe');
@@ -80,9 +86,12 @@ it('keeps a custom backend throw on the existing rejected-completion boundary', 
     },
   });
   const adapter = (await rhi.requestAdapter()).unwrap();
-  const debug = wrap({
-    requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
-  });
+  const debug = wrap(
+    {
+      requestAdapter: async () => ok({ ...adapter, requestDevice: async () => ok(real) }),
+    },
+    createShaderModule,
+  );
   const device = (await (await debug.requestAdapter()).unwrap().requestDevice()).unwrap();
   const completion = device.createRenderPipelineAsync?.({
     layout: 'auto',

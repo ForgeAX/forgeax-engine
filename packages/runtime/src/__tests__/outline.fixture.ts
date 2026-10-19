@@ -1,5 +1,6 @@
 import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
@@ -13,7 +14,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
@@ -140,7 +140,7 @@ export async function verifyOutline(
       for (let y = 0; y < height; y++)
         for (let x = 0; x < width * 4; x++)
           linearPixels.push(
-            halfToFloat(view.getUint16(y * linear.metadata.bytesPerRow + x * 2, true)),
+            halfFloat.f16ToF32(view.getUint16(y * linear.metadata.bytesPerRow + x * 2, true)),
           );
     }
     return { pixels, linearPixels, counts: counts(pixels) };
@@ -355,7 +355,7 @@ export async function verifyOutline(
         const bytes = inspected.attachment.bytes;
         const values = Array.from(
           new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2),
-          halfToFloat,
+          halfFloat.f16ToF32,
         );
         if (stage === 'depth')
           expect(values.filter((_, i) => i % 4 === 0).some((z) => z > 0)).toBe(true);
@@ -383,7 +383,7 @@ export async function verifyOutline(
           attachment.bytes.byteOffset,
           attachment.bytes.byteLength / 2,
         ),
-        halfToFloat,
+        halfFloat.f16ToF32,
       );
       expect(counts(pixels)).toEqual(live.counts);
       expect(pixels.length).toBe(live.linearPixels.length);
@@ -425,7 +425,7 @@ export async function verifyOutline(
         counts(
           Array.from(
             new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2),
-            halfToFloat,
+            halfFloat.f16ToF32,
           ),
         ),
       ).toEqual({ visible: 0, hidden: 0 });

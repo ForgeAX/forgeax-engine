@@ -20,9 +20,9 @@
 // Red-stage scaffolding: implementation lands in T-M3-04 (mipmap-generator.ts)
 // + T-M3-05 (uploadTexture call site).
 
-import { numMipLevels } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { DecodedImage, TextureAsset } from '@forgeax/engine-types';
+import { numMipLevels } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../../../../render/src/device/gpu-residency';
 

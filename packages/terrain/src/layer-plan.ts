@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine-math';
 import {
   type Asset,
   type MaterialAsset,
@@ -30,15 +31,6 @@ const supported = new Set([
 ]);
 
 /** IEEE binary16 storage; finite values outside its range are rejected by the producer. */
-function half(value: number): number {
-  const bytes = new Float32Array([value]),
-    bits = new Uint32Array(bytes.buffer)[0] ?? 0;
-  const sign = (bits >>> 16) & 0x8000,
-    e = ((bits >>> 23) & 255) - 127 + 15,
-    m = bits & 0x7fffff;
-  if (e <= 0) return e < -10 ? sign : sign | ((((m | 0x800000) >>> (1 - e)) + 0x1000) >>> 13);
-  return sign | ((e << 10) + ((m + 0x1000) >>> 13));
-}
 
 /** Shared bounded Standard sampling plan. Admission compares texels without allocating arrays. */
 export function createTerrainLayerPlan(
@@ -266,7 +258,7 @@ export function createTerrainLayerPlan(
               'channel',
               'finite binary16-compatible Standard channels',
             );
-          values.push(half(value));
+          values.push(halfFloat.f32ToF16(value));
         }
         encoded.push(values);
       }

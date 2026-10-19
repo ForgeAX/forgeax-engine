@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -43,10 +44,7 @@ const server = createServer((request, response) => {
   });
 });
 
-await new Promise<void>((resolve, reject) => {
-  server.once('error', reject);
-  server.listen(0, '127.0.0.1', () => resolve());
-});
+await once(server.listen(0, '127.0.0.1'), 'listening');
 
 const context = new Context();
 const carrier: Plugin = {

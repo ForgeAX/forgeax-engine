@@ -1,4 +1,4 @@
-import { ensureReady, rhi } from '@forgeax/engine-rhi-wgpu';
+import { createShaderModule, ensureReady, rhi } from '@forgeax/engine-rhi-wgpu';
 import { expect, it } from 'vitest';
 import { wrap } from '../recorder';
 
@@ -11,7 +11,7 @@ it('keeps WebGL2 multisampled attachments renderable under the recorder', async 
   document.body.append(canvas);
   try {
     await ensureReady();
-    const recorder = wrap(rhi);
+    const recorder = wrap(rhi, createShaderModule);
     const adapter = (await recorder.requestAdapter(undefined, canvas)).unwrap();
     // The renderer always requests this feature for its depth targets.
     const device = (

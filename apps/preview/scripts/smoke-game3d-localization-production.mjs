@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
@@ -25,7 +26,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(404); response.end();
   }
 });
-await new Promise((done) => server.listen(0, '127.0.0.1', done));
+await once(server.listen(0, '127.0.0.1'), 'listening');
 const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true, ...browserLaunch, chromiumSandbox: true});
 let page;

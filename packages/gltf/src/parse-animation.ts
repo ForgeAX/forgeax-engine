@@ -11,7 +11,12 @@
 //   - charter P3 (fail-fast on unsupported interpolation/morph targets)
 
 import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
-import type { AnimationTargetIdValue } from '@forgeax/engine-types';
+import type {
+  AnimationChannelPod,
+  AnimationClipPod,
+  AnimationSamplerPod,
+  AnimationTargetIdValue,
+} from '@forgeax/engine-types';
 import {
   type AccessorJson,
   type BufferViewJson,
@@ -19,9 +24,6 @@ import {
 } from './accessor/decode-accessor.js';
 import { err, type GltfError, gltfErr, ok, type Result } from './errors.js';
 import { buildNodeParentMap, resolveNamedNodePath } from './node-path.js';
-
-/** Supported interpolation modes (CUBICSPLINE is deferred to OOS-skin-cubicspline). */
-type Interpolation = 'LINEAR' | 'STEP' | 'CUBICSPLINE';
 
 interface ChannelJson {
   readonly sampler: number;
@@ -45,38 +47,18 @@ interface AnimationJson {
 
 const ANIMATION_ACCESSOR_TYPES = ['SCALAR', 'VEC2', 'VEC3', 'VEC4'] as const;
 
-export interface GltfAnimationChannelRecord {
-  readonly targetId: AnimationTargetIdValue;
+interface GltfAnimationChannelRecord extends AnimationChannelPod {
   readonly targetNodeIndex: number;
-  /** 'translation' | 'rotation' | 'scale' | 'weights'. */
-  readonly property: 'translation' | 'rotation' | 'scale' | 'weights';
-  /** Sampler driving this channel. */
-  readonly sampler: GltfAnimationSamplerRecord;
 }
 
-export interface GltfAnimationSamplerRecord {
-  /** Keyframe timestamp array (ascending). */
-  readonly input: Float32Array;
-  /** Keyframe value array per element size. */
-  readonly output: Float32Array;
-  /** 'LINEAR' | 'STEP'. */
-  readonly interpolation: Interpolation;
-}
-
-export interface GltfAnimationClipRecord {
-  /** Producer-authored animation name, when the source provides one. */
-  readonly name?: string;
-  /** Clip duration = max(sampler.input[last]). */
-  readonly duration: number;
-  /** Per-joint-property channels. */
+export interface GltfAnimationClipRecord extends Omit<AnimationClipPod, 'channels'> {
   readonly channels: readonly GltfAnimationChannelRecord[];
 }
 
 /**
  * Parse glTF animations[] array into GltfAnimationClipRecord[].
  *
- * Only LINEAR and STEP interpolation are supported. CUBICSPLINE triggers
- * fail-fast with 'gltf-animation-cubicspline-unsupported'. Channels targeting
+ * LINEAR, STEP and CUBICSPLINE retain the shared sampler layout. Channels targeting
  * morph weights preserve their element-major sampler output for playback.
  */
 export function parseAnimation(
@@ -100,7 +82,7 @@ export function parseAnimation(
     if (anim === undefined) continue;
 
     // Decode samplers first (shared across channels).
-    const decodedSamplers: GltfAnimationSamplerRecord[] = [];
+    const decodedSamplers: AnimationSamplerPod[] = [];
     for (let sampIdx = 0; sampIdx < anim.samplers.length; sampIdx++) {
       const sampler = anim.samplers[sampIdx];
       if (sampler === undefined) continue;
@@ -186,7 +168,7 @@ export function parseAnimation(
       decodedSamplers.push({
         input: inputResult.value,
         output: outputResult.value,
-        interpolation: interpolation as Interpolation,
+        interpolation,
       });
     }
 

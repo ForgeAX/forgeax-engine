@@ -7,9 +7,9 @@ import {
   serializeMaterialCookReceipt,
 } from '@forgeax/engine-pack/material-cook';
 import type { CookProduct, MaterialAsset, MaterialTable } from '@forgeax/engine-types';
+import { resolveMaterialAsset } from '@forgeax/engine-types';
 import type { MaterialCookedAsset } from './cook.js';
 import { cookedRecord, materialPrograms } from './publication.js';
-import { resolveMaterialAsset } from './resolve.js';
 
 export {
   type CookedMaterialRecord,

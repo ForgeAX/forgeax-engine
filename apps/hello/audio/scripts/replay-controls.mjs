@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import { create, globals } from '@forgeax/engine-dawn-node';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -11,7 +12,7 @@ import {
   openReplay,
   replayDeviceRequest,
 } from '../../../../packages/rhi-debug/dist/index.mjs';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const directory = resolve(process.env.FORGEAX_AUDIO_EVIDENCE ?? 'artifacts/audio-controls');
 await mkdir(resolve(directory, 'replay'), { recursive: true });
@@ -166,7 +167,7 @@ for (const source of capture.rows) {
     if (errors.length) throw new Error(JSON.stringify(errors));
     await writeFile(
       resolve(directory, 'replay', `${source.phase}.png`),
-      writeReferencePng(rgba, output.width, output.height),
+      encodePng(output.width, output.height, rgba),
     );
     await writeFile(resolve(directory, `${source.phase}.rhitape.gz`), gzipSync(bytes));
     // The two unseeded targets are initialized by the captured scene depth clear

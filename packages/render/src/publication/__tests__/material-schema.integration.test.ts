@@ -24,7 +24,7 @@ import {
   MATERIAL_PER_ENTITY_STRIDE,
 } from '../../record/render-context';
 import { type RenderPublication, renderPublicationTransfers } from '../contract';
-import { installPublicationPrograms } from '../programs';
+import { installPublicationPrograms, publicationMaterialSchemaRebinder } from '../programs';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
@@ -242,7 +242,7 @@ it('detaches numeric and ABI aliases while preserving dynamic resource identitie
   expect(owned.paramSnapshot?.vector).toEqual([NaN, -0, Infinity, 1]);
   if (material.materialParamSchema?.[0] !== undefined)
     Reflect.set(material.materialParamSchema[0], 'default', 0.125);
-  expect(owned.materialParamSchema?.[0]?.default).toBe(0.75);
+  expect(owned.materialParamSchema?.[0]).toMatchObject({ default: 0.75 });
   for (const field of [
     'textureCoordinates',
     'textureHandles',
@@ -399,9 +399,77 @@ it('does not collapse distinct numeric defaults during schema admission', () => 
   );
   const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
   expect(accepted.frame.renderables[0]?.material.materialParamSchema).toBe(f.copied);
-  expect(
-    Object.is(accepted.frame.renderables[0]?.material.materialParamSchema?.[0]?.default, -0),
-  ).toBe(true);
+  const first = accepted.frame.renderables[0]?.material.materialParamSchema?.[0];
+  expect(Object.is(first !== undefined && 'default' in first ? first.default : undefined, -0)).toBe(
+    true,
+  );
+  f.receiver.dispose();
+  f.publisher.dispose();
+});
+
+it('rebinds shared received schemas without merging distinct material values or programs', () => {
+  const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
+  const first = f.packet.templates[0];
+  if (first === undefined) throw new Error('Missing template');
+  const material = first.snapshot.material;
+  const received = ownReceivedPublicationMaterials({
+    ...f.packet,
+    templates: [
+      {
+        ...first,
+        snapshot: {
+          ...first.snapshot,
+          materials: [
+            material,
+            { ...material, paramSnapshot: { factor: 0.5 } },
+            { ...material, materialShaderId: 'game::other' },
+            { ...material, paramSnapshot: { factor: 1 } },
+          ],
+        },
+      },
+    ],
+  });
+  installPublicationPrograms(f.assets, f.packet.programs);
+  f.assets.shaderRegistry.installMaterialArtifact('game::other', {
+    source: '',
+    paramSchema: [{ name: 'factor', type: 'f32', default: 0.25 }],
+  });
+  const snapshot = received.templates[0]?.snapshot;
+  if (snapshot === undefined) throw new Error('Missing received template');
+  const canonical = f.assets.shaderRegistry
+    .findMaterialArtifact('game::forward')
+    .unwrap().paramSchema;
+  const rebound = publicationMaterialSchemaRebinder(f.assets.shaderRegistry)(snapshot);
+  expect(rebound.materials.map((row) => row.paramSnapshot?.factor)).toEqual([0.25, 0.5, 0.25, 1]);
+  expect(rebound.materials[0]?.materialParamSchema).toBe(canonical);
+  expect(rebound.materials[1]?.materialParamSchema).toBe(canonical);
+  expect(rebound.materials[2]).toBe(snapshot.materials[2]);
+  expect(rebound.materials[3]?.materialParamSchema).toBe(canonical);
+  expect(rebound.materials[0]).not.toBe(rebound.materials[1]);
+  f.receiver.dispose();
+  f.publisher.dispose();
+});
+
+it('observes changed defaults on a shared mutable schema between raw material rows', () => {
+  const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
+  installPublicationPrograms(f.assets, f.packet.programs);
+  const original = f.packet.templates[0]?.snapshot;
+  if (original === undefined) throw new Error('Missing template');
+  const field = { name: 'factor', type: 'f32' as const, default: 0.75 };
+  const schema = [field];
+  const rebind = publicationMaterialSchemaRebinder(f.assets.shaderRegistry);
+  const row = () => {
+    const material = { ...original.material, materialParamSchema: schema };
+    return { material, materials: [material] };
+  };
+  const canonical = f.assets.shaderRegistry
+    .findMaterialArtifact('game::forward')
+    .unwrap().paramSchema;
+  expect(rebind(row()).material.materialParamSchema).toBe(canonical);
+  field.default = 0.5;
+  expect(rebind(row()).material.materialParamSchema).toBe(schema);
+  field.default = 0.75;
+  expect(rebind(row()).material.materialParamSchema).toBe(canonical);
   f.receiver.dispose();
   f.publisher.dispose();
 });

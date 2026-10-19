@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
@@ -134,11 +135,11 @@ describe('ScriptablePack and Pack development publication', () => {
     const readCatalog = async () => {
       const response = await fetch(new URL(binding.catalogUrl, base));
       expect(response.status).toBe(200);
-      return response.json();
+      return decodeCatalogWire(await response.json()).unwrap();
     };
     const post = (guid: string) =>
       fetch(new URL(`${binding.importUrlBase}/${guid}`, base), { method: 'POST' });
-    expect((await readCatalog()).entries).toHaveLength(2);
+    expect(await readCatalog()).toHaveLength(2);
     const first = post(guids[0]);
     await importEntered;
     const second = post(guids[1]);
@@ -146,11 +147,7 @@ describe('ScriptablePack and Pack development publication', () => {
       await siblingRequest;
       // The first producer is still held while the real second HTTP request
       // and an independent Catalog read cross the live Vite transport.
-      expect(
-        (await readCatalog()).entries.every(
-          (row: { lifecycle: string }) => row.lifecycle === 'missing',
-        ),
-      ).toBe(true);
+      expect((await readCatalog()).every((row) => row.lifecycle === 'missing')).toBe(true);
     } finally {
       releaseImport();
     }
@@ -162,10 +159,8 @@ describe('ScriptablePack and Pack development publication', () => {
     }
     const assertClosure = async (revision: string) => {
       const catalog = await readCatalog();
-      expect(catalog.entries.map((row: { guid: string }) => row.guid).sort()).toEqual(
-        [...guids].sort(),
-      );
-      for (const row of catalog.entries) {
+      expect(catalog.map((row) => row.guid).sort()).toEqual([...guids].sort());
+      for (const row of catalog) {
         expect(row.lifecycle).toBe('current');
         const response = await fetch(new URL(row.packageUrl, base));
         expect(response.status).toBe(200);
@@ -425,12 +420,10 @@ export default definePack({
     const catalogResponse = await fetch(new URL(binding.catalogUrl, baseUrl));
     const catalogBody = await catalogResponse.text();
     expect(catalogResponse.status, catalogBody).toBe(200);
-    const catalog = JSON.parse(catalogBody) as {
-      entries: Array<{ packageId?: string; packageUrl: string; sourceKey?: string }>;
-    };
-    expect(catalog.entries).toHaveLength(2);
-    const rootEntry = catalog.entries.find((entry) => entry.packageId === ROOT_PACKAGE_ID);
-    const instanceEntry = catalog.entries.find((entry) => entry.packageId === INSTANCE_PACKAGE_ID);
+    const catalog = decodeCatalogWire(JSON.parse(catalogBody)).unwrap();
+    expect(catalog).toHaveLength(2);
+    const rootEntry = catalog.find((entry) => entry.packageId === ROOT_PACKAGE_ID);
+    const instanceEntry = catalog.find((entry) => entry.packageId === INSTANCE_PACKAGE_ID);
     expect(rootEntry).toBeDefined();
     expect(instanceEntry).toBeDefined();
     if (rootEntry === undefined || instanceEntry === undefined) {
@@ -460,15 +453,13 @@ export default definePack({
     const refreshed = await waitFor(
       async () => {
         const response = await fetch(new URL(binding.catalogUrl, baseUrl));
-        return (await response.json()) as typeof catalog;
+        return decodeCatalogWire(await response.json()).unwrap();
       },
       (next) =>
-        next.entries.find((entry) => entry.packageId === INSTANCE_PACKAGE_ID)?.packageUrl !==
+        next.find((entry) => entry.packageId === INSTANCE_PACKAGE_ID)?.packageUrl !==
         instanceEntry.packageUrl,
     );
-    const refreshedEntry = refreshed.entries.find(
-      (entry) => entry.packageId === INSTANCE_PACKAGE_ID,
-    );
+    const refreshedEntry = refreshed.find((entry) => entry.packageId === INSTANCE_PACKAGE_ID);
     if (refreshedEntry === undefined) throw new Error('expected the refreshed instance row');
     const refreshedPackage = await fetch(new URL(refreshedEntry.packageUrl, baseUrl));
     expect(refreshedPackage.status).toBe(200);
@@ -547,15 +538,8 @@ export default definePack({
     const catalogResponse = await fetch(new URL(binding.catalogUrl, baseUrl));
     const catalogBody = await catalogResponse.text();
     expect(catalogResponse.status, catalogBody).toBe(200);
-    const catalog = (await JSON.parse(catalogBody)) as {
-      entries: Array<{
-        guid: string;
-        kind: string;
-        packageUrl: string;
-        execution?: string;
-      }>;
-    };
-    const entry = catalog.entries.find((candidate) => candidate.guid === guid);
+    const catalog = decodeCatalogWire(JSON.parse(catalogBody)).unwrap();
+    const entry = catalog.find((candidate) => candidate.guid === guid);
     expect(entry).toMatchObject({ guid, kind: 'particle-effect', execution: 'cooked' });
     if (entry === undefined) throw new Error('expected the direct cooked Catalog row');
     const packageResponse = await fetch(new URL(entry.packageUrl, baseUrl));
@@ -664,11 +648,9 @@ export default definePack({
     const catalogResponse = await fetch(new URL(binding.catalogUrl, baseUrl));
     const catalogBody = await catalogResponse.text();
     expect(catalogResponse.status, catalogBody).toBe(200);
-    const catalog = JSON.parse(catalogBody) as {
-      entries: Array<{ guid: string; packageUrl: string; refs?: readonly string[] }>;
-    };
-    const scene = catalog.entries.find((entry) => entry.guid === sceneGuid);
-    const external = catalog.entries.find((entry) => entry.guid === externalGuid);
+    const catalog = decodeCatalogWire(JSON.parse(catalogBody)).unwrap();
+    const scene = catalog.find((entry) => entry.guid === sceneGuid);
+    const external = catalog.find((entry) => entry.guid === externalGuid);
     expect(scene).toMatchObject({ guid: sceneGuid, refs: [externalGuid] });
     expect(external).toMatchObject({ guid: externalGuid });
     if (scene === undefined) throw new Error('expected the direct scene Catalog row');

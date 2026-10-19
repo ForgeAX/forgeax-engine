@@ -69,6 +69,7 @@ type CommandInput = EngineWorkspaceCameraInput & {
   readonly x?: number;
   readonly y?: number;
   readonly previewOwner?: string;
+  readonly options?: unknown;
   readonly previewTargetId?: string;
   readonly asset?: EngineWorkspaceAsset;
   readonly width?: number;
@@ -194,7 +195,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
       );
     const errors: unknown[] = [];
     let submittedFrame = 0;
-    let readyCompletedFrame = 0;
+    let readyCompleted: BrowserFrameCompleted | undefined;
     if (typeof canvas.addEventListener === 'function')
       ctx.effect(() => {
         const removeSubmitted = subscribeBrowserFrameSubmitted(canvas, (frame) => {
@@ -202,8 +203,8 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         });
         const completed = (event: Event) => {
           const frame = (event as CustomEvent<BrowserFrameCompleted>).detail;
-          if (frame.presentation === 'ready')
-            readyCompletedFrame = Math.max(readyCompletedFrame, frame.frameId);
+          if (frame.presentation === 'ready' && frame.frameId > (readyCompleted?.frameId ?? 0))
+            readyCompleted = frame;
         };
         canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, completed);
         return () => {
@@ -247,7 +248,11 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
     };
     const removeErrors = app.onError((error) => {
       if (errors.length === 32) errors.shift();
-      errors.push({ code: error.code, hint: error.hint });
+      errors.push({
+        code: error.code,
+        hint: error.hint,
+        ...('detail' in error ? { detail: error.detail } : {}),
+      });
       if (failure || disposed || app.world.execution.health !== 'poisoned') return;
       failure = new EngineWorkspaceError(
         error.code,
@@ -316,7 +321,13 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           'Engine workspace capture dimensions must match the active target dimensions',
         );
       const deadline = Date.now() + 10_000;
-      while (readyCompletedFrame <= frameFloor) {
+      while (
+        !readyCompleted ||
+        readyCompleted.frameId <= frameFloor ||
+        (readyCompleted.barrelDistortion !== undefined &&
+          (readyCompleted.barrelDistortion.width !== canvas.width ||
+            readyCompleted.barrelDistortion.height !== canvas.height))
+      ) {
         assertAvailable();
         input.signal?.throwIfAborted();
         // Hidden previews retain their tools and can render an explicitly requested frame.
@@ -362,7 +373,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
             worldIdentity: app.world.identity,
             frameFloor,
             submittedFrame,
-            readyCompletedFrame,
+            readyCompletedFrame: readyCompleted?.frameId ?? 0,
             presented,
             extent: { width: canvas.width, height: canvas.height },
             renderer: {
@@ -426,7 +437,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         }
         await new Promise((resolve) => setTimeout(resolve, 16));
       }
-      const frameId = readyCompletedFrame;
+      const frameId = readyCompleted.frameId;
       const png = canvas.toDataURL('image/png');
       if (!png.startsWith('data:image/png'))
         throw new Error('Engine workspace canvas returned an invalid PNG');
@@ -718,6 +729,15 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           };
         case 'capture':
           return active(input).capture?.(input);
+        case 'preview.texture.get':
+        case 'preview.texture.set': {
+          const owner = active(input);
+          if (!owner.texture) throw new Error('Texture preview controls are unavailable');
+          if (command.operation === 'preview.texture.get') return owner.texture.get();
+          const result = await owner.texture.set(input.options);
+          frameFloor = submittedFrame;
+          return result;
+        }
         case 'camera.get':
           return active(input).getCamera(input);
         case 'camera.begin':
@@ -831,6 +851,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         command.operation === 'describe' ||
         command.operation === 'scene.tree.get' ||
         command.operation === 'entity.inspect' ||
+        command.operation === 'preview.texture.get' ||
         command.operation === 'camera.get' ||
         command.operation === 'target.pick';
       const completion = (readOnly ? Promise.resolve() : queue).then(run, run);

@@ -387,7 +387,10 @@ export function createMaterialLayoutCache({
     materialParamSchema?: readonly ParamSchemaEntry[],
   ): BindGroupLayout | undefined => {
     if (isEngineOwnedMaterialShader(materialShaderId)) return undefined;
-    const contract = getMaterialShaderBindingContract(materialShaderId).bindings;
+    const lookup = getShader().findMaterialArtifact(materialShaderId);
+    const contract = lookup.ok
+      ? (lookup.value.receipt?.bindings ?? 'render-material')
+      : 'render-material';
     if (contract === 'group-0') {
       return getOrBuildGroup0MaterialLayout()?.materialBgl;
     }

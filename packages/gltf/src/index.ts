@@ -34,14 +34,14 @@ export type {
   AccessorJson,
   AccessorRole,
   BufferViewJson,
-  ComponentTypeId,
   DecodeAccessorInput,
   DecodedAccessor,
 } from './accessor/decode-accessor.js';
 // Accessor decoder (w9).
-export { COMPONENT_TYPE, decodeAccessor } from './accessor/decode-accessor.js';
+export { decodeAccessor } from './accessor/decode-accessor.js';
 export type { DecodeColorAccessorInput } from './accessor/decode-color.js';
 export { decodeColorAccessor } from './accessor/decode-color.js';
+export { COMPONENT_TYPE, type ComponentTypeId } from './accessor/layout.js';
 export type { GltfBridgeContext, MaterialBridgeContext } from './bridge.js';
 // Bridge: gltfDocToSceneAsset + toMaterialAsset + meshIrToMeshAsset (SSOT for
 // hello-gltf + hello-gltf-instancing, feat-20260518 M3 w9; M3 Tier-C material
@@ -96,7 +96,6 @@ export { err, GLTF_ERROR_HINTS, gltfErr, ok } from './errors.js';
 // (feat-20260603-asset-import-loader-injection M2 / w19).
 export { gltfImporter } from './gltf-importer.js';
 export { type GltfLodRelation, parseGltfLodExtension } from './lod/parse-lod.js';
-export { projectGltfLodMeta } from './lod/project-meta.js';
 export type { GltfCameraIr } from './parse-camera.js';
 export type { GlbChunks } from './parse-glb-chunks.js';
 // Header / chunk parsers (w8).
@@ -113,6 +112,7 @@ export type {
   GltfNodeIr,
   GltfNormalTextureInfoIr,
   GltfOcclusionTextureInfoIr,
+  GltfParseError,
   GltfSamplerIr,
   GltfSceneIr,
   GltfTextureInfoIr,
@@ -136,7 +136,6 @@ export type { GltfHeaderJson } from './parse-gltf-header.js';
 export type {
   GltfDocItem,
   GltfMetaJson,
-  GltfSubAssetEntry,
   ReimportReuseResult,
   ReimportReuseValue,
   SubAssetKey,

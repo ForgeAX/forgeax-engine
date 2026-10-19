@@ -21,6 +21,19 @@ function totalBytes(layout: readonly TextureMipLayout[]): number {
 
 describe('canonical texture layout', () => {
   it.each([
+    ['r16unorm', 2],
+    ['r16snorm', 2],
+    ['rgba16unorm', 8],
+    ['rgba16snorm', 8],
+  ] as const)('uses the normalized 16-bit channel width for %s', (format, texelBytes) => {
+    const levels = uploadLayout(format, 4, 2, 3);
+    expect(levels.map((level) => level.bytesPerRow)).toEqual(
+      [4, 2, 1].map((width) => width * texelBytes),
+    );
+    expect(totalBytes(levels)).toBe(11 * texelBytes);
+  });
+
+  it.each([
     ['etc2-rgb8unorm', 8],
     ['etc2-rgb8unorm-srgb', 8],
     ['etc2-rgb8a1unorm', 8],
@@ -323,4 +336,14 @@ describe('isCompressedFormat', () => {
   ] as const)('%s -> %s', (format, compressed) => {
     expect(isCompressedFormat(format)).toBe(compressed);
   });
+});
+
+it('keeps layout dimensions unsigned before a consumer applies device extent limits', () => {
+  const result = deriveTextureLayout({
+    shape: { viewDimension: '2d', extent: { width: 2 ** 31, height: 1 } },
+    format: 'r8unorm',
+    mips: { kind: 'packed', levelCount: 2 },
+  }).unwrap();
+  expect(result.levels.map((level) => level.width)).toEqual([2 ** 31, 2 ** 30]);
+  expect(result.byteLength).toBe(3 * 2 ** 30);
 });

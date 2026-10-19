@@ -55,7 +55,6 @@ const skeleton: SkeletonPod = {
 };
 
 const skin: SkinPod = {
-  skeletonGuid: guid(5),
   jointPaths: ['SkinnedMesh'],
   vertexCount: 3,
   influences: Array.from({ length: 3 }, () => ({
@@ -65,7 +64,9 @@ const skin: SkinPod = {
 };
 
 describe('FBX material deformation ownership', () => {
-  it('marks only material slots used by the skinned mesh as pbr-skin', () => {
+  it.each([
+    5, 9,
+  ])('uses metadata skeleton %i while marking only skinned material slots', (skeletonId) => {
     const assets = toAssetPack({
       meshes: [mesh(0, 0), mesh(1, 1)],
       scene,
@@ -79,10 +80,20 @@ describe('FBX material deformation ownership', () => {
         { guid: guid(2), kind: 'mesh', sourceIndex: 1 },
         { guid: guid(3), kind: 'material', sourceIndex: 0 },
         { guid: guid(4), kind: 'material', sourceIndex: 1 },
-        { guid: guid(5), kind: 'skeleton', sourceIndex: 0 },
+        { guid: guid(skeletonId), kind: 'skeleton', sourceIndex: 0 },
         { guid: guid(6), kind: 'skin', sourceIndex: 0 },
         { guid: guid(7), kind: 'scene', sourceIndex: 0 },
       ],
+    });
+
+    const skinAsset = assets.find((asset) => asset.kind === 'skin');
+    expect(skinAsset?.payload).toMatchObject({
+      skeletonGuid: guid(skeletonId),
+      jointPaths: skin.jointPaths,
+    });
+    expect(skinAsset?.refs).toContainEqual({
+      guid: guid(skeletonId),
+      sourceField: { fieldName: 'skeleton' },
     });
 
     const materials = assets

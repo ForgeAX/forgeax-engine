@@ -114,7 +114,7 @@ function spawnScene(world: import('@forgeax/engine-ecs').World): void {
   // DirectionalLight: angled down so the ground + sphere are lit.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [-0.5, -1, -0.3],
       color: [1, 1, 1],
       intensity: 1,

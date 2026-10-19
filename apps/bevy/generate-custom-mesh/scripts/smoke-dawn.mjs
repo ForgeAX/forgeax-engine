@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-generate-custom-mesh headless dawn smoke.
 // Browser and smoke share src/generate-custom-mesh.ts.
@@ -7,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
@@ -117,7 +118,7 @@ for (let i = 2; i < SMOKE_MIN_FRAMES; i++) {
 const pixels = afterPixels;
 const refPath = resolve(here, '..', 'artifacts', 'generate-custom-mesh-ref.png');
 mkdirSync(dirname(refPath), { recursive: true });
-writeFileSync(refPath, writeReferencePng(pixels, WIDTH, HEIGHT));
+writeFileSync(refPath, encodePng(WIDTH, HEIGHT, pixels));
 
 let notBlack = false;
 for (let i = 0; i < pixels.length; i += 4) { if (pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0) { notBlack = true; break; } }

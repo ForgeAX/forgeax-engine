@@ -63,6 +63,7 @@ it.each([
     source: {
       worldId: 0,
       entityKey: 1,
+      transform: { world: matrix(0) },
       instances,
       temporal: { previousInstances },
       material: { materialHandle: 1 },

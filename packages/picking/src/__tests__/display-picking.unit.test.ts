@@ -1,9 +1,13 @@
-import type { World } from '@forgeax/engine-ecs';
+import { World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import {
   attachBarrelDistortionCameraFrame,
   createBarrelDistortionMapping,
+  MeshFilter,
+  MeshRenderer,
 } from '@forgeax/engine-render';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   computeDisplayScreenRay,
@@ -14,7 +18,7 @@ import {
 } from '../display-picking';
 
 describe('display picking frame authority', () => {
-  it('uses the accepted identity frame after an unrendered camera mutation', () => {
+  it('constructs the identity display ray without a live World', () => {
     const mapping = attachBarrelDistortionCameraFrame(
       createBarrelDistortionMapping(640, 360, undefined).unwrap(),
       {
@@ -24,14 +28,7 @@ describe('display picking frame authority', () => {
         projectionMatrix: mat4.create(),
       },
     );
-    // A live World fallback would throw here. The submitted camera matrices
-    // remain the sole source for the displayed frame after a later mutation.
-    const mutatedWorld = {
-      get: () => {
-        throw new Error('unrendered camera state must not be read');
-      },
-    } as unknown as World;
-    const ray = computeDisplayScreenRay(mutatedWorld, 17 as never, 320, 180, mapping, 640, 360);
+    const ray = computeDisplayScreenRay(320, 180, mapping, 640, 360);
     expect(ray).toBeDefined();
   });
 
@@ -49,12 +46,7 @@ describe('display picking frame authority', () => {
         projectionMatrix,
       },
     );
-    const world = {
-      get: () => {
-        throw new Error('display picking must use the accepted mapping');
-      },
-    } as unknown as World;
-    const ray = computeDisplayScreenRay(world, 17 as never, 32, 32, mapping, 64, 64);
+    const ray = computeDisplayScreenRay(32, 32, mapping, 64, 64);
     expect(ray).toMatchObject({ projectionKind: 'orthographic' });
     expect(ray).toBeDefined();
     if (ray === undefined) return;
@@ -63,14 +55,7 @@ describe('display picking frame authority', () => {
   });
 
   it('rejects a display query without an accepted frame context', () => {
-    const world = {
-      get: () => {
-        throw new Error('missing frame context must not consult World');
-      },
-    } as unknown as World;
-    expect(
-      computeDisplayScreenRay(world, 17 as never, 10, 10, undefined, 640, 360),
-    ).toBeUndefined();
+    expect(computeDisplayScreenRay(10, 10, undefined, 640, 360)).toBeUndefined();
   });
 
   it('rejects a viewport that disagrees with the submitted mapping extent', () => {
@@ -83,10 +68,7 @@ describe('display picking frame authority', () => {
         projectionMatrix: mat4.create(),
       },
     );
-    const world = {} as World;
-    expect(
-      computeDisplayScreenRay(world, 17 as never, 640, 360, mapping, 1280, 720),
-    ).toBeUndefined();
+    expect(computeDisplayScreenRay(640, 360, mapping, 1280, 720)).toBeUndefined();
     const out = { x: 0, y: 0 };
     expect(displayToScenePixel(out, undefined, 10, 10)).toBe(false);
   });
@@ -101,7 +83,6 @@ describe('display picking frame authority', () => {
         projectionMatrix: mat4.create(),
       },
     );
-    const world = {} as World;
     const embeddedOffset = { left: 37, top: 19 };
     const devicePixelRatio = 2;
     const cssPoint = { x: embeddedOffset.left + 160, y: embeddedOffset.top + 90 };
@@ -114,37 +95,15 @@ describe('display picking frame authority', () => {
     // public picking API consumes the resulting physical pixel against the
     // accepted submitted extent.
     expect(
-      computeDisplayScreenRay(
-        world,
-        17 as never,
-        submittedPixel.x,
-        submittedPixel.y,
-        mapping,
-        640,
-        360,
-      ),
+      computeDisplayScreenRay(submittedPixel.x, submittedPixel.y, mapping, 640, 360),
     ).toBeDefined();
-    expect(
-      computeDisplayScreenRay(world, 17 as never, -1, submittedPixel.y, mapping, 640, 360),
-    ).toBeUndefined();
-    expect(
-      computeDisplayScreenRay(world, 17 as never, 640, submittedPixel.y, mapping, 640, 360),
-    ).toBeDefined();
-    expect(
-      computeDisplayScreenRay(world, 17 as never, 641, submittedPixel.y, mapping, 640, 360),
-    ).toBeUndefined();
+    expect(computeDisplayScreenRay(-1, submittedPixel.y, mapping, 640, 360)).toBeUndefined();
+    expect(computeDisplayScreenRay(640, submittedPixel.y, mapping, 640, 360)).toBeDefined();
+    expect(computeDisplayScreenRay(641, submittedPixel.y, mapping, 640, 360)).toBeUndefined();
     // A DPR-sized viewport is a different submitted extent and must fail
     // closed instead of silently selecting a second display mapping.
     expect(
-      computeDisplayScreenRay(
-        world,
-        17 as never,
-        submittedPixel.x,
-        submittedPixel.y,
-        mapping,
-        1280,
-        720,
-      ),
+      computeDisplayScreenRay(submittedPixel.x, submittedPixel.y, mapping, 1280, 720),
     ).toBeUndefined();
   });
 
@@ -155,9 +114,82 @@ describe('display picking frame authority', () => {
       },
     } as unknown as World;
     expect(pickDisplay(world, 10, 10, undefined, 640, 360)).toBeUndefined();
-    expect(pickVertexDisplay(world, 17 as never, 10, 10, undefined, 640, 360)).toBeUndefined();
+    expect(pickVertexDisplay(world, 10, 10, undefined, 640, 360)).toBeUndefined();
     expect(
-      pickVertexOnEntityDisplay(world, 17 as never, 10, 10, undefined, 640, 360, 18 as never),
+      pickVertexOnEntityDisplay(world, 10, 10, undefined, 640, 360, 18 as never),
     ).toBeUndefined();
+  });
+});
+
+describe('display vertex selection', () => {
+  it('remaps all and single-entity hits before radius and limit selection', () => {
+    const world = new World();
+    const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0]);
+    const mesh: MeshAsset = {
+      kind: 'mesh',
+      vertices: positions,
+      attributes: { position: positions },
+      indices: new Uint16Array([0, 1, 2]),
+      aabb: new Float32Array([-0.5, -0.5, 0, 0.5, 0.5, 0]),
+      submeshes: [
+        {
+          indexOffset: 0,
+          indexCount: 3,
+          vertexCount: 3,
+          topology: 'triangle-list',
+          materialSlot: 0,
+        },
+      ],
+      materialSlots: [{ slotName: 'Default' }],
+    };
+    const material: MaterialAsset = {
+      kind: 'material',
+      passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' } }],
+    };
+    const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const entities = [0, -1].map((z) =>
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, z] } },
+          { component: MeshFilter, data: { assetHandle: meshHandle } },
+          { component: MeshRenderer, data: { materials: [materialHandle] } },
+        )
+        .unwrap(),
+    );
+    propagateTransforms(world);
+    const view = mat4.identity(mat4.create());
+    view[14] = -5;
+    const mapping = attachBarrelDistortionCameraFrame(
+      createBarrelDistortionMapping(600, 600, {
+        strength: 0.2,
+        centerX: 0.5,
+        centerY: 0.5,
+      }).unwrap(),
+      {
+        projection: 'perspective',
+        far: 100,
+        viewMatrix: view,
+        projectionMatrix: mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 1, 0.1, 100),
+      },
+    );
+    const all = pickVertexDisplay(world, 300, 300, mapping, 600, 600, {});
+    expect(Array.isArray(all)).toBe(true);
+    if (!Array.isArray(all)) throw new Error('Expected vertex array');
+    expect(all).toHaveLength(6);
+    expect(pickVertexDisplay(world, 300, 300, mapping, 600, 600)).toEqual(all[0]);
+    expect(pickVertexDisplay(world, 300, 300, mapping, 600, 600, { limit: 1 })).toEqual(
+      all.slice(0, 1),
+    );
+    const entity = entities[0];
+    if (entity === undefined) throw new Error('Expected mesh entity');
+    const selected = pickVertexOnEntityDisplay(world, 300, 300, mapping, 600, 600, entity, {});
+    expect(selected).toEqual(all.filter((hit) => hit.entity === entity));
+    expect(
+      pickVertexOnEntityDisplay(world, 300, 300, mapping, 600, 600, entity, {
+        radius: 1,
+      }),
+    ).toEqual([]);
+    expect(pickVertexDisplay(world, 300, 300, mapping, 600, 600, { radius: NaN })).toEqual([]);
   });
 });

@@ -1,13 +1,14 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { RhiDevice } from '@forgeax/engine-rhi';
+import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { ok } from '@forgeax/engine-types';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { err, ok } from '@forgeax/engine-types';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_DEPTH_OF_FIELD_PARAMS,
   type DepthOfFieldParams,
 } from '../features/depth-of-field/depth-of-field-params';
+import { addAnalyticFogPass } from '../pipeline/analytic-fog-pass';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
@@ -15,6 +16,7 @@ import { selectStandardClusterTransport } from '../pipeline/standard-lighting/tr
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import { createRenderPipelineTarget } from '../render-pipeline';
 
 let device: RhiDevice;
 
@@ -168,7 +170,7 @@ describe('analytic distance and height fog graph', () => {
     expect(names.filter((n) => n === 'analytic-fog')).toHaveLength(1);
     expect(names.indexOf('analytic-fog')).toBeGreaterThan(names.indexOf('main'));
     expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('transparent'));
-    expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('bloom-downsample-0'));
+    expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('bloom-horizontal-0'));
     expect(names.some((n) => n.startsWith('volume-'))).toBe(false);
     const fog = info.passes.find((p) => p.name === 'analytic-fog');
     expect(fog?.accesses).toEqual([
@@ -199,4 +201,94 @@ describe('analytic distance and height fog graph', () => {
       if (resolve >= 0) expect(names.indexOf('analytic-fog')).toBeLessThan(resolve);
     }
   });
+});
+
+it('retains fog bindings until physical resources change and retries failed replacement', async () => {
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const localDevice = (await adapter.requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(localDevice, { code: 'synthetic' })).unwrap();
+  const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+  const color = createRenderPipelineTarget(graph, 'color', {
+    format: 'rgba8unorm',
+    size: 'surface',
+  }).unwrap();
+  const depth = graph
+    .importTexture(
+      'depth',
+      { format: 'depth32float', size: 'surface', usage: 20 },
+      (frame) => frame.currentTexture,
+    )
+    .unwrap();
+  const view = graph.importView(depth, { aspect: 'depth-only' }, (frame) => frame.view).unwrap();
+  graph
+    .addRasterPass('clear', {
+      accesses: [{ resource: color.view, usage: 'color-attachment' }],
+      colorAttachments: [
+        {
+          view: color.view,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        },
+      ],
+      encode: () => {},
+    })
+    .unwrap();
+  addAnalyticFogPass(graph, { color, depth: view }).unwrap();
+  const compiled = graph
+    .compile({ device: localDevice, surfaceSize: { width: 8, height: 8 } })
+    .unwrap();
+  const makeDepth = () => {
+    const texture = localDevice
+      .createTexture({ format: 'depth32float', size: { width: 8, height: 8 }, usage: 20 })
+      .unwrap();
+    return {
+      texture,
+      view: localDevice.createTextureView(texture, { aspect: 'depth-only' }).unwrap(),
+    };
+  };
+  const buffer = () => localDevice.createBuffer({ size: 4096, usage: 72 }).unwrap();
+  let currentDepth = makeDepth();
+  let uniform = buffer();
+  const create = vi.spyOn(localDevice, 'createBindGroup');
+  const execute = () =>
+    compiled.execute({
+      encoder: localDevice.createCommandEncoder().unwrap(),
+      currentTexture: currentDepth.texture,
+      view: currentDepth.view,
+      runtime: {
+        device: localDevice,
+        lookupPostProcess: () => ({ source: 'synthetic' }),
+        shaderModuleFactory: { createShaderModule: () => ok(shader) },
+      },
+      pipelineState: { viewUniformBuffer: uniform },
+    } as unknown as RenderPipelineFrame);
+  execute().unwrap();
+  execute().unwrap();
+  expect(create).toHaveBeenCalledTimes(1);
+  const original = currentDepth;
+  currentDepth = makeDepth();
+  execute().unwrap();
+  expect(create).toHaveBeenCalledTimes(2);
+  const originalUniform = uniform;
+  uniform = buffer();
+  create.mockReturnValueOnce(
+    err(new RhiError({ code: 'webgpu-runtime-error', expected: 'bindings', hint: 'test failure' })),
+  );
+  expect(execute().ok).toBe(false);
+  execute().unwrap();
+  execute().unwrap();
+  expect(create).toHaveBeenCalledTimes(4);
+  expect(create.mock.calls.at(-1)?.[0].entries).toEqual([
+    {
+      binding: 0,
+      resource: { kind: 'buffer', value: { buffer: uniform, size: expect.any(Number) } },
+    },
+    { binding: 1, resource: { kind: 'textureView', value: currentDepth.view } },
+  ]);
+  (await compiled.retire()).unwrap();
+  localDevice.destroyTexture(original.texture).unwrap();
+  localDevice.destroyTexture(currentDepth.texture).unwrap();
+  localDevice.destroyBuffer(originalUniform).unwrap();
+  localDevice.destroyBuffer(uniform).unwrap();
 });

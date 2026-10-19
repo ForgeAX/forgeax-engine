@@ -1,3 +1,5 @@
+import { srgbChannelToLinear, linearChannelToSrgb } from '@forgeax/engine/types';
+import { halfFloat } from '@forgeax/engine/math';
 // apps/hello/rect-light-texture - procedural light images. Each one is drawn
 // once in linear float RGB and encoded into the storage format it exercises,
 // so the gallery covers every uncompressed sourceTexture encoding and sizes
@@ -34,13 +36,11 @@ const mixRgb = (a: Rgb, b: Rgb, t: number): Rgb => [
   a[1] + (b[1] - a[1]) * t,
   a[2] + (b[2] - a[2]) * t,
 ];
-const srgbToLinear = (value: number) =>
-  value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-const linearRgb = (c: Rgb): Rgb => [srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2])];
+const linearRgb = (c: Rgb): Rgb => [srgbChannelToLinear(c[0]), srgbChannelToLinear(c[1]), srgbChannelToLinear(c[2])];
 const fromSrgb = (r: number, g: number, b: number): Rgb => [
-  srgbToLinear(r / 255),
-  srgbToLinear(g / 255),
-  srgbToLinear(b / 255),
+  srgbChannelToLinear(r / 255),
+  srgbChannelToLinear(g / 255),
+  srgbChannelToLinear(b / 255),
 ];
 
 function hueToRgb(hue: number): Rgb {
@@ -181,19 +181,10 @@ export const GALLERY: Readonly<Record<GalleryImage, GalleryEntry>> = {
   rainbow: { width: 128, height: 64, encoding: 'rgba32float', paint: rainbow },
 };
 
-function floatToHalf(value: number): number {
-  const f32 = new Float32Array([value]);
-  const bits = new Uint32Array(f32.buffer)[0] ?? 0;
-  const sign = (bits >>> 16) & 0x8000;
-  const exponent = ((bits >>> 23) & 0xff) - 127 + 15;
-  if (exponent <= 0) return sign;
-  if (exponent >= 0x1f) return sign | 0x7c00;
-  return sign | (exponent << 10) | ((bits >>> 13) & 0x3ff);
-}
 
 const linearToSrgbByte = (value: number) => {
   const v = Math.min(1, Math.max(0, value));
-  return Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055) * 255);
+  return Math.round((linearChannelToSrgb(v)) * 255);
 };
 const linearByte = (value: number) => Math.round(Math.min(1, Math.max(0, value)) * 255);
 
@@ -232,8 +223,8 @@ function encode(pixels: Float32Array, count: number, encoding: SourceEncoding): 
     case 'rgba16float': {
       const out = new Uint16Array(count * 4);
       for (let i = 0; i < count; i++) {
-        for (let c = 0; c < 3; c++) out[i * 4 + c] = floatToHalf(pixels[i * 3 + c] ?? 0);
-        out[i * 4 + 3] = floatToHalf(1);
+        for (let c = 0; c < 3; c++) out[i * 4 + c] = halfFloat.f32ToF16(pixels[i * 3 + c] ?? 0);
+        out[i * 4 + 3] = halfFloat.f32ToF16(1);
       }
       return new Uint8Array(out.buffer);
     }

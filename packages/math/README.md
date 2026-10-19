@@ -3,10 +3,25 @@
 Pure-function SoA-friendly Vec / Mat / Quat / Color / Euler math library for forgeax-engine.
 **branded** `Float32Array` storage — Vec3 ≢ Vec4 ≢ Quat at compile time, zero runtime cost.
 
+Color delegates scalar sRGB transfer functions to `@forgeax/engine-types`, a declared runtime dependency built before Math. Math retains its negative-channel and alpha behavior.
+
+## Affine matrices
+
+`mat4.compose(out, position, rotation, scale, shear?)` composes `T * R * H * S`.
+H has unit diagonal and dimensionless upper-triangular XY, XZ, YZ shear entries;
+omission retains the ordinary TRS path. `mat4.decomposeAffine(position, rotation,
+scale, shear, matrix)` recovers this representation using QR decomposition and
+puts a reflection sign on scale Z. It returns false without changing outputs
+for singular, non-affine or Float32-unrepresentable input. The homogeneous W
+coefficient must round to 1 at native Float32 precision, admitting inversion
+roundoff from double-precision sources. Both routines retain
+caller-owned output storage; decomposition outputs must not overlap each other.
+`mat4.decompose` retains its existing best-effort TRS semantics.
+
 ## 30-second self-introduction
 
 - **ABI**: `Float32Array & { readonly __<dim>: void }` 七件套（`Vec2 / Vec3 / Vec4 / Quat / Mat3 / Mat4 / Color`）+ `Euler` plain-object；branded 维度互斥（编译期）+ TypedArray 即时上传 GPU（运行期）。
-- **Surface**: 19 namespace × 213 函数（vec2:20 / vec3:21 / vec4:18 / mat3:10 / mat4:34 / quat:23 / euler:6 / color:12 / curve3:4 / easing:4 / noise:1 / frustum:4 / ray:9 / ray2:11 / box2:13 / box3:7 / circle2:10 / sphere:5 / f32-to-f16-bytes:1）；单 entry `import { Vec3, vec3, ... } from '@forgeax/engine-math'`。
+- **Surface**: 19 namespace × 214 函数（vec2:20 / vec3:21 / vec4:18 / mat3:10 / mat4:35 / quat:23 / euler:6 / color:12 / curve3:4 / easing:4 / noise:1 / frustum:4 / ray:9 / ray2:11 / box2:13 / box3:7 / circle2:10 / sphere:5 / f32-to-f16-bytes:1）；单 entry `import { Vec3, vec3, ... } from '@forgeax/engine-math'`。
 - **Style**: gl-matrix / wgpu-matrix 风纯函数 namespace + out-param-first（`func(out, ...args)`）；零分配；aliasing-safe（`add(v, v, v)` 合法）。
 - **Errors**: 全库静默回退（不抛错、不返回 `null`、不返回 `Result`、不 `console.warn`）；退化语义靠 JSDoc `@degrade` + 本 README §退化策略表 + `*.test-d.ts` 三层共担。
 
@@ -33,7 +48,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 
 > 上述代码覆盖 v0.1 PBR 渲染管线 90% 的典型 transform / projection / shader-uniform 准备路径——LLM 一次扫读即可拿到 "概念→签名→典型流程" 完整闭包（charter 命题 1）。
 
-## quick-ref：19 namespace × 213 函数
+## quick-ref：19 namespace × 214 函数
 
 每 namespace 内函数顺序粗略按 "构造 → 比较 → 算术 → 几何 → 高级" 分组。完整签名以 `.d.ts` JSDoc 为 SSOT。
 
@@ -43,7 +58,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 | **`vec3`** (21) | `create / clone / copy / set / equals / add / sub / scale / negate / dot / cross / lengthSq / length / distance / distanceSq / normalize / lerp / smoothDamp / catmullRom / min / max` |
 | **`vec4`** (18) | `create / clone / copy / set / equals / add / sub / scale / negate / dot / lengthSq / length / distance / normalize / lerp / smoothDamp / min / max` |
 | **`mat3`** (10) | `create / clone / identity / equals / multiply / transpose / invert / scale / fromMat4 / normalMatrix` |
-| **`mat4`** (34) | `create / view / clone / identity / equals / multiply / transpose / invert / scale / translate / rotate / lookAt / compose / decompose / fromQuat / fromTranslation / fromScaling / fromRotation / perspective / perspectiveNO / perspectiveReverseZ / orthographic / orthographicNO / orthographicReverseZ / transformVec3 / transformPoint / transformDirection / getTranslation / getForward / getUp / getRight / unproject / projectPoint / computeViewProj` |
+| **`mat4`** (35) | `create / view / clone / identity / equals / multiply / transpose / invert / scale / translate / rotate / lookAt / compose / decompose / decomposeAffine / fromQuat / fromTranslation / fromScaling / fromRotation / perspective / perspectiveNO / perspectiveReverseZ / orthographic / orthographicNO / orthographicReverseZ / transformVec3 / transformPoint / transformDirection / getTranslation / getForward / getUp / getRight / unproject / projectPoint / computeViewProj` |
 | **`quat`** (23) | `create / clone / identity / fromAxisAngle / fromEuler / fromRotationMatrix / fromLookAt / fromUnitVectors / multiply / rotateAxis / slerp / nlerp / invert / conjugate / dot / length / lengthSq / normalize / transformVec3 / eulerY / right / up / forward` |
 | **`euler`** (6) | `create / clone / set / toQuat / fromQuat / fromRotationMatrix` |
 | **`color`** (12) | `create / clone / srgbToLinear / linearToSrgb / rgbToXyzMatrix / rgbGamutMatrix / linearSrgbToLinearDisplayP3 / linearDisplayP3ToLinearSrgb / displayP3ToLinear / fromHex / fromCss / toHex` |
@@ -57,7 +72,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 | **`box3`** (7) | `create / expandByPoint / containsPoint / intersectsBox / fromPoints / fromPositions / transformBox3` |
 | **`circle2`** (10) | `create / fromPoints / toBox / center / radius / closestPoint / containsPoint / intersectsCircle / intersectsBox / merge` |
 | **`sphere`** (5) | `create / expandByPoint / containsPoint / intersectsBox / fromPoints` |
-| **`f32-to-f16-bytes`** (2) | `f32ToF16Bytes`, `f16ToF32` |
+| **`f32-to-f16-bytes`** (3) | `f32ToF16`, `f32ToF16Bytes`, `f16ToF32` |
 
 > [!NOTE]
 > Surface 由 `packages/math/scripts/count-math-exports.mjs` AST 计数（`node packages/math/scripts/count-math-exports.mjs`）SSOT 派生；表格中函数清单与计数器同步（M5 verify 已锁；surface 增减需同步本表）。
@@ -259,7 +274,7 @@ const projReverseZ = mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 16 / 9
 
 | 版本 | 范围 |
 |:--|:--|
-| **v0.0 (本闭环)** | 19 namespace × 213 函数（含 mat4 / quat 反向 surface 跨类型 transform 4 函数、2D bounds/raycast/cast，以及 easing 标量缓动 + noise 1D Perlin）；branded ABI；3 档 NDC 投影；M1-M6 全 19 AC pass |
+| **v0.0 (本闭环)** | 19 namespace × 214 函数（含 mat4 / quat 反向 surface 跨类型 transform 4 函数、2D bounds/raycast/cast，以及 easing 标量缓动 + noise 1D Perlin）；branded ABI；3 档 NDC 投影；M1-M6 全 19 AC pass |
 | v0.1 (PBR 闭环) | `mat3.fromMat4Scale` 法线矩阵优化路径；`Color.linearToSRGB` GPU 上传专用变体；高级 PBR 工具 |
 | v0.2 (动画闭环) | `quat.squad` Catmull-Rom 球面插值；`euler.lookAt` 自然映射；动画系统消费方向定 |
 | v1.0 (稳定 ABI) | 不再 breaking ABI；coverage 阈值不退步；`@forgeax/engine-math` 正式 `npm publish` |
@@ -330,3 +345,11 @@ sample(position, curve3.parameterAtDistance(lengths, travelledDistance));
 > are finite controls; empty curves write zero, singleton curves are constant,
 > and repeated/nearly coincident controls remain finite. Sampling/tangents are
 > aliasing-safe and allocate no per-call scratch.
+
+`halfFloat` owns CPU binary16 encoding and decoding for import, uploads and readback.
+Scalar and bulk encoding first round to float32, then round to the nearest binary16
+value with midpoint ties away from zero. Signed zero, subnormals, infinity and
+quiet NaN are preserved; overflow becomes signed infinity.
+
+Color conversion uses the Types IEC sRGB transfer functions. The Math Color API
+keeps its existing negative-channel pass-through policy; alpha is unchanged.

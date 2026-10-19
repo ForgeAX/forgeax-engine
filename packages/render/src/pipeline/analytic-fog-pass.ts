@@ -3,7 +3,13 @@ import {
   type RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import type { BindGroupLayout, RenderPipeline } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  BindGroupLayout,
+  Buffer,
+  RenderPipeline,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { addAtmosphereComposition } from '../environment/compose';
 import type { GraphAtmosphere } from '../environment/luts';
@@ -51,6 +57,9 @@ export function addAnalyticFogPass(
   if (!view.ok) return view;
   let pipeline: RenderPipeline | undefined;
   let layout: BindGroupLayout | undefined;
+  let bindings:
+    | { readonly depth: TextureView; readonly uniform: Buffer; readonly group: BindGroup }
+    | undefined;
   const pass = graph.addRasterPass('analytic-fog', {
     accesses: [
       { resource: input.depth, usage: 'sampled-read' },
@@ -125,24 +134,27 @@ export function addAnalyticFogPass(
       const uniform = resources.buffer(view.value);
       if (!depth.ok) throw depth.error;
       if (!uniform.ok) throw uniform.error;
-      const bindings = frame.runtime.device
-        .createBindGroup({
-          label: 'analytic-fog.bind-group',
-          layout,
-          entries: [
-            {
-              binding: 0,
-              resource: {
-                kind: 'buffer',
-                value: { buffer: uniform.value, size: VIEW_UNIFORM_BYTES },
+      if (bindings?.depth !== depth.value || bindings.uniform !== uniform.value) {
+        const group = frame.runtime.device
+          .createBindGroup({
+            label: 'analytic-fog.bind-group',
+            layout,
+            entries: [
+              {
+                binding: 0,
+                resource: {
+                  kind: 'buffer',
+                  value: { buffer: uniform.value, size: VIEW_UNIFORM_BYTES },
+                },
               },
-            },
-            { binding: 1, resource: { kind: 'textureView', value: depth.value as never } },
-          ],
-        })
-        .unwrap();
+              { binding: 1, resource: { kind: 'textureView', value: depth.value as never } },
+            ],
+          })
+          .unwrap();
+        bindings = { depth: depth.value, uniform: uniform.value, group };
+      }
       pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bindings);
+      pass.setBindGroup(0, bindings.group);
       pass.draw(3);
     },
   });

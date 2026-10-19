@@ -1838,16 +1838,15 @@ describe('standalone host', () => {
       }
       expect(generated).toContain('data: { equirect: canonicalEnvironment }');
       expect(generated).toContain('fitToolPreviewCameraToAabb');
-      expect(generated).toContain('projection: CAMERA_PROJECTION_ORTHOGRAPHIC');
+      expect(generated).toContain('createTextureWorkspacePreview(app.world, payload,');
       expect(generated).toContain("resource.kind === 'texture'");
       expect(generated).toContain('rendererTextureResident');
       expect(generated).toContain('textureRendererObservation(');
       expect(generated).toContain('preparedResourceBinding,');
       expect(generated).toContain('forgeax:frame-submitted');
       expect(generated).toContain('textureDimensions(payload)');
-      expect(generated).toContain('checkerTextureHandle');
-      expect(generated).toContain('checkerMaterialHandle');
-      expect(generated).toContain("srcFactor: 'src-alpha'");
+      expect(generated).not.toContain('TEXTURE_VIEW_MATERIALS');
+      expect(generated).toContain('texture: owner.texture');
       expect(generated).not.toContain('app.renderer.store.uploadTexture');
       expect(generated).toContain('AssetGuid.format(slot.defaultMaterial)');
       await expect(
@@ -1856,8 +1855,7 @@ describe('standalone host', () => {
       expect(generated).toContain('await cleanup();');
       expect(generated).not.toContain('app.renderer.drawCalls');
       expect(generated).toContain('observation: {');
-      expect(generated).toContain('tonemap: TONEMAP_NONE');
-      expect(generated).toContain('clearColor: [0, 0, 0, 1]');
+      expect(generated).toContain('background: presentation.background');
       expect(generated).toContain('createApp(');
       expect(generated).toContain('plugins: [],');
       expect(generated).toContain('assetRuntimeBinding: runtimeScopeBinding');

@@ -25,6 +25,9 @@ describe('revision observer real filesystem contract', () => {
     await mkdir(assets);
     const existing = join(assets, 'hero.bin');
     await writeFile(existing, 'old');
+    // Same-size writes may share mtime on coarse filesystems. This contract
+    // exercises stat reconciliation, so give the baseline a distinct time.
+    await utimes(existing, 1, 1);
     const batches: Array<{ revision: number; sources: string[] }> = [];
     const observer = createRevisionObserver({
       roots: [assets],
@@ -69,6 +72,7 @@ describe('revision observer real filesystem contract', () => {
     const sharedSecond = join(second, 'shared.bin');
     await writeFile(sharedFirst, 'old');
     await writeFile(sharedSecond, 'old');
+    await utimes(sharedSecond, 1, 1);
     const batches: string[][] = [];
     const observer = createRevisionObserver({
       roots: [first, second],

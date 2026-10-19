@@ -19,8 +19,6 @@
 //   - radicalInverseVdC(bits)
 //   - hammersley(i, N)
 //   - iblDGGX(nDotH, roughness)
-//   - iblGeometrySchlickGGX(NdotV, roughness)   (IBL k = roughness^2 / 2)
-//   - iblGeometrySmith(NdotV, NdotL, roughness)
 //   - importanceSampleGGX(Xi, N, roughness)
 //   - fresnelSchlickRoughness(cosTheta, F0, roughness)
 //
@@ -75,20 +73,6 @@ fn iblDGGX(nDotH: f32, roughness: f32) -> f32 {
   let a2 = a * a;
   let f = (nDotH * a2 - nDotH) * nDotH + 1.0;
   return a2 / (max(PI * f * f, 1e-7));
-}
-
-// Smith-GGX G1 for IBL: k = roughness^2 / 2.
-// DIFFERENT from direct-light's k = ((roughness+1)^2)/8 (in brdf.wgsl).
-fn iblGeometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
-  let k = (roughness * roughness) / 2.0;
-  return NdotV / max(NdotV * (1.0 - k) + k, 1e-5);
-}
-
-// Smith-GGX height-correlated geometry for IBL.
-fn iblGeometrySmith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
-  let ggxV = iblGeometrySchlickGGX(NdotV, roughness);
-  let ggxL = iblGeometrySchlickGGX(NdotL, roughness);
-  return ggxV * ggxL;
 }
 
 // GGX importance sampling: maps uniform 2D sample Xi to a half-vector H

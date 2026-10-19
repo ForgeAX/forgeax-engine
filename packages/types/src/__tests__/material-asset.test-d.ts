@@ -16,7 +16,13 @@
 //          plan-strategy D-4 (PassSelector Record<string, string[]>).
 
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type { AssetGuid, MaterialAsset, MaterialValue, PassSelector } from '../index';
+import type {
+  AssetGuid,
+  MaterialAsset,
+  MaterialValue,
+  ParamSchemaEntry,
+  PassSelector,
+} from '../index';
 import { RenderQueue } from '../index';
 
 describe('RenderQueue - 5 standard queue constants (w5 / AC-04)', () => {
@@ -126,4 +132,30 @@ describe('MaterialAsset authoring vocabulary', () => {
     };
     void parameters;
   });
+});
+
+it('keeps defaults on numeric compiled parameters', () => {
+  const numeric: ParamSchemaEntry = { name: 'factor', type: 'f32', default: 1 };
+  const texture: ParamSchemaEntry = {
+    name: 'map',
+    type: 'texture2d',
+    // @ts-expect-error resource bindings do not own numeric defaults
+    default: null,
+  };
+  const sampler: ParamSchemaEntry = {
+    name: 'sample',
+    type: 'sampler',
+    // @ts-expect-error sampler binding has no default payload
+    default: {},
+  };
+  const storage: ParamSchemaEntry = {
+    name: 'data',
+    type: 'storage_buffer',
+    // @ts-expect-error storage binding has no default payload
+    default: [],
+  };
+  expectTypeOf(numeric.default).toEqualTypeOf<number | readonly number[] | undefined>();
+  void texture;
+  void sampler;
+  void storage;
 });

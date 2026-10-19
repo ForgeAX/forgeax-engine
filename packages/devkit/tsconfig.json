@@ -12,6 +12,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../app" },
+    { "path": "../ddc" },
     { "path": "../audio" },
     { "path": "../audio-webaudio" },
     { "path": "../project" },

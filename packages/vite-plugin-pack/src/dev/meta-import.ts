@@ -22,7 +22,7 @@ import { type NativeCooker, NativeCookerRegistry } from '@forgeax/engine-pack/na
 import type { PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { PluginServerState } from './plugin-server.js';
 
-export interface MetaImportContext {
+interface MetaImportContext {
   readonly ddcRoot: (cwd: string, binding?: RuntimeAssetBinding) => string;
   readonly runtimeBinding?: RuntimeAssetBinding;
   readonly getCatalogProjection: () => CatalogBuildResult;
@@ -310,12 +310,12 @@ export async function startMetaImport(
       });
     }
     const publishedCatalog = publication?.catalog ?? catalog;
-    const delta = calculateCatalogDelta(previousCatalog, publishedCatalog);
     // A production generation publishes its accepted candidate through the
     // outer watcher after every owner commits. Direct route imports have no
     // candidate owner, so they remain responsible for publishing their delta.
-    if (delta !== undefined && context.pendingImportPublications === undefined) {
-      context.publishCatalogDelta?.(delta);
+    if (context.pendingImportPublications === undefined && context.publishCatalogDelta) {
+      const delta = calculateCatalogDelta(previousCatalog, publishedCatalog);
+      if (delta !== undefined) context.publishCatalogDelta(delta);
     }
     context.setCatalogProjection({
       ...context.getCatalogProjection(),

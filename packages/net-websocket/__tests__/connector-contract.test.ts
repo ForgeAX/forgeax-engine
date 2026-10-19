@@ -27,7 +27,9 @@ describe('Node WebSocket connector contract', () => {
 
     try {
       const factory = await connectorFactory();
-      const connector = factory(address);
+      // Structural option variables may contain extra fields; the explicit URL remains authoritative.
+      const options = { maxQueuedEvents: 32, url: 'ws://127.0.0.1:1' };
+      const connector = factory(address, options);
       const firstResult = await connector.connect(new AbortController().signal);
       expect(firstResult.ok).toBe(true);
       if (!firstResult.ok) return;

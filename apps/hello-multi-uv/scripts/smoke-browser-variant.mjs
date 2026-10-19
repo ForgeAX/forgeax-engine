@@ -5,6 +5,7 @@
 // must disappear, otherwise the gate is measuring the HUD rather than the PSO.
 
 import { chromium } from 'playwright';
+import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { spawn } from 'node:child_process';
 import { inflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -195,13 +196,8 @@ let browser;
 try {
   const baseUrl = await waitForVite(viteProc);
   browser = await chromium.launch({
-    headless: true,
-    channel: 'chrome',
-    args: [
-      '--enable-unsafe-webgpu',
-      '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-      '--ignore-gpu-blocklist',
-    ],
+    ...browserLaunch,
+    headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
     chromiumSandbox: true,
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });

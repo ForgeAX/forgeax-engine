@@ -87,7 +87,7 @@ describe('forgeax-view package contribution', () => {
     ]);
     assert.deepEqual(pageTypes.get(VIEW_PAGE_TYPES.material).resourceSelector, { kinds: ['material'] });
     assert.deepEqual(pageTypes.get(VIEW_PAGE_TYPES.mesh).resourceSelector, { kinds: ['mesh'] });
-    assert.deepEqual(pageTypes.get(VIEW_PAGE_TYPES.texture).resourceSelector, { kinds: ['texture', 'image'] });
+    assert.deepEqual(pageTypes.get(VIEW_PAGE_TYPES.texture).resourceSelector, { kinds: ['texture', 'image', 'equirect'] });
     assert.deepEqual(pageTypes.get(VIEW_PAGE_TYPES.asset).resourceSelector, { fallback: true });
     assert.equal(resolveResourcePageType([...pageTypes.values()], { kind: 'scene' }).pageType.typeId, VIEW_PAGE_TYPES.scene);
     assert.deepEqual(pageTypes.get(VIEW_PAGE_TYPES.scene).resourceSelector, { kinds: ['scene'] });

@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine/math';
 import { FORGEAX_FRAME_SUBMITTED_EVENT, type BrowserFrameSubmitted } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AUTO_EXPOSURE_TAA_FIXTURE } from '@forgeax/apps-shared/auto-exposure-fixture';
@@ -303,8 +304,8 @@ const cameraEntity = app.world
               bloom: BLOOM_ENABLED,
               bloomThreshold: 0.7,
               bloomIntensity: 0.35,
-              bloomSoftKnee: 0.5,
-              bloomScatter: 0.7,
+              bloomSmoothWidth: 0.01,
+              bloomRadius: 0,
             }
           : {}),
       },
@@ -613,15 +614,6 @@ async function hashBytes(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function decodeFloat16(bits: number): number {
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits >>> 10) & 0x1f;
-  const fraction = bits & 0x03ff;
-  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
-  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
-}
-
 function channelSummary(values: readonly number[]): ObservationChannelSummary {
   if (values.length === 0) return { min: Number.NaN, max: Number.NaN, mean: Number.NaN };
   let min = Infinity;
@@ -660,10 +652,10 @@ function summarizeObservation(observation: {
       let a: number;
       if (metadata.format === 'rgba16float') {
         const view = new DataView(bytes.buffer, bytes.byteOffset + offset, bytesPerPixel);
-        r = decodeFloat16(view.getUint16(0, true));
-        g = decodeFloat16(view.getUint16(2, true));
-        b = decodeFloat16(view.getUint16(4, true));
-        a = decodeFloat16(view.getUint16(6, true));
+        r = halfFloat.f16ToF32(view.getUint16(0, true));
+        g = halfFloat.f16ToF32(view.getUint16(2, true));
+        b = halfFloat.f16ToF32(view.getUint16(4, true));
+        a = halfFloat.f16ToF32(view.getUint16(6, true));
       } else {
         // The final attachment is normally BGRA8.  Keep the reorder explicit,
         // while accepting an RGBA8 readback for null/software surfaces.

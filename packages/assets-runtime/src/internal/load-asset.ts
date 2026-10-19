@@ -14,7 +14,7 @@ import type {
   PluginAssetDefinition,
   Result,
 } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import { defineAssetKind } from '../asset-kind.js';
 import type { CatalogSource } from '../catalog-source.js';
 import { pluginAssetDecoder } from '../loaders/plugin.js';
@@ -114,8 +114,6 @@ function artifactError(guid: string, reason: string): AssetLoadError {
     },
   };
 }
-
-const ASSET_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function invalidGuid(guid: string): AssetLoadError {
   return {
@@ -265,7 +263,7 @@ export function createAssetRegistry(options: AssetRegistryOptions): AssetRegistr
       kind: BuiltinAssetKind | AssetKind<unknown, string>,
       loadOptions: AssetLoadOptions = {},
     ): Promise<Result<unknown, AssetLoadError>> => {
-      if (!ASSET_GUID_PATTERN.test(guid)) return err(invalidGuid(guid));
+      if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
       if (loadOptions.signal?.aborted) return err(assetLoadCancelled(guid));
       const request = (async () => {
         const expectedKind = typeof kind === 'string' ? kind : kind.kind;

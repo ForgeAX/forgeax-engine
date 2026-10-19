@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-empty headless dawn smoke.
 // Browser and smoke share the same src/empty.ts scene.
@@ -7,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 160;
@@ -131,7 +132,7 @@ await delay(50);
 const pixels = await capture();
 const refPngPath = resolve(here, '..', 'artifacts', 'empty-ref.png');
 mkdirSync(dirname(refPngPath), { recursive: true });
-writeFileSync(refPngPath, writeReferencePng(pixels, WIDTH, HEIGHT));
+writeFileSync(refPngPath, encodePng(WIDTH, HEIGHT, pixels));
 
 const checks = [
   ['backend=webgpu', rendererBackend(renderer) === 'webgpu'],

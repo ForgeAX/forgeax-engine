@@ -1,4 +1,3 @@
-import { numMipLevels } from '@forgeax/engine-assets-runtime';
 import {
   type GraphAccess,
   type GraphResourceResolver,
@@ -7,7 +6,7 @@ import {
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import type { RhiDevice, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, mipDimension, numMipLevels, ok, type Result } from '@forgeax/engine-types';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -488,8 +487,8 @@ export function addTransmissionBackdropPasses(
       if (!source.ok) throw source.error;
       if (!target.ok) throw target.error;
       encoder.copyTextureToTexture(
-        { texture: source.value as never, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-        { texture: target.value as never, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+        { texture: source.value, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+        { texture: target.value, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
         { ...input.copySize, depthOrArrayLayers: 1 },
       );
     },
@@ -503,8 +502,8 @@ export function addTransmissionBackdropPasses(
     // its own attachment texture; some WebGL2 drivers reject that as a
     // feedback loop even when the sampled and attached mips are disjoint.
     const levelSize = (level: number) => ({
-      width: Math.max(1, input.surfaceSize.width >> level),
-      height: Math.max(1, input.surfaceSize.height >> level),
+      width: mipDimension(input.surfaceSize.width, level),
+      height: mipDimension(input.surfaceSize.height, level),
     });
     const scratch = input.graph.createTexture('transmission-backdrop-scratch', {
       format: backdrop.value.format,
@@ -576,8 +575,8 @@ export function addTransmissionBackdropPasses(
           if (!from.ok) throw from.error;
           if (!to.ok) throw to.error;
           encoder.copyTextureToTexture(
-            { texture: from.value as never, mipLevel: level - 1, origin: { x: 0, y: 0, z: 0 } },
-            { texture: to.value as never, mipLevel: level, origin: { x: 0, y: 0, z: 0 } },
+            { texture: from.value, mipLevel: level - 1, origin: { x: 0, y: 0, z: 0 } },
+            { texture: to.value, mipLevel: level, origin: { x: 0, y: 0, z: 0 } },
             { ...levelSize(level), depthOrArrayLayers: 1 },
           );
         },

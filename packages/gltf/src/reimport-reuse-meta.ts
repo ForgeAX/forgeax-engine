@@ -21,6 +21,7 @@
 //   - AC-13: reimport idempotency overall (no spurious GUID churn)
 
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from './errors.js';
 import {
   deriveGltfSourceKeys,
@@ -33,22 +34,12 @@ export type { SubAssetKey } from './sub-asset-key.js';
 export { subAssetKey };
 export type GltfDocItem = GltfDocItemLike;
 
-/** Subset of `<source>.meta.json` fields (importer=gltf arm) touched by the reuse algorithm. */
-export interface GltfSubAssetEntry {
-  readonly guid: string;
-  readonly sourceIndex: number;
-  readonly kind: string;
-  readonly sourceKey?: string;
-  /** Optional display name copied from the current glTF output. */
-  readonly name?: string;
-}
-
 export interface GltfMetaJson {
   readonly schemaVersion: 1;
   readonly kind: 'external-asset-package';
   readonly importer: 'gltf';
   readonly source: string;
-  readonly subAssets: readonly GltfSubAssetEntry[];
+  readonly subAssets: readonly ImportSubAsset[];
   readonly sourceOverrides?:
     | Readonly<Record<string, Readonly<Record<string, unknown>>>>
     | undefined;
@@ -66,7 +57,7 @@ export interface GltfMetaJson {
 }
 
 export interface ReimportReuseValue {
-  readonly subAssets: readonly GltfSubAssetEntry[];
+  readonly subAssets: readonly ImportSubAsset[];
 }
 
 export type ReimportReuseResult = Result<ReimportReuseValue, GltfSourceKeyError>;
@@ -86,8 +77,8 @@ export function reimportReuseMeta(
   const sourceKeys = deriveGltfSourceKeys(items);
   if (!sourceKeys.ok) return err(sourceKeys.error);
 
-  const stage1Index = new Map<string, GltfSubAssetEntry>();
-  const stage2Index = new Map<string, GltfSubAssetEntry>();
+  const stage1Index = new Map<string, ImportSubAsset>();
+  const stage2Index = new Map<string, ImportSubAsset>();
   if (existingMeta !== undefined) {
     for (const entry of existingMeta.subAssets) {
       // Source names are display metadata, not identity. Semantic sourceKey
@@ -98,11 +89,11 @@ export function reimportReuseMeta(
     }
   }
 
-  const subAssets: GltfSubAssetEntry[] = [];
+  const subAssets: ImportSubAsset[] = [];
   for (const item of items) {
     const sourceKey = sourceKeyForGltfOutput(item);
     const indexKey = `${item.kind} ${item.sourceIndex}`;
-    let reused: GltfSubAssetEntry | undefined;
+    let reused: ImportSubAsset | undefined;
 
     // Stage 1: semantic sourceKey match. Names are copied from the current
     // source output below, but never participate in identity matching.

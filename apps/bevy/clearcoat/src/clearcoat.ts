@@ -50,7 +50,7 @@ export async function buildClearcoatWorld(
     { component: MeshRenderer, data: { materials: [floor] } },
   );
   world.spawn({ component: PointLight, data: { color: [1, 0.72, 0.55], intensity: 20_000, range: 20 } });
-  world.spawn({ component: DirectionalLight, data: { direction: [-0.35, -0.8, -0.45], intensity: 250 } });
+  world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.35, -0.8, -0.45], intensity: 250 } });
   world.spawn({ component: Skylight, data: { equirect, intensity: 0.6, rotation: [0, 0, 0, 1] } });
   world.spawn({ component: SkyboxBackground, data: { equirect, rotation: [0, 0, 0, 1] } });
   const eye: [number, number, number] = [0, 0.35, 7.2];

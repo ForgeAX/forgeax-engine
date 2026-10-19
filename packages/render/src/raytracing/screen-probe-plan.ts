@@ -3,7 +3,7 @@ import type { StandardScreenProbes } from '../pipeline/standard-profile';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 
 /** Octahedral radiance texels per probe edge (UE ScreenProbeTracingOctahedronResolution). */
-export const SCREEN_PROBE_OCT = 8;
+const SCREEN_PROBE_OCT = 8;
 export const SCREEN_PROBE_TEXELS = SCREEN_PROBE_OCT * SCREEN_PROBE_OCT;
 /** Probe record: world position + view distance, normal + state. */
 export const SCREEN_PROBE_RECORD_BYTES = 32;

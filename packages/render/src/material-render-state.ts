@@ -1,5 +1,34 @@
 import type { MaterialRenderState } from '@forgeax/engine-types';
 
+/** Affine model parity, independent of translation and nonuniform scale magnitude. */
+export function isReflectedTransform(world: Float32Array): boolean {
+  const a = world[0] ?? 0,
+    b = world[4] ?? 0,
+    c = world[8] ?? 0;
+  const d = world[1] ?? 0,
+    e = world[5] ?? 0,
+    f = world[9] ?? 0;
+  const g = world[2] ?? 0,
+    h = world[6] ?? 0,
+    i = world[10] ?? 0;
+  return a * (e * i - h * f) - b * (d * i - g * f) + c * (d * h - g * e) < 0;
+}
+
+/** Model and view reflections compose by parity; authored material state stays immutable. */
+export function reflectedRenderState(
+  state: MaterialRenderState | undefined,
+  reflected: boolean,
+): MaterialRenderState | undefined {
+  return reflected ? { ...state, frontFace: state?.frontFace === 'cw' ? 'ccw' : 'cw' } : state;
+}
+
+export function transformRenderState(
+  state: MaterialRenderState | undefined,
+  world: Float32Array,
+): MaterialRenderState | undefined {
+  return reflectedRenderState(state, isReflectedTransform(world));
+}
+
 // Material comparisons describe forward distance, as in Three.js. Only this
 // projection converts them to the renderer's native Reverse-Z representation.
 const REVERSED_DEPTH_COMPARE: Record<GPUCompareFunction, GPUCompareFunction> = {

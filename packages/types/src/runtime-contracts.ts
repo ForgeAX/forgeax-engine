@@ -716,13 +716,7 @@ export interface EvalResultNotSerializableDetail {
  * abstraction — pixelmatch internal exception does NOT get a third member;
  * see D-P3 decision rationale).
  */
-export type MetricErrorCode =
-  | 'metric-not-declared'
-  | 'metric-kind-unknown'
-  | 'metric-status-not-ok'
-  | 'metric-schema-malformed'
-  | 'pixel-parity-threshold-exceeded'
-  | 'pixel-parity-capture-failed';
+export type MetricErrorCode = MetricError['code'];
 
 /**
  * Per-code detail shape for the four legacy `MetricErrorCode` members
@@ -870,7 +864,6 @@ export type MetricError =
  * branches of `MetricError`).
  */
 interface MetricErrorBase {
-  readonly code: MetricErrorCode;
   readonly expected: string;
   readonly hint: string;
 }
@@ -997,14 +990,12 @@ export type {
   CatalogProjectionInput,
   CatalogSubject,
   CookExecution,
-  ExistingOutput,
   ImportedOutputDeclaration,
   KindChange,
   MatchConflict,
   ProducerContractDiagnostic,
   ProducerContractErrorCode,
   ProducerContractResult,
-  ProposedOutput,
   ProviderProvenance,
   ResourceRevision,
   ScenePublicationFence,
@@ -1066,7 +1057,12 @@ export type {
   CatalogRevisionPoint,
   CatalogRevisionWindow,
 } from './catalog';
-export { catalogDeltaDigest, catalogEntryDigest, validateCatalogDelta } from './catalog';
+export {
+  catalogDeltaDigest,
+  catalogEntryDigest,
+  checkCatalogRevisionContinuity,
+  validateCatalogDelta,
+} from './catalog';
 
 // === InspectEntry / InspectSnapshot (feat-20260618-asset-and-pack-name-fields M1 / w3) ===
 //

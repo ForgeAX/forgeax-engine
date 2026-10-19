@@ -477,9 +477,9 @@ async function readbackTexture(
   pass.draw(3, 1, 0, 0);
   pass.end();
   encoder.value.copyTextureToBuffer(
-    { texture: normalizedTexture.value as unknown as GPUTexture },
+    { texture: normalizedTexture.value },
     {
-      buffer: readback.value as unknown as GPUBuffer,
+      buffer: readback.value,
       offset: 0,
       bytesPerRow: 256,
       rowsPerImage: height,

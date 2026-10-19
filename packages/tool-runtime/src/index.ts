@@ -16,6 +16,7 @@ export {
   createPreviewArtifactManifest,
   createSnapshotRef,
   isSerializableValue,
+  isToolEvidenceKind,
   type PreviewArtifactIdentity,
   type PreviewArtifactKind,
   type PreviewArtifactManifest,
@@ -93,6 +94,7 @@ export {
   type LeaseTermination,
   type LeaseTerminationReason,
   type LexicalLease,
+  toolCleanupFailure,
 } from './lease.js';
 export {
   type CapabilityToken,
@@ -121,11 +123,9 @@ export {
   type AuthenticatedLoopbackTransport,
   type AuthenticatedLoopbackTransportOptions,
   type CarrierExecutionRequest,
-  type CarrierTransport,
   CarrierTransportError,
   createAuthenticatedCarrierTransport,
   createAuthenticatedLoopbackTransport,
-  createLoopbackTransport,
   type ServiceWireHandler,
   type ServiceWireRequest,
 } from './transport.js';
@@ -168,4 +168,4 @@ export type {
   ToolTiming,
   ToolTimingPhase,
 } from './types.js';
-export { TOOL_REALMS } from './types.js';
+export { TOOL_EVIDENCE_KINDS, TOOL_REALMS } from './types.js';

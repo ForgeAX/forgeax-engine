@@ -1,6 +1,4 @@
 import {
-  ENDPOINT_ERROR_HINTS,
-  ENDPOINT_EXPECTED,
   EndpointError,
   type EndpointEvent,
   type NetEndpoint,
@@ -247,8 +245,6 @@ function nativeCause(cause: unknown): string {
 function connectionFailure(address: string, cause: unknown): EndpointError {
   return new EndpointError({
     code: 'connection-failed',
-    expected: ENDPOINT_EXPECTED['connection-failed'],
-    hint: ENDPOINT_ERROR_HINTS['connection-failed'],
     detail: { address, cause: nativeCause(cause) },
   });
 }
@@ -256,8 +252,6 @@ function connectionFailure(address: string, cause: unknown): EndpointError {
 function sendFailure(peerId: PeerId, cause: unknown): EndpointError {
   return new EndpointError({
     code: 'send-failed',
-    expected: ENDPOINT_EXPECTED['send-failed'],
-    hint: ENDPOINT_ERROR_HINTS['send-failed'],
     detail: { peerId, cause: nativeCause(cause) },
   });
 }
@@ -265,8 +259,6 @@ function sendFailure(peerId: PeerId, cause: unknown): EndpointError {
 function peerNotFound(peerId: PeerId): EndpointError {
   return new EndpointError({
     code: 'peer-not-found',
-    expected: ENDPOINT_EXPECTED['peer-not-found'],
-    hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
     detail: { peerId },
   });
 }
@@ -274,8 +266,6 @@ function peerNotFound(peerId: PeerId): EndpointError {
 function connectionClosed(peerId: PeerId): EndpointError {
   return new EndpointError({
     code: 'connection-closed',
-    expected: ENDPOINT_EXPECTED['connection-closed'],
-    hint: ENDPOINT_ERROR_HINTS['connection-closed'],
     detail: { peerId },
   });
 }
@@ -283,8 +273,6 @@ function connectionClosed(peerId: PeerId): EndpointError {
 function alreadyClosed(cause: unknown = 'Endpoint is closed'): EndpointError {
   return new EndpointError({
     code: 'already-closed',
-    expected: ENDPOINT_EXPECTED['already-closed'],
-    hint: ENDPOINT_ERROR_HINTS['already-closed'],
     detail: { cause: nativeCause(cause) },
   });
 }

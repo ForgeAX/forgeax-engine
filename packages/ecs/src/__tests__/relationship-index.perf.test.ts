@@ -4,7 +4,8 @@ import type { EntityHandle } from '../entity-handle';
 import { defineRelationship } from '../relationship-index';
 import { World } from '../world';
 
-const SAMPLE_ROUNDS = 7;
+const SAMPLE_ROUNDS = 31;
+const WARMUP_ROUNDS = 3;
 const PARENT_COUNT = 8;
 const CHILD_COUNT = 512;
 const pair = defineRelationship({
@@ -15,6 +16,7 @@ const pair = defineRelationship({
 });
 
 type SampleStats = {
+  readonly samplesMs: readonly number[];
   readonly medianMs: number;
   readonly p95Ms: number;
   readonly ci95Ms: readonly [number, number];
@@ -33,6 +35,7 @@ function summarize(samples: readonly number[]): SampleStats {
     Math.max(1, samples.length - 1);
   const margin = 1.96 * Math.sqrt(variance / samples.length);
   return {
+    samplesMs: samples,
     medianMs: percentile(samples, 0.5),
     p95Ms: percentile(samples, 0.95),
     ci95Ms: [mean - margin, mean + margin],
@@ -84,21 +87,27 @@ function runWorldWorkload(mode: 'baseline' | 'candidate'): number {
   return count;
 }
 
-function measure(mode: 'baseline' | 'candidate'): SampleStats {
-  const samples: number[] = [];
-  for (let round = 0; round < SAMPLE_ROUNDS; round += 1) {
-    const start = performance.now();
-    const count = runWorldWorkload(mode);
-    samples.push(performance.now() - start);
-    if (count !== CHILD_COUNT) throw new Error(`relationship workload count mismatch: ${count}`);
+function measure(): { baseline: SampleStats; candidate: SampleStats } {
+  const samples = { baseline: [] as number[], candidate: [] as number[] };
+  // Seven observations make p95 the maximum. Warm both complete workloads and
+  // alternate their order so compilation and runner drift do not favor one arm.
+  for (let round = -WARMUP_ROUNDS; round < SAMPLE_ROUNDS; round += 1) {
+    const order =
+      round % 2 === 0 ? (['baseline', 'candidate'] as const) : (['candidate', 'baseline'] as const);
+    for (const mode of order) {
+      const start = performance.now();
+      const count = runWorldWorkload(mode);
+      const elapsed = performance.now() - start;
+      if (round >= 0) samples[mode].push(elapsed);
+      if (count !== CHILD_COUNT) throw new Error(`relationship workload count mismatch: ${count}`);
+    }
   }
-  return summarize(samples);
+  return { baseline: summarize(samples.baseline), candidate: summarize(samples.candidate) };
 }
 
 describe('M2 relationship World workload', () => {
   it('collects same-semantics baseline/candidate attach-detach-reparent-read evidence', () => {
-    const baseline = measure('baseline');
-    const candidate = measure('candidate');
+    const { baseline, candidate } = measure();
     const environment = {
       node: process.version,
       platform: process.platform,
@@ -109,12 +118,18 @@ describe('M2 relationship World workload', () => {
     // biome-ignore lint/suspicious/noConsole: benchmark emits machine-readable evidence
     console.info(
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         workload: 'world-relationship-attach-detach-reparent-read',
         baseline,
         candidate,
         environment,
-        workloadShape: { parents: PARENT_COUNT, children: CHILD_COUNT, rounds: SAMPLE_ROUNDS },
+        workloadShape: {
+          parents: PARENT_COUNT,
+          children: CHILD_COUNT,
+          rounds: SAMPLE_ROUNDS,
+          warmupRounds: WARMUP_ROUNDS,
+          order: 'alternating paired complete workloads',
+        },
         stopRule: 'candidate p95 > baseline p95 * 1.05 requires human decision',
         p95Stop,
       }),

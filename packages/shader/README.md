@@ -26,7 +26,8 @@ Native hosts supply `ShaderRegistryOptions.readText`; App/Renderer forward it as
 Device forks retain that reader and the same verified CPU publication. Browser
 reads keep HTTP status checks; native reads do not require a global fetch shim.
 SHA-256 uses Web Crypto when present and the same digest contract through
-`@noble/hashes` otherwise.
+`@noble/hashes` otherwise. LTC table provenance uses the same SHA-256 library
+synchronously over the supplied table byte view.
 
 Material module alias matching compares the admitted fragments directly against
 the selected source. It preserves complete string equality, including fragment
@@ -55,7 +56,11 @@ program names; unknown binding expressions and shared variant layouts keep their
 conservative binding policy. Registrations, selected
 variants and material passes share it; `forkForDevice()` retains these CPU facts
 while GPU modules are rebuilt. New source selects a new description. The runtime
-`MaterialShaderArtifact.program` carries this description instead of independent
+description retains the sampled user-region texture names too. Staged registration
+reuses these exact-source facts, while every schema still passes admission and
+the undeclared-texture check. No GPU work, failed schema or caller-supplied metadata
+can authorize a material registration. The runtime `MaterialShaderArtifact.program`
+carries this description instead of independent
 WGSL, identity and optional binding-decision fields. Synthetic producers use
 `createMaterialShaderProgram()` when constructing an artifact, never while drawing.
 
@@ -342,6 +347,14 @@ derivatives need uniform control flow. Flat surfaces are unchanged bit for bit.
 `packages/runtime/src/__tests__/specular-aa.dawn.test.ts` gates the effect against
 an 8x supersampled truth rendered without the filter. It also replays the captured
 Deferred G-buffer on a fresh device with and without the filter.
+
+Environment reflection sampling follows Three r184's dominant direction:
+`normalize(mix(reflect(-V, N), N, roughness⁴))`. Skylight and ReflectionProbe
+share this direction before rotation and optional box projection, including
+clearcoat callers. At full roughness the broad lobe follows the normal.
+The HDR comparison uses top-to-bottom scanlines and Three HDRLoader's
+`flipY=true` convention. A bare DataTexture defaults to `flipY=false`; that
+input mismatch must not be diagnosed as an Engine cube-orientation defect.
 
 The GGX environment prefilter keeps 1024 Hammersley samples for every nonzero
 roughness. At exactly zero roughness, all half-vectors and reflected directions
@@ -638,6 +651,12 @@ and retains its Deferred pass. The five glTF extensions use the same schema and
 the same Forward physical evaluator; runtime never compiles or patches this
 layout.
 
+Clearcoat's direct and environment radiance already includes the coat BRDF's
+Fresnel term. Layer composition multiplies that radiance by clearcoat coverage
+once; the view Fresnel term separately attenuates the underlying material.
+Multiplying the reflected radiance by Fresnel again suppresses ordinary coat
+highlights and is not an energy-conserving layer composition.
+
 The diffuse-transmission layer (`DIFFUSE_TRANSMISSION_AVAILABLE`) adds a back-hemisphere
 Lambert lobe to every Standard light evaluator and samples irradiance along `-N`. The factor
 splits energy rather than adding it: the front diffuse albedo is scaled by `1 - factor` before the
@@ -827,3 +846,52 @@ row/count, z carries receiver channels. Scene-index variants read the same
 Do not transport masks through UNORM encoding or numerical f32 conversion.
 See the [Render channel contract](../render/README.md#surface-direct-light-channels)
 for author validation, support and shadow/GI boundaries.
+
+## Fragment color output
+
+`tone-mapping.wgsl` owns the parameterized tone curves used by both the fullscreen
+Output Transform and opted-in material output. `output-encoding.wgsl` remains the
+single transfer/gamut implementation. The default Standard and Unlit programs
+retain linear output until the normal fullscreen post chain.
+
+A cooked Standard or Unlit root can declare `fragmentOutput: vec4` to select output
+at the fragment write: `[toneMode, exposure, encode, gamut]`. Tone modes reuse
+`TONEMAP_SHADER_MODE`; encode is 0 for working-space values and 1 for output
+encoding; gamut is 0 for sRGB and 1 for Display P3. Mode 0 is identity and ignores
+exposure. Data shaders use `[0, 1, 0, 0]`; a color material with tone mapping disabled
+still uses encode 1 for a display destination. This optional contract is compiled
+from the authored parameter schema and never expands the default material ABI.
+
+The selected graph must match these writes: encoded attachments blend encoded
+values and use raw presentation once. Fragment output is after native surface/fog
+evaluation; a producer with a different fog, dithering or premultiplication order
+must explicitly compose that order before claiming compatibility. The current Three
+adapter still rejects those unimplemented combinations and ordinary render targets.
+
+## Three r184 sampling contracts
+
+`fxaa.wgsl` follows the pinned Three WebGPU FXAA luminance, thresholds, six-step
+edge search and subpixel blend. Fractional luma search remains explicit bilinear
+texel sampling for backend stability. Endpoint comparisons allow four f32 rounding
+units scaled by local luminance, so mathematically equal endpoints terminate
+consistently across axes and backends. Output encoding belongs to the graph.
+
+`hdrp-ssao.wgsl` defaults to GTAO through the Render parameter owner: three slices,
+six steps per side, radius 0.25, thickness 1 and linear radial sampling. It applies
+visibility intensity before the existing depth/normal bilateral filter. The
+verified cosine integral, projected-normal correction, orthographic rays and
+background/normal-plane rejection remain intentional differences from Three.
+
+Vogel PCF samples the original UV footprint with sampler edge clamping; receiver
+slope correction uses the actual half-texel clamped location. Bloom retains its
+normalized tent pyramid and threshold-subtracting extraction. See the
+[Render contract](../render/README.md#three-r184-post-processing-comparison)
+for parameter semantics and the live comparison.
+
+## Constant environment irradiance
+
+The Standard environment uniform ends with `ambientIrradiance: vec4` (RGB plus
+padding), making its host size 80 bytes. Forward and Deferred share the same
+Lambert conversion and diffuse material response, before occlusion and physical
+layer composition. Probe-mode uniforms retain this independent global input.
+The default is zero and Unlit/data shaders do not consume it.

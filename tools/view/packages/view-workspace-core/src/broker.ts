@@ -343,7 +343,7 @@ export class ViewWorkspaceBroker {
   async invoke(operation: string, args: Args = {}, { signal, caller, clientId = 'view-owner', token, requestId }: WorkspaceCallContext = {}) {
     const requestedAsset = operation === 'asset.open' ? this.assets?.find(asset => asset.guid === args.guid) : undefined;
     if (operation === 'asset.open' && (args.detailsOnly === true || requestedAsset?.previewable === false
-      || (requestedAsset && !['scene', 'mesh', 'material', 'texture'].includes(requestedAsset.kind)))) {
+      || (requestedAsset && !['scene', 'mesh', 'material', 'texture', 'equirect'].includes(requestedAsset.kind)))) {
       const result = await this.invoke('asset.inspect', args, { signal, caller, clientId, token, requestId });
       this.recordOpenRequest({ requestId, result: result as WorkspaceDomainResult, guid: args.guid, detailsOnly: true });
       this.changed();
@@ -410,7 +410,7 @@ export class ViewWorkspaceBroker {
       this.previewProjection.cameraVersion = result?.version;
       this.previewProjection.interaction = result?.interaction ?? null;
     }
-    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'assets.thumbnails'].includes(operation)) this.changed();
+    if (!history && !['scene.tree.get', 'entity.inspect', 'workspace.get', 'preview.capture', 'preview.texture.get', 'assets.thumbnails'].includes(operation)) this.changed();
     if (['project.open', 'project.close', 'project.reopen', 'asset.open', 'preview.close', 'camera.abort', 'play.start', 'play.ready', 'play.stop'].includes(operation)) {
       if (operation === 'project.open' || operation === 'project.reopen') this.workspaceTargetLost = false;
       return this.snapshot();

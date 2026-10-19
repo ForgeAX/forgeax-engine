@@ -1,10 +1,13 @@
+import { encodeBase64 } from '@forgeax/engine/types';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
+import { halfFloat } from '@forgeax/engine/math';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { AnimationPlayer, AnimationTargetId, animationPlugin, bindAnimationTargets } from '@forgeax/engine-animation';
 import { World, createWorldContext } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective, renderComponentsPlugin } from '@forgeax/engine-render';
-import { attachRecorder, buildFrameModel, decodeTape, encodeTape, halfToFloat, openReplay, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
+import { attachRecorder, buildFrameModel, decodeTape, encodeTape, openReplay, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { skinningPlugin } from '@forgeax/engine-skinning';
@@ -16,11 +19,6 @@ import { MESH_IO_LOGICAL_FRAMES, meshIoFrameIndices } from './frame-profile';
 import './style.css';
 
 function value<T>(result: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown }): T { if (!result.ok) throw result.error; return result.value; }
-function base64(bytes: Uint8Array): string {
-  let text = '';
-  for (let index = 0; index < bytes.length; index += 8192) text += String.fromCharCode(...bytes.subarray(index, index + 8192));
-  return btoa(text);
-}
 function difference(a: Uint8Array, b: Uint8Array): number {
   if (a.length !== b.length) throw new Error(`readback length mismatch ${a.length}/${b.length}`);
   let changed = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed++;
@@ -35,7 +33,7 @@ const fileManifest = () => files.map(({ name, bytes }) => ({ name, byteLength: b
 Object.assign(window, { meshIoReadFile: (name: string, offset: number) => {
   const file = files.find((entry) => entry.name === name);
   if (file === undefined) throw new Error(`missing evidence ${name}`);
-  return base64(file.bytes.subarray(offset, offset + 1024 * 1024));
+  return encodeBase64(file.bytes.subarray(offset, offset + 1024 * 1024));
 } });
 
 async function run() {
@@ -76,8 +74,8 @@ async function run() {
         const words = new DataView(hdrBytes.buffer, hdrBytes.byteOffset, hdrBytes.byteLength);
         for (let i = 0; i < pixels.data.length; i += 4) {
           for (let channel = 0; channel < 3; channel++) {
-            const linear = Math.min(1, Math.max(0, halfToFloat(words.getUint16((i + channel) * 2, true))));
-            pixels.data[i + channel] = Math.round((linear <= .0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - .055) * 255);
+            const linear = Math.min(1, Math.max(0, halfFloat.f16ToF32(words.getUint16((i + channel) * 2, true))));
+            pixels.data[i + channel] = Math.round((linearChannelToSrgb(linear)) * 255);
           }
           pixels.data[i + 3] = 255;
         }

@@ -491,7 +491,7 @@ export function buildPipelineDescriptor(
  * `clearValue` is `undefined` for `loadOp='load'` policies (no clear value
  * is emitted into the descriptor when the prior contents are loaded).
  */
-export interface AttachmentColorOps {
+interface AttachmentColorOps {
   readonly loadOp: 'clear' | 'load';
   readonly storeOp: 'store' | 'discard';
   readonly clearValue: GPUColor | undefined;
@@ -506,7 +506,7 @@ export interface AttachmentColorOps {
  * elides stencil ops). This collapses the R3/R5 stencil-op duplicates that
  * previously lived inline at every forward-pass beginRenderPass call site.
  */
-export interface AttachmentDepthOps {
+interface AttachmentDepthOps {
   readonly loadOp: 'clear' | 'load';
   readonly storeOp: 'store' | 'discard';
   readonly clearValue: number;
@@ -524,7 +524,7 @@ export interface AttachmentDepthOps {
  * - `'color-only'` → populated `colorAttachments[]`, no `depthStencilAttachment`
  * - `'color-and-depth'` → both
  */
-export interface PassKindAttachmentPolicy {
+interface PassKindAttachmentPolicy {
   readonly shape: 'depth-only' | 'color-only' | 'color-and-depth';
   readonly defaultColorOps: AttachmentColorOps | undefined;
   readonly defaultDepthOps: AttachmentDepthOps | undefined;
@@ -559,7 +559,7 @@ const DEPTH_ONLY_POLICY: PassKindAttachmentPolicy = {
  * 4. `'point-shadow-caster'` — HDRP point-shadow caster: depth-only
  * 5. `'skybox'` — fullscreen skybox: color-only clear/store
  * 6. `'tonemap'` — HDR→LDR tonemap fullscreen: color-only clear/store
- * 7. `'bloom-downsample'` / `'bloom-upsample'` — multiscale Bloom pyramid:
+ * 7. `'bloom-horizontal'` / `'bloom-vertical'` — multiscale Bloom pyramid:
  *    color-only clear/store
  * 8. `'bloom-composite'` — bloom add-back: color-only load/store (NOT clear)
  * 9. `'fxaa'` — fullscreen FXAA: color-only clear/store
@@ -594,8 +594,8 @@ export const passKindPolicyTable: Readonly<Record<string, PassKindAttachmentPoli
   'point-shadow-caster': DEPTH_ONLY_POLICY,
   skybox: FULLSCREEN_COLOR_POLICY,
   tonemap: FULLSCREEN_COLOR_POLICY,
-  'bloom-downsample': FULLSCREEN_COLOR_POLICY,
-  'bloom-upsample': FULLSCREEN_COLOR_POLICY,
+  'bloom-horizontal': FULLSCREEN_COLOR_POLICY,
+  'bloom-vertical': FULLSCREEN_COLOR_POLICY,
   'bloom-composite': {
     shape: 'color-only',
     defaultColorOps: { loadOp: 'load', storeOp: 'store', clearValue: OPAQUE_BLACK },

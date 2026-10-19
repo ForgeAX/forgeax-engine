@@ -1,9 +1,11 @@
+import { linearChannelToSrgb } from '@forgeax/engine-types';
+import { halfFloat } from '@forgeax/engine-math';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import UPNG from 'upng-js';
-import { halfToFloat } from '../../rhi-debug/dist/index.mjs';
+
 
 const directory = resolve(process.argv[2] ?? 'artifacts/skinned-triangle-picking/browser');
 const cards=[];
@@ -16,8 +18,8 @@ for(const name of ['rest','posed']) {
   for(let y=0;y<metadata.height;y++) for(let x=0;x<metadata.width;x++) {
     const at=y*metadata.bytesPerRow+x*8;
     for(let c=0;c<3;c++) {
-      const linear=Math.min(1,Math.max(0,halfToFloat(view.getUint16(at+c*2,true))));
-      const srgb=linear<=0.0031308?linear*12.92:1.055*linear**(1/2.4)-0.055;
+      const linear=Math.min(1,Math.max(0,halfFloat.f16ToF32(view.getUint16(at+c*2,true))));
+      const srgb=linearChannelToSrgb(linear);
       pixels[(y*metadata.width+x)*4+c]=Math.round(srgb*255);
     }
     pixels[(y*metadata.width+x)*4+3]=255;

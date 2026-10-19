@@ -9,7 +9,6 @@ import { mapSceneToDisplay } from '@forgeax/engine-render';
 import { computeDisplayScreenRay, pickDisplay, pickVertexDisplay } from '../index';
 
 declare const world: World;
-declare const camera: EntityHandle;
 declare const target: EntityHandle;
 declare const receipt: FrameReceipt;
 declare const outputWidth: number;
@@ -19,19 +18,10 @@ declare const pointerY: number;
 
 const mapping = receipt.barrelDistortion;
 if (mapping !== undefined) {
-  const ray = computeDisplayScreenRay(
-    world,
-    camera,
-    pointerX,
-    pointerY,
-    mapping,
-    outputWidth,
-    outputHeight,
-  );
+  const ray = computeDisplayScreenRay(pointerX, pointerY, mapping, outputWidth, outputHeight);
   const entityHit = pickDisplay(world, pointerX, pointerY, mapping, outputWidth, outputHeight);
   const vertexHits = pickVertexDisplay(
     world,
-    camera,
     pointerX,
     pointerY,
     mapping,

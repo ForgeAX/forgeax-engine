@@ -174,13 +174,12 @@ describe('canvas submission lifecycle', () => {
     const encoder = owner.createCommandEncoder().unwrap();
     const buffer = owner.createBuffer({ size: 256, usage: 0x0c }).unwrap();
     const other = owner.createTexture({ size: [1, 1], format: 'bgra8unorm', usage: 3 }).unwrap();
-    const target = { texture: texture as unknown as GPUTexture };
-    const info = { buffer: buffer as unknown as GPUBuffer, bytesPerRow: 256 };
+    const target = { texture: texture };
+    const info = { buffer: buffer, bytesPerRow: 256 };
     if (kind === 'buffer-to-texture') encoder.copyBufferToTexture(info, target, [1, 1, 1]);
     else if (kind === 'texture-to-buffer')
       encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow: 256 }, [1, 1, 1]);
-    else
-      encoder.copyTextureToTexture(target, { texture: other as unknown as GPUTexture }, [1, 1, 1]);
+    else encoder.copyTextureToTexture(target, { texture: other }, [1, 1, 1]);
     owner.queue.submit([encoder.finish().unwrap()]).unwrap();
     expect(ctx.getCurrentTexture().unwrap()).not.toBe(texture);
     expect(owner.bookkeeper.isDestroyed(texture)).toBe(false);
@@ -204,11 +203,7 @@ describe('canvas submission lifecycle', () => {
     pending.end();
     const commands = encoder.finish().unwrap();
     expect(() =>
-      encoder.copyTextureToTexture(
-        { texture: texture as unknown as GPUTexture },
-        { texture: texture as unknown as GPUTexture },
-        [1, 1, 1],
-      ),
+      encoder.copyTextureToTexture({ texture: texture }, { texture: texture }, [1, 1, 1]),
     ).toThrow();
     const invalid = owner.createCommandEncoder().unwrap();
     const foreignView = foreign

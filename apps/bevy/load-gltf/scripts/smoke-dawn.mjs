@@ -97,7 +97,7 @@ const instanceResult = worldInstantiateScene(world, world.allocSharedRef('SceneA
 if (!instanceResult.ok) throw new Error(`instantiate failed: ${instanceResult.error.code}`);
 world.spawn(
   { component: Transform, data: { pos: [1.5, 2.5, 2.5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: DirectionalLight, data: { direction: [0, -1, 0], intensity: 3 } },
+  { component: DirectionalLight, data: { castShadow: true, direction: [0, -1, 0], intensity: 3 } },
 );
 
 const bytesPerRow = Math.ceil((width * 4) / 256) * 256;

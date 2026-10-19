@@ -518,7 +518,6 @@
           "packages/import/src/runtime-pack.ts",
           "packages/import/src/runtime-pack-content.ts",
           "packages/import/src/runtime-pack-snapshot.ts",
-          "packages/import/src/runtime-pack-data.ts",
           "packages/pack/src/data.ts",
           "packages/assets-runtime/src/validate-publication.ts",
           "packages/assets-runtime/src/retain-publication.ts"

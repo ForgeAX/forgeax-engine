@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AssetGuid as EngineAssetGuid, Result } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import type { AssetVerificationReport } from './cli-asset.js';
-import { AssetGuid, isValidAssetGuidString, isValidPackSourceKey, PackageId } from './guid.js';
+import { AssetGuid, isValidPackSourceKey, PackageId } from './guid.js';
 import {
   type AnyScriptablePackDefinition,
   createPackAuthoringGateway,

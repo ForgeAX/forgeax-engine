@@ -83,7 +83,7 @@ type ViewKernels = Extract<
   { ok: true }
 >['value']['kernels'];
 
-export interface IrradianceFieldFrameInput {
+interface IrradianceFieldFrameInput {
   readonly runtime: RenderSystemInternals;
   readonly scene: PersistentGpuDrivenState;
   readonly worlds: readonly RenderResourceScope[];
@@ -152,7 +152,7 @@ export interface IrradianceFieldInspection {
 }
 
 /** Cumulative in-place edit work of one field generation. */
-export interface IrradianceFieldEditStats {
+interface IrradianceFieldEditStats {
   readonly applied: number;
   readonly movedInstances: number;
   readonly removedInstances: number;

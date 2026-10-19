@@ -61,7 +61,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   app.world.spawn({
     component: DirectionalLight,
-    data: { direction: [-0.5, -0.8, -0.4], color: [1, 1, 1], intensity: 3 },
+    data: { castShadow: true, direction: [-0.5, -0.8, -0.4], color: [1, 1, 1], intensity: 3 },
   });
   const eye: [number, number, number] = [10, 8, 16];
   app.world.spawn(

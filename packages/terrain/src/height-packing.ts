@@ -6,7 +6,7 @@ import type {
   TerrainAsset,
   TerrainSource,
 } from '@forgeax/engine-types';
-import { resolveMaterialAsset } from '@forgeax/engine-types';
+import { numMipLevels, resolveMaterialAsset } from '@forgeax/engine-types';
 import { terrainSourceHeightRange } from './height-bounds.js';
 import { cookTerrainIds } from './material-id.js';
 import { terrainSampleHeight } from './query.js';
@@ -191,14 +191,15 @@ export function terrainDerivedGeometryValid(
       control.shape.extent.height !== n ||
       (ids
         ? control.mips.kind !== 'none'
-        : control.mips.kind !== 'packed' || control.mips.levelCount !== Math.log2(n) + 1) ||
+        : control.mips.kind !== 'packed' ||
+          control.mips.levelCount !== numMipLevels({ width: n, height: n })) ||
       tex.format !== 'rgba8unorm' ||
       tex.colorSpace !== 'linear' ||
       tex.shape.viewDimension !== '2d' ||
       tex.shape.extent.width !== n ||
       tex.shape.extent.height !== n ||
       tex.mips.kind !== 'packed' ||
-      tex.mips.levelCount !== Math.log2(n) + 1
+      tex.mips.levelCount !== numMipLevels({ width: n, height: n })
     )
       return false;
     const active = new Set<number>();

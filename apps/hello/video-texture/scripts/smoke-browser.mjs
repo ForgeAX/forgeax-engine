@@ -33,6 +33,7 @@
 //   2 = harness error (vite did not boot)
 
 import { chromium } from 'playwright';
+import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -89,17 +90,8 @@ console.log(`[smoke-browser] using ${portUrl}`);
 // --- 2. Launch Chrome with WebGPU + autoplay ---------------------------------
 
 const browser = await chromium.launch({
-  headless: true,
-  channel: 'chrome',
-  args: [
-    '--enable-unsafe-webgpu',
-    '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-    '--ignore-gpu-blocklist',
-    // Headless Chrome blocks <video>.play() without a user gesture by default,
-    // which would stall frame decode; the host provider calls .play() eagerly.
-    // (sibling apps/hello/video-cutscene/scripts/smoke-browser.mjs precedent.)
-    '--autoplay-policy=no-user-gesture-required',
-  ],
+  ...browserLaunch,
+  headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
   chromiumSandbox: true,
 });
 

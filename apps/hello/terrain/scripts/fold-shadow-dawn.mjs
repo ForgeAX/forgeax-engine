@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -17,7 +18,7 @@ import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { mat4, quat, ray, vec2 } from '@forgeax/engine-math';
 import { Transform } from '@forgeax/engine-scene';
 import { Terrain } from '@forgeax/engine-terrain';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { terrainHarness } from './harness.mjs';
 
 const root = resolve(import.meta.dirname, '../../../..');
@@ -79,7 +80,7 @@ try {
       const tape = (await pending).unwrap();
       writeFileSync(resolve(dir, name + '.rhitape'), tape.bytes);
       const pixels = await h.pixels();
-      writeFileSync(resolve(dir, name + '.png'), writeReferencePng(pixels, 960, 540));
+      writeFileSync(resolve(dir, name + '.png'), encodePng(960, 540, pixels));
       const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
       const terrain = model.works.filter((work) =>
         work.pipeline.shaders.some((shader) => shader.source?.includes('fn terrainDecodeHeight')),

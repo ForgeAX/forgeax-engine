@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless proof for Bevy's `bounding_2d` reproduction.
@@ -10,7 +11,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_BRIGHT_FLOOR = Number.parseFloat(process.env.SMOKE_BRIGHT_FLOOR ?? '0.10');
@@ -190,7 +191,7 @@ try {
   const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
   mkdirSync(outDir, { recursive: true });
   const out = process.env.SMOKE_PNG_OUT ?? resolve(outDir, 'smoke-frame.png');
-  writeFileSync(out, writeReferencePng(frame, WIDTH, HEIGHT));
+  writeFileSync(out, encodePng(WIDTH, HEIGHT, frame));
   console.log(`[smoke] wrote PNG=${out}`);
 } catch (err) {
   console.warn(`[smoke] (non-fatal) PNG dump skipped: ${err instanceof Error ? err.message : String(err)}`);

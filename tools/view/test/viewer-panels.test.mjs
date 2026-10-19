@@ -543,6 +543,83 @@ describe('display Frontend Fiber surface ownership', () => {
     assert.deepEqual(registry.getClaims(), []);
   });
 
+  it('submits the starting Play extent through Engine before readiness and revokes detached requests', async () => {
+    const previous = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback) { this.callback = callback; }
+      observe() { this.callback(); }
+      unobserve() {}
+      disconnect() {}
+    };
+    const { document, root } = fakeDocument();
+    document.body = root;
+    Object.assign(document.defaultView, { devicePixelRatio: 2, addEventListener() {}, removeEventListener() {} });
+    const target = { targetId: 'retina-play', generation: 4, width: 1280, height: 720, url: 'http://localhost:1234/' };
+    let state = { projectPhase: 'running', targetBinding: 'play', play: { target, phase: 'starting' } };
+    let publish;
+    let ready;
+    const handshake = new Promise(resolve => { ready = resolve; });
+    const requests = [];
+    const context = new Context();
+    context.provide('viewOperationClient', {
+      subscribe(listener) { publish = listener; listener(state); return () => {}; },
+      getState: async () => state,
+      async resizePreview(request) {
+        requests.push(request);
+        await handshake;
+        state = { ...state, play: { ...state.play, phase: 'running', target: { ...target, width: request.width, height: request.height } } };
+        publish(state);
+        return { target: state.play.target };
+      },
+    });
+    context.provide('frontendPlatform', {
+      createFrame() {
+        const element = document.createElement('iframe'); root.append(element);
+        return { element, ready: Promise.resolve(), async dispose() { element.remove(); } };
+      },
+    });
+    try {
+      await context.plugin(viewPlayPresentationPlugin, { document });
+      const panel = document.createElement('div');
+      Object.assign(panel, { clientWidth: 960, clientHeight: 540, getBoundingClientRect: () => ({ left: 10, top: 20, width: 960, height: 540 }) });
+      const presentation = context.get('viewPlayPresentation');
+      const detach = presentation.attach(panel);
+      await Promise.resolve();
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].targetId, target.targetId);
+      assert.equal(requests[0].targetGeneration, 4);
+      assert.equal(requests[0].width, 1920);
+      assert.equal(requests[0].height, 1080);
+      assert.equal(target.width, 1280, 'Only Engine confirmation changes the target extent');
+      await new Promise(resolve => setTimeout(resolve, 130));
+      assert.equal(requests.length, 1, 'ResizeObserver must not duplicate the extent while Engine readiness is pending');
+      state = { ...state, play: { ...state.play, phase: 'running' } }; publish(state);
+      ready();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(requests.length, 1, 'The pending initial resize survives the starting-to-running publication');
+      const frame = root.children.find(element => element.tagName === 'IFRAME');
+      assert.equal(frame.style.width, '960px');
+      assert.equal(frame.style.height, '540px');
+      assert.equal(frame.style.transform, 'scale(1)');
+      detach();
+      assert.equal(requests[0].signal.aborted, true);
+      assert.equal(frame.style.visibility, 'visible');
+      assert.equal(frame.style.opacity, '0');
+      const restore = presentation.attach(panel);
+      state = { ...state, targetBinding: 'editor' }; publish(state);
+      await new Promise(resolve => setTimeout(resolve, 130));
+      assert.equal(requests.length, 1, 'Hidden Play retains native frames without new resize commands');
+      state = { ...state, targetBinding: 'play' }; publish(state);
+      assert.equal(frame.style.opacity, '1');
+      assert.equal(root.children.filter(element => element.tagName === 'IFRAME').length, 1);
+      restore();
+    } finally {
+      ready();
+      await context.fiber.dispose();
+      globalThis.ResizeObserver = previous;
+    }
+  });
+
   it('owns the platform Play document without navigating loopback', async () => {
     const { document, root } = fakeDocument();
     document.body = root;

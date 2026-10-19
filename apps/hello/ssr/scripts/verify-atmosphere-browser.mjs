@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const root=fileURLToPath(new URL('../../../..',import.meta.url));
 const out=resolve(process.env.FORGEAX_ATMOSPHERE_EVIDENCE ?? `${root}/artifacts/atmosphere/browser`);
@@ -39,7 +40,7 @@ try {
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     const rgba=new Uint8Array(await page.evaluate(async()=>Array.from(await globalThis.__readReflectionPixels())));
     require(rgba.length===512*512*4,`${name}: incorrect readback size`);
-    await writeFile(resolve(out,`${name}.png`),writeReferencePng(rgba,512,512));
+    await writeFile(resolve(out,`${name}.png`),encodePng(512, 512, rgba));
     await writeFile(resolve(out,`${name}.rgba`),rgba);
     images.set(name,rgba);
     const row={name,settings,report,sha256:createHash('sha256').update(rgba).digest('hex')};
@@ -97,7 +98,7 @@ try {
   const resized=await page.evaluate(()=>__setAtmosphereEvidence({frames:4}));
   const resizedPixels=new Uint8Array(await page.evaluate(async()=>Array.from(await __readReflectionPixels())));
   require(resizedPixels.length===384*384*4,'Resize retained the previous output extent');
-  await writeFile(resolve(out,'resized-384.png'),writeReferencePng(resizedPixels,384,384));
+  await writeFile(resolve(out,'resized-384.png'),encodePng(384, 384, resizedPixels));
   results.push({name:'resized-384',report:resized,width:384,height:384});
   await page.evaluate(()=>{const canvas=document.querySelector('canvas');document.documentElement.style.setProperty('--render-size','512px');canvas.width=512;canvas.height=512;});
   await run('resize-return',{frames:4});

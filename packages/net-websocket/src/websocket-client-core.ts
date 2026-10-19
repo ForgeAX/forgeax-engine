@@ -1,6 +1,4 @@
 import {
-  ENDPOINT_ERROR_HINTS,
-  ENDPOINT_EXPECTED,
   EndpointError,
   type EndpointEvent,
   type NetEndpoint,
@@ -120,8 +118,6 @@ export function createWebSocketClientEndpoint(
           return err(
             new EndpointError({
               code: 'peer-not-found',
-              expected: ENDPOINT_EXPECTED['peer-not-found'],
-              hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
               detail: { peerId },
             }),
           );
@@ -135,8 +131,6 @@ export function createWebSocketClientEndpoint(
           return err(
             new EndpointError({
               code: 'send-failed',
-              expected: ENDPOINT_EXPECTED['send-failed'],
-              hint: ENDPOINT_ERROR_HINTS['send-failed'],
               detail: { peerId, cause: normalizeCause(cause) },
             }),
           );
@@ -147,8 +141,6 @@ export function createWebSocketClientEndpoint(
           return err(
             new EndpointError({
               code: 'peer-not-found',
-              expected: ENDPOINT_EXPECTED['peer-not-found'],
-              hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
               detail: { peerId },
             }),
           );

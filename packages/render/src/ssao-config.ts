@@ -3,8 +3,8 @@
 import { err, ok, type RenderPipelineAsset, type Result } from '@forgeax/engine-types';
 import { PostProcessError } from './post-process-errors';
 
-export const SSAO_DEFAULT_RADIUS = 0.5;
-export const SSAO_DEFAULT_BIAS = 0.025;
+export const SSAO_DEFAULT_RADIUS = 0.25;
+export const SSAO_DEFAULT_BIAS = 0;
 export const SSAO_DEFAULT_INTENSITY = 1.0;
 
 export type SsaoParameterConfig = Omit<
@@ -12,14 +12,24 @@ export type SsaoParameterConfig = Omit<
   'enabled'
 >;
 
+export const GTAO_SAMPLE_COUNTS = { low: 4, medium: 10, high: 16 } as const;
+export const SSAO_DEFAULT_THICKNESS = 1;
+export const SSAO_DEFAULT_DISTANCE_EXPONENT = 1;
+export const SSAO_DEFAULT_DISTANCE_FALL_OFF = 1;
+export const SSAO_DEFAULT_RESOLUTION_SCALE = 1;
+
 export const SSAO_SAMPLE_COUNTS = { low: 16, medium: 32, high: 64 } as const;
 
-export interface ResolvedSsaoParameters {
+interface ResolvedSsaoParameters {
   readonly algorithm: 'ssao' | 'gtao';
   readonly directLightingStrength: number;
   readonly radius: number;
   readonly bias: number;
   readonly intensity: number;
+  readonly thickness: number;
+  readonly distanceExponent: number;
+  readonly distanceFallOff: number;
+  readonly resolutionScale: number;
   readonly quality: 'low' | 'medium' | 'high';
 }
 
@@ -30,11 +40,15 @@ export interface ResolvedSsaoParameters {
  */
 export function getSsaoParameters(config: SsaoParameterConfig | undefined): ResolvedSsaoParameters {
   return {
-    algorithm: config?.algorithm ?? 'ssao',
+    algorithm: config?.algorithm ?? 'gtao',
     directLightingStrength: config?.directLightingStrength ?? 0,
     radius: config?.radius ?? SSAO_DEFAULT_RADIUS,
     bias: config?.bias ?? SSAO_DEFAULT_BIAS,
     intensity: config?.intensity ?? SSAO_DEFAULT_INTENSITY,
+    thickness: config?.thickness ?? SSAO_DEFAULT_THICKNESS,
+    distanceExponent: config?.distanceExponent ?? SSAO_DEFAULT_DISTANCE_EXPONENT,
+    distanceFallOff: config?.distanceFallOff ?? SSAO_DEFAULT_DISTANCE_FALL_OFF,
+    resolutionScale: config?.resolutionScale ?? SSAO_DEFAULT_RESOLUTION_SCALE,
     quality: config?.quality ?? 'high',
   };
 }
@@ -97,6 +111,22 @@ export function resolveSsaoParameters(
         detail: { paramName: 'directLightingStrength', value: resolved.directLightingStrength },
       }),
     );
+  }
+  for (const [paramName, min, max] of [
+    ['thickness', 0, Number.POSITIVE_INFINITY],
+    ['distanceExponent', 0, Number.POSITIVE_INFINITY],
+    ['distanceFallOff', 0, 1],
+    ['resolutionScale', 0.25, 1],
+  ] as const) {
+    const value = resolved[paramName];
+    if (!Number.isFinite(value) || value < min || value > max) {
+      return err(
+        new PostProcessError({
+          code: 'ssao-parameter-invalid',
+          detail: { paramName, value },
+        }),
+      );
+    }
   }
   return ok(resolved);
 }

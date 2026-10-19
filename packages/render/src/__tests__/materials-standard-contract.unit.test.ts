@@ -64,6 +64,26 @@ describe('Materials.standard clearcoat public contract', () => {
     expect(explicit.parameters?.find((p) => p.name === 'normalScale')?.default).toEqual([1, 1]);
   });
 
+  it('makes emissive color effective and shares the Three r184 roughness defaults', () => {
+    const material = Materials.standard({
+      baseColor: [1, 1, 1, 1],
+      emissive: [0.5, 0.2, 0.1],
+      sheenColor: [0.2, 0.3, 0.4],
+      staticSwitches: { sheen: true },
+    });
+    expect(material.values?.roughness).toBe(1);
+    for (const name of ['roughness', 'emissiveIntensity', 'sheenRoughness']) {
+      expect(material.parameters?.find((p) => p.name === name)?.default).toBe(1);
+    }
+    const dark = Materials.standard({
+      baseColor: [1, 1, 1, 1],
+      emissive: [1, 1, 1],
+      emissiveIntensity: 0,
+      roughness: 0,
+    });
+    expect(dark.values).toMatchObject({ emissiveIntensity: 0, roughness: 0 });
+  });
+
   it('retains parameter defaults without specializing custom shader roots', () => {
     const parameters = [{ name: 'normalTexture', type: 'texture' as const, default: 1 }];
     expect(materialStandardTextureMask(parameters, 'forgeax::default-standard-pbr', {})).toBe(4);

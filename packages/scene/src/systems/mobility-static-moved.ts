@@ -3,7 +3,7 @@ import { Mobility, MobilityKindValue } from '../components/mobility';
 import { Transform } from '../components/transform';
 import { emitMobilityDiagnostic } from '../mobility-diagnostics';
 
-export const MOBILITY_STATIC_MOVED_SYSTEM = 'mobilityStaticMoved' as const;
+const MOBILITY_STATIC_MOVED_SYSTEM = 'mobilityStaticMoved' as const;
 
 interface StaticMovedQueries {
   readonly declared: Query;
@@ -29,7 +29,7 @@ function queriesFor(world: World): StaticMovedQueries {
  * after the frame that declared them static. Initial placement (Transform
  * written in the same frame Mobility is added) is not a violation.
  */
-export function detectMobilityStaticMoved(world: World): void {
+function detectMobilityStaticMoved(world: World): void {
   const { declared, moved } = queriesFor(world);
   const placed = new Set<number>();
   for (const span of declared.spans().unwrap()) {

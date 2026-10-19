@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -117,8 +118,8 @@ const diff = (a, b) => {
   return { pixels, mean: sum / (width * height) };
 };
 mkdirSync(resolve(appRoot, 'artifacts'), { recursive: true });
-writeFileSync(resolve(appRoot, 'artifacts/frame-early.png'), writeReferencePng(earlyFrame, width, height));
-writeFileSync(resolve(appRoot, 'artifacts/frame-late.png'), writeReferencePng(lateFrame, width, height));
+writeFileSync(resolve(appRoot, 'artifacts/frame-early.png'), encodePng(width, height, earlyFrame));
+writeFileSync(resolve(appRoot, 'artifacts/frame-late.png'), encodePng(width, height, lateFrame));
 const motion = diff(earlyFrame, lateFrame);
 const lateQuat = late.ok ? Array.from(late.value.quat) : [];
 const changed = Math.abs((lateQuat[2] ?? 0) - (earlyQuat[2] ?? 0)) > 0.01 || Math.abs((lateQuat[3] ?? 0) - (earlyQuat[3] ?? 0)) > 0.01;

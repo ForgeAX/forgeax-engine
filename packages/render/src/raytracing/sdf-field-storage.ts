@@ -1,4 +1,5 @@
 import { distanceFieldTexel, type MeshDistanceField } from '@forgeax/engine-geometry';
+import { fnv1a32 } from '@forgeax/engine-types';
 /** GPU SNORM16 payloads retain the canonical four-cubed field lattice. */
 export const SDF_BRICK_EDGE = 4;
 /** Every table entry addresses a payload; hashes only select exact-comparison buckets. */
@@ -31,8 +32,7 @@ export function packSampledField(
         ) & 65535;
       brick[local >> 1] = (brick[local >> 1] ?? 0) | (code << ((local & 1) * 16));
     }
-    let hash = 2166136261;
-    for (const word of brick) hash = Math.imul(hash ^ word, 16777619) >>> 0;
+    const hash = fnv1a32(brick);
     let found = -1;
     const offsets = chains.get(hash);
     if (offsets)

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite_sheet`: only source-sheet frames 1 through 6 animate.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -97,7 +98,7 @@ for (let i = 0; i < earlyFrame.length; i += 4) {
 motionDelta /= earlyFrame.length * 255;
 const outDir = process.env.SMOKE_PNG_DIR ?? resolve(here, '..', 'artifacts');
 mkdirSync(outDir, { recursive: true });
-writeFileSync(resolve(outDir, 'sprite-sheet.png'), writeReferencePng(lateFrame, width, height));
+writeFileSync(resolve(outDir, 'sprite-sheet.png'), encodePng(width, height, lateFrame));
 let coloredPixels = 0;
 for (let i = 0; i < lateFrame.length; i += 4) {
   const max = Math.max(lateFrame[i], lateFrame[i + 1], lateFrame[i + 2]);

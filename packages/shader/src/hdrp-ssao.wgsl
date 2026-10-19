@@ -8,10 +8,9 @@
 
 // ── SSAO uniform (3 mat4 + vec4 intensityPad, 256 B, D-1 + D-C) ─────────────
 //
-// intensityPad carries the lighting intensity plus the calc radius/bias.
-// The lighting shader reads intensity from `cluster_uniform.near_far_log.w`
-// (HDRP unified BGL @group(2) @binding(6)); the calc shader reads radius and
-// bias here. Keeping the values in this existing vec4 preserves the one-shot
+// intensityPad carries the raw visibility exponent plus the calc radius/bias.
+// Raw intensity is applied before the spatial filter, once.
+// Keeping these values in the existing vec4 preserves the one-shot
 // 256 B UBO write and avoids a second parameter binding.
 
 struct SsaoUniform {
@@ -19,7 +18,7 @@ struct SsaoUniform {
   projection        : mat4x4<f32>,  // view -> clip
   inverseProjection : mat4x4<f32>,  // NDC -> view
   intensityPad      : vec4<f32>,    // intensity, radius, bias, sample budget
-  algorithmPad      : vec4<f32>,    // x: 0 = hemisphere SSAO, 1 = GTAO
+  algorithmPad      : vec4<f32>,    // algorithm, thickness, radial exponent, distance falloff
 };
 
 // ── SSAO binding declarations (@group(2)) ───────────────────────────────────
@@ -57,6 +56,8 @@ fn vs_ssao(@builtin(vertex_index) vertex_index : u32) -> SsaoVsOut {
 }
 
 // GTAO: cosine-weighted slice integral (Jimenez et al., Algorithm 1).
+// Three r184 radial search; projected-length/open-integral correction and
+// orthographic rays retain the independently verified rendering-equation integral.
 // Sources and deliberate differences: packages/render/README.md, GTAO references.
 // hNegative <= 0 <= hPositive are visibility horizons measured from viewDir.
 fn gtaoSliceIntegral(n: f32, hNegative: f32, hPositive: f32) -> f32 {
@@ -67,6 +68,17 @@ fn gtaoSliceIntegral(n: f32, hNegative: f32, hPositive: f32) -> f32 {
 fn aoViewPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
   let p = ssao_uniform.inverseProjection * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), depth, 1.0);
   return p.xyz / p.w;
+}
+
+// Three r184's default 5x5 magic-square rotation, including RGBA8 quantization.
+// Derive it without a second texture/upload owner; SSAO keeps its hemisphere noise.
+fn gtaoRotation(pixel: vec2<i32>, height: i32) -> f32 {
+  let square = array<u32, 25>(9u, 3u, 22u, 16u, 15u, 2u, 21u, 20u, 14u, 8u, 25u, 19u, 13u, 7u, 1u, 18u, 12u, 6u, 5u, 24u, 11u, 10u, 4u, 23u, 17u);
+  let index = u32((height - 1 - pixel.y) % 5) * 5u + u32(pixel.x % 5);
+  let angle = 6.28318530718 * f32(square[index]) / 25.0;
+  let encoded = floor((vec2<f32>(cos(angle), sin(angle)) * 0.5 + 0.5) * 255.0);
+  let tangent = encoded * (2.0 / 255.0) - 1.0;
+  return atan2(tangent.y, tangent.x);
 }
 
 fn gtaoVisibility(uv: vec2<f32>) -> f32 {
@@ -85,9 +97,13 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
   let radius = ssao_uniform.intensityPad.y;
   let bias = ssao_uniform.intensityPad.z;
   let budget = u32(ssao_uniform.intensityPad.w);
-  let slices = select(select(2u, 4u, budget >= 32u), 8u, budget >= 64u);
-  // Four radial samples per side: low/medium/high = 16/32/64 depth taps.
-  let noise = fract(52.9829189 * fract(dot(vec2<f32>(pixel), vec2<f32>(0.06711056, 0.00583715))));
+  // Three r184 samples=16 is 3 slices * 6 steps * 2 sides, not 16 reads.
+  let slices = select(3u, 5u, budget >= 30u);
+  let steps = (budget + slices - 1u) / slices;
+  let thickness = ssao_uniform.algorithmPad.y;
+  let distanceExponent = ssao_uniform.algorithmPad.z;
+  let distanceFallOff = ssao_uniform.algorithmPad.w;
+  let rotation = gtaoRotation(pixel, dimensions.y);
   // Integrate blocked arcs: the unoccluded hemisphere is analytically 1.
   // Subtracting the same slice's open integral avoids finite-angle baseline
   // darkening on sloped surfaces, without changing the occluded arc equation.
@@ -95,7 +111,7 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
   let basisX = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), viewDir));
   let basisY = cross(viewDir, basisX);
   for (var slice = 0u; slice < slices; slice++) {
-    let angle = (f32(slice) + noise) * 3.14159265359 / f32(slices);
+    let angle = f32(slice) * 3.14159265359 / f32(slices) + rotation;
     // Uniform azimuth about the view ray, not about screen Z. Project this
     // slice onto the constant-Z sampling plane for perspective-correct UVs.
     let tangent = basisX * cos(angle) + basisY * sin(angle);
@@ -107,11 +123,11 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
     let n = atan2(dot(projected, tangent), dot(projected, viewDir));
     let low = vec2<f32>(cos(n + 1.57079632679), cos(n - 1.57079632679));
     var horizons = low;
-    for (var step = 0u; step < 4u; step++) {
-      let t = (f32(step) + 0.5 + 0.5 * noise) / 4.0;
+    for (var step = 0u; step < steps; step++) {
+      let t = pow(f32(step + 1u) / f32(steps), distanceExponent);
       for (var side = 0u; side < 2u; side++) {
         let sign = select(1.0, -1.0, side == 1u);
-        let probe = position + sign * direction * radius * t * t;
+        let probe = position + sign * direction * radius * t;
         let clip = ssao_uniform.projection * vec4<f32>(probe, 1.0);
         if (clip.w <= 0.0) { continue; }
         let sampleUv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
@@ -123,12 +139,12 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
         let snappedUv = (vec2<f32>(samplePixel) + 0.5) / vec2<f32>(dimensions);
         let delta = aoViewPosition(snappedUv, sampleDepth) - position;
         let distance = length(delta);
-        // Ignore surface self-intersection and geometry outside the local sphere.
-        if (distance <= 0.00001 || dot(delta, normal) <= bias || distance >= radius) { continue; }
-        // Radius falloff starts at 50%, matching UE's documented default ratio.
-        let falloff = clamp(2.0 - 2.0 * distance / radius, 0.0, 1.0);
+        // Thickness rejects depth discontinuities independently of the optional
+        // normal-plane bias. The search radius controls sample placement only.
+        if (distance <= 0.00001 || dot(delta, normal) <= bias || abs(delta.z) >= thickness) { continue; }
+        let falloff = mix(1.0, 2.0 / f32(step + 2u), distanceFallOff);
         let cosine = dot(delta / distance, viewDir);
-        horizons[side] = max(horizons[side], mix(low[side], cosine, falloff));
+        horizons[side] += max(0.0, (cosine - horizons[side]) * falloff);
       }
     }
     let hNegative = n + clamp(-acos(clamp(horizons.y, -1.0, 1.0)) - n, -1.57079632679, 1.57079632679);
@@ -159,7 +175,7 @@ fn hemisphereVisibility(in : SsaoVsOut) -> f32 {
   let viewNormal = normalize((ssao_uniform.view * vec4<f32>(worldNormal, 0.0)).xyz);
 
   // Read noise for per-pixel TBN rotation.
-  // Actually: scale factor is screenDim / noiseDim. Use a fixed factor for half-res.
+  // Actually: scale factor is screenDim / noiseDim. Use the selected AO target extent.
   // The noise texture is 4x4 and tiled via REPEAT sampling.
   let screenDim = vec2<f32>(textureDimensions(gbuffer_normal, 0));
   let noiseUV = in.uv * screenDim / 8.0;
@@ -207,7 +223,7 @@ fn hemisphereVisibility(in : SsaoVsOut) -> f32 {
 }
 
 // The raw target carries the center world normal beside visibility, so the
-// blur weights 25 taps from this half-res texel instead of re-reading and
+// blur weights 25 taps from this AO texel instead of re-reading and
 // decoding the full-res G-buffer per tap (the dominant filter cost).
 fn encodeSsaoNormal(n : vec3<f32>) -> vec2<f32> {
   var oct = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
@@ -235,6 +251,10 @@ fn fs_ssao_calc(in : SsaoVsOut) -> @location(0) vec4<f32> {
   } else {
     visibility = hemisphereVisibility(in);
   }
+  // Three's scale is applied to raw visibility, before spatial denoising.
+  // Explicit zero strength is identity, including fully occluded samples.
+  if (ssao_uniform.intensityPad.x == 0.0) { visibility = 1.0; }
+  else { visibility = pow(visibility, ssao_uniform.intensityPad.x); }
   return vec4<f32>(visibility, encodeSsaoNormal(ssaoNormal(in.uv)), 1.0);
 }
 

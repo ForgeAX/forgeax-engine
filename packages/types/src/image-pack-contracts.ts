@@ -125,6 +125,57 @@ export const IMAGE_ERROR_HINTS: Readonly<Record<ImageErrorCode, string>> = {
     'repair the PixelSurface authoring input named in err.detail; use positive integer dimensions, finite RGBA8 values, and a finite noise seed, then rerun the image producer',
 };
 
+// Per-code .expected string literals SSOT.
+// Mirrors ASSET_ERROR_HINTS / IMAGE_ERROR_HINTS shape (charter P5 consistent
+// abstraction). AI users surface .expected when a structured error needs to
+// describe the precondition that was violated.
+export const IMAGE_ERROR_EXPECTED: Readonly<Record<ImageErrorCode, string>> = {
+  'image-decode-failed': 'PNG / JPG byte stream decodes successfully',
+  'image-format-unsupported':
+    "mime is one of ['image/png', 'image/jpeg']; uploadTexture format <-> colorSpace family agrees",
+  'image-dimension-out-of-bounds':
+    'width and height fall under device caps maxTextureDimension2D (or 16384 hard cap)',
+  'image-meta-missing':
+    "<source>.meta.json sidecar (importer: 'image') exists in the same directory",
+  'image-hdr-decode-failed': 'Radiance RGBE header is valid and pixel data decodes successfully',
+  'atlas-empty-input': 'images.length >= 1',
+  'atlas-size-exceeded':
+    'image width x height <= maxAtlasSize^2 and each image fits in the atlas footprint',
+  'atlas-region-mismatch': 'sum(regions[i].w x regions[i].h) <= atlasWidth x atlasHeight',
+  'image-surface-invalid':
+    'PixelSurface dimensions and authoring inputs satisfy the RGBA8 contract',
+};
+
+/** Runtime implementation of the correlated `ImageErrorFor<C>` envelope. */
+export class ImageErrorImpl<C extends ImageErrorCode = ImageErrorCode>
+  extends Error
+  implements ImageErrorFor<C>
+{
+  readonly code: C;
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail: ImageErrorDetailFor<C>;
+
+  constructor(detail: ImageErrorDetailFor<C>, expected = IMAGE_ERROR_EXPECTED[detail.code]) {
+    const code = detail.code;
+    const hint = IMAGE_ERROR_HINTS[code];
+    super(`[ImageError ${code}] expected: ${expected}; hint: ${hint}`);
+    this.name = 'ImageError';
+    this.code = code;
+    this.expected = expected;
+    this.hint = hint;
+    this.detail = detail;
+  }
+}
+
+/** Construct a structured image error while preserving its code/detail pair. */
+export function imageError<C extends ImageErrorCode>(
+  detail: ImageErrorDetailFor<C>,
+  expected?: string,
+): ImageErrorFor<C> {
+  return new ImageErrorImpl<C>(detail, expected);
+}
+
 /**
  * Image color-space discriminator (plan-strategy section 2.5 D Open Q-4 (c)).
  *
@@ -211,6 +262,14 @@ export interface DecodedImage {
 /** 16-byte UUID brand for disk-layer asset identification. RFC 4122 UUIDv7 wire form. */
 export type AssetGuid = Uint8Array & { readonly __guidBrand: 'AssetGuid' };
 
+/** UUID dash-form spelling shared by authoring and runtime admission; case and version are unrestricted. */
+export function isValidAssetGuidString(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
 // === PackErrorCode / PackErrorDetail — disk-layer error SSOT (feat-20260513-guid-asset-package-system w15) ===
 //
 // Decision anchors:
@@ -248,24 +307,7 @@ export type AssetGuid = Uint8Array & { readonly __guidBrand: 'AssetGuid' };
  * locked); source resolution is intentionally local to each Meta sidecar so
  * there is no project-level path alias registry.
  */
-export type PackErrorCode =
-  | 'pack-module-not-found'
-  | 'pack-malformed-meta'
-  | 'pack-malformed-pack'
-  | 'pack-guid-malformed'
-  | 'pack-orphan-meta'
-  | 'pack-meta-missing'
-  | 'pack-guid-collision'
-  | 'pack-cyclic-reference'
-  | 'pack-subasset-index-out-of-range'
-  // === 1 new code (feat-20260523-shader-template-instance-split M1-T02) ===
-  | 'payload-schema-mismatch'
-  // === 4 new codes (feat-20260608-scene-nesting-ecs-fication M1 / w8;
-  // plan-strategy D-8 literals locked) ===
-  | 'pack-mount-localid-overlap'
-  | 'pack-mount-count-mismatch'
-  | 'pack-mount-override-localid-out-of-range'
-  | 'pack-mount-override-unknown-field';
+export type PackErrorCode = keyof typeof PACK_ERROR_HINTS;
 
 /**
  * Discriminated detail union for PackError — narrowed per PackError.code.
@@ -402,9 +444,9 @@ export type PackErrorDetail =
 
 /**
  * Per-code .hint string literals SSOT.
- * Record<PackErrorCode, string> ensures compile-time completeness.
+ * PackErrorCode derives from these keys, so every admitted code has a hint.
  */
-export const PACK_ERROR_HINTS: Readonly<Record<PackErrorCode, string>> = {
+export const PACK_ERROR_HINTS = {
   'pack-module-not-found':
     'correct the import relative to detail.sourcePath, or install the named package in the project, then rebuild',
   'pack-malformed-meta':
@@ -435,4 +477,4 @@ export const PACK_ERROR_HINTS: Readonly<Record<PackErrorCode, string>> = {
     'override.localId must be in [0, mount.memberCount); shrink the override or extend memberCount to match the child SceneAsset',
   'pack-mount-override-unknown-field':
     'override.comp / override.field must match a defined component schema; check defineComponent registry or rebuild mount sidecar after the child SceneAsset reimport',
-};
+} as const;

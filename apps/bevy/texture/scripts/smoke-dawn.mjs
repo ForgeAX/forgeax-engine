@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-texture headless dawn smoke — reproduces the app's texture World in
 // node-dawn and asserts a real textured render (unlit + baseColorTexture).
@@ -13,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -181,7 +182,7 @@ world.spawn(
 );
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: DirectionalLight, data: { color: [1, 1, 1], intensity: 1 } },
+  { component: DirectionalLight, data: { castShadow: true, color: [1, 1, 1], intensity: 1 } },
 );
 // Camera at +Z, identity quat looks along -Z toward the quads
 world.spawn(
@@ -249,7 +250,7 @@ try {
   }
   const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(here, '..', 'artifacts', 'smoke-frame.png');
   mkdirSync(dirname(pngOut), { recursive: true });
-  writeFileSync(pngOut, writeReferencePng(tight, WIDTH, HEIGHT));
+  writeFileSync(pngOut, encodePng(WIDTH, HEIGHT, tight));
   console.log(`[smoke] wrote PNG=${pngOut}`);
 } catch (err) {
   console.warn(`[smoke] (non-fatal) PNG dump skipped: ${err instanceof Error ? err.message : String(err)}`);

@@ -52,6 +52,7 @@
     "@forgeax/engine-vite-plugin-pack": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",
     "@forgeax/engine-shader-compiler": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",

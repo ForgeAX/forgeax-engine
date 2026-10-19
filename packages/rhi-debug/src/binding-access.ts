@@ -1,3 +1,5 @@
+import { stripWgslComments } from '@forgeax/engine-types';
+
 /**
  * How a work may touch one bound resource. `write` and `read-write` bindings
  * are the work's storage outputs. `unknown` means neither an explicit layout
@@ -28,7 +30,7 @@ export function wgslBindingAccess(
   const result = new Map<string, BindingAccess>();
   for (const source of sources) {
     if (source === null) continue;
-    for (const match of source.matchAll(DECLARATION)) {
+    for (const match of stripWgslComments(source).matchAll(DECLARATION)) {
       const attributes = match[1] ?? '';
       const group = /@group\s*\(\s*(\d+)/.exec(attributes)?.[1];
       const binding = /@binding\s*\(\s*(\d+)/.exec(attributes)?.[1];

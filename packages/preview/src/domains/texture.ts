@@ -1,9 +1,12 @@
+import { numMipLevels } from '@forgeax/engine-types';
 import { evaluateTextureOracle, type TextureOracleInput } from '../evidence/oracle.js';
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
+import { isRecord } from '../request-schema.js';
 import {
   loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
+  type ResourceSubject,
   subjectFailure,
 } from './subject.js';
 
@@ -23,10 +26,6 @@ export interface TextureSubjectInspection {
 type InspectionResult =
   | { readonly ok: true; readonly value: TextureSubjectInspection }
   | ReturnType<typeof subjectFailure>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function requiredString(asset: Record<string, unknown>, field: string): string | undefined {
   const value = asset[field];
@@ -56,13 +55,7 @@ function authoredMipCount(
     shape?.viewDimension === '3d' && extent !== undefined
       ? (requiredNumber(extent, 'depth') ?? 1)
       : 1;
-  let largest = Math.max(width, height, depth);
-  let levels = 1;
-  while (largest > 1) {
-    largest = Math.max(1, Math.floor(largest / 2));
-    levels += 1;
-  }
-  return levels;
+  return numMipLevels({ width, height }, depth);
 }
 
 function isTexturePayloadClass(value: unknown): value is TextureSubjectInspection['payloadClass'] {
@@ -121,12 +114,7 @@ function observationPayloadClass(
   return isTexturePayloadClass(value) ? value : undefined;
 }
 
-export function inspectTextureSubject(input: {
-  readonly guid: string;
-  readonly asset: unknown;
-  readonly digest?: string;
-  readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
-}): InspectionResult {
+export function inspectTextureSubject(input: ResourceSubject): InspectionResult {
   if (!isRecord(input.asset) || input.asset.kind !== 'texture') {
     return subjectFailure('resource-preview-kind-mismatch', 'a TextureAsset with kind texture', {
       phase: 'subject',

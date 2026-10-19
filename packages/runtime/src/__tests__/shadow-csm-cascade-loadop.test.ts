@@ -224,7 +224,7 @@ async function drawCsmScene(cascadeCount: number): Promise<CaptureLog> {
   );
   world.spawn({
     component: DirectionalLight,
-    data: { ...directionalLight(), cascadeCount, mapSize: 1024 },
+    data: { castShadow: true, ...directionalLight(), cascadeCount, mapSize: 1024 },
   });
   world.spawn(
     { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },

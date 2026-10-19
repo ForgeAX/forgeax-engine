@@ -1,3 +1,4 @@
+import { halfFloat } from '@forgeax/engine/math';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 // Node/Dawn harness shared by the hello-gi smoke and the reference tool. The
 // Renderer consumes ordinary cooked material publications (the same
@@ -168,19 +169,7 @@ export async function engineManifestUrl() {
 }
 
 const halfTable = new Float32Array(65536);
-for (let h = 0; h < 65536; h++) {
-  const s = h & 0x8000 ? -1 : 1;
-  const e = (h >> 10) & 0x1f;
-  const f = h & 0x3ff;
-  halfTable[h] =
-    e === 0
-      ? s * 2 ** -14 * (f / 1024)
-      : e === 31
-        ? f
-          ? Number.NaN
-          : s * Number.POSITIVE_INFINITY
-        : s * 2 ** (e - 15) * (1 + f / 1024);
-}
+for (let h = 0; h < 65536; h++) halfTable[h] = halfFloat.f16ToF32(h);
 
 /** rgba16float observation rows to a tightly packed RGB Float32Array. */
 export function hdrToRgb(observation, width, height) {

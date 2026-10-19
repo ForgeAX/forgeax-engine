@@ -38,7 +38,7 @@ import { err, ok } from '@forgeax/engine-types';
  * - `sourceDeviceId` — the id of the device that issued the handle; cross-device
  *   use fail-fasts via `'rhi-not-available'`.
  */
-export interface HandleRecord {
+interface HandleRecord {
   readonly id: number;
   readonly kind: string;
   destroyed: boolean;
@@ -61,7 +61,7 @@ export const BOOKKEEPING_KEY = Symbol('forgeax-rhi-null-bookkeeping');
 /** A handle object as RhiNull mints it: a plain object carrying its ledger row
  *  under the private bookkeeping symbol, cast to the relevant brand at the
  *  create* call site. */
-export interface BookkeptHandle {
+interface BookkeptHandle {
   readonly [BOOKKEEPING_KEY]: HandleRecord;
 }
 

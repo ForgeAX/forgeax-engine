@@ -1,63 +1,7 @@
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
 
-// @forgeax/engine-rhi-wgpu — wgpu 30 wasm thin shim implementing @forgeax/engine-rhi.
-//
-// This package is the dual-impl partner of @forgeax/engine-rhi-webgpu (see AGENTS.md
-// "## Packages" + "## RHI / WebGPU" sections). Both packages export an `rhi`
-// singleton implementing the same @forgeax/engine-rhi surface — the @forgeax/engine-runtime
-// createRenderer.ts auto-select facade (M3) picks one at runtime based on
-// `navigator.gpu` availability (D-P4 dynamic import + R-05 Vite ?url).
-//
-// Shape rules (mirrors @forgeax/engine-rhi-webgpu, charter proposition 5 consistent
-// abstraction across the dual-impl boundary):
-//   - spec alignment — the 17 descriptor field names pass through verbatim.
-//   - opaque handle — 14 RHI handles surface as brand-only opaque types
-//     (research R-06 wasm-bindgen `extends` + `typescript_type` form).
-//   - capability-gated — wgpu webgl backend hard-limits surface via
-//     `RhiCaps.X = false` rather than runtime exceptions.
-//   - math-free — wasm-bindgen boundary accepts `Float32Array` /
-//     `Uint16Array` / `Uint32Array` (research R-06 `js_sys` ABI).
-//
-// Lazy-load contract (research F-4 / F-5 + R-04 + plan-strategy §6 M3):
-//   - The wasm bundle is owned by `@forgeax/engine-wgpu-wasm` (the merged wgpu 30 +
-//     naga 30 wasm-pack output). Source identity and measured size belong to
-//     that package's provenance and bundle-size report.
-//     rhi-wgpu itself is a TS-only thin shell after feat-20260511-naga-rhi-wgpu-merge
-//     M3 / w9 (D-P1 / D-P4): no local pkg/ output, no Rust toolchain
-//     dependency, no second wasm bundle on the wire.
-//   - The bundle is NOT loaded at module-import time. `ensureReady()` is
-//     the lazy-init entry; callers await it before consuming the `rhi`
-//     singleton. Internally this forwards to `@forgeax/engine-wgpu-wasm.ensureReady`
-//     so the same wasm namespace is shared with `@forgeax/engine-naga` (research
-//     F-5 single ensureReady SSOT).
-//   - On the navigator.gpu path, this package's dynamic `import('@forgeax/
-//     rhi-wgpu')` does not evaluate at all (D-P4) — the engine facade picks
-//     @forgeax/engine-rhi-webgpu and the wasm bundle stays out of the first-paint
-//     bundle.
-//   - The public no-arg form `await ensureReady()` is fully wired — the
-//     default factory dynamic-imports `@forgeax/engine-wgpu-wasm` and forwards to
-//     its `ensureReady` so callers do NOT need to supply an `initFn`
-//     explicitly. AI users consume the rhi singleton through one read:
-//
-//       import { rhi, ensureReady } from '@forgeax/engine-rhi-wgpu';
-//       await ensureReady();
-//       const adapter = (await rhi.requestAdapter()).unwrap();
-//
-// SSOT signal — re-export the merged wasm namespace type from
-// `@forgeax/engine-wgpu-wasm` so AI users + reviewer tooling can grep one line and
-// see this package's wasm bundle owner. The value-level wiring lives in
-// `internal/wasm-loader.ts`'s default factory which dynamic-imports
-// `@forgeax/engine-wgpu-wasm` and forwards to its `ensureReady` (feat-20260511-naga-rhi-wgpu-merge
-// M3 / w9 — research F-5 single ensureReady SSOT).
-//
-// Public entries (w16 baseline; w17-w19 expand the surface):
-// - requestAdapter(opts?) — entry 1: spec-aligned strict two-step path;
-//   returns Result<RhiAdapter, RhiError>.
-// - acquireCanvasContext(canvas) — entry 2: wasm surface path (M3 / w14).
-// - rhi — singleton entry (charter proposition 1: progressive disclosure +
-//   plan-strategy §7.4 'import { rhi } from @forgeax/engine-rhi-wgpu' + Engine.create
-//   escape hatch injection shape).
-// - ensureReady — wasm lazy-load surface (w13).
+// Thin RHI adapter over the shared wgpu WASM namespace. requestAdapter initializes
+// the selected module lazily; ensureReady is optional prewarming or native Host injection.
 
 /// <reference types="@webgpu/types" />
 
@@ -83,7 +27,7 @@ import {
   validateRayQueryShader,
 } from '@forgeax/engine-rhi';
 import { type GpuCanvasContextLike, makeCanvasContext, makeRhiAdapter } from './adapter';
-import { getRhiWgpuModule } from './internal/wasm-loader';
+import { ensureRhiWgpuReady } from './internal/wasm-loader';
 import { ownWasmSurface, type WasmSurface } from './internal/wasm-surface';
 
 /**
@@ -151,45 +95,26 @@ function preCreateWebGL2ContextForWgpuGLBackend(
   }
 }
 
-/**
- * Entry 1 — `requestAdapter` walks `navigator.gpu.requestAdapter(opts)` if
- * available, otherwise hands off to the lazy-loaded wgpu wasm Instance
- * (R-03 graceful fallback).
- *
- * Two-branch logic (bug-20260526 fix):
- * 1. Try `navigator.gpu` first (fast path, no wasm overhead) — if it works,
- *    return adapter.
- * 2. If `navigator.gpu` is undefined OR returns null adapter, fall back to
- *    wgpu-wasm's own adapter enumeration via the initialized module.
- *
- * Optional `compatibleSurface` parameter (M3 / w21): when provided and the
- * wasm fallback path is taken, the function calls the wasm module's
- * `requestAdapterWithCanvas(canvas)` instead of the basic `requestAdapter()`.
- * This is required by the wgpu GL backend which needs a compatible surface
- * to enumerate adapters (requirements-decisions D5).
- *
- * Pre-condition: caller must have called `ensureReady()` before invoking
- * this function when the wasm fallback path is needed (D-2 constraint).
- *
- * Strict two-step path mirrors the spec / wgpu (research 6) and the
- * @forgeax/engine-rhi-webgpu shim signature byte-for-byte (charter proposition 5
- * consistent abstraction across the dual-impl boundary).
- */
+/** Requests a wgpu adapter after initialization; GL enumeration uses the supplied canvas. */
 export async function requestAdapter(
   _opts?: RequestAdapterOptions | undefined,
   compatibleSurface?: RhiCanvasTarget | undefined,
 ): Promise<Result<RhiAdapter, RhiError>> {
-  // bug-20260610: NO navigator.gpu fast path here. `@forgeax/engine-rhi-webgpu`
-  // owns navigator.gpu — `@forgeax/engine-rhi-wgpu` is the wasm GL fallback
-  // backend by definition (the engine `createRenderer` Channel 2/3 split
-  // routes navigator.gpu cases to rhi-webgpu, falling back to rhi-wgpu only
-  // when rhi-webgpu fails). Touching navigator.gpu here would re-do work
-  // rhi-webgpu already did and re-surface the same null adapter / error
-  // path; rhi-wgpu's job is the wasm GL fallback path exclusively.
-
-  // Wasm fallback path: navigator.gpu absent or returned null adapter.
-  // D-2 pre-condition: getRhiWgpuModule() must be defined (caller called ensureReady).
-  const wasmModule = getRhiWgpuModule<{
+  let namespace: unknown;
+  try {
+    namespace = await ensureRhiWgpuReady();
+  } catch (cause) {
+    return err(
+      cause instanceof RhiError
+        ? cause
+        : new RhiError({
+            code: 'rhi-not-available',
+            expected: 'the initialized wgpu WASM namespace',
+            hint: `wgpu initialization failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          }),
+    );
+  }
+  const wasmModule = namespace as {
     RhiWgpuInstance: {
       // forgeax-async-whitelist: wasm-bindgen — raw generated instance and adapter API
       create(): Promise<{
@@ -198,16 +123,7 @@ export async function requestAdapter(
         createSurface?(canvas: RhiCanvasTarget): unknown;
       }>;
     };
-  }>();
-  if (wasmModule === undefined) {
-    return err(
-      new RhiError({
-        code: 'rhi-not-available',
-        expected: '@forgeax/engine-rhi-wgpu wasm module initialized via ensureReady()',
-        hint: 'call ensureReady() before requestAdapter() — the wasm module must be loaded before adapter enumeration',
-      }),
-    );
-  }
+  };
 
   // D-1: Use RhiWgpuInstance.create() + instance.requestAdapter() (or
   // requestAdapterWithCanvas when compatibleSurface is provided).

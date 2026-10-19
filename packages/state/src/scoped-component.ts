@@ -117,25 +117,3 @@ export function despawnOnEnter<T extends StateToken>(
     throw result.error;
   }
 }
-
-/**
- * Count entities carrying `token`'s ScopedTo component, grouped by the variant
- * index they are scoped to (irrespective of exit/enter mode). Returns an array
- * aligned to `token.variants` (index i = count for `token.variants[i]`).
- *
- * Used by the `state get <name>` CLI inspector to report per-variant scoped
- * entity counts (requirements AC-15). Reflection only — does not mutate World.
- */
-export function countScopedEntitiesByVariant(world: World, token: StateToken): number[] {
-  const counts = new Array<number>(token.variants.length).fill(0);
-  const scoped = getScopedComponent(token);
-  const query = world.query({ read: [scoped] }).unwrap();
-  for (const row of query) {
-    const idx = row.get(scoped).value;
-    if (typeof idx !== 'number') continue;
-    if (idx >= 0 && idx < counts.length) counts[idx] = (counts[idx] ?? 0) + 1;
-  }
-  return counts;
-}
-
-// resolveScopedComponent removed — transitionStatesSystem uses the World-local catalog.

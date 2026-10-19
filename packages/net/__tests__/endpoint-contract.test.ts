@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { EndpointErrorCode } from '../src/endpoint/errors';
 import {
   EndpointError,
-  ENDPOINT_EXPECTED,
-  ENDPOINT_ERROR_HINTS,
   isEndpointError,
 } from '../src/endpoint/errors';
 import type { EndpointEvent, PeerId } from '../src/endpoint/endpoint';
@@ -30,29 +28,11 @@ describe('EndpointError closed union', () => {
     expect(codes).toHaveLength(5);
   });
 
-  it('all codes have non-empty expected and hint', () => {
-    const codes: EndpointErrorCode[] = [
-      'peer-not-found',
-      'connection-closed',
-      'send-failed',
-      'already-closed',
-      'connection-failed',
-    ];
-    for (const code of codes) {
-      expect(ENDPOINT_EXPECTED[code]).toBeTypeOf('string');
-      expect(ENDPOINT_EXPECTED[code].length).toBeGreaterThan(0);
-      expect(ENDPOINT_ERROR_HINTS[code]).toBeTypeOf('string');
-      expect(ENDPOINT_ERROR_HINTS[code].length).toBeGreaterThan(0);
-    }
-  });
-
   it('can construct each error variant with proper detail', () => {
     const peerId = 1 as PeerId;
 
     const e1 = new EndpointError({
       code: 'peer-not-found',
-      expected: ENDPOINT_EXPECTED['peer-not-found'],
-      hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
       detail: { peerId },
     });
     expect(e1.code).toBe('peer-not-found');
@@ -61,8 +41,6 @@ describe('EndpointError closed union', () => {
 
     const e2 = new EndpointError({
       code: 'connection-closed',
-      expected: ENDPOINT_EXPECTED['connection-closed'],
-      hint: ENDPOINT_ERROR_HINTS['connection-closed'],
       detail: { peerId },
     });
     expect(e2.code).toBe('connection-closed');
@@ -70,8 +48,6 @@ describe('EndpointError closed union', () => {
 
     const e3 = new EndpointError({
       code: 'send-failed',
-      expected: ENDPOINT_EXPECTED['send-failed'],
-      hint: ENDPOINT_ERROR_HINTS['send-failed'],
       detail: { peerId, cause: 'buffer full' },
     });
     expect(e3.code).toBe('send-failed');
@@ -80,8 +56,6 @@ describe('EndpointError closed union', () => {
 
     const e4 = new EndpointError({
       code: 'already-closed',
-      expected: ENDPOINT_EXPECTED['already-closed'],
-      hint: ENDPOINT_ERROR_HINTS['already-closed'],
       detail: { cause: 'endpoint was closed' },
     });
     expect(e4.code).toBe('already-closed');
@@ -89,8 +63,6 @@ describe('EndpointError closed union', () => {
 
     const e5 = new EndpointError({
       code: 'connection-failed',
-      expected: ENDPOINT_EXPECTED['connection-failed'],
-      hint: ENDPOINT_ERROR_HINTS['connection-failed'],
       detail: { address: 'ws://127.0.0.1:43100', cause: 'ECONNREFUSED' },
     });
     expect(e5.code).toBe('connection-failed');
@@ -117,8 +89,6 @@ describe('EndpointError closed union', () => {
 
     const err = new EndpointError({
       code: 'peer-not-found',
-      expected: ENDPOINT_EXPECTED['peer-not-found'],
-      hint: ENDPOINT_ERROR_HINTS['peer-not-found'],
       detail: { peerId: 1 as PeerId },
     });
     expect(handleError(err)).toContain('peer not found');

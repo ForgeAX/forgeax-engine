@@ -14,8 +14,15 @@ import {
   type PreviewDomainResult,
   type PreviewDomainRunner,
   previewRuntimeUnavailable,
+  REQUIRED_PREVIEW_EVIDENCE,
   validateDomainValue,
 } from './host.js';
+import {
+  isNonemptyString,
+  isRecord,
+  isSafeInteger,
+  parsePreviewRequest,
+} from './request-schema.js';
 
 export interface VfxBinding {
   readonly guid: string;
@@ -50,33 +57,34 @@ export interface VfxPreviewReport {
 
 const vfxPreviewArgsSchema: ToolSchema<VfxPreviewRequest> = {
   parse(value) {
-    if (value === null || typeof value !== 'object')
-      return { ok: false, error: 'expected a VFX preview request object' };
-    const request = value as Partial<VfxPreviewRequest>;
-    const binding = request.binding;
-    const simulation = request.simulation;
-    if (request.subject?.kind !== 'ParticleEffectAsset' || typeof request.subject.guid !== 'string')
-      return { ok: false, error: 'expected a ParticleEffectAsset subject' };
+    const envelope = parsePreviewRequest(value, 'ParticleEffectAsset');
+    if (!envelope.ok) return envelope;
+    const request = envelope.value;
+    const { binding, simulation } = request;
     if (
-      request.snapshot === undefined ||
-      !Number.isSafeInteger(request.snapshot.revision) ||
-      typeof request.snapshot.digest !== 'string'
-    )
-      return { ok: false, error: 'expected a revisioned snapshot' };
-    if (
-      binding === undefined ||
-      binding.guid !== request.subject.guid ||
-      binding.effectDigest.length === 0 ||
-      simulation === undefined ||
-      !Number.isSafeInteger(simulation.seed) ||
+      !isNonemptyString(binding.effectDigest) ||
+      !isRecord(simulation) ||
+      !isSafeInteger(simulation.seed) ||
+      typeof simulation.deltaSeconds !== 'number' ||
       simulation.deltaSeconds <= 0 ||
       !Number.isFinite(simulation.deltaSeconds) ||
-      !Number.isSafeInteger(simulation.frames) ||
+      !isSafeInteger(simulation.frames) ||
       simulation.frames < 1 ||
       simulation.frames > 240
     )
       return { ok: false, error: 'expected a bound effect and bounded deterministic timeline' };
-    return { ok: true, value: request as VfxPreviewRequest };
+    return {
+      ok: true,
+      value: {
+        ...request,
+        binding: { guid: request.subject.guid, effectDigest: binding.effectDigest },
+        simulation: {
+          seed: simulation.seed,
+          deltaSeconds: simulation.deltaSeconds,
+          frames: simulation.frames,
+        },
+      },
+    };
   },
   describe:
     '{"type":"object","required":["subject","snapshot","binding","simulation"],"properties":{"subject":{"type":"object","required":["kind","guid"],"properties":{"kind":{"const":"ParticleEffectAsset"},"guid":{"type":"string"}}},"snapshot":{"type":"object","required":["revision","digest"]},"binding":{"type":"object","required":["guid","effectDigest"]},"simulation":{"type":"object","required":["seed","deltaSeconds","frames"]}}}',
@@ -94,12 +102,12 @@ export const vfxPreviewDescriptor = {
   realm: 'engine' as const,
   argsSchema: vfxPreviewArgsSchema,
   resultSchema: vfxPreviewResultSchema,
-  evidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+  evidence: REQUIRED_PREVIEW_EVIDENCE,
   preview: {
     realm: 'engine' as const,
     subject: { kind: 'ParticleEffectAsset', guid: '<request>' },
     snapshot: { revision: 0, digest: '<request>' },
-    requiredEvidence: ['rhi-tape', 'png', 'profile-capture'] as const,
+    requiredEvidence: REQUIRED_PREVIEW_EVIDENCE,
   } satisfies ToolPreviewContract,
 };
 

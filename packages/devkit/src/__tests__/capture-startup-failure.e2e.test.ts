@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Context, startNativePlugin } from '@forgeax/engine-plugin';
 import { expect, it } from 'vitest';
+import { createBrowserCapture } from '../browser-capture.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
-import { createBrowserCapture } from '../software-capture.js';
 import { waitForBrowserToolHost } from '../tools/browser-host.js';
 
 it.each([
@@ -97,14 +97,14 @@ it.each([
         output: join(evidence, `${timing}.png`),
       }),
     ).rejects.toMatchObject({
-      code: 'software-capture-runtime-failed',
+      code: 'browser-capture-runtime-failed',
     });
     await expect(
       session.capture(undefined, {
         purpose: 'observe',
         timeoutMs: 5000,
       }),
-    ).rejects.toMatchObject({ code: 'software-capture-runtime-failed' });
+    ).rejects.toMatchObject({ code: 'browser-capture-runtime-failed' });
     expect(session.report().ok).toBe(false);
     expect(session.report().captures.at(-1)?.runtime).toMatchObject({
       fatalError: expect.stringContaining('Call initialize() before using vag-platform-sdk'),

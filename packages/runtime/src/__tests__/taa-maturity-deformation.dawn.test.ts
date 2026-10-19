@@ -1,11 +1,11 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -154,7 +154,7 @@ it
             temporal.bytes.byteLength,
           );
           const lanes = Array.from({ length: 4 }, (_, c) =>
-            halfToFloat(data.getUint16((32 * 64 + 32) * 8 + c * 2, true)),
+            halfFloat.f16ToF32(data.getUint16((32 * 64 + 32) * 8 + c * 2, true)),
           );
           if (!changed) {
             expect(Math.abs(lanes[0] ?? 1)).toBeLessThan(1e-4);

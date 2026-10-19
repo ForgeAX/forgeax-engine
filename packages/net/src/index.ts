@@ -7,8 +7,6 @@
 export type { EndpointEvent, NetEndpoint, NetEndpointConnector, PeerId } from './endpoint/endpoint';
 export type { EndpointErrorCode, EndpointErrorDetail } from './endpoint/errors';
 export {
-  ENDPOINT_ERROR_HINTS,
-  ENDPOINT_EXPECTED,
   EndpointError,
   isEndpointError,
 } from './endpoint/errors';

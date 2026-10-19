@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn-node smoke for Bevy's text2d mapping.
@@ -12,7 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 
 const framesTarget = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -165,7 +166,7 @@ for (let i = 0; i < framesTarget; i++) {
 await delay(100);
 
 const pixels = await readback(sharedDevice);
-writeFileSync(resolve(artifactDir, 'text2d.png'), writeReferencePng(pixels, width, height));
+writeFileSync(resolve(artifactDir, 'text2d.png'), encodePng(width, height, pixels));
 const visiblePixels = countVisiblePixels(pixels);
 const motion = app.world.get(scene.translation, Text2dMotion);
 const motionPhase = motion.ok ? motion.value.phase : 0;
@@ -272,7 +273,7 @@ async function runM34Recovery(app, font, errors, outputDir, providedScene) {
     const pixels = await readback(sharedDevice);
     const visiblePixels = countVisiblePixels(pixels);
     const path = resolve(outputDir, `m34-${name}.png`);
-    writeFileSync(path, writeReferencePng(pixels, width, height));
+    writeFileSync(path, encodePng(width, height, pixels));
     return { state, visiblePixels, path };
   };
 

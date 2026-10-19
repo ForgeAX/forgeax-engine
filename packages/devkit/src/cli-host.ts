@@ -3,12 +3,12 @@ import type { ToolApi, ToolRunOptions, ToolTerminal } from '@forgeax/engine-tool
 import { createToolClient, type ToolClient } from './tools/client.js';
 
 /** The DevKit command surface is a Host capability, not a second CLI runtime. */
-export interface DevkitCliService {
+interface DevkitCliService {
   readonly ready: () => Promise<ToolClient>;
   readonly closed: () => boolean;
 }
 
-export interface DevkitCliStartup {
+interface DevkitCliStartup {
   readonly plugin: Plugin;
   readonly service: DevkitCliService;
 }

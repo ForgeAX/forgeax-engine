@@ -9,7 +9,7 @@
 // Lambertian diffuse + Three r184 squared finite-range attenuation); the
 // PointLight carries its authored distance exponent; SpotLight keeps exponent 2
 // and multiplies a cone-falloff factor
-// `smoothstep(cosOuter, cosInner, dot(l, -lightDir))` on top.
+// `evalSpotCone(cosInner, cosOuter, dot(l, -lightDir))` on top.
 //
 // charter P4 consistent abstraction: one body, two thin wrappers that each
 // carry exactly the parameters their light type needs. evalPoint avoids the
@@ -37,7 +37,7 @@
 
 // extendedLighting is one closed resource topology for IES, Cookie, and
 // probe factors. The ordinary path supplies identity factors.
-#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation, projectSpotUv}
+#import forgeax_pbr::lighting_attenuation::{evalSpotCone, evalDistanceAttenuation, evalSpotAttenuation, projectSpotUv}
 // feat-20260625-spot-light-shadow-mapping M3 / w15 (plan-strategy D-3 + D-5):
 // spot shadow sampling reuses the shared 2D 9-tap PCF core (sample_shadow_2d)
 // and the always-on `spotShadowMap` (binding 8) + `shadowSampler` (binding 4).
@@ -193,7 +193,7 @@ fn evalSpotFlat(
   let toLight = lightPos - worldPos;
   let dSquared = max(dot(toLight, toLight), 1e-4);
   let l = toLight / sqrt(dSquared);
-  let cone = smoothstep(cosOuter, cosInner, dot(l, -lightDir));
+  let cone = evalSpotCone(cosInner, cosOuter, dot(l, -lightDir));
   return evalPointFlat(
     lightPos, colorTimesIntensity, invRangeSquared, 2.0, worldPos, baseColor,
   ) * cone;
@@ -309,7 +309,7 @@ fn evalSpot(
   );
   let toLight = lightPos - worldPos;
   let l = normalize(toLight);
-  let cone = smoothstep(cosOuter, cosInner, dot(l, -lightDir));
+  let cone = evalSpotCone(cosInner, cosOuter, dot(l, -lightDir));
   return body * spotModifierProduct(1.0, 1.0, cone, 1.0, 1.0, 1.0);
 }
 

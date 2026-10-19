@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join as pathJoin, relative, resolve } from 'node:path';
@@ -82,7 +83,7 @@ async function receiver() {
       response.end('artifact must be JSON');
     }
   });
-  await new Promise((resolveServer) => server.listen(port, host, resolveServer));
+  await once(server.listen(port, host), 'listening');
   const address = server.address();
   const selectedPort = typeof address === 'object' && address !== null ? address.port : port;
   process.stdout.write(

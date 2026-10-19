@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -22,29 +23,17 @@ const root = resolve(here, '..', '..', '..', '..');
 const remoteLive = resolve(root, 'skills/forgeax-engine-cli/scripts/remote-live.mjs');
 const childEnv = { ...process.env, INIT_CWD: root };
 
-function findFreePort(excluded = new Set()) {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      server.close((error) => {
-        if (error !== undefined) {
-          reject(error);
-          return;
-        }
-        if (typeof address !== 'object' || address === null || typeof address.port !== 'number') {
-          reject(new Error('free-port probe did not return a TCP port'));
-          return;
-        }
-        if (excluded.has(address.port)) {
-          findFreePort(excluded).then(resolvePort, reject);
-          return;
-        }
-        resolvePort(address.port);
-      });
-    });
+async function findFreePort(excluded = new Set()) {
+  const server = createServer();
+  await once(server.listen(0, '127.0.0.1'), 'listening');
+  const address = server.address();
+  await new Promise((resolveClose, reject) => {
+    server.close((error) => error === undefined ? resolveClose() : reject(error));
   });
+  if (typeof address !== 'object' || address === null || typeof address.port !== 'number') {
+    throw new Error('free-port probe did not return a TCP port');
+  }
+  return excluded.has(address.port) ? findFreePort(excluded) : address.port;
 }
 
 function run(label, args, extraEnv = {}) {
@@ -96,7 +85,6 @@ function runDevKitOperation(label, operation, artifactPath, extraArgs = []) {
   const cli = resolve(root, 'packages/devkit/dist/cli.mjs');
   const output = runNode(label, [
     cli,
-    'debug',
     ...operation.split('.'),
     '--artifact',
     artifactPath,
@@ -151,7 +139,7 @@ async function captureArtifact(page, label) {
     const response = await fetch(`/__forgeax-debug/tape?runId=${encodeURIComponent(runId)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-forgeax-rhitape' },
-      body: result.value.bytes,
+      body: new Blob([result.value.bytes], { type: 'application/x-forgeax-rhitape' }),
     });
     const artifact = await response.json();
     if (!response.ok) return { ok: false, error: artifact };
@@ -220,7 +208,7 @@ async function runRemoteLiveBrowser() {
   try {
     await waitForPage(pageUrl, dev);
     browser = await chromium.launch({
-      headless: true,
+      headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
       channel: 'chrome',
       args: ['--disable-features=MacAppCodeSignClone', '--enable-unsafe-webgpu', '--enable-features=Vulkan,UseSkiaRenderer', '--ignore-gpu-blocklist'],
       chromiumSandbox: true,

@@ -3,14 +3,9 @@ import { RenderTargetOperationFailedError, RenderTargetStateInvalidError } from 
 import type { RenderResult } from '../render-contract';
 import type { RenderTarget, RenderTargetDescriptor } from './contracts';
 
-export type RenderTargetOwnerState =
-  | 'uninitialized'
-  | 'candidate'
-  | 'active'
-  | 'rebuilding'
-  | 'destroyed';
+type RenderTargetOwnerState = 'uninitialized' | 'candidate' | 'active' | 'rebuilding' | 'destroyed';
 
-export interface RenderTargetPhysicalCandidate {
+interface RenderTargetPhysicalCandidate {
   readonly generation: number;
   readonly descriptor: RenderTargetDescriptor;
 }
@@ -23,7 +18,7 @@ export interface RenderTargetOwnerInspection {
   readonly candidate?: RenderTargetPhysicalCandidate;
 }
 
-export interface RenderTargetOwnerOptions {
+interface RenderTargetOwnerOptions {
   readonly rendererId: symbol;
   readonly getGeneration: () => number;
 }

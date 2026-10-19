@@ -6,7 +6,11 @@
 
 import type { Vec2, Vec3 } from '@forgeax/engine-math';
 import type { Result } from '@forgeax/engine-types';
-import type { PhysicsContactSnapshot } from './contact-query.js';
+import type {
+  PhysicsContactNeighborsSnapshot,
+  PhysicsContactNormalFilter,
+  PhysicsContactSnapshot,
+} from './contact-query.js';
 import type {
   DerivedBodyTypeCandidateInput,
   DerivedPhysicsCandidate,
@@ -71,6 +75,12 @@ export interface PhysicsWorld {
     entity: number,
     filterMask?: number,
   ) => Result<PhysicsContactSnapshot, ManagedPhysicsFailure>;
+  /** Current solid neighbors without decoding points or impulses; normals use a strict dot test. */
+  getCurrentContactNeighbors?: (
+    entity: number,
+    filterMask?: number,
+    normalFilter?: PhysicsContactNormalFilter,
+  ) => Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure>;
   /** Request native wake without changing pose or velocity; contacts require the next step. */
   wakeBody?: (entity: number) => Result<void, ManagedPhysicsFailure>;
   /** Explicit pose/velocity handoff. Call after synchronization and before step, never for visual blend. */

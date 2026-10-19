@@ -1198,6 +1198,9 @@ beforeAll(async () => {
     'forgeax_cloud::layer': readSrc('cloud.wgsl'),
     'forgeax_pbr::brdf': BRDF,
     'forgeax_pbr::specular_aa': readSrc('specular-aa.wgsl'),
+    'forgeax_material::fragment_output': readSrc('material/fragment-output.wgsl'),
+    'forgeax_view::tone_mapping': readSrc('tone-mapping.wgsl'),
+    'forgeax_view::output_encoding': readSrc('output-encoding.wgsl'),
     'forgeax_material::alpha_hash': readSrc('alpha-hash.wgsl'),
     'forgeax_material::oit': readSrc('oit.wgsl'),
     'forgeax_shadow::surface': readSrc('shadow-surface.wgsl'),
@@ -1233,6 +1236,9 @@ beforeAll(async () => {
 
   UNLIT_ENTRY_IMPORTS = {
     'forgeax_clipping::planes': readSrc('clipping.wgsl'),
+    'forgeax_material::fragment_output': readSrc('material/fragment-output.wgsl'),
+    'forgeax_view::tone_mapping': readSrc('tone-mapping.wgsl'),
+    'forgeax_view::output_encoding': readSrc('output-encoding.wgsl'),
     'forgeax_material::alpha_hash': readSrc('alpha-hash.wgsl'),
     'forgeax_material::oit': readSrc('oit.wgsl'),
     'forgeax_shadow::surface': readSrc('shadow-surface.wgsl'),

@@ -11,8 +11,9 @@ import type {
   RenderTargetTextureSource,
   RenderTargetTextureSourceOptions,
 } from './contracts';
+import { renderTargetMipCount } from './contracts';
 
-export interface RenderTargetMaterialSourceView {
+interface RenderTargetMaterialSourceView {
   readonly dimension: RenderTargetTextureSourceOptions['dimension'];
   readonly mipLevel: number;
   readonly resolveRequired: boolean;
@@ -29,7 +30,7 @@ export interface RenderTargetMaterialSourceBinding {
   readonly textureView?: TextureView;
 }
 
-export interface RenderTargetMaterialSourceExpectation {
+interface RenderTargetMaterialSourceExpectation {
   readonly target: RenderTarget;
   readonly generation: number;
   readonly shape: RenderTargetDescriptor['shape'];
@@ -105,10 +106,7 @@ export function createRenderTargetMaterialSource(
   if (options.dimension !== descriptor.shape) {
     return invalid('dimension', options.dimension, `dimension matches ${descriptor.shape}`);
   }
-  const mipCount =
-    descriptor.mipLevels === 1
-      ? 1
-      : Math.floor(Math.log2(Math.max(descriptor.width, descriptor.height))) + 1;
+  const mipCount = renderTargetMipCount(descriptor);
   if (!Number.isInteger(options.mipLevel) || options.mipLevel < 0 || options.mipLevel >= mipCount) {
     return invalid('mipLevel', options.mipLevel, `an admitted mip level below ${mipCount}`);
   }

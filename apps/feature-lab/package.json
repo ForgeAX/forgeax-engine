@@ -40,7 +40,8 @@
     }
   },
   "dependencies": {
-    "@forgeax/engine": "workspace:*"
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-image": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-shader": "workspace:*",

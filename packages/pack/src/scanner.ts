@@ -2,14 +2,15 @@ import { readdir, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type {
   CatalogDiagnostic,
+  ImportSubAsset,
   PackErrorCode,
   ProviderProvenance,
   ResourceRevision,
   SourceOverrideDescriptor,
 } from '@forgeax/engine-types';
-import { PACK_ERROR_HINTS } from '@forgeax/engine-types';
+import { isValidAssetGuidString, PACK_ERROR_HINTS } from '@forgeax/engine-types';
 import { PackError } from './errors.js';
-import { isValidAssetGuidString, PackageId } from './guid.js';
+import { PackageId } from './guid.js';
 import {
   type AnyScriptablePackDefinition,
   type PackAuthoringError,
@@ -131,15 +132,7 @@ export interface MetaInventoryDocument {
   readonly sourceOverrides?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly sourceOverrideDescriptors?: readonly SourceOverrideDescriptor[];
   readonly paramSchema?: readonly Readonly<Record<string, unknown>>[];
-  readonly subAssets: readonly MetaInventorySubAsset[];
-}
-
-export interface MetaInventorySubAsset {
-  readonly guid: string;
-  readonly sourceIndex: number;
-  readonly sourceKey?: string;
-  readonly name?: string;
-  readonly kind: string;
+  readonly subAssets: readonly ImportSubAsset[];
 }
 
 export interface LegacyPackInventoryDocument {

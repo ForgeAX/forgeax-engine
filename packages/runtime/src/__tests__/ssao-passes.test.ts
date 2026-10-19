@@ -12,8 +12,8 @@ import { DeviceScope } from '../../../render/src/device/device-scope';
 import type { BloomPersistentBundle } from '../../../render/src/record/render-context';
 import {
   recordBloomCompositePass,
-  recordBloomDownsamplePass,
-  recordBloomUpsamplePass,
+  recordBloomHorizontalPass,
+  recordBloomVerticalPass,
   recordFxaaPass,
   recordSkyboxPass,
 } from '../../../render/src/record/skybox-post-pass';
@@ -645,9 +645,9 @@ describe('recordSsaoCalcPass per-frame intensity write (M8 / w46 — RED)', () =
     // only enabled+intensity, so the parameter authority contributes the
     // documented radius/bias defaults.
     expect(data[48]).toBe(1.0);
-    expect(data[49]).toBe(0.5);
-    expect(data[50]).toBeCloseTo(0.025, 6);
-    expect(data[51]).toBe(64); // Default high-quality sample count.
+    expect(data[49]).toBe(0.25);
+    expect(data[50]).toBe(0);
+    expect(data[51]).toBe(16); // Default GTAO nominal sample budget.
   });
 
   it('(p) calc pass writeBuffer count is 1 per frame (single 256B transaction)', () => {
@@ -729,15 +729,15 @@ function makePostProcessRecordCtx(): {
   const bloomResources = {
     scope: bloomScope,
     generation: bloomScope.generation,
-    bloomDownsamplePipeline: ownBloomHandle('pipeline', 'bloom-downsample-pipeline'),
-    bloomUpsamplePipeline: ownBloomHandle('pipeline', 'bloom-upsample-pipeline'),
+    bloomHorizontalPipeline: ownBloomHandle('pipeline', 'bloom-horizontal-pipeline'),
+    bloomVerticalPipeline: ownBloomHandle('pipeline', 'bloom-vertical-pipeline'),
     bloomCompositePipeline: ownBloomHandle('pipeline', 'bloom-composite-pipeline'),
-    bloomDownsampleBindGroupLayout: ownBloomHandle('binding', 'bloom-downsample-bgl'),
-    bloomUpsampleBindGroupLayout: ownBloomHandle('binding', 'bloom-upsample-bgl'),
+    bloomHorizontalBindGroupLayout: ownBloomHandle('binding', 'bloom-horizontal-bgl'),
+    bloomVerticalBindGroupLayout: ownBloomHandle('binding', 'bloom-vertical-bgl'),
     bloomCompositeBindGroupLayout: ownBloomHandle('binding', 'bloom-composite-bgl'),
     bloomSampler: ownBloomHandle('post-effect', 'bloom-sampler'),
-    bloomDownsampleParamsBuffer: ownBloomHandle('buffer', 'bloom-downsample-params'),
-    bloomUpsampleParamsBuffer: ownBloomHandle('buffer', 'bloom-upsample-params'),
+    bloomHorizontalParamsBuffer: ownBloomHandle('buffer', 'bloom-horizontal-params'),
+    bloomVerticalParamsBuffer: ownBloomHandle('buffer', 'bloom-vertical-params'),
     bloomCompositeParamsBuffer: ownBloomHandle('buffer', 'bloom-composite-params'),
   } as unknown as BloomPersistentBundle;
   const ctx = {
@@ -774,8 +774,8 @@ function makePostProcessRecordCtx(): {
     camera: {
       bloom: 'on',
       bloomThreshold: 1,
-      bloomSoftKnee: 0.5,
-      bloomScatter: 0.7,
+      bloomSmoothWidth: 0.01,
+      bloomRadius: 0,
       bloomIntensity: 0.5,
       antialias: 'fxaa',
     },
@@ -796,15 +796,16 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
     const views = {
       hdrColor: { label: 'hdr-color' },
       ldrColor: { label: 'ldr-color' },
-      bloomDownsample0: { label: 'bloom-downsample-0' },
-      bloomDownsample1: { label: 'bloom-downsample-1' },
-      bloomDownsample2: { label: 'bloom-downsample-2' },
-      bloomDownsample3: { label: 'bloom-downsample-3' },
-      bloomDownsample4: { label: 'bloom-downsample-4' },
-      bloomUpsample3: { label: 'bloom-upsample-3' },
-      bloomUpsample2: { label: 'bloom-upsample-2' },
-      bloomUpsample1: { label: 'bloom-upsample-1' },
-      bloomUpsample0: { label: 'bloom-upsample-0' },
+      bloomHorizontal0: { label: 'bloom-horizontal-0' },
+      bloomHorizontal1: { label: 'bloom-horizontal-1' },
+      bloomHorizontal2: { label: 'bloom-horizontal-2' },
+      bloomHorizontal3: { label: 'bloom-horizontal-3' },
+      bloomHorizontal4: { label: 'bloom-horizontal-4' },
+      bloomVertical4: { label: 'bloom-vertical-4' },
+      bloomVertical3: { label: 'bloom-vertical-3' },
+      bloomVertical2: { label: 'bloom-vertical-2' },
+      bloomVertical1: { label: 'bloom-vertical-1' },
+      bloomVertical0: { label: 'bloom-vertical-0' },
       hdrComposited: { label: 'hdr-composited' },
       cubemap: { label: 'cubemap' },
     };
@@ -814,10 +815,8 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
 
     const recordAll = () => {
       for (let level = 0; level < 5; level += 1) {
-        recordBloomDownsamplePass(ctx, resolve, undefined, level);
-      }
-      for (let level = 3; level >= 0; level -= 1) {
-        recordBloomUpsamplePass(ctx, resolve, undefined, level);
+        recordBloomHorizontalPass(ctx, resolve, undefined, level);
+        recordBloomVerticalPass(ctx, resolve, undefined, level);
       }
       recordBloomCompositePass(ctx, resolve);
       recordFxaaPass(ctx, resolve);
@@ -825,56 +824,58 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
     };
     recordAll();
     expect(ctx.encoder.copyTextureToTexture).not.toHaveBeenCalled();
-    expect(bindGroupCreates).toHaveLength(12);
+    expect(bindGroupCreates).toHaveLength(13);
     expect(bindGroupCreates.map((create) => create.label)).toEqual([
-      'bloom-downsample-0-bg',
-      'bloom-downsample-1-bg',
-      'bloom-downsample-2-bg',
-      'bloom-downsample-3-bg',
-      'bloom-downsample-4-bg',
-      'bloom-upsample-3-bg',
-      'bloom-upsample-2-bg',
-      'bloom-upsample-1-bg',
-      'bloom-upsample-0-bg',
+      'bloom-horizontal-0-bg',
+      'bloom-vertical-0-bg',
+      'bloom-horizontal-1-bg',
+      'bloom-vertical-1-bg',
+      'bloom-horizontal-2-bg',
+      'bloom-vertical-2-bg',
+      'bloom-horizontal-3-bg',
+      'bloom-vertical-3-bg',
+      'bloom-horizontal-4-bg',
+      'bloom-vertical-4-bg',
       'bloom-composite-bg',
       'fxaa-bg',
       'skybox-bg',
     ]);
-    expect(bindGroupCreates[9]?.entries.map((entry) => entry.resource.value)).toContain(
-      views.bloomUpsample0,
+    expect(bindGroupCreates[10]?.entries.map((entry) => entry.resource.value)).toContain(
+      views.bloomVertical0,
     );
-    expect(bindGroupCreates[11]?.entries[0]?.resource.value).toBe(views.cubemap);
-    expect(bindGroupCreates[11]?.entries[2]?.resource.value).toEqual({
+    expect(bindGroupCreates[12]?.entries[0]?.resource.value).toBe(views.cubemap);
+    expect(bindGroupCreates[12]?.entries[2]?.resource.value).toEqual({
       buffer: ctx.pipelineState.viewUniformBuffer,
       size: VIEW_UNIFORM_BYTES,
     });
 
     recordAll();
-    expect(bindGroupCreates).toHaveLength(12);
+    expect(bindGroupCreates).toHaveLength(13);
 
-    views.bloomDownsample0 = { label: 'bloom-downsample-0-resized' };
-    views.bloomDownsample1 = { label: 'bloom-downsample-1-resized' };
-    views.bloomDownsample2 = { label: 'bloom-downsample-2-resized' };
-    views.bloomDownsample3 = { label: 'bloom-downsample-3-resized' };
-    views.bloomDownsample4 = { label: 'bloom-downsample-4-resized' };
-    views.bloomUpsample3 = { label: 'bloom-upsample-3-resized' };
-    views.bloomUpsample2 = { label: 'bloom-upsample-2-resized' };
-    views.bloomUpsample1 = { label: 'bloom-upsample-1-resized' };
-    views.bloomUpsample0 = { label: 'bloom-upsample-0-resized' };
+    views.bloomHorizontal0 = { label: 'bloom-horizontal-0-resized' };
+    views.bloomHorizontal1 = { label: 'bloom-horizontal-1-resized' };
+    views.bloomHorizontal2 = { label: 'bloom-horizontal-2-resized' };
+    views.bloomHorizontal3 = { label: 'bloom-horizontal-3-resized' };
+    views.bloomHorizontal4 = { label: 'bloom-horizontal-4-resized' };
+    views.bloomVertical4 = { label: 'bloom-vertical-4-resized' };
+    views.bloomVertical3 = { label: 'bloom-vertical-3-resized' };
+    views.bloomVertical2 = { label: 'bloom-vertical-2-resized' };
+    views.bloomVertical1 = { label: 'bloom-vertical-1-resized' };
+    views.bloomVertical0 = { label: 'bloom-vertical-0-resized' };
     views.hdrColor = { label: 'hdr-color-resized' };
     views.ldrColor = { label: 'ldr-color-resized' };
     views.cubemap = { label: 'cubemap-reprojected' };
     recordAll();
 
-    expect(bindGroupCreates).toHaveLength(24);
-    expect(bindGroupCreates[12]?.entries[0]?.resource.value).toBe(views.hdrColor);
-    expect(bindGroupCreates[14]?.entries[0]?.resource.value).toBe(views.bloomDownsample1);
-    expect(bindGroupCreates[20]?.entries[0]?.resource.value).toBe(views.bloomDownsample0);
-    expect(bindGroupCreates[21]?.entries.map((entry) => entry.resource.value)).toContain(
-      views.bloomUpsample0,
+    expect(bindGroupCreates).toHaveLength(26);
+    expect(bindGroupCreates[13]?.entries[0]?.resource.value).toBe(views.hdrColor);
+    expect(bindGroupCreates[17]?.entries[0]?.resource.value).toBe(views.bloomVertical1);
+    expect(bindGroupCreates[14]?.entries[0]?.resource.value).toBe(views.bloomHorizontal0);
+    expect(bindGroupCreates[23]?.entries.map((entry) => entry.resource.value)).toContain(
+      views.bloomVertical0,
     );
-    expect(bindGroupCreates[22]?.entries[0]?.resource.value).toBe(views.ldrColor);
-    expect(bindGroupCreates[23]?.entries[0]?.resource.value).toBe(views.cubemap);
+    expect(bindGroupCreates[24]?.entries[0]?.resource.value).toBe(views.ldrColor);
+    expect(bindGroupCreates[25]?.entries[0]?.resource.value).toBe(views.cubemap);
   });
 });
 

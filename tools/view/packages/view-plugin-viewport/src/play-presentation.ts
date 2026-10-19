@@ -4,6 +4,7 @@ import type { WorkspaceState } from '@forgeax/view-workspace-core/contract';
 export type PlayPresentation = { attach: (element: HTMLElement) => () => void };
 declare module '@forgeax/engine-plugin' { interface EngineContextServices { viewPlayPresentation: PlayPresentation; } }
 import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { attachPreviewRenderResizeSync } from '@forgeax/view-workspace-core/render-resize-sync';
 
 /** Browser resources live with the workspace connection, independently of viewport panels. */
 export const viewPlayPresentationPlugin = {
@@ -25,10 +26,27 @@ export const viewPlayPresentationPlugin = {
     let anchor: HTMLElement | undefined;
     let state: WorkspaceState | null = null;
     let disposed = false;
+    let resizeKey = '';
+    let releaseResize: (() => void) | undefined;
+    const stopResize = () => {
+      releaseResize?.();
+      releaseResize = undefined;
+      resizeKey = '';
+    };
     const place = () => {
-      if (!frame) return;
       const rect = anchor?.getBoundingClientRect();
       const visible = state?.targetBinding === 'play' && rect !== undefined && rect.width > 0 && rect.height > 0;
+      const target = state?.play?.target;
+      // Engine queues this request behind its native readiness handshake.
+      // Publish placement before capture/pick can begin on the running target.
+      const nextResizeKey = visible && target && state?.play?.phase !== 'failed'
+        ? `${target.targetId}:${target.generation}` : '';
+      if (nextResizeKey !== resizeKey) {
+        stopResize();
+        resizeKey = nextResizeKey;
+        if (resizeKey) releaseResize = attachPreviewRenderResizeSync({ api: client, surface: anchor, target });
+      }
+      if (!frame) return;
       const dpr = Math.max(1, document.defaultView?.devicePixelRatio ?? 1);
       const width = (state?.play?.target.width ?? 1280) / dpr;
       const height = (state?.play?.target.height ?? 720) / dpr;
@@ -92,11 +110,13 @@ export const viewPlayPresentationPlugin = {
     ctx.provide('viewPlayPresentation', {
       attach(element: HTMLElement) {
         if (anchor) observer?.unobserve(anchor);
+        stopResize();
         anchor = element;
         observer?.observe(element);
         place();
         return () => {
           if (anchor !== element) return;
+          stopResize();
           observer?.unobserve(element);
           anchor = undefined;
           place();
@@ -105,6 +125,7 @@ export const viewPlayPresentationPlugin = {
     });
     ctx.effect(() => async () => {
       disposed = true;
+      stopResize();
       unsubscribe();
       observer?.disconnect();
       win?.removeEventListener('resize', place);

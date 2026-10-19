@@ -69,21 +69,21 @@ import {
  * Keeping the owner as RhiDevice makes the backend boundary explicit: raw
  * GPU handles can only exist inside an RHI implementation or a test readback.
  */
-export type IblRhiOwner = RhiDevice;
+type IblRhiOwner = RhiDevice;
 
 export type IblShaderModuleFactory = (
   device: IblRhiOwner,
   desc: { code: string; label?: string },
 ) => Promise<Result<ShaderModule, RhiError>>;
 
-export interface IblPipelineSet {
+interface IblPipelineSet {
   readonly equirectToCubePipeline: RenderPipeline;
   readonly irradiancePipeline: RenderPipeline;
   readonly prefilterPipeline: RenderPipeline;
   readonly brdfLutPipeline: RenderPipeline;
 }
 
-export interface IblPipelineError {
+interface IblPipelineError {
   readonly code: 'ibl-pipeline-create-failed' | 'ibl-shader-module-missing';
   readonly expected: string;
   readonly hint: string;
@@ -94,8 +94,8 @@ export interface IblPipelineError {
  * Per-DeviceScope-generation IBL pipeline cache instance.
  *
  * M3.5 (round-2 t52): the 4 pipeline slots are mutable so createIblPipelines
- * can fill them after construction. The output textures and views are
- * promoted here only after a completed precompute submission.
+ * can fill them after construction. Completed output textures and views are
+ * returned to source residency; this cache never selects a scene image.
  */
 export interface IblPipelineCache {
   /** Reusable generation-scoped kernel state; per-probe outputs stay elsewhere. */
@@ -119,23 +119,6 @@ export interface IblPipelineCache {
   cubeGroup1Bgl?: BindGroupLayout;
   /** group(0) BGL for prefilter (face + prefilter uniforms). */
   prefilterGroup0Bgl?: BindGroupLayout;
-
-  /** Irradiance cubemap texture (32x32; outputFormat, cube). */
-  irradianceTexture?: Texture;
-  /** Irradiance cubemap view (dimension:cube). */
-  irradianceView?: TextureView;
-  /** Per-face 2D views for irradiance (render-attachment use). */
-  irradianceFaceViews?: ReadonlyArray<TextureView>;
-  /** Specular prefilter cubemap (128x128, 5 mip levels). */
-  prefilterTexture?: Texture;
-  /** Prefilter cubemap view (dimension:cube, all mips). */
-  prefilterView?: TextureView;
-  /** Per-face 2D views per mip for prefilter (5 mips x 6 faces). */
-  prefilterFaceViewsByMip?: ReadonlyArray<ReadonlyArray<TextureView>>;
-  /** BRDF LUT (256x256; outputFormat). */
-  brdfLutTexture?: Texture;
-  /** BRDF LUT view. */
-  brdfLutView?: TextureView;
 
   /** Counter: times irradiance pass has executed. AC-04: == 1 after first cook. */
   irradianceBakeCount: number;
@@ -185,7 +168,7 @@ export function hasIblCache(scope: DeviceScope): boolean {
 // build-time so the runtime cache never reaches into engine-naga
 // (AGENTS.md grep gate forbids).
 
-export interface IblComposedShaders {
+interface IblComposedShaders {
   /** ibl-equirect-to-cube composed (cubemap_vs + equirectToCube_fs). */
   readonly equirectToCube: string;
   /** ibl-irradiance composed (cubemap_vs + irradianceConvolve_fs). */
@@ -262,8 +245,8 @@ function buildCaptureViewProjs(): Float32Array[] {
   return targets.map((_t, i) => {
     const t = _t;
     const u = ups[i] ?? [0, -1, 0];
-    const view = lookAtMatrix([0, 0, 0], t, u);
-    return mulMat4(proj, view);
+    const view = mat4.lookAt(mat4.create(), [0, 0, 0], t, u);
+    return mat4.multiply(mat4.create(), proj, view);
   });
 }
 
@@ -273,88 +256,13 @@ function cubemapCaptureProjection(fovy: number, near: number, far: number): Floa
   return projection;
 }
 
-function lookAtMatrix(
-  eye: readonly number[],
-  target: readonly number[],
-  up: readonly number[],
-): Float32Array {
-  const [ex, ey0, ez] = [eye[0] ?? 0, eye[1] ?? 0, eye[2] ?? 0];
-  const [tx, ty, tz] = [target[0] ?? 0, target[1] ?? 0, target[2] ?? 0];
-  const [upx, upy, upz] = [up[0] ?? 0, up[1] ?? 0, up[2] ?? 0];
-  let fx = ex - tx,
-    fy = ey0 - ty,
-    fz = ez - tz;
-  const fLen = Math.sqrt(fx * fx + fy * fy + fz * fz);
-  fx /= fLen;
-  fy /= fLen;
-  fz /= fLen;
-
-  let rx = upy * fz - upz * fy;
-  let ry = upz * fx - upx * fz;
-  let rz = upx * fy - upy * fx;
-  const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
-  rx /= rLen;
-  ry /= rLen;
-  rz /= rLen;
-
-  const ux = fy * rz - fz * ry;
-  const uy = fz * rx - fx * rz;
-  const uz = fx * ry - fy * rx;
-
-  return new Float32Array([
-    rx,
-    ux,
-    fx,
-    0,
-    ry,
-    uy,
-    fy,
-    0,
-    rz,
-    uz,
-    fz,
-    0,
-    -(rx * ex + ry * ey0 + rz * ez),
-    -(ux * ex + uy * ey0 + uz * ez),
-    -(fx * ex + fy * ey0 + fz * ez),
-    1,
-  ]);
-}
-
-// Column-major matrix product `r = a * b` where each Float32Array stores
-// 4 contiguous column vectors of 4 floats (WGSL `mat4x4<f32>` uniform
-// layout). For column-major storage `flat[c*4 + row] = M[col=c, row]`, so:
-//   (a * b)[col=c, row=r] = sum_k a[col=k, row=r] * b[col=c, row=k]
-//   flat_out[c*4 + r]     = sum_k a[k*4 + r] * b[c*4 + k]
-//
-// The prior row-major iteration silently transposed the result, producing
-// `b * a` in WGSL's view -- IBL equirect-to-cube vertices then projected
-// to clip with w=0 / w=-1, every face fell outside the [-1,1] frustum, no
-// fragments drew, and every downstream IBL texture (irradiance / prefilter)
-// inherited the clearValue=(0,0,0,1). Demo 3x3 sphere matrix rendered
-// pure black because `ambient = kD * 0 + specular * 0 = 0` and there are
-// no direct lights in the IBL demo scene.
-function mulMat4(a: Float32Array, b: Float32Array): Float32Array {
-  const r = new Float32Array(16);
-  for (let c = 0; c < 4; c++) {
-    for (let row = 0; row < 4; row++) {
-      let sum = 0;
-      for (let k = 0; k < 4; k++) {
-        sum += (a[k * 4 + row] ?? 0) * (b[c * 4 + k] ?? 0);
-      }
-      r[c * 4 + row] = sum;
-    }
-  }
-  return r;
-}
-
 // ─── M3.5 t52: createIblPipelines (4 independent GPURenderPipelines) ─────────
 
 // IBL output texture sizes (plan D-10 SSOT, mirrored in ibl-brdf-lut.wgsl).
-export const IRRADIANCE_SIZE = 32;
+const IRRADIANCE_SIZE = 32;
 export const PREFILTER_SIZE = 128;
 export const PREFILTER_MIP_LEVELS = 5;
-export const BRDF_LUT_SIZE = 256;
+const BRDF_LUT_SIZE = 256;
 
 /** Face (mat4x4f) and prefilter (vec4f) uniforms each own one dynamic-offset-aligned slot. */
 export const IBL_UNIFORM_SLOT_STRIDE = 256;
@@ -365,7 +273,7 @@ export function prefilterSubpassIndex(mip: number, face: number): number {
   return mip * 6 + face;
 }
 
-export function iblFaceUniformEntry(buffer: Buffer, face: number): BindGroupEntry {
+function iblFaceUniformEntry(buffer: Buffer, face: number): BindGroupEntry {
   return {
     binding: 0,
     resource: {
@@ -644,7 +552,7 @@ export interface RunIblPrecomputeOptions {
   readonly cubeVertexBuffer: Buffer;
 }
 
-interface IblPrecomputeCandidate {
+export interface IblPrecomputeOutput {
   irradianceTexture: Texture;
   irradianceView: TextureView;
   irradianceFaceViews: ReadonlyArray<TextureView>;
@@ -655,7 +563,7 @@ interface IblPrecomputeCandidate {
   brdfLutView: TextureView;
 }
 
-export interface IblPrecomputeError {
+interface IblPrecomputeError {
   readonly code: 'ibl-precompute-not-dispatched';
   readonly expected: string;
   readonly hint: string;
@@ -708,13 +616,13 @@ function yieldToRenderOpportunity(): Promise<void> {
  */
 export async function runIblPrecompute(
   opts: RunIblPrecomputeOptions,
-): Promise<Result<{ submitted: boolean }, IblPrecomputeError>> {
+): Promise<Result<IblPrecomputeOutput, IblPrecomputeError>> {
   const { device, scope } = opts;
   if (!scope.isAlive()) return err(badAlloc('device-scope-generation'));
   const cache = getOrCreateIblCache(scope);
   const outputFormat = cache.outputFormat ?? 'rgba16float';
   const generation = scope.generation;
-  const candidate: Partial<IblPrecomputeCandidate> = {};
+  const candidate: Partial<IblPrecomputeOutput> = {};
   const fail = (stage: string, cause?: RhiError): Promise<Result<never, IblPrecomputeError>> => {
     // Candidate textures are adopted by the DeviceScope immediately after
     // allocation, so every failure is retired with the owning generation.
@@ -1105,7 +1013,7 @@ export async function runIblPrecompute(
   const brdfStage = await submitStage('brdf-lut', false);
   if (!brdfStage.ok) return err(brdfStage.error);
 
-  const promoted: IblPrecomputeCandidate = {
+  const promoted: IblPrecomputeOutput = {
     irradianceTexture: candidateIrradianceTexture,
     irradianceView: candidateIrradianceView,
     irradianceFaceViews: irrFaceViews,
@@ -1115,23 +1023,12 @@ export async function runIblPrecompute(
     brdfLutTexture: candidateBrdfLutTexture,
     brdfLutView,
   };
-  // Previous outputs remain DeviceScope-owned until scope retirement. This
-  // avoids destroying a texture still referenced by an already-recorded pass.
-  cache.irradianceTexture = promoted.irradianceTexture;
-  cache.irradianceView = promoted.irradianceView;
-  cache.irradianceFaceViews = promoted.irradianceFaceViews;
-  cache.prefilterTexture = promoted.prefilterTexture;
-  cache.prefilterView = promoted.prefilterView;
-  cache.prefilterFaceViewsByMip = promoted.prefilterFaceViewsByMip;
-  cache.brdfLutTexture = promoted.brdfLutTexture;
-  cache.brdfLutView = promoted.brdfLutView;
-
   // POST-SUBMIT counter increments (AC-20).
   cache.irradianceBakeCount += 1;
   cache.prefilterBakeCount += 1;
   cache.brdfLutBakeCount += 1;
 
-  return ok({ submitted: true });
+  return ok(promoted);
 }
 
 function adoptIblTexture(scope: DeviceScope, device: IblRhiOwner, texture: Texture): Texture {

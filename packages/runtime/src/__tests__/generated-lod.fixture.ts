@@ -1,5 +1,6 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { halfFloat } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   Camera,
@@ -12,7 +13,6 @@ import {
 import {
   buildFrameModel,
   decodeTape,
-  halfToFloat,
   inspectBufferRecords,
   openReplay,
   type RecorderAttachment,
@@ -32,7 +32,7 @@ const hdr = (bytes: Uint8Array, rowBytes: number) => {
   for (let y = 0; y < 128; y++)
     for (let x = 0; x < 128; x++)
       for (let c = 0; c < 4; c++)
-        values[(y * 128 + x) * 4 + c] = halfToFloat(
+        values[(y * 128 + x) * 4 + c] = halfFloat.f16ToF32(
           view.getUint16(y * rowBytes + x * 8 + c * 2, true),
         );
   return values;

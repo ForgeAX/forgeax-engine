@@ -18,7 +18,7 @@ export const VOLUME_PACKING_Z = 4;
 /** Renderer-owned parameter allocation shared by staging and inspection. */
 export const VOLUMETRIC_FOG_PARAMS_BYTES = (1 + MAX_VOLUMETRIC_FOG_OWNERS) * 9 * 16;
 
-export interface VolumetricFogExtent {
+interface VolumetricFogExtent {
   readonly width: number;
   readonly height: number;
   readonly depth: number;
@@ -80,7 +80,7 @@ export interface VolumetricFogResourceFacts {
 }
 
 /** Project graph descriptors into the volume inspection without a second ledger. */
-export interface VolumetricFogResourceInspectionOptions {
+interface VolumetricFogResourceInspectionOptions {
   /** Number of non-null parameter buffers retained by the frame owner. */
   readonly parameterBufferCount?: number;
 }

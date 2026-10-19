@@ -15,7 +15,6 @@ import {
   type WorldAccelerationGeometry,
   type WorldAccelerationInstance,
 } from './world-acceleration';
-import type { WorldTraversal } from './world-traversal';
 
 /** BLAS builds admitted per frame; later geometries join the TLAS on following frames. */
 export const WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME = 4;
@@ -29,7 +28,7 @@ export type WorldTraversalFallback =
   | RhiRayQueryUnsupportedReason
   | 'scene-exceeds-ray-query-limits';
 
-export type WorldTraversalSelection =
+type WorldTraversalSelection =
   | { readonly traversal: 'ray-query' }
   | { readonly traversal: 'global-sdf'; readonly fallback: WorldTraversalFallback };
 
@@ -85,7 +84,7 @@ export interface WorldAccelerationInspection {
 }
 
 /** Extra capacity of an editable field's acceleration: TLAS rows and `faceNormals` rows. */
-export interface WorldAccelerationHeadroom {
+interface WorldAccelerationHeadroom {
   /** TLAS instance capacity; at least the projected instance count. */
   readonly instances: number;
   /** Spare `faceNormals` rows for meshes an add introduces. */
@@ -278,11 +277,4 @@ export function prepareWorldAcceleration(
     }),
     dispose: () => resources.dispose(),
   });
-}
-
-/** The traversal a prepared field composes into its world-trace kernels. */
-export function preparedTraversal(
-  acceleration: PreparedWorldAcceleration | undefined,
-): WorldTraversal {
-  return acceleration === undefined ? 'global-sdf' : acceleration.traversal;
 }

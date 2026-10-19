@@ -7,16 +7,29 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  CHUNK_DIGEST_HEADER,
+  RAW_TAPE_ROUTE,
+  type RawTapeArtifactRef,
+  RHITAPE_MIME,
+  type TapeChunk,
+} from '@forgeax/engine-rhi-debug';
 import type { Plugin, ViteDevServer } from 'vite';
+
+export {
+  CHUNK_DIGEST_HEADER,
+  RAW_TAPE_ROUTE,
+  type RawTapeArtifactRef,
+  RHITAPE_MIME,
+  type TapeChunk,
+} from '@forgeax/engine-rhi-debug';
+
 import { verifyTapeFile } from './tape-file';
 
-export const RAW_TAPE_ROUTE = '/__forgeax-debug/tape' as const;
 /** GET: held chunks for `runId`+`size`; PUT: one chunk at `offset` with its digest header. */
-export const TAPE_CHUNKS_ROUTE = '/__forgeax-debug/tape/chunks' as const;
+export const TAPE_CHUNKS_ROUTE = `${RAW_TAPE_ROUTE}/chunks` as const;
 /** POST `{ size, chunks }`: verify coverage, validate the container, publish atomically. */
-export const TAPE_COMMIT_ROUTE = '/__forgeax-debug/tape/commit' as const;
-export const RHITAPE_MIME = 'application/x-forgeax-rhitape' as const;
-export const CHUNK_DIGEST_HEADER = 'x-forgeax-chunk-digest' as const;
+export const TAPE_COMMIT_ROUTE = `${RAW_TAPE_ROUTE}/commit` as const;
 /** Largest accepted chunk body; bounds dev-server memory per request. */
 export const MAX_CHUNK_BYTES = 64 * 1024 * 1024;
 
@@ -48,19 +61,6 @@ export interface RawTapeUpload {
   readonly runId: string;
   readonly contentType: string;
   readonly bytes: Uint8Array;
-}
-
-export interface RawTapeArtifactRef {
-  readonly kind: 'rhi-tape';
-  readonly digest: string;
-  readonly path: string;
-  readonly bytes: number;
-}
-
-export interface TapeChunk {
-  readonly offset: number;
-  readonly length: number;
-  readonly digest: string;
 }
 
 export interface TapeChunkUpload {

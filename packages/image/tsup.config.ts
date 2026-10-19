@@ -10,6 +10,7 @@ export default defineConfig({
     'src/decode-image-from-file.ts',
     'src/image-importer.ts',
     'src/ktx2-encode.ts',
+    'src/png-encoder.ts',
   ],
   // upng-js / jpeg-js are Node-only lazy imports inside image-decoder-node.ts.
   // Externalizing keeps the browser bundle tree-shaking the Node decoder when

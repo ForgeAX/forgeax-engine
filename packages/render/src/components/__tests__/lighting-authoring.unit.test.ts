@@ -29,12 +29,15 @@ describe('lighting authoring contracts', () => {
   });
 
   it('keeps defaults and rejects invalid Rect/Probe facts before rendering', () => {
-    expect(RectAreaLight.fields.width.default).toBe(1);
-    expect(RectAreaLight.fields.height.default).toBe(1);
+    expect(RectAreaLight.fields.width.default).toBe(10);
+    expect(RectAreaLight.fields.height.default).toBe(10);
     expect(LightProbe.fields.irradiance.type).toBe('array<f32, 27>');
     expect(LightProbe.fields.radius.default).toBe(1e-4);
 
     expect(validateRectAreaLightData({}).ok).toBe(true);
+    expect(validateRectAreaLightData({ range: Infinity }).ok).toBe(true);
+    expect(validateRectAreaLightData({ width: Infinity }).ok).toBe(false);
+    expect(validateRectAreaLightData({ range: NaN }).ok).toBe(false);
     expect(validateRectAreaLightData({ width: 0 }).ok).toBe(false);
     expect(validateRectAreaLightData({ intensity: Number.NaN }).ok).toBe(false);
     expect(validateLightProbeData({ irradiance: new Float32Array(26), radius: 1 }).ok).toBe(false);

@@ -3,6 +3,7 @@ import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   createMeshSsboGrowController,
+  meshSsboBuffer,
   meshSsboBufferBinding,
   writeMeshSsboBuffer,
 } from '../assembly/mesh-ssbo-grow';
@@ -69,6 +70,23 @@ function fixture(paged: boolean, uniformLimit?: number) {
 }
 
 describe('bounded draw buffer pages', () => {
+  it('keeps physical resource selection on the current allocation and rejects absent pages', () => {
+    const first = {} as Buffer,
+      second = {} as Buffer;
+    const storage = { buffer: first as Buffer | null };
+    expect(meshSsboBuffer(storage, 256)).toBe(first);
+    storage.buffer = second;
+    expect(meshSsboBuffer(storage, 256)).toBe(second);
+    storage.buffer = null;
+    expect(() => meshSsboBuffer(storage, 0)).toThrow('not allocated');
+    const paged = {
+      buffer: null,
+      pages: { byteStride: 256, byteSize: 512, buffers: [first, second] },
+    };
+    expect(meshSsboBuffer(paged, 255)).toBe(first);
+    expect(meshSsboBuffer(paged, 256)).toBe(second);
+    expect(() => meshSsboBuffer(paged, 512)).toThrow('exceeds allocated pages');
+  });
   it.each([
     [undefined, 16384],
     [0, 16384],
@@ -90,6 +108,7 @@ describe('bounded draw buffer pages', () => {
       writeMeshSsboBuffer(f.queue, stream, 0, payload);
       for (const slot of [0, 24, 25, 49]) {
         const binding = meshSsboBufferBinding(stream, slot * stride);
+        expect(meshSsboBuffer(stream, slot * stride)).toBe(binding.buffer);
         expect(f.bytes.get(binding.buffer)?.[binding.byteOffset]).toBe(17);
       }
     }

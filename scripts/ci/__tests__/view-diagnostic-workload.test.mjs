@@ -214,8 +214,10 @@ for (const lightweight of [false, true])
               ? Buffer.from(
                   bytes
                     .toString()
-                    .replace('mapSize: 1024,', 'mapSize: 128,')
-                    .replace('cascadeCount: 3,', `cascadeCount: ${quality.cascadeCount},`),
+                    .replace(
+                      'DirectionalLight: {',
+                      `DirectionalLight: {cascadeCount: ${quality.cascadeCount},mapSize: 128,`,
+                    ),
                 )
               : bytes;
           assert.deepEqual(copied, expected, path);

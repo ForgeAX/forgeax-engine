@@ -1,13 +1,15 @@
 import { evaluateVfxOracle, type VfxOracleInput } from '../evidence/oracle.js';
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
+import { isRecord } from '../request-schema.js';
 import {
   loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
+  type ResourceSubject,
   subjectFailure,
 } from './subject.js';
 
-export interface VfxSubjectInspection {
+interface VfxSubjectInspection {
   readonly subjectDigest: string;
   readonly programFingerprint: string;
   readonly emitterDigest: string;
@@ -22,10 +24,6 @@ export interface VfxSubjectInspection {
 type InspectionResult =
   | { readonly ok: true; readonly value: VfxSubjectInspection }
   | ReturnType<typeof subjectFailure>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function requiredString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -112,12 +110,7 @@ function jsonDigest(value: unknown): string | undefined {
   return typeof encoded === 'string' && encoded.length > 0 ? encoded : undefined;
 }
 
-export function inspectVfxSubject(input: {
-  readonly guid: string;
-  readonly asset: unknown;
-  readonly digest?: string;
-  readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
-}): InspectionResult {
+export function inspectVfxSubject(input: ResourceSubject): InspectionResult {
   if (!isRecord(input.asset) || input.asset.kind !== 'particle-effect') {
     return subjectFailure(
       'resource-preview-kind-mismatch',

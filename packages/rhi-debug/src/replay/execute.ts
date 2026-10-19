@@ -1,11 +1,9 @@
 import type {
   BindGroupDescriptor,
-  Blas,
   BlasBuildEntry,
   Buffer,
   CommandBuffer,
   PipelineLayout,
-  QuerySet,
   RenderPassColorAttachment,
   RenderPassDepthStencilAttachment,
   RhiBindingResource,
@@ -14,8 +12,6 @@ import type {
   RhiError,
   RhiQueue,
   RhiRenderPipelineOps,
-  Texture,
-  Tlas,
   TlasBuildEntry,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
@@ -32,13 +28,16 @@ import {
   finish,
   missingResource,
   passCall,
-  pipelineError,
-  requireReplayResource,
   requireResource,
   seedInitialData,
   unsupportedEvent,
 } from './execute-support';
-import { destroyReplayResource, type ReplayResource, type ResourceTable } from './resources';
+import {
+  destroyReplayResource,
+  type ReplayResource,
+  type ReplayResourceValues,
+  type ResourceTable,
+} from './resources';
 import { isDepthTextureFormat } from './texture-format';
 
 export { eventFailure } from './execute-support';
@@ -64,18 +63,20 @@ export async function executeEvent(
       case 'frameMark':
         return ok(undefined);
       case 'createBuffer':
-        return createResource(context, eventIndex, event, context.device.createBuffer(event.desc), {
-          kind: 'buffer',
-        });
+        return createResource(
+          context,
+          eventIndex,
+          event,
+          context.device.createBuffer(event.desc),
+          'buffer',
+        );
       case 'createTexture':
         return createResource(
           context,
           eventIndex,
           event,
           context.device.createTexture(replayTextureDescriptor(event.desc) as never),
-          {
-            kind: 'texture',
-          },
+          'texture',
         );
       case 'createQuerySet':
         return createResource(
@@ -83,18 +84,24 @@ export async function executeEvent(
           eventIndex,
           event,
           context.device.createQuerySet(event.desc),
-          { kind: 'query-set' },
+          'query-set',
         );
       case 'createBlas':
-        return createResource(context, eventIndex, event, context.device.createBlas(event.desc), {
-          kind: 'acceleration-structure',
-          role: 'blas',
-        });
+        return createResource(
+          context,
+          eventIndex,
+          event,
+          context.device.createBlas(event.desc),
+          'blas',
+        );
       case 'createTlas':
-        return createResource(context, eventIndex, event, context.device.createTlas(event.desc), {
-          kind: 'acceleration-structure',
-          role: 'tlas',
-        });
+        return createResource(
+          context,
+          eventIndex,
+          event,
+          context.device.createTlas(event.desc),
+          'tlas',
+        );
       case 'destroyBlas':
       case 'destroyTlas':
         return destroyAccelerationStructure(context, event, eventIndex);
@@ -107,7 +114,7 @@ export async function executeEvent(
       case 'destroyQuerySet':
         return destroyResource(context, eventIndex, event, 'query-set');
       case 'createTextureView': {
-        const texture = requireResource<Texture>(
+        const texture = requireResource(
           context,
           event.sourceHandleId,
           'texture',
@@ -120,7 +127,7 @@ export async function executeEvent(
           eventIndex,
           event,
           context.device.createTextureView(texture.value, event.desc),
-          { kind: 'texture-view' },
+          'texture-view',
           event.resultHandleId,
         );
       }
@@ -130,9 +137,7 @@ export async function executeEvent(
           eventIndex,
           event,
           context.device.createSampler(event.desc),
-          {
-            kind: 'sampler',
-          },
+          'sampler',
         );
       case 'createBindGroupLayout':
         return createResource(
@@ -140,28 +145,22 @@ export async function executeEvent(
           eventIndex,
           event,
           context.device.createBindGroupLayout(event.desc as never),
-          { kind: 'binding', role: 'bind-group-layout' },
+          'bind-group-layout',
         );
       case 'getBindGroupLayout': {
-        const pipeline = requireReplayResource(
-          context,
-          event.pipelineHandleId,
-          'pipeline',
-          eventIndex,
-          event.kind,
-        );
-        if (!pipeline.ok) return pipeline;
+        const pipeline = context.table.get(event.pipelineHandleId)?.resource;
+        if (pipeline?.kind !== 'render-pipeline' && pipeline?.kind !== 'compute-pipeline')
+          return missingResource(eventIndex, event, event.pipelineHandleId, 'pipeline');
         return createResource(
           context,
           eventIndex,
           event,
           ok(
-            (
-              pipeline.value.value as import('@forgeax/engine-rhi').RenderPipeline &
-                RhiRenderPipelineOps
-            ).getBindGroupLayout(event.index),
+            (pipeline.value as typeof pipeline.value & RhiRenderPipelineOps).getBindGroupLayout(
+              event.index,
+            ),
           ),
-          { kind: 'binding', role: 'bind-group-layout' },
+          'bind-group-layout',
         );
       }
       case 'createBindGroup':
@@ -180,7 +179,7 @@ export async function executeEvent(
           eventIndex,
           event,
           context.device.createCommandEncoder(event.desc),
-          { kind: 'encoder', role: 'command' },
+          'command',
           event.cmdHandleId,
         );
       case 'writeBuffer':
@@ -235,21 +234,20 @@ export async function executeEvent(
         return finish(context, event, eventIndex);
       case 'setPipeline':
         return passCall(context, event, eventIndex, 'render-pass', (pass) => {
-          const pipeline = requireReplayResource(
+          const pipeline = requireResource(
             context,
             event.pipelineHandleId,
-            'pipeline',
+            'render-pipeline',
             eventIndex,
             event.kind,
           );
-          if (!pipeline.ok || pipeline.value.role !== 'render')
-            return pipelineError(pipeline, event, eventIndex);
-          pass.setPipeline(pipeline.value.value as never);
+          if (!pipeline.ok) return pipeline;
+          pass.setPipeline(pipeline.value);
           return ok(undefined);
         });
       case 'setVertexBuffer':
         return passCall(context, event, eventIndex, 'render-pass', (pass) => {
-          const buffer = requireResource<Buffer>(
+          const buffer = requireResource(
             context,
             event.bufferHandleId,
             'buffer',
@@ -262,7 +260,7 @@ export async function executeEvent(
         });
       case 'setIndexBuffer':
         return passCall(context, event, eventIndex, 'render-pass', (pass) => {
-          const buffer = requireResource<Buffer>(
+          const buffer = requireResource(
             context,
             event.bufferHandleId,
             'buffer',
@@ -275,16 +273,15 @@ export async function executeEvent(
         });
       case 'setBindGroup':
         return passCall(context, event, eventIndex, 'pass', (pass) => {
-          const bindGroup = requireReplayResource(
+          const bindGroup = requireResource(
             context,
             event.bindGroupHandleId,
-            'binding',
+            'bind-group',
             eventIndex,
             event.kind,
           );
-          if (!bindGroup.ok || bindGroup.value.role !== 'bind-group')
-            return pipelineError(bindGroup, event, eventIndex);
-          pass.setBindGroup(event.index, bindGroup.value.value as never, event.dynamicOffsets);
+          if (!bindGroup.ok) return bindGroup;
+          pass.setBindGroup(event.index, bindGroup.value, event.dynamicOffsets);
           return ok(undefined);
         });
       case 'draw':
@@ -334,7 +331,7 @@ export async function executeEvent(
         });
       case 'drawIndirect':
         return passCall(context, event, eventIndex, 'render-pass', (pass) => {
-          const buffer = requireResource<Buffer>(
+          const buffer = requireResource(
             context,
             event.indirectBufferHandleId,
             'buffer',
@@ -347,7 +344,7 @@ export async function executeEvent(
         });
       case 'drawIndexedIndirect':
         return passCall(context, event, eventIndex, 'render-pass', (pass) => {
-          const buffer = requireResource<Buffer>(
+          const buffer = requireResource(
             context,
             event.indirectBufferHandleId,
             'buffer',
@@ -359,32 +356,31 @@ export async function executeEvent(
           return ok(undefined);
         });
       case 'passPushDebugGroup':
-        return passCall(context, event, eventIndex, 'pass', (pass) => {
+        return passCall(context, event, eventIndex, 'render-pass', (pass) => {
           pass.pushDebugGroup(event.groupLabel);
           return ok(undefined);
         });
       case 'passPopDebugGroup':
-        return passCall(context, event, eventIndex, 'pass', (pass) => {
+        return passCall(context, event, eventIndex, 'render-pass', (pass) => {
           pass.popDebugGroup();
           return ok(undefined);
         });
       case 'passInsertDebugMarker':
-        return passCall(context, event, eventIndex, 'pass', (pass) => {
+        return passCall(context, event, eventIndex, 'render-pass', (pass) => {
           pass.insertDebugMarker(event.markerLabel);
           return ok(undefined);
         });
       case 'setComputePipeline':
         return passCall(context, event, eventIndex, 'compute-pass', (pass) => {
-          const pipeline = requireReplayResource(
+          const pipeline = requireResource(
             context,
             event.pipelineHandleId,
-            'pipeline',
+            'compute-pipeline',
             eventIndex,
             event.kind,
           );
-          if (!pipeline.ok || pipeline.value.role !== 'compute')
-            return pipelineError(pipeline, event, eventIndex);
-          pass.setPipeline(pipeline.value.value as never);
+          if (!pipeline.ok) return pipeline;
+          pass.setPipeline(pipeline.value);
           return ok(undefined);
         });
       case 'dispatchWorkgroups':
@@ -394,7 +390,7 @@ export async function executeEvent(
         });
       case 'dispatchWorkgroupsIndirect':
         return passCall(context, event, eventIndex, 'compute-pass', (pass) => {
-          const buffer = requireResource<Buffer>(
+          const buffer = requireResource(
             context,
             event.indirectBufferHandleId,
             'buffer',
@@ -429,19 +425,23 @@ function replayTextureDescriptor(
   };
 }
 
-function createResource<T extends ReplayResource>(
+function createResource<K extends ReplayResource['kind']>(
   context: ReplayExecutionContext,
   eventIndex: number,
   event: RhiCallEvent,
-  result: Result<T['value'], RhiError>,
-  shape: Pick<ReplayResource, 'kind'> & { readonly role?: string },
+  result: Result<NoInfer<ReplayResourceValues[K]>, RhiError>,
+  kind: K,
   resourceId?: string,
 ): Result<void, RhiDebugError> {
   if (!result.ok) return eventFailure(eventIndex, event, 'create', result.error);
   const id = resourceId ?? ('handleId' in event ? event.handleId : undefined);
   if (id === undefined)
     return eventFailure(eventIndex, event, 'lookup', 'created resource has no handle id');
-  const stored = context.table.set(id, { ...shape, value: result.value } as T, eventRecord(event));
+  const stored = context.table.set(
+    id,
+    { kind, value: result.value } as ReplayResource,
+    eventRecord(event),
+  );
   return stored.ok ? ok(undefined) : stored;
 }
 
@@ -466,22 +466,15 @@ function resolveQuerySet(
   event: Extract<RhiCallEvent, { kind: 'resolveQuerySet' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
-  const querySet = requireResource<QuerySet>(
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
+  const querySet = requireResource(
     context,
     event.querySetHandleId,
     'query-set',
     eventIndex,
     event.kind,
   );
-  const destination = requireResource<Buffer>(
+  const destination = requireResource(
     context,
     event.destinationHandleId,
     'buffer',
@@ -506,20 +499,14 @@ function destroyAccelerationStructure(
   event: Extract<RhiCallEvent, { kind: 'destroyBlas' | 'destroyTlas' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const role = event.kind === 'destroyBlas' ? 'blas' : 'tlas';
-  const resource = requireReplayResource(
-    context,
-    event.handleId,
-    'acceleration-structure',
-    eventIndex,
-    event.kind,
-    role,
-  );
-  if (!resource.ok) return resource;
+  const kind = event.kind === 'destroyBlas' ? 'blas' : 'tlas';
+  const resource = context.table.get(event.handleId)?.resource;
+  if (resource === undefined || resource.kind !== kind)
+    return missingResource(eventIndex, event, event.handleId, kind);
   const result =
-    resource.value.kind === 'acceleration-structure' && resource.value.role === 'blas'
-      ? context.device.destroyBlas(resource.value.value)
-      : context.device.destroyTlas(resource.value.value as Tlas);
+    resource.kind === 'blas'
+      ? context.device.destroyBlas(resource.value)
+      : context.device.destroyTlas(resource.value);
   if (!result.ok) return eventFailure(eventIndex, event, 'create', result.error);
   context.table.delete(event.handleId);
   return ok(undefined);
@@ -530,14 +517,7 @@ function buildAccelerationStructures(
   event: Extract<RhiCallEvent, { kind: 'buildAccelerationStructures' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
   if (!encoder.ok) return encoder;
   return encodeAccelerationStructureBuild(
     context,
@@ -561,19 +541,19 @@ export function encodeAccelerationStructureBuild(
   event: RhiCallEvent,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const lookup = <T>(id: string, kind: string, role?: string): Result<T, RhiDebugError> =>
-    requireResource<T>(context, id, kind, eventIndex, event.kind, role);
+  const lookup = <K extends ReplayResource['kind']>(id: string, kind: K) =>
+    requireResource(context, id, kind, eventIndex, event.kind);
   const blas: BlasBuildEntry[] = [];
   for (const build of blasBuilds) {
-    const target = lookup<Blas>(build.blasHandleId, 'acceleration-structure', 'blas');
+    const target = lookup(build.blasHandleId, 'blas');
     if (!target.ok) return target;
     const geometries: BlasBuildEntry['geometries'][number][] = [];
     for (const geometry of build.geometries) {
-      const vertexBuffer = lookup<Buffer>(geometry.vertexBufferHandleId, 'buffer');
+      const vertexBuffer = lookup(geometry.vertexBufferHandleId, 'buffer');
       if (!vertexBuffer.ok) return vertexBuffer;
       let index: { buffer: Buffer; firstIndex?: number } | undefined;
       if (geometry.index !== undefined && geometry.index !== null) {
-        const indexBuffer = lookup<Buffer>(geometry.index.bufferHandleId, 'buffer');
+        const indexBuffer = lookup(geometry.index.bufferHandleId, 'buffer');
         if (!indexBuffer.ok) return indexBuffer;
         index = {
           buffer: indexBuffer.value,
@@ -595,11 +575,11 @@ export function encodeAccelerationStructureBuild(
   }
   const tlas: TlasBuildEntry[] = [];
   for (const build of tlasBuilds) {
-    const target = lookup<Tlas>(build.tlasHandleId, 'acceleration-structure', 'tlas');
+    const target = lookup(build.tlasHandleId, 'tlas');
     if (!target.ok) return target;
     const instances: TlasBuildEntry['instances'][number][] = [];
     for (const instance of build.instances) {
-      const instanceBlas = lookup<Blas>(instance.blasHandleId, 'acceleration-structure', 'blas');
+      const instanceBlas = lookup(instance.blasHandleId, 'blas');
       if (!instanceBlas.ok) return instanceBlas;
       instances.push({
         blas: instanceBlas.value,
@@ -620,7 +600,7 @@ async function createShaderModule(
   eventIndex: number,
 ): Promise<Result<void, RhiDebugError>> {
   const result = await context.createShaderModule(context.device, { code: event.wgslCode });
-  return createResource(context, eventIndex, event, result, { kind: 'shader-module' });
+  return createResource(context, eventIndex, event, result, 'shader-module');
 }
 
 function createBindGroup(
@@ -628,15 +608,14 @@ function createBindGroup(
   event: Extract<RhiCallEvent, { kind: 'createBindGroup' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const layout = requireReplayResource(
+  const layout = requireResource(
     context,
     event.layoutHandleId,
-    'binding',
+    'bind-group-layout',
     eventIndex,
     event.kind,
   );
-  if (!layout.ok || layout.value.role !== 'bind-group-layout')
-    return pipelineError(layout, event, eventIndex);
+  if (!layout.ok) return layout;
   const resources: RhiBindingResource[] = [];
   for (const [index, entry] of event.entries.entries()) {
     const resourceId = event.resourceHandleIds[index];
@@ -660,8 +639,7 @@ function createBindGroup(
       resources.push({ kind: 'textureView', value: resolved.resource.value });
     } else if (
       entry.resourceKind === 'accelerationStructure' &&
-      resolved.resource.kind === 'acceleration-structure' &&
-      resolved.resource.role === 'tlas'
+      resolved.resource.kind === 'tlas'
     ) {
       resources.push({ kind: 'accelerationStructure', value: resolved.resource.value });
     } else {
@@ -669,16 +647,19 @@ function createBindGroup(
     }
   }
   const descriptor: BindGroupDescriptor = {
-    layout: layout.value.value as never,
+    layout: layout.value,
     entries: event.entries.map((entry, index) => ({
       binding: entry.binding,
       resource: resources[index] as RhiBindingResource,
     })),
   };
-  return createResource(context, eventIndex, event, context.device.createBindGroup(descriptor), {
-    kind: 'binding',
-    role: 'bind-group',
-  });
+  return createResource(
+    context,
+    eventIndex,
+    event,
+    context.device.createBindGroup(descriptor),
+    'bind-group',
+  );
 }
 
 function createPipelineLayout(
@@ -688,17 +669,16 @@ function createPipelineLayout(
 ): Result<void, RhiDebugError> {
   const layouts: import('@forgeax/engine-rhi').BindGroupLayout[] = [];
   for (const id of event.bglHandleIds) {
-    const layout = requireReplayResource(context, id, 'binding', eventIndex, event.kind);
-    if (!layout.ok || layout.value.role !== 'bind-group-layout')
-      return pipelineError(layout, event, eventIndex);
-    layouts.push(layout.value.value as import('@forgeax/engine-rhi').BindGroupLayout);
+    const layout = requireResource(context, id, 'bind-group-layout', eventIndex, event.kind);
+    if (!layout.ok) return layout;
+    layouts.push(layout.value);
   }
   return createResource(
     context,
     eventIndex,
     event,
     context.device.createPipelineLayout({ bindGroupLayouts: layouts }),
-    { kind: 'binding', role: 'pipeline-layout' },
+    'pipeline-layout',
   );
 }
 
@@ -744,10 +724,7 @@ function createRenderPipeline(
     eventIndex,
     event,
     context.device.createRenderPipeline(descriptor as never),
-    {
-      kind: 'pipeline',
-      role: 'render',
-    },
+    'render-pipeline',
   );
 }
 
@@ -775,7 +752,7 @@ function createComputePipeline(
       layout: layout.value,
       compute: { ...event.desc.compute, module: shader },
     } as never),
-    { kind: 'pipeline', role: 'compute' },
+    'compute-pipeline',
   );
 }
 
@@ -785,22 +762,15 @@ function replayPipelineLayout(
   eventIndex: number,
 ): Result<PipelineLayout | 'auto', RhiDebugError> {
   if (event.layoutHandleId === 'layout:auto') return ok('auto');
-  const layout = requireReplayResource(
+  const layout = requireResource(
     context,
     event.layoutHandleId,
-    'binding',
+    'pipeline-layout',
     eventIndex,
     event.kind,
   );
   if (!layout.ok) return layout;
-  if (layout.value.role !== 'pipeline-layout')
-    return eventFailure(
-      eventIndex,
-      event,
-      'lookup',
-      'pipeline layout resource has the wrong binding role',
-    );
-  return ok(layout.value.value as PipelineLayout);
+  return ok(layout.value);
 }
 
 function shaderValue(
@@ -818,7 +788,7 @@ function writeBuffer(
   event: Extract<RhiCallEvent, { kind: 'writeBuffer' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const buffer = requireResource<Buffer>(context, event.handleId, 'buffer', eventIndex, event.kind);
+  const buffer = requireResource(context, event.handleId, 'buffer', eventIndex, event.kind);
   if (!buffer.ok) return buffer;
   const bytes = blob(context.tape, event.dataHash, event, eventIndex);
   if (!bytes.ok) return bytes;
@@ -837,7 +807,7 @@ function writeTexture(
   event: Extract<RhiCallEvent, { kind: 'writeTexture' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const texture = requireResource<Texture>(
+  const texture = requireResource(
     context,
     event.destination.textureHandleId,
     'texture',
@@ -876,14 +846,7 @@ function submit(
 ): Result<void, RhiDebugError> {
   const commandBuffers: CommandBuffer[] = [];
   for (const id of event.cmdHandleIds) {
-    const commandBuffer = requireResource<CommandBuffer>(
-      context,
-      id,
-      'encoder',
-      eventIndex,
-      event.kind,
-      'command-buffer',
-    );
+    const commandBuffer = requireResource(context, id, 'command-buffer', eventIndex, event.kind);
     if (!commandBuffer.ok) return commandBuffer;
     commandBuffers.push(commandBuffer.value);
   }
@@ -896,14 +859,7 @@ function beginRenderPass(
   event: Extract<RhiCallEvent, { kind: 'beginRenderPass' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
   if (!encoder.ok) return encoder;
   const colors = Array.from(event.desc.colorAttachments).map((attachment, index) => {
     if (attachment === null || attachment === undefined) return attachment;
@@ -948,7 +904,7 @@ function beginRenderPass(
   const pass = encoder.value.beginRenderPass(descriptor as never);
   return context.table.set(
     event.passHandleId,
-    { kind: 'encoder', role: 'render-pass', value: pass },
+    { kind: 'render-pass', value: pass },
     eventRecord(event),
   );
 }
@@ -962,7 +918,7 @@ function replayTimestampWrites(
   const handle = event.timestampQuerySetHandleId;
   if (handle === undefined)
     return missingResource(eventIndex, event, 'timestamp-query-set', 'query-set');
-  const query = requireResource<QuerySet>(context, handle, 'query-set', eventIndex, event.kind);
+  const query = requireResource(context, handle, 'query-set', eventIndex, event.kind);
   if (!query.ok) return query;
   return ok({
     ...event.desc.timestampWrites,
@@ -975,14 +931,7 @@ function beginComputePass(
   event: Extract<RhiCallEvent, { kind: 'beginComputePass' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
   if (!encoder.ok) return encoder;
   const timestamp = replayTimestampWrites(context, event, eventIndex);
   if (!timestamp.ok) return timestamp;
@@ -992,7 +941,7 @@ function beginComputePass(
   });
   return context.table.set(
     event.passHandleId,
-    { kind: 'encoder', role: 'compute-pass', value: pass },
+    { kind: 'compute-pass', value: pass },
     eventRecord(event),
   );
 }
@@ -1002,22 +951,9 @@ function copyBufferToBuffer(
   event: Extract<RhiCallEvent, { kind: 'copyBufferToBuffer' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
-  const source = requireResource<Buffer>(
-    context,
-    event.sourceHandleId,
-    'buffer',
-    eventIndex,
-    event.kind,
-  );
-  const destination = requireResource<Buffer>(
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
+  const source = requireResource(context, event.sourceHandleId, 'buffer', eventIndex, event.kind);
+  const destination = requireResource(
     context,
     event.destinationHandleId,
     'buffer',
@@ -1042,22 +978,15 @@ function copyBufferToTexture(
   event: Extract<RhiCallEvent, { kind: 'copyBufferToTexture' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
-  const buffer = requireResource<Buffer>(
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
+  const buffer = requireResource(
     context,
     event.source.bufferHandleId,
     'buffer',
     eventIndex,
     event.kind,
   );
-  const texture = requireResource<Texture>(
+  const texture = requireResource(
     context,
     event.destination.textureHandleId,
     'texture',
@@ -1068,8 +997,8 @@ function copyBufferToTexture(
   if (!buffer.ok) return buffer;
   if (!texture.ok) return texture;
   encoder.value.copyBufferToTexture(
-    { ...event.source, buffer: buffer.value } as never,
-    { ...event.destination, texture: texture.value } as never,
+    { ...event.source, buffer: buffer.value },
+    { ...event.destination, texture: texture.value },
     event.copySize,
   );
   return ok(undefined);
@@ -1080,22 +1009,15 @@ function copyTextureToBuffer(
   event: Extract<RhiCallEvent, { kind: 'copyTextureToBuffer' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
-  const texture = requireResource<Texture>(
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
+  const texture = requireResource(
     context,
     event.source.textureHandleId,
     'texture',
     eventIndex,
     event.kind,
   );
-  const buffer = requireResource<Buffer>(
+  const buffer = requireResource(
     context,
     event.destination.bufferHandleId,
     'buffer',
@@ -1106,8 +1028,8 @@ function copyTextureToBuffer(
   if (!texture.ok) return texture;
   if (!buffer.ok) return buffer;
   encoder.value.copyTextureToBuffer(
-    { ...event.source, texture: texture.value } as never,
-    { ...event.destination, buffer: buffer.value } as never,
+    { ...event.source, texture: texture.value },
+    { ...event.destination, buffer: buffer.value },
     event.copySize,
   );
   return ok(undefined);
@@ -1118,22 +1040,15 @@ function copyTextureToTexture(
   event: Extract<RhiCallEvent, { kind: 'copyTextureToTexture' }>,
   eventIndex: number,
 ): Result<void, RhiDebugError> {
-  const encoder = requireResource<RhiCommandEncoder>(
-    context,
-    event.cmdHandleId,
-    'encoder',
-    eventIndex,
-    event.kind,
-    'command',
-  );
-  const source = requireResource<Texture>(
+  const encoder = requireResource(context, event.cmdHandleId, 'command', eventIndex, event.kind);
+  const source = requireResource(
     context,
     event.source.textureHandleId,
     'texture',
     eventIndex,
     event.kind,
   );
-  const destination = requireResource<Texture>(
+  const destination = requireResource(
     context,
     event.destination.textureHandleId,
     'texture',
@@ -1144,8 +1059,8 @@ function copyTextureToTexture(
   if (!source.ok) return source;
   if (!destination.ok) return destination;
   encoder.value.copyTextureToTexture(
-    { ...event.source, texture: source.value } as never,
-    { ...event.destination, texture: destination.value } as never,
+    { ...event.source, texture: source.value },
+    { ...event.destination, texture: destination.value },
     event.copySize,
   );
   return ok(undefined);

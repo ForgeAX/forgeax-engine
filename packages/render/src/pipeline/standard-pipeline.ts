@@ -23,6 +23,7 @@ import {
   importRenderPipelineSurface,
   type RenderPipelineTarget,
 } from '../render-pipeline';
+import { getSsaoParameters } from '../ssao-config';
 import { addSsrCompositionPass } from '../ssr/compose';
 import { addSsrSpatialPasses } from '../ssr/graph';
 import {
@@ -383,7 +384,7 @@ function buildStandardDeferredLane(
   const specularResponse =
     reflectionFallback.value === undefined
       ? ok(undefined)
-      : target(graph, 'deferred-specular-response-ao', {
+      : target(graph, 'deferred-specular-response', {
           format: 'rgba16float',
           size: internalSize,
         });
@@ -592,9 +593,14 @@ function buildStandardDeferredLane(
 
   let ssao: RenderPipelineTarget | undefined;
   if (topology.config?.ssao?.enabled === true) {
-    const raw = target(graph, 'ssao-raw', { format: 'rgba8unorm', size: 'half-surface' });
+    const { resolutionScale } = getSsaoParameters(topology.config.ssao);
+    const size = {
+      width: Math.max(1, Math.round(internalCopySize.width * resolutionScale)),
+      height: Math.max(1, Math.round(internalCopySize.height * resolutionScale)),
+    };
+    const raw = target(graph, 'ssao-raw', { format: 'rgba8unorm', size });
     if (!raw.ok) return raw;
-    const blurred = target(graph, 'ssao-blurred', { format: 'r8unorm', size: 'half-surface' });
+    const blurred = target(graph, 'ssao-blurred', { format: 'r8unorm', size });
     if (!blurred.ok) return blurred;
     const passes = addTypedSsaoPasses(graph, {
       normal: decals.value.normal,
@@ -937,7 +943,7 @@ function buildStandardDeferredLane(
     atmosphere.value?.atmosphere,
   );
   if (!features.ok) return features;
-  const observation = addTypedFrameObservationPass(graph, sceneOutput, 'forgeax::standard');
+  const observation = addTypedFrameObservationPass(graph, sceneOutput);
   if (!observation.ok) return observation;
   if (reflectionFallback.value?.sampleCount === 1) {
     const fallbackObservation = addReflectionFallbackObservationPass(
@@ -1032,7 +1038,7 @@ function standardTopology(
  * graph shape and never a second lighting authority.
  */
 export function buildStandard(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  context: StandardPipelineBuildContext,
   topology: RenderPipelineTopology,
   reuseAdjacentShadow = false,
 ): ReturnType<RenderPipeline['build']> {

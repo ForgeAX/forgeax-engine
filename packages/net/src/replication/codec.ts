@@ -220,26 +220,31 @@ function validateSequence(sequence: unknown): string | undefined {
     : 'sequence must be a positive safe integer';
 }
 
-function validateLimits(
-  packet: ReplicationDataPacket,
-  bytes: Uint8Array | undefined,
-  limits: ReplicationLimits,
-): NetError | null {
-  if (bytes !== undefined && bytes.byteLength > limits.maxMessageBytes)
-    return limitError('maxMessageBytes', bytes.byteLength, limits.maxMessageBytes);
+function validateMessageSize(bytes: Uint8Array, limits: ReplicationLimits): NetError | null {
+  return bytes.byteLength > limits.maxMessageBytes
+    ? limitError('maxMessageBytes', bytes.byteLength, limits.maxMessageBytes)
+    : null;
+}
+
+function validateLimits(packet: ReplicationPacket, limits: ReplicationLimits): NetError | null {
+  if (packet.kind === 'application') {
+    const payload = packet.payload;
+    if (payload.length > limits.maxBufferBytes)
+      return limitError('maxBufferBytes', payload.length, limits.maxBufferBytes);
+    if (payload.length > limits.maxArrayElements)
+      return limitError('maxArrayElements', payload.length, limits.maxArrayElements);
+    return null;
+  }
+  if (!isReplicationDataPacket(packet)) return null;
   if (packet.entities.length > limits.maxEntities)
     return limitError('maxEntities', packet.entities.length, limits.maxEntities);
   let operations = 0;
   const visit = (value: unknown): NetError | null => {
-    if (
-      typeof value === 'string' &&
-      new TextEncoder().encode(value).byteLength > limits.maxStringBytes
-    )
-      return limitError(
-        'maxStringBytes',
-        new TextEncoder().encode(value).byteLength,
-        limits.maxStringBytes,
-      );
+    if (typeof value === 'string') {
+      const size = new TextEncoder().encode(value).byteLength;
+      if (size > limits.maxStringBytes)
+        return limitError('maxStringBytes', size, limits.maxStringBytes);
+    }
     const typedArray = typedArrayName(value);
     if (typedArray !== undefined) {
       const contents = value as PortableTypedArray;
@@ -256,8 +261,7 @@ function validateLimits(
         const problem = visit(item);
         if (problem) return problem;
       }
-    }
-    if (value !== null && typeof value === 'object' && !(value instanceof Uint8Array))
+    } else if (value !== null && typeof value === 'object')
       for (const item of Object.values(value as Record<string, unknown>)) {
         const problem = visit(item);
         if (problem) return problem;
@@ -337,12 +341,7 @@ export function encodeReplicationPacket(
   if (reason !== undefined) return err(invalid(reason));
   const body = JSON.stringify(canonicalize(packet));
   const bytes = new TextEncoder().encode(`${REPLICATION_PROTOCOL_PREFIX}\n${body}`);
-  const failure =
-    packet.kind === 'application'
-      ? validateApplicationLimits(packet.payload, bytes, limits)
-      : isReplicationDataPacket(packet)
-        ? validateLimits(packet, bytes, limits)
-        : null;
+  const failure = validateMessageSize(bytes, limits) ?? validateLimits(packet, limits);
   return failure ? err(failure) : ok(bytes);
 }
 
@@ -350,29 +349,10 @@ export function decodeReplicationPacket(
   bytes: Uint8Array,
   limits: ReplicationLimits,
 ): Result<ReplicationPacket, NetError> {
-  if (bytes.byteLength > limits.maxMessageBytes)
-    return err(limitError('maxMessageBytes', bytes.byteLength, limits.maxMessageBytes));
+  const sizeFailure = validateMessageSize(bytes, limits);
+  if (sizeFailure !== null) return err(sizeFailure);
   const parsed = parse(bytes);
   if ('error' in parsed) return err(parsed.error);
-  const failure =
-    parsed.packet.kind === 'application'
-      ? validateApplicationLimits(parsed.packet.payload, bytes, limits)
-      : isReplicationDataPacket(parsed.packet)
-        ? validateLimits(parsed.packet, bytes, limits)
-        : null;
+  const failure = validateLimits(parsed.packet, limits);
   return failure ? err(failure) : ok(parsed.packet);
-}
-
-function validateApplicationLimits(
-  payload: readonly number[],
-  bytes: Uint8Array,
-  limits: ReplicationLimits,
-): NetError | null {
-  if (bytes.byteLength > limits.maxMessageBytes)
-    return limitError('maxMessageBytes', bytes.byteLength, limits.maxMessageBytes);
-  if (payload.length > limits.maxBufferBytes)
-    return limitError('maxBufferBytes', payload.length, limits.maxBufferBytes);
-  if (payload.length > limits.maxArrayElements)
-    return limitError('maxArrayElements', payload.length, limits.maxArrayElements);
-  return null;
 }

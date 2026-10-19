@@ -13,7 +13,6 @@
 //   bin(lights, view, proj, grid, near, far, clusterGrid, lightIndexList, capacity)
 //     -> Result<writtenLightIndexCount, ClusterBinError>
 //
-//   deriveCullingRadius(range, intensity, threshold) — D-8 +Infinity fallback
 //
 // Constraints:
 //   D-3: pure function + Result<number, ClusterBinError> + out param + no throw
@@ -30,7 +29,7 @@ import { err, ok, type Result } from '@forgeax/engine-rhi';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
-export type ClusterBinErrorCode = 'index-overflow';
+type ClusterBinErrorCode = 'index-overflow';
 
 export interface ClusterBinError {
   readonly code: ClusterBinErrorCode;
@@ -39,7 +38,7 @@ export interface ClusterBinError {
   readonly detail: IndexOverflowDetail;
 }
 
-export interface IndexOverflowDetail {
+interface IndexOverflowDetail {
   readonly actual: number;
   readonly capacity: number;
 }
@@ -49,20 +48,20 @@ export interface IndexOverflowDetail {
  * `min` and `max` are NDC coordinates clamped to [-1, 1] for XY;
  * Z may extend to projection-space depth values.
  */
-export interface ClusterAabb {
+interface ClusterAabb {
   readonly min: Vec3;
   readonly max: Vec3;
 }
 
 /** Unsigned integer 3D cluster cell coordinate. */
-export interface Uvec3 {
+interface Uvec3 {
   readonly x: number;
   readonly y: number;
   readonly z: number;
 }
 
 /** Cluster cell range in the unsigned grid. */
-export interface ClusterBounds {
+interface ClusterBounds {
   readonly min: Uvec3;
   readonly max: Uvec3;
 }
@@ -92,11 +91,11 @@ export interface ClusterBinScratch {
  * producer uses the same CPU-owned scratch and leaves the ordered list to a
  * later compute pass.
  */
-export interface ClusterBinOptions {
+interface ClusterBinOptions {
   readonly writeMembership?: boolean;
 }
 
-export type ClusterBinProfilePhase =
+type ClusterBinProfilePhase =
   | 'light-bounds-and-occupancy'
   | 'light-bounds-and-occupancy/light-aabb'
   | 'light-bounds-and-occupancy/cluster-occupancy'
@@ -105,7 +104,7 @@ export type ClusterBinProfilePhase =
   | 'light-index-write/bounds-read'
   | 'light-index-write/cluster-write';
 
-export type ClusterBinProfileRunner = <T>(phase: ClusterBinProfilePhase, action: () => T) => T;
+type ClusterBinProfileRunner = <T>(phase: ClusterBinProfilePhase, action: () => T) => T;
 
 function runClusterBinProfilePhase<T>(
   runner: ClusterBinProfileRunner | undefined,
@@ -151,27 +150,6 @@ function ensureScratchCapacity(
   if (scratch.clusterDeltas.length < differenceVolumeSize) {
     scratch.clusterDeltas = new Int32Array(differenceVolumeSize);
   }
-}
-
-// ── deriveCullingRadius ────────────────────────────────────────────────────
-
-/**
- * Compute a culling radius for a punctual light.
- *
- * If `range` is finite, returns it verbatim (D-8 sphere proxy).
- * If `range === +Infinity`, derives a finite radius from the distance at which
- * the light's perceptible contribution drops below `threshold`.
- *
- * Formula: `sqrt(intensity / threshold)` gives the distance at which attenuation
- * = threshold (assuming E=1/r^2 falloff for point lights).
- * Cap to a conservative 1000 units to prevent overly large bounds.
- */
-export function deriveCullingRadius(range: number, intensity: number, threshold = 0.001): number {
-  if (Number.isFinite(range)) {
-    return Math.max(0, range);
-  }
-  const derived = Math.sqrt(intensity / threshold);
-  return Math.min(derived, 1000);
 }
 
 // ── view_z_to_z_slice ──────────────────────────────────────────────────────
@@ -538,7 +516,18 @@ export function bin(
         lightBounds[boundsOffset] = -1;
         const light = lights[lightIdx];
         if (!light) continue;
-        const radius = deriveCullingRadius(light.range, 1);
+        // A no-cutoff source illuminates every visible cluster, including
+        // when the light itself is outside the camera frustum.
+        if (light.range === Number.POSITIVE_INFINITY) {
+          lightBounds[boundsOffset] = 0;
+          lightBounds[boundsOffset + 1] = 0;
+          lightBounds[boundsOffset + 2] = 0;
+          lightBounds[boundsOffset + 3] = gridX - 1;
+          lightBounds[boundsOffset + 4] = gridY - 1;
+          lightBounds[boundsOffset + 5] = gridZ - 1;
+          continue;
+        }
+        const radius = light.range;
 
         if (radius <= 0) {
           continue;

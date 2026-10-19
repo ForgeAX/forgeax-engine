@@ -27,6 +27,13 @@ for (const algorithm of ['ssao', 'gtao'] as const)
     ['orthographic', 64],
     ...(algorithm === 'gtao'
       ? ([
+          ['plane', 4],
+          ['plane', 10],
+          ['contact', 16],
+          ['distant-edge', 16],
+          ['background', 16],
+          ['plane-odd', 16],
+          ['plane-jitter', 16],
           ['plane-odd', 64],
           ['plane-jitter', 64],
         ] as const)
@@ -104,7 +111,7 @@ for (const algorithm of ['ssao', 'gtao'] as const)
       payload.set(projection, 16);
       payload.set(inverse, 32);
       payload.set([1, 0.5, 0.025, sampleCount], 48);
-      payload[52] = algorithm === 'gtao' ? 1 : 0;
+      payload.set([algorithm === 'gtao' ? 1 : 0, 1, 1, 1], 52);
       device.queue.writeBuffer(uniform, 0, payload);
       device.queue.writeBuffer(
         kernel,

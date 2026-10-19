@@ -1,10 +1,13 @@
+import { fnv1a32 } from '@forgeax/engine-types';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import { standardBloomAdmitted } from '../bloom-admission';
 import { type AtmosphereViews, atmosphereBindings } from '../environment/bindings';
+import type { RenderResourceScope } from '../publication/resource-scope';
 // @forgeax/engine-runtime - RenderSystem record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
 
-import { mat4, vec3 } from '@forgeax/engine-math';
+import { vec3 } from '@forgeax/engine-math';
 import {
   type BindGroup,
   type BindGroupEntry,
@@ -64,7 +67,7 @@ import {
   ShadowAtlas,
 } from '../shadow-atlas';
 import { getOrCreateSsaoBuffers } from '../ssao-buffers';
-import { getSsaoParameters, SSAO_SAMPLE_COUNTS } from '../ssao-config';
+import { buildSsaoUniformPayload } from '../ssao-uniform';
 // extendedLighting keeps Spot modifier factors on the existing light record
 // path; no additional render pass or submit owner is introduced.
 import type { BindGroupCounts, RenderFrameState } from './frame-snapshot';
@@ -210,9 +213,8 @@ export function buildPerFrameBindGroups(
     membership?.clusterGridBuffer === expectedHdrpBuffers.clusterGridBuffer
       ? projectDeviceOwnedBindGroup(membership, internals.device, membershipLayout)
       : null;
-  if (membership !== null && currentMembership === null) {
-    frameState.hdrpClusterMembership = null;
-  }
+  // Selection may run before lighting preparation. Only the writer retires a
+  // membership binding when its device, layout or buffers actually change.
   const hdrpClusterMembershipBindGroup: BindGroup | null = clusteredLighting
     ? currentMembership
     : null;
@@ -668,7 +670,7 @@ export function prepareFrameLighting(
       range:
         Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
-          : 1000,
+          : Number.POSITIVE_INFINITY,
       source,
     })),
     ...spotLights.map((source) => ({
@@ -679,7 +681,7 @@ export function prepareFrameLighting(
       range:
         Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
-          : 1000,
+          : Number.POSITIVE_INFINITY,
       source,
     })),
     ...rectLights.map((source) => ({
@@ -689,7 +691,7 @@ export function prepareFrameLighting(
       range:
         (Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
-          : 1000) + Math.hypot(source.halfWidth, source.halfHeight),
+          : Number.POSITIVE_INFINITY) + Math.hypot(source.halfWidth, source.halfHeight),
       source,
     })),
   ];
@@ -755,11 +757,7 @@ const MODIFIER_DIGESTS = new WeakMap<Uint8Array, number>();
 function modifierDigest(data: Uint8Array): number {
   const cached = MODIFIER_DIGESTS.get(data);
   if (cached !== undefined) return cached;
-  let hash = 2166136261;
-  for (let index = 0; index < data.length; index += 1) {
-    hash ^= data[index] ?? 0;
-    hash = Math.imul(hash, 16777619);
-  }
+  const hash = fnv1a32(data);
   const digest = hash >>> 0;
   MODIFIER_DIGESTS.set(data, digest);
   return digest;
@@ -1220,18 +1218,8 @@ export function writeHdrpClusterAndSsaoBuffers(
   );
   if (!bufferUpload.ok) return bufferUpload;
 
-  // ── feat-20260612-hdrp-ssao M1 / w6 + M7 / w33 ───────────────
-  // Per-frame SSAO uniform write (plan-strategy D-1 + D-C):
-  //   view + projection + inverseProjection at offsets 0/64/128 +
-  //   intensityPad (vec4 — x=intensity, y=radius, z=bias) at offset 192;
-  //   total 256 B (matches host SSAO_UNIFORM_BYTES + WGSL struct).
-  // Single writeBuffer covers all four fields so one queue entry
-  // updates the entire UBO.
-  // Separate from View UBO (592 B invariant); does not affect
-  // material PSO bytecode.
-  //
-  // Writes when HDRP is active; config.ssao?.enabled guard comes in
-  // M4 / w19 after the config.ssao type narrowing is added.
+  // Prime the same sampled payload used by the graph pass. A failed early
+  // upload still aborts this frame through the required-upload error path.
   const ssaoUpload = runHdrpClusterProfilePhase(
     profilePhase,
     'record/scene-state/hdrp-cluster/buffer-upload',
@@ -1239,30 +1227,10 @@ export function writeHdrpClusterAndSsaoBuffers(
       if (frameState.installedPipelineConfig?.ssao?.enabled !== true) return ok(undefined);
       const ssaoBufs = getOrCreateSsaoBuffers(internals);
       if (ssaoBufs === null) return ok(undefined);
-      const sProj = computeProjectionMatrix(camera);
-      const sView = computeViewMatrix(camera);
-      // inverseProjection = inverse(projection): NDC -> view-space.
-      const invProjOnly = mat4.create();
-      mat4.invert(invProjOnly, sProj);
-
-      // Float32Array of 64 (256 B): 3 mat4 (48) + intensityPad vec4 (4)
-      // + 12 trailing padding floats. We only fill the declared region.
-      const ssaoUniformPayload = new Float32Array(64);
-      ssaoUniformPayload.set(sView, 0);
-      ssaoUniformPayload.set(sProj, 16);
-      ssaoUniformPayload.set(invProjOnly, 32);
-      // intensityPad carries the same resolved values as the graph SSAO
-      // calc pass; this early write keeps the shared UBO valid before the
-      // typed fullscreen pass executes.
-      const ssaoConfig = frameState.installedPipelineConfig?.ssao;
-      const parameters = getSsaoParameters(
-        ssaoConfig !== undefined && ssaoConfig.enabled === true ? ssaoConfig : undefined,
+      const ssaoUniformPayload = buildSsaoUniformPayload(
+        camera,
+        frameState.installedPipelineConfig?.ssao,
       );
-      ssaoUniformPayload[48] = parameters.intensity;
-      ssaoUniformPayload[49] = parameters.radius;
-      ssaoUniformPayload[50] = parameters.bias;
-      ssaoUniformPayload[51] = SSAO_SAMPLE_COUNTS[parameters.quality];
-      ssaoUniformPayload[52] = parameters.algorithm === 'gtao' ? 1 : 0;
 
       const ssaoUniformRes = internals.device.queue.writeBuffer(
         ssaoBufs.uniformBuffer,
@@ -1299,8 +1267,9 @@ export function resolveSkyboxActive(
   frameState: RenderFrameState,
   camera: CameraSnapshot,
   skybox: SkyboxSnapshot | undefined,
+  world: RenderResourceScope,
 ): { tonemapActive: boolean; skyboxActive: boolean } {
-  const tonemapActive = camera.tonemap !== 'none';
+  const tonemapActive = camera.tonemap !== 'none' || standardBloomAdmitted(camera);
   let skyboxActive = skybox !== undefined && tonemapActive;
   // feat-20260531-skybox-env-background M3 / w20: once-warn when camera
   // tonemap is 'none' but a SkyboxBackground entity exists. The skybox
@@ -1320,6 +1289,7 @@ export function resolveSkyboxActive(
   if (skybox !== undefined && tonemapActive) {
     const cubemapView = internals.gpuStore.getCubemapGpuView(
       toShared<'EquirectAsset'>(skybox.equirectHandle),
+      world,
     );
     if (cubemapView === undefined) {
       // The skybox reuses the Skylight's equirect handle; the cubemap

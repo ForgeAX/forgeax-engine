@@ -209,6 +209,16 @@ describe('Surface composition owner-cut', () => {
     if (!forbidden.ok) expect(forbidden.error.code).toBe('material-surface-forbidden-interface');
   });
 
+  it('ignores forbidden declarations inside nested WGSL comments', () => {
+    const result = validateSurfaceDependency({
+      material: 'probe',
+      pass: 'forward',
+      sourcePath: 'helper.wgsl',
+      source: '/* outer /* inner */ @group(1) @binding(0) var hidden: sampler; */',
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it('validates transitive Surface helpers instead of dropping their closure', () => {
     const helper = `#define_import_path game::surface_helper\n@group(1) @binding(0) var forbidden: sampler;`;
     const result = validateSurfaceDependency({

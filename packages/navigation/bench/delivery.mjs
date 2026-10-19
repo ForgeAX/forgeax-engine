@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import {mkdirSync,writeFileSync} from 'node:fs';
@@ -35,7 +36,7 @@ export async function validateDelivery() {
   scratch.components.register(SceneInstance).unwrap();const vocabulary=componentVocabulary(scratch);await realm.fiber.dispose();
   let files;
   const server=createServer((req,res)=>{const bytes=files?.get(req.url.slice(1));if(!bytes){res.writeHead(404);res.end();return;}res.end(bytes);});
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${server.address().port}/`;
+  await once(server.listen(0,'127.0.0.1'), 'listening');const base=`http://127.0.0.1:${server.address().port}/`;
   try {
     const first=await produceNavigationFixture({base,sceneComponents:vocabulary});files=first.files;const cold=[];
     for(let restart=0;restart<2;restart++) {

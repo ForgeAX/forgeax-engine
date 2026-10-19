@@ -488,8 +488,10 @@ source supplies a decomposition; Physics never infers a source grid or performs
 source-specific merging. One native compound retains that logical shape identity.
 
 Preparation bounds buffers before element reads or copies, detaches all point
-arrays, and creates massless disabled colliders. Unknown fields and shape kinds
-are refused. A malformed hull returns a structured preparation failure, without
+arrays, and creates massless disabled colliders. One logical compound owns one
+point buffer with disjoint views for its pieces; retaining any piece view keeps
+that compound's point storage alive. Recovery copies detach from this buffer.
+Unknown fields and shape kinds are refused. A malformed hull returns a structured preparation failure, without
 publishing any part of the candidate. Native geometry and simulation use
 Float32 precision. Producers validate their own source-to-Float32 conversion.
 Source-specific precision, decomposition, boundary composition and source
@@ -550,6 +552,19 @@ membership bits. Omission includes every eligible contact. Rejected partners
 are skipped before manifold/point decoding; the native solver, contact events
 and other queries are unchanged. Filtering applies equally to static,
 kinematic, dynamic and sleeping contact partners.
+
+`getCurrentContactNeighbors(entity, filterMask?, normalFilter?)` returns a detached
+`PhysicsContactNeighborsSnapshot` with the same completed-step `fixedStep` and
+`deltaTime`, plus unique `entities`. A partner qualifies when at least one actual
+solver manifold has points. The optional finite `direction` and `minimumDot`
+apply the strict world-space predicate `dot(normalTowardOther, direction) > minimumDot`;
+the direction is not normalized and the threshold is not clamped. The native
+projection transports no points, impulses or per-manifold objects. It shares
+the full query's body-generation, enabled/sensor and two-way collision-group
+filters, with no persistent contact registry. Its 4096-visit budget counts
+colliders, pairs and the complete solver-manifold roster of each examined pair;
+point visits are absent. Budget failure is atomic and reports the entity and
+per-category visit counts. Use the full query when geometry or load is needed.
 
 Compound contact clusters use the actual solver manifold roster, including its
 selected contact identities. Sleeping pairs retain current contact geometry but

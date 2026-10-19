@@ -43,14 +43,14 @@ const entries: readonly FixtureEntry[] = [
     bindings: '[]',
   },
   {
-    hash: 'fixture-bloom-downsample',
-    wgsl: '// fixture marker: BloomDownsampleParams\n',
+    hash: 'fixture-bloom-horizontal',
+    wgsl: '// fixture marker: BloomHorizontalParams\n',
     glsl: '',
     bindings: '[]',
   },
   {
-    hash: 'fixture-bloom-upsample',
-    wgsl: '// fixture marker: BloomUpsampleParams\n',
+    hash: 'fixture-bloom-vertical',
+    wgsl: '// fixture marker: BloomVerticalParams\n',
     glsl: '',
     bindings: '[]',
   },

@@ -172,7 +172,7 @@ const cameraEntity = camSpawn.value;
 
 const lightSpawn = world.spawn({
   component: DirectionalLight,
-  data: { direction: [-0.4, -1, -0.3], color: [1, 1, 1], intensity: 1 },
+  data: { castShadow: true, direction: [-0.4, -1, -0.3], color: [1, 1, 1], intensity: 1 },
 });
 if (!lightSpawn.ok) {
   console.error(`[smoke] FAIL - DirectionalLight spawn failed: ${lightSpawn.error.code}`);

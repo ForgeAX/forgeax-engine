@@ -6,7 +6,7 @@ import { parsePackSourceJson } from '../pack-authoring.js';
 import { declaredPackAssets, SCANNER_BLACKLIST, scan } from '../scanner.js';
 
 /** Project root and GUID used to locate an authoritative source declaration. */
-export interface SourceInventoryRequest {
+interface SourceInventoryRequest {
   readonly projectRoot: string;
   readonly guid: string;
 }

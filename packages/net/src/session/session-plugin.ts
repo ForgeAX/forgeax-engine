@@ -3,18 +3,11 @@
 
 import { FixedUpdate, Update } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
-import type { NetEndpoint, NetEndpointConnector } from '../endpoint/endpoint';
-import { NetSession, type NetSessionClock } from './net-session';
-import type { NetRecoveryPolicy } from './recovery';
+import { NetSession, type NetSessionConfig } from './net-session';
 
-export interface NetPluginConfig {
-  readonly endpoint?: NetEndpoint;
-  readonly connector?: NetEndpointConnector;
-  readonly sessionId?: number;
-  readonly recovery?: Partial<NetRecoveryPolicy>;
-  readonly clock?: NetSessionClock;
-  readonly maxRawMessages?: number;
-}
+export type NetPluginConfig = Omit<NetSessionConfig, 'maxRawMessages'> & {
+  readonly maxRawMessages?: NetSessionConfig['maxRawMessages'];
+};
 
 export function netPlugin(config: NetPluginConfig): Plugin {
   return {
@@ -23,11 +16,7 @@ export function netPlugin(config: NetPluginConfig): Plugin {
     apply(ctx) {
       const world = ctx.world;
       const session = new NetSession({
-        ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
-        ...(config.connector === undefined ? {} : { connector: config.connector }),
-        ...(config.sessionId === undefined ? {} : { sessionId: config.sessionId }),
-        ...(config.recovery === undefined ? {} : { recovery: config.recovery }),
-        ...(config.clock === undefined ? {} : { clock: config.clock }),
+        ...config,
         maxRawMessages: config.maxRawMessages ?? 256,
       });
       ctx.effect(() => {

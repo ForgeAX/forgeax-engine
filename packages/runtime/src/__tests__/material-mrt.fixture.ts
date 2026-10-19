@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import {
@@ -15,7 +16,6 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
   tapeDigest,
@@ -256,12 +256,16 @@ export async function verifyMaterialMrt(options: {
         throw new Error('missing live MRT attachment');
       const center = (size / 2) * size + size / 2;
       expect(
-        [...new Uint16Array(colorPixels.buffer).slice(center * 4, center * 4 + 4)].map(halfToFloat),
+        [...new Uint16Array(colorPixels.buffer).slice(center * 4, center * 4 + 4)].map(
+          halfFloat.f16ToF32,
+        ),
       ).toEqual([0.375, 0.625, 0.875, 1]);
       expect(new Uint32Array(idPixels.buffer)[center]).toBe(123456789);
       expect([...maskPixels.slice(center * 4, center * 4 + 4)]).toEqual([191, 64, 128, 255]);
       expect(
-        [...new Uint16Array(dataPixels.buffer).slice(center * 4, center * 4 + 4)].map(halfToFloat),
+        [...new Uint16Array(dataPixels.buffer).slice(center * 4, center * 4 + 4)].map(
+          halfFloat.f16ToF32,
+        ),
       ).toEqual([-2, 0.125, 4, 1]);
       expect(new Uint32Array(idPixels.buffer)[0]).toBe(0);
       for (const falsify of [false, true]) {

@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 import UPNG from 'upng-js';
 import { triangleDistanceSquared } from '../../../packages/geometry/src/triangle-query.ts';
 import { surfaceCardKey } from '../../../packages/render/src/raytracing/surface-cards.ts';
@@ -128,13 +130,7 @@ for (const p of ['albedoRoughness', 'f0Validity', 'normals', 'depth']) {
   planes[p] = new DataView(b.buffer);
 }
 const half = (v, i) => {
-  const u = v.getUint16(i, true),
-    e = (u >> 10) & 31,
-    m = u & 1023;
-  return (
-    (u & 32768 ? -1 : 1) *
-    (e === 0 ? m * 2 ** -24 : e === 31 ? (m ? NaN : Infinity) : (1 + m / 1024) * 2 ** (e - 15))
-  );
+  return halfFloat.f16ToF32(v.getUint16(i, true));
 };
 const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0),
   sub = (a, b) => a.map((v, i) => v - b[i]);
@@ -349,9 +345,7 @@ for (let y = 0; y < height; y++)
       state === 1
         ? [0, 1, 2].map((c) => {
             const v = Math.max(0, filteredColor[c]);
-            return Math.round(
-              Math.min(1, v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055) * 255,
-            );
+            return Math.round(Math.min(1, linearChannelToSrgb(v)) * 255);
           })
         : palette[state];
     images.material.set([...color, 255], i * 4);

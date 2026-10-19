@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
   Instances,
@@ -17,7 +18,6 @@ import {
   decodeTape,
   encodeTape,
   type FrameModel,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -637,7 +637,7 @@ export async function verifyVisibleSurfaceReplay(
               1) !==
             0,
         )
-        .map((i) => Array.from(halfs.subarray(i * 4, i * 4 + 4), halfToFloat));
+        .map((i) => Array.from(halfs.subarray(i * 4, i * 4 + 4), halfFloat.f16ToF32));
       const motion = [0, 1, 2, 3].map(
         (channel) =>
           samples.reduce((sum, sample) => sum + (sample[channel] ?? NaN), 0) /

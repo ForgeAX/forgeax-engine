@@ -6,9 +6,11 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { halfFloat } from '@forgeax/engine/math';
 import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
 import { create, globals } from '@forgeax/engine-dawn-node';
 import { World } from '@forgeax/engine-ecs';
+import { encodePng } from '@forgeax/engine-image/png';
 import {
   ANTIALIAS_NONE,
   ANTIALIAS_TAA,
@@ -35,14 +37,13 @@ import {
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { createRenderer } from '@forgeax/engine-runtime';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { writeReferencePng } from '../../apps/shared/png-codec.mjs';
+
 import {
   attachRecorder,
   buildFrameModel,
   buildResourceLifecycle,
   decodeTape,
   decodeToRgba8,
-  halfToFloat,
   openReplay,
   replayDeviceRequest,
   tapeDigest,
@@ -74,7 +75,7 @@ const p = (values, fraction) =>
   [...values].sort((a, b) => a - b)[Math.ceil(values.length * fraction) - 1];
 const stats = (values) => ({ p50: p(values, 0.5), p95: p(values, 0.95) });
 const image = (name, rgba, width, height) =>
-  writeFileSync(resolve(output, `${name}.png`), writeReferencePng(rgba, width, height));
+  writeFileSync(resolve(output, `${name}.png`), encodePng(width, height, rgba));
 const json = (name, data) =>
   writeFileSync(resolve(output, `${name}.json`), `${JSON.stringify(data, null, 2)}\n`);
 
@@ -413,7 +414,7 @@ async function fixture(width, height, capture = false) {
     for (let y = 0; y < hdr.metadata.height; y++)
       for (let x = 0; x < hdr.metadata.width; x++) {
         for (let c = 0; c < 3; c++) {
-          const sample = halfToFloat(
+          const sample = halfFloat.f16ToF32(
             hdrView.getUint16(y * hdr.metadata.bytesPerRow + x * 8 + c * 2, true),
           );
           assert.ok(Number.isFinite(sample), 'combined linear HDR must remain finite');

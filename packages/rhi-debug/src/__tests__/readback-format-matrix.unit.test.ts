@@ -69,6 +69,9 @@ describe('Replay readback format matrix', () => {
 
   it.each([
     ['bc7-rgba-unorm', '2d'],
+    ['toString', '2d'],
+    ['constructor', '2d'],
+    ['__proto__', '2d'],
   ])('returns an explicit unsupported plan for %s/%s', (format, dimension) => {
     const plan = getTextureReadbackPlan({ format, dimension });
     expect(plan.supported).toBe(false);

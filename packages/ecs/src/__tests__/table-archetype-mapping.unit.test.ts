@@ -75,4 +75,39 @@ describe('Table and Archetype ownership', () => {
       second,
     ]);
   });
+  it('repairs both indexes through interleaved sparse, dense and despawn transitions', () => {
+    const Value = defineComponent('MixedMappingValue', { x: 'f32' });
+    const Dense = defineComponent('MixedMappingDense', { y: 'f32' });
+    const Sparse = defineComponent('MixedMappingSparse', {}, { storage: 'sparse' });
+    const world = new World();
+    const entities = Array.from({ length: 12 }, (_, x) =>
+      world.spawn({ component: Value, data: { x } }).unwrap(),
+    );
+    const alive = new Map(entities.map((entity, x) => [entity, x]));
+    for (const [x, entity] of entities.entries()) {
+      if (x % 2) world.addComponent(entity, { component: Sparse, data: {} }).unwrap();
+    }
+    const check = () => {
+      const seen = new Map<EntityHandle, number>();
+      for (const row of world.query({ read: [Value, Entity] }).unwrap()) {
+        expect(row.get(Entity).self).toBe(row.entity);
+        seen.set(row.entity, row.get(Value).x);
+      }
+      expect(seen).toEqual(alive);
+      for (const [entity, x] of alive) expect(world.get(entity, Value).unwrap().x).toBe(x);
+    };
+    for (const [x, entity] of entities.entries()) {
+      world.addComponent(entity, { component: Dense, data: { y: x + 100 } }).unwrap();
+      check();
+      if (x % 2) world.removeComponent(entity, Sparse).unwrap();
+      else world.addComponent(entity, { component: Sparse, data: {} }).unwrap();
+      check();
+      expect(world.get(entity, Dense).unwrap().y).toBe(x + 100);
+      world.removeComponent(entity, Dense).unwrap();
+      check();
+      world.despawn(entity).unwrap();
+      alive.delete(entity);
+      check();
+    }
+  });
 });

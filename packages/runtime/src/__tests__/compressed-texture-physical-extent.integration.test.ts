@@ -1,6 +1,10 @@
-import { numMipLevels } from '@forgeax/engine-assets-runtime';
 import { ok, type RhiCaps } from '@forgeax/engine-rhi';
-import { deriveTextureLayout, type TextureAsset, toShared } from '@forgeax/engine-types';
+import {
+  deriveTextureLayout,
+  numMipLevels,
+  type TextureAsset,
+  toShared,
+} from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../../../render/src/device/gpu-residency';
 

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error browser-safe evidence module is intentionally JavaScript.
 import { captureGpuErrors, captureWorldErrors, requireFrameMaterials, disposeRenderResources, runPairedStages, runRenderPhase } from '../../evidence/phase-executor.mjs';
 
@@ -306,33 +306,68 @@ describe('physical material smoke contract', () => {
     expect(source).toContain('const warmupFrames = pairRenderer === renderer ? 1 : 2;');
   });
 
-  it('rejects pending presentation after successful GPU completion', async () => {
-    await expect(runRenderPhase({
-      phase: 'paired', frameCount: 1,
-      world: { update: () => ({ unwrap() {} }) },
-      renderer: { draw: () => ({ ok: true, value: {
-        frameId: 1, presentation: 'pending', completed: Promise.resolve({ ok: true }),
-      } }) },
-      frameRequest: {}, yieldFrame: async () => {},
-    })).rejects.toThrow('presentation is pending');
+  it('rejects preparation that never produces a ready scene', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(15_001);
+    try {
+      await expect(runRenderPhase({
+        phase: 'paired', frameCount: 1,
+        world: { update: () => ({ unwrap() {} }) },
+        renderer: { draw: () => ({ ok: true, value: {
+          frameId: 1, presentation: 'pending', completed: Promise.resolve({ ok: true }),
+        } }) },
+        frameRequest: {}, yieldFrame: async () => {},
+      })).rejects.toThrow('Renderer scene presentation did not become ready');
+    } finally {
+      clock.mockRestore();
+    }
   });
 
-  it('counts only completed ready frames during bounded resource preparation', async () => {
+  it('retries preparation without advancing simulation and re-arms submission observations', async () => {
     let draws = 0;
+    let updates = 0;
+    const prepared: number[] = [];
     const observed: number[] = [];
     const receipt = await runRenderPhase({
-      phase: 'ibl', frameCount: 3, maxPendingFrames: 2,
-      world: { update: () => ({ unwrap() {} }) },
+      phase: 'direct', frameCount: 3,
+      world: { update: () => ({ unwrap() { updates += 1; } }) },
       renderer: { draw: () => ({ ok: true, value: {
         frameId: ++draws, presentation: draws <= 2 ? 'pending' : 'ready',
         completed: Promise.resolve({ ok: true }),
       } }) },
       frameRequest: {}, yieldFrame: async () => {},
+      beforeDraw: (frame: number) => prepared.push(frame),
       afterDraw: (_frame: number, current: { frameId: number }) => observed.push(current.frameId),
     });
+    expect(updates).toBe(3);
     expect(draws).toBe(5);
+    expect(prepared).toEqual([0, 0, 0, 1, 2]);
     expect(observed).toEqual([3, 4, 5]);
     expect(receipt.frameId).toBe(5);
+  });
+
+  it('refreshes an exact capture identity when the last phase picture is pending', async () => {
+    let nativeFrame = 0;
+    let expectedFrame = 0;
+    let updates = 0;
+    const observed: number[] = [];
+    await runRenderPhase({
+      phase: 'ibl', frameCount: 3,
+      world: { update: () => ({ unwrap() { updates += 1; } }) },
+      renderer: { draw: () => {
+        nativeFrame += 1;
+        if (nativeFrame !== 3 && expectedFrame !== nativeFrame)
+          return { ok: false, error: new Error('identity-mismatch') };
+        return { ok: true, value: {
+          frameId: nativeFrame, presentation: nativeFrame === 3 ? 'pending' : 'ready',
+          completed: Promise.resolve({ ok: true }),
+        } };
+      } },
+      frameRequest: {}, yieldFrame: async () => {},
+      beforeDraw: () => { expectedFrame = nativeFrame + 1; },
+      afterDraw: (_frame: number, current: { frameId: number }) => observed.push(current.frameId),
+    });
+    expect(updates).toBe(3);
+    expect(observed).toEqual([1, 2, 4]);
   });
 
   it('retains native GPU validation errors and forwards the installed handler', () => {

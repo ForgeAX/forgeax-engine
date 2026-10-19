@@ -20,7 +20,7 @@ import {
   validateMotionBlurParams,
 } from './motion-blur-params';
 
-export const MOTION_BLUR_FEATURE_IDENTITY = 'forgeax.motion-blur';
+const MOTION_BLUR_FEATURE_IDENTITY = 'forgeax.motion-blur';
 
 export function addMotionBlurPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -37,7 +37,7 @@ export function addMotionBlurPass(
   });
 }
 
-export interface MotionBlurFeatureFrame {
+interface MotionBlurFeatureFrame {
   readonly params: MotionBlurParams | undefined;
   readonly demanded: boolean;
   /** Raw accepted-submit interval; it is never replaced by ECS clamp time. */
@@ -1370,7 +1370,7 @@ fn reconstruct(
 }
 `;
 
-export function encodeMotionBlurComputeParams(
+function encodeMotionBlurComputeParams(
   params: MotionBlurParams,
   frameDeltaSeconds = 1 / 60,
   reset = false,

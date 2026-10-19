@@ -111,7 +111,7 @@ export function buildFoliageWorld(world: World, options: FoliageOptions): void {
   world
     .spawn({
       component: DirectionalLight,
-      data: { direction: [0.15, -0.3, 1], color: [1, 0.96, 0.88], intensity: 1.5 },
+      data: { castShadow: true, direction: [0.15, -0.3, 1], color: [1, 0.96, 0.88], intensity: 1.5 },
     })
     .unwrap();
   // One and four point cases exercise the same punctual BRDF on both backends.

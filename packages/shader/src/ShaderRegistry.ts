@@ -25,7 +25,7 @@ import type {
   ParamSchemaEntry,
   ParamSchemaProjectionOwnerStats,
 } from '@forgeax/engine-types';
-import { findUndeclaredSampledTextures, ParamSchemaProjectionOwner } from '@forgeax/engine-types';
+import { ParamSchemaProjectionOwner } from '@forgeax/engine-types';
 import {
   err,
   manifestMalformed,
@@ -586,7 +586,11 @@ export class ShaderRegistry {
    * });
    * ```
    */
-  installMaterialArtifact(identifier: string, entry: MaterialShaderEntry): void {
+  installMaterialArtifact(
+    identifier: string,
+    entry: MaterialShaderEntry,
+    programSource?: ShaderRegistry,
+  ): void {
     if (this.#materialShaders.has(identifier)) {
       throw new Error(
         `ShaderRegistry: material shader identifier '${identifier}' already registered; same-name re-register is forbidden (AGENTS.md "explicit registration" + Inspector "fail-fast no overwrite" pattern). Use findMaterialArtifact to read back the existing entry.`,
@@ -613,21 +617,29 @@ export class ShaderRegistry {
       revision: 1,
       schema: paramSchema,
     });
+    // Exact source facts can come from this registry or the receiving registry.
+    // Each new schema is still admitted and checked before publishing the entry.
+    const program =
+      this.#materialPrograms.get(source) ??
+      (programSource === undefined ? undefined : programSource.#materialPrograms.get(source)) ??
+      createMaterialShaderProgram(source);
     if (!identifier.startsWith(FORGEAX_RESERVED_PATH_PREFIX)) {
-      const undeclared = findUndeclaredSampledTextures(source, paramSchemaProjection.schema);
+      const declared = paramSchemaProjection.derivedInterface.textureFieldNames;
+      const undeclared = program.sampledUserTextureFields.filter((field) => !declared.has(field));
       if (undeclared.length > 0) {
         throw new Error(
           `ShaderRegistry: material shader '${identifier}' samples texture(s) [${undeclared.join(', ')}] in its WGSL but its paramSchema does not declare them as texture entries. Add { name: '${undeclared[0]}', type: 'texture2d' } (and any others listed) to the paramSchema, or the engine would silently bind the default white texture (charter P3 explicit failure; see docs/handover/2026-06-19-blending-transparency-regression-bisect.md).`,
         );
       }
     }
+    this.#materialPrograms.set(source, program);
     this.#materialShaders.set(
       identifier,
       Object.freeze(
         ok(
           Object.freeze({
             source,
-            program: this.materialProgram(source),
+            program,
             paramSchema: paramSchemaProjection.schema,
             paramSchemaProjection,
             ...(receipt === undefined ? {} : { receipt }),

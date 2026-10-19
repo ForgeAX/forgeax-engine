@@ -2,7 +2,7 @@ import { gpuDrivenShadowDrawKey } from '../extract/gpu-driven';
 import type { RenderableSnapshot, ShadowCasterMembership } from '../render-system-extract';
 import { type EntryLookup, FirstEntryMap } from './first-entry-map';
 
-export interface ShadowMembershipDraw {
+interface ShadowMembershipDraw {
   readonly rows: readonly number[];
   readonly cpu: boolean;
 }

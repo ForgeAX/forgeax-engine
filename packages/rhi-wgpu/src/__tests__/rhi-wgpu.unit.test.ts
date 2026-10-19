@@ -20,8 +20,9 @@ import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
 import { makeCanvasContext } from '../adapter';
 import { makeRhiCommandEncoder } from '../command-encoder';
 import { disposeDevice, makeRhiDevice, type RawDeviceLike } from '../device';
-import { __resetForTests, ensureRhiWgpuReady, getRhiWgpuModule } from '../internal/wasm-loader';
+import { __resetForTests, ensureRhiWgpuReady } from '../internal/wasm-loader';
 import { makeRhiRenderPassEncoder } from '../render-pass-encoder';
+import { rawCommandEncoder, rawComputePass, rawRenderPass } from './raw-command-fixtures';
 
 // ── unified mock for @forgeax/engine-wgpu-wasm ──
 const fakeWasmAdapter = {
@@ -91,7 +92,7 @@ describe('backend device retirement', () => {
 describe('command encoder finish', () => {
   it('a second finish() returns command-encoder-finished and never reaches the wasm handle', () => {
     const finish = vi.fn(() => ({}));
-    const encoder = makeRhiCommandEncoder({ finish });
+    const encoder = makeRhiCommandEncoder(rawCommandEncoder({ finish }));
     expect(encoder.finish().ok).toBe(true);
     const second = encoder.finish();
     expect(second.ok).toBe(false);
@@ -277,16 +278,16 @@ describe('WebGL2 wasm surface configuration', () => {
 });
 
 describe('compute-pass forwarding', () => {
-  it('raises a structured capability refusal when the raw encoder has no compute pass', () => {
-    const encoder = makeRhiCommandEncoder({});
-
-    expect(() => encoder.beginComputePass()).toThrowError(
-      expect.objectContaining({
-        code: 'feature-not-enabled',
-        expected: expect.stringContaining('feature compute'),
-        hint: expect.stringContaining('caps.compute'),
+  it('preserves a native compute refusal', () => {
+    const failure = new Error('compute unavailable on this backend');
+    const encoder = makeRhiCommandEncoder(
+      rawCommandEncoder({
+        beginComputePass() {
+          throw failure;
+        },
       }),
     );
+    expect(() => encoder.beginComputePass()).toThrow(failure);
   });
 
   it('forwards pipeline, bindings, direct and indirect dispatch into the wasm handle', () => {
@@ -298,7 +299,7 @@ describe('compute-pass forwarding', () => {
       end: vi.fn(),
     };
     const beginComputePass = vi.fn(() => rawPass);
-    const encoder = makeRhiCommandEncoder({ beginComputePass });
+    const encoder = makeRhiCommandEncoder(rawCommandEncoder({ beginComputePass }));
     const querySet = {};
     const pass = encoder.beginComputePass({
       label: 'compute',
@@ -337,18 +338,18 @@ describe('compute-pass forwarding', () => {
     let beginReceiver: unknown;
     let endReceiver: unknown;
     const descriptor = { timestampWrites: { querySet: {}, beginningOfPassWriteIndex: 0 } };
-    const rawPass = {
+    const rawPass = rawComputePass({
       end(this: unknown) {
         endReceiver = this;
       },
-    };
-    const rawEncoder = {
+    });
+    const rawEncoder = rawCommandEncoder({
       beginComputePass(this: unknown, received: unknown) {
         beginReceiver = this;
         expect(received).toBe(descriptor);
         return rawPass;
       },
-    };
+    });
 
     makeRhiCommandEncoder(rawEncoder).encodeEmptyComputePass(descriptor);
 
@@ -488,7 +489,7 @@ describe('surface presentation proof', () => {
 describe('render-pass dynamic-offset forwarding', () => {
   it('preserves Uint32Array start and length in the five-argument overload', () => {
     const rawPass = { setBindGroup: vi.fn() };
-    const pass = makeRhiRenderPassEncoder(rawPass);
+    const pass = makeRhiRenderPassEncoder(rawRenderPass(rawPass));
     const offsets = new Uint32Array([256, 512]);
     const bindings = {};
 
@@ -826,17 +827,11 @@ function setNavigatorGpu(gpu: unknown): void {
         expect(mockRequestAdapterWithCanvas).not.toHaveBeenCalled();
       });
 
-      test('Edge: ensureReady() not called => structured error with hint', async () => {
+      test('adapter requests initialize the module without explicit prewarming', async () => {
         removeNavigatorGpu();
-
         const { requestAdapter } = await import('../index');
-        const result = await requestAdapter();
-
-        expect(result.ok).toBe(false);
-        if (!result.ok) {
-          expect(result.error.code).toBe('rhi-not-available');
-          expect(result.error.hint).toContain('ensureReady');
-        }
+        expect((await requestAdapter()).ok).toBe(true);
+        expect(fakeWasmInstance.requestAdapter).toHaveBeenCalledTimes(1);
       });
 
       test('M2 w10 — caps.backendKind is non-undefined and value in valid set', async () => {
@@ -1267,15 +1262,50 @@ function setNavigatorGpu(gpu: unknown): void {
         expect((out as FakeModule).id).toBe('fake-module-after-retry');
       });
 
-      test('(d) getRhiWgpuModule returns undefined before settle and the module after', async () => {
-        expect(getRhiWgpuModule()).toBeUndefined();
-        const fakeModule: FakeModule = {
-          id: 'fake-module-accessor',
-          spike_create_instance: () => 'ok',
-        };
-        const initFn = vi.fn(async () => fakeModule);
-        await ensureRhiWgpuReady({ initFn });
-        expect(getRhiWgpuModule()).toBe(fakeModule);
+      test('adapter requests await an in-flight native initializer', async () => {
+        restoreMocks();
+        let resolveInit!: (module: unknown) => void;
+        const pending = new Promise((resolve) => {
+          resolveInit = resolve;
+        });
+        const initFn = vi.fn(() => pending);
+        const ready = ensureRhiWgpuReady({ initFn });
+        const { requestAdapter } = await import('../index');
+        const adapter = requestAdapter();
+        let settled = false;
+        void adapter.then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(fakeWasmInstance.requestAdapter).not.toHaveBeenCalled();
+        resolveInit(fakeWasmNamespace);
+        await ready;
+        expect((await adapter).ok).toBe(true);
+        expect(ensureRhiWgpuReady()).toBe(ready);
+        expect(initFn).toHaveBeenCalledTimes(1);
+      });
+
+      test('adapter initialization failure remains structured and admits retry', async () => {
+        restoreMocks();
+        const failure = new Error('native Host unavailable');
+        let rejectInit!: (cause: unknown) => void;
+        const pending = new Promise((_resolve, reject) => {
+          rejectInit = reject;
+        });
+        const ready = ensureRhiWgpuReady({ initFn: () => pending });
+        const rejection = expect(ready).rejects.toBe(failure);
+        const { requestAdapter } = await import('../index');
+        const adapter = requestAdapter();
+        rejectInit(failure);
+        await rejection;
+        const result = await adapter;
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.code).toBe('rhi-not-available');
+          expect(result.error.hint).toContain('native Host unavailable');
+        }
+        expect((await requestAdapter()).ok).toBe(true);
       });
 
       test('(e) default factory resolves through @forgeax/engine-wgpu-wasm ensureReady (no explicit initFn)', async () => {

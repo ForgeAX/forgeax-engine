@@ -225,7 +225,7 @@ function spawnScene(world, antialias) {
   // Directional light.
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: DARK_GRADIENT_FIXTURE.scene.lightDirection,
       color: [1, 1, 1],
       intensity: DARK_GRADIENT_FIXTURE.scene.lightIntensity,

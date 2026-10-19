@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -99,46 +99,7 @@ execFileSync('pnpm', ['--filter', '@forgeax/hello-m2-content-pipeline', 'smoke:b
 });
 console.log('[m2-content] browser Worker font bake: PASS');
 
-const fontCliPath = resolve(root, 'packages/font/dist/cli-font.mjs');
-const fontSourcePath = resolve(root, 'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf');
-const nodeFontOutput = resolve(root, '.forgeax-gauntlet/hello-m2-content-pipeline/node-font-worker');
-mkdirSync(nodeFontOutput, { recursive: true });
-const invalidFontPath = resolve(nodeFontOutput, 'invalid.woff2');
-writeFileSync(invalidFontPath, Buffer.from('wOF2\u0000\u0000\u0000\u0000'));
-let invalidFontStderr = '';
-try {
-  execFileSync('node', [fontCliPath, 'bake', invalidFontPath, nodeFontOutput], {
-    cwd: root,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-} catch (error) {
-  invalidFontStderr = String(error.stderr ?? '');
-}
-let invalidFontFailure;
-try {
-  invalidFontFailure = JSON.parse(invalidFontStderr.trim());
-} catch {
-  fail(`plain-Node invalid font did not return structured JSON: ${invalidFontStderr}`);
-}
-if (invalidFontFailure.code !== 'unsupported-font-format' || invalidFontFailure.expected !== 'ttf') {
-  fail(`plain-Node invalid font returned ${invalidFontStderr}`);
-}
-execFileSync('node', [fontCliPath, 'bake', fontSourcePath, nodeFontOutput], {
-  cwd: root,
-  stdio: 'inherit',
-});
-const nodeFontAtlas = resolve(nodeFontOutput, 'DejaVuSansMono.atlas.png');
-const nodeFontSidecar = resolve(nodeFontOutput, 'DejaVuSansMono.meta.json');
-const nodeFontSidecarData = JSON.parse(readFileSync(nodeFontSidecar, 'utf8'));
-const nodeFontGlyphs = Object.keys(nodeFontSidecarData.glyphs ?? {});
-if (!existsSync(nodeFontAtlas) || readFileSync(nodeFontAtlas)[0] !== 0x89) {
-  fail('plain-Node font bake emitted no PNG atlas');
-}
-if (nodeFontSidecarData.common?.atlasWidth !== 1024 || nodeFontGlyphs.length <= 90) {
-  fail(`plain-Node font bake emitted invalid sidecar glyphs=${nodeFontGlyphs.length}`);
-}
-console.log(`[m2-content] plain Node font bake + structured recovery: PASS glyphs=${nodeFontGlyphs.length}`);
+execFileSync('node', [resolve(here, 'smoke-node-font.mjs')], { cwd: root, stdio: 'inherit' });
 
 const imageMetaPath = resolve(root, 'forgeax-engine-assets/learn-opengl/objects/planet/mars.png.meta.json');
 const imageMeta = JSON.parse(readFileSync(imageMetaPath, 'utf8'));

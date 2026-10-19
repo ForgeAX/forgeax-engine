@@ -81,3 +81,36 @@ it('transfers disposal ownership on admission and retires a superseded buffer on
   expect(destroy.mock.calls.filter(([value]) => value === buffer)).toHaveLength(1);
   owner.dispose();
 });
+
+it('keeps accepted candidates detached across builtin registration and late discard', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const destroy = vi.spyOn(device, 'destroyBuffer');
+  const owner = createPostProcessParamsOwner(
+    { device, errorRegistry: new RhiErrorListenerRegistry() },
+    vi.fn(),
+  );
+  const entry: PostProcessShaderEntry = {
+    source: 'overlay',
+    params: { byteSize: 32, defaultValue: new Uint8Array(32) },
+  };
+  const entries = new Map([['overlay', entry]]);
+  const first = owner.prepare(entries).unwrap();
+  owner.accept(first);
+  owner.featureEntries = entries;
+  const overlay = first.buffers.get('overlay');
+  const unregister = owner.registerBuiltinPostProcess('builtin', { ...entry, source: 'builtin' });
+  const builtin = owner.getBuffer('builtin');
+  expect(first.buffers.has('builtin')).toBe(false);
+  const second = owner.prepare(entries).unwrap();
+  owner.accept(second);
+  owner.discard(first);
+  expect(destroy).not.toHaveBeenCalled();
+  unregister();
+  expect(second.buffers.get('builtin')).toBe(builtin);
+  expect(owner.getBuffer('builtin')).toBeUndefined();
+  expect(owner.getBuffer('overlay')).toBe(overlay);
+  owner.discard(second);
+  owner.dispose();
+  expect(destroy.mock.calls.filter(([buffer]) => buffer === overlay)).toHaveLength(1);
+  expect(destroy.mock.calls.filter(([buffer]) => buffer === builtin)).toHaveLength(1);
+});

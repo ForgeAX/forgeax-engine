@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import {
   SSAO_UNIFORM_BYTES,
   SSAO_UNIFORM_INTENSITY_OFFSET,
-} from '../../../render/src/ssao-buffers';
+} from '../../../render/src/ssao-uniform';
 
 const FLOATS_PER_MAT4 = 16;
 const MAT4_COUNT = 3;

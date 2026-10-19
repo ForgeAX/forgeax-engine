@@ -1,10 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { type AssetError, ok, type Result } from '@forgeax/engine-types';
 import { formatFailure } from './errors.js';
-import { type MeshSourceFormat, meshSourceKey, parseMeshSource } from './importer.js';
-import { parseObjPackage } from './obj-package';
+import { meshSourceKey, parseMeshSource } from './importer.js';
 
 /** Source admission creates/reuses authored identities; the Importer only consumes them. */
 export async function importMeshFile(
@@ -15,7 +15,7 @@ export async function importMeshFile(
     {
       source: string;
       metaPath: string;
-      subAssets: readonly { guid: string; kind: string; sourceKey: string; sourceIndex: number }[];
+      subAssets: readonly (ImportSubAsset & { readonly sourceKey: string })[];
     },
     AssetError
   >
@@ -29,7 +29,7 @@ export async function importMeshFile(
       | {
           importer?: string;
           source?: string;
-          subAssets?: { guid: string; kind: string; sourceKey: string; sourceIndex: number }[];
+          subAssets?: (ImportSubAsset & { readonly sourceKey: string })[];
           importSettings?: Record<string, unknown>;
         }
       | undefined;
@@ -62,40 +62,20 @@ export async function importMeshFile(
         'existing sidecar requires unique valid mesh GUIDs and sourceKeys',
       );
     const bytes = await readFile(path);
-    const obj =
-      format === 'obj'
-        ? await parseObjPackage(new TextDecoder().decode(bytes), async (uri) =>
-            readFile(resolve(dirname(path), uri)),
-          )
-        : undefined;
-    const parsed =
-      obj ??
-      (await parseMeshSource(
-        format as MeshSourceFormat,
-        bytes,
-        typeof existing?.importSettings?.curveSegments === 'number'
-          ? existing.importSettings.curveSegments
-          : 24,
-      ));
+    const parsed = await parseMeshSource(
+      format,
+      bytes,
+      async (uri) => readFile(resolve(dirname(path), uri)),
+      typeof existing?.importSettings?.curveSegments === 'number'
+        ? existing.importSettings.curveSegments
+        : 24,
+    );
     if (!parsed.ok) return parsed;
-    const meshes =
-      obj?.ok === true
-        ? obj.value.meshes
-        : (parsed.value as readonly import('./geometry').ImportedMesh[]);
+    const { meshes, materials, textures } = parsed.value;
     const rows = [
       ...meshes.map((mesh) => ({ sourceKey: meshSourceKey(mesh), kind: 'mesh' })),
-      ...(obj?.ok === true
-        ? [
-            ...obj.value.materials.map((material) => ({
-              sourceKey: material.sourceKey,
-              kind: 'material',
-            })),
-            ...obj.value.textures.map((texture) => ({
-              sourceKey: texture.sourceKey,
-              kind: 'texture',
-            })),
-          ]
-        : []),
+      ...materials.map((material) => ({ sourceKey: material.sourceKey, kind: 'material' })),
+      ...textures.map((texture) => ({ sourceKey: texture.sourceKey, kind: 'texture' })),
     ];
     const keys = rows.map((row) => row.sourceKey);
     if (new Set(keys).size !== keys.length)

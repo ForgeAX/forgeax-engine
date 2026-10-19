@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createPreviewHost, type PreviewHostAdapter } from '../index.js';
+import { type PreviewHostAdapter, withPreviewSession } from '../index.js';
 
 function adapterWithCensus(census: {
   worlds: number;
@@ -29,8 +29,8 @@ function adapterWithCensus(census: {
 describe('preview host lexical session', () => {
   it('leases typed binding/frame/capture capabilities and disposes them once', async () => {
     const adapter = adapterWithCensus({ worlds: 0, renderers: 0, canvases: 0, leases: 0 });
-    const host = createPreviewHost(adapter);
-    const result = await host.withSession(
+    const result = await withPreviewSession(
+      adapter,
       {
         subject: { kind: 'mesh', guid: 'mesh:fixture' },
         snapshot: { revision: 1, digest: 'sha256:project' },
@@ -48,12 +48,9 @@ describe('preview host lexical session', () => {
   });
 
   it('fails closed when a session leaves a live resource census', async () => {
-    const host = createPreviewHost(
-      adapterWithCensus({ worlds: 1, renderers: 0, canvases: 0, leases: 0 }),
-    );
-
     await expect(
-      host.withSession(
+      withPreviewSession(
+        adapterWithCensus({ worlds: 1, renderers: 0, canvases: 0, leases: 0 }),
         {
           subject: { kind: 'material', guid: 'material:fixture' },
           snapshot: { revision: 1, digest: 'sha256:project' },

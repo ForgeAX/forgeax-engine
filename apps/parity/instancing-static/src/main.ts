@@ -186,7 +186,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Single DirectionalLight (matches hello-room main.ts shape, per AC-09).
   world.spawn({
     component: DirectionalLight,
-    data: {
+    data: { castShadow: true,
       direction: [LIGHT_DIR_X, LIGHT_DIR_Y, LIGHT_DIR_Z],
       color: [1, 1, 1],
       intensity: 1,

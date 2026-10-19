@@ -27,19 +27,14 @@ export function variantSetFromDefines(
     .join('+');
 }
 
-/**
- * Select the equirect source for the shared lazy projection.
- *
- * Skylight uses handle 0 as a real "solid-color ambient" sentinel, so nullish
- * coalescing cannot distinguish "no equirect" from a valid snapshot. Prefer a
- * non-zero Skylight handle and fall back to SkyboxBackground otherwise.
- */
-export function selectLazyEquirectHandle(
+/** Prepare both authored image sources; a shared image is projected once. */
+export function selectLazyEquirectHandles(
   skylight: Pick<SkylightSnapshot, 'equirectHandle'> | undefined,
   skybox: Pick<SkyboxSnapshot, 'equirectHandle'> | undefined,
-): number {
-  const skylightHandle = skylight?.equirectHandle ?? 0;
-  return skylightHandle !== 0 ? skylightHandle : (skybox?.equirectHandle ?? 0);
+): readonly number[] {
+  return [...new Set([skylight?.equirectHandle ?? 0, skybox?.equirectHandle ?? 0])].filter(
+    (handle) => handle !== 0,
+  );
 }
 
 /**
@@ -147,7 +142,7 @@ export function driveLazyEquirectProjection(
 ): void {
   const store = internals.gpuStore;
   const handle = toShared<'EquirectAsset'>(equirectHandle);
-  const failure = store.getCubemapFailure(handle);
+  const failure = store.getCubemapFailure(handle, world);
   if (failure !== undefined) {
     // Fire the structured error exactly once per failed source (the store
     // records failed permanently and never retries; R-2 / AC-09).
@@ -160,7 +155,7 @@ export function driveLazyEquirectProjection(
 
   // 'pending' and 'ready' are both handled downstream (white fallback while
   // pending; real IBL once ready). Only the first sight ('undefined') launches.
-  if (store.getCubemapStatus(handle) !== undefined) return;
+  if (store.getCubemapStatus(handle, world) !== undefined) return;
 
   // First sight: resolve the equirect POD and fire-and-forget the projection.
   const podRes = resolveAssetHandle<EquirectAsset>(world, handle);

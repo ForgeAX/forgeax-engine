@@ -4,6 +4,7 @@ import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine
 import { quat } from '@forgeax/engine-math';
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
 import type { Plugin } from '@forgeax/engine-plugin';
+import type { TextureViewControl } from '@forgeax/engine-preview';
 import { worldDespawnScene } from '@forgeax/engine-scene';
 import type { ToolCallerIdentity } from '@forgeax/engine-tool-runtime';
 import type { Asset, CatalogEntry, SceneAsset } from '@forgeax/engine-types';
@@ -32,6 +33,7 @@ export const ENGINE_WORKSPACE_PREVIEWABLE_KINDS = [
   'material',
   'mesh',
   'texture',
+  'equirect',
   'vfx',
 ] as const;
 
@@ -162,6 +164,7 @@ export interface EngineWorkspaceAssetBinding {
 }
 
 export interface EngineWorkspacePreview {
+  readonly texture?: TextureViewControl;
   readonly resize?: (input: {
     readonly targetId: string;
     readonly width: number;
@@ -225,6 +228,7 @@ export interface EngineWorkspacePlay extends EngineWorkspacePreview {
  * workspace preview below.
  */
 export interface EngineWorkspaceResourcePreviewOwner {
+  readonly texture?: TextureViewControl;
   readonly assetBinding?: EngineWorkspaceAssetBinding;
   readonly close?: () => Promise<void> | void;
 }
@@ -1355,6 +1359,7 @@ export async function createEngineWorkspaceAppPreview(
       return target.target;
     },
     asset: input.asset,
+    ...(resourceOwner?.texture === undefined ? {} : { texture: resourceOwner.texture }),
     ...(assetBinding === undefined ? {} : { assetBinding }),
     ...(loadedScene === undefined ? {} : { scene: loadedScene }),
     handle: {
@@ -1844,16 +1849,17 @@ export function captureEngineWorkspaceAssetBinding(
 export function projectEngineWorkspaceAssets(
   entries: readonly CatalogEntry[],
 ): EngineWorkspaceAsset[] {
-  return entries.map((entry) => ({
-    guid: String(entry.guid),
-    kind: String(entry.kind),
-    ...(entry.name === undefined ? {} : { name: String(entry.name) }),
-    ...(entry.sourceKey === undefined ? {} : { sourceKey: String(entry.sourceKey) }),
-    ...(entry.packageId === undefined ? {} : { packageId: String(entry.packageId) }),
-    ...(entry.lifecycle === undefined ? {} : { lifecycle: entry.lifecycle }),
-    path: String(entry.sourcePath),
-    previewable: (ENGINE_WORKSPACE_PREVIEWABLE_KINDS as readonly string[]).includes(
-      String(entry.kind),
-    ),
-  }));
+  return entries.map((entry) => {
+    const kind = entry.kind === 'particle-effect' ? 'vfx' : String(entry.kind);
+    return {
+      guid: String(entry.guid),
+      kind,
+      ...(entry.name === undefined ? {} : { name: String(entry.name) }),
+      ...(entry.sourceKey === undefined ? {} : { sourceKey: String(entry.sourceKey) }),
+      ...(entry.packageId === undefined ? {} : { packageId: String(entry.packageId) }),
+      ...(entry.lifecycle === undefined ? {} : { lifecycle: entry.lifecycle }),
+      path: String(entry.sourcePath),
+      previewable: (ENGINE_WORKSPACE_PREVIEWABLE_KINDS as readonly string[]).includes(kind),
+    };
+  });
 }

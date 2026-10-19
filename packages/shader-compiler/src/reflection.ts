@@ -12,7 +12,7 @@ import type {
   MaterialErrorFor,
   Result as MaterialResult,
 } from '@forgeax/engine-types';
-import { createMaterialError, err, ok } from '@forgeax/engine-types';
+import { createMaterialError, err, MATERIAL_NUMERIC_LAYOUT, ok } from '@forgeax/engine-types';
 
 /**
  * Parse the BGL JSON string emitted by naga emit_reflection.
@@ -196,10 +196,12 @@ export function compareDerivedMaterialInterface(
  * safe when the selected Naga module agrees on the actual array stride,
  * element struct span, member offsets, and fixed binding addresses. Keep this
  * check beside the raw reflection reader so a token/name match can never
- * publish an indirect draw ABI.
+ * publish an indirect draw ABI. Medium templates pass no derived material
+ * fields: their row is opaque, while storage addresses, strides and span
+ * retain the same contract.
  */
 export function validateSceneIndexStorage(
-  derived: DerivedMaterialInterface,
+  derived: DerivedMaterialInterface | undefined,
   reflection: Pick<ParsedReflection, 'boundGlobals' | 'bindings'>,
   rowStride: number,
   visibleItemsBinding: number,
@@ -219,65 +221,28 @@ export function validateSceneIndexStorage(
   if (scene?.span !== rowStride) {
     return `sceneMaterials element span ${String(scene?.span)} does not match row stride ${rowStride}`;
   }
-  const expectedMembers = expectedMaterialMembers(derived);
-  const actualMembers = scene.members ?? [];
-  if (actualMembers.length < expectedMembers.length) {
-    return `sceneMaterials element exposes ${actualMembers.length} members; expected ${expectedMembers.length}`;
-  }
-  for (let index = 0; index < expectedMembers.length; index += 1) {
-    const expected = expectedMembers[index];
-    const actual = actualMembers[index];
-    if (expected === undefined || actual === undefined || !sameMember(expected, actual)) {
-      return `sceneMaterials member ${expected?.name ?? String(index)} does not match the derived row layout`;
+  if (derived !== undefined) {
+    const expectedMembers = expectedMaterialMembers(derived);
+    const actualMembers = scene.members ?? [];
+    if (actualMembers.length < expectedMembers.length) {
+      return `sceneMaterials element exposes ${actualMembers.length} members; expected ${expectedMembers.length}`;
+    }
+    for (let index = 0; index < expectedMembers.length; index += 1) {
+      const expected = expectedMembers[index];
+      const actual = actualMembers[index];
+      if (expected === undefined || actual === undefined || !sameMember(expected, actual)) {
+        return `sceneMaterials member ${expected?.name ?? String(index)} does not match the derived row layout`;
+      }
+    }
+    if (
+      actualMembers
+        .slice(expectedMembers.length)
+        .some((member) => !member.name.startsWith('_gpuDrivenPadding'))
+    ) {
+      return 'sceneMaterials has an undeclared storage member after the derived row fields';
     }
   }
-  if (
-    actualMembers
-      .slice(expectedMembers.length)
-      .some((member) => !member.name.startsWith('_gpuDrivenPadding'))
-  ) {
-    return 'sceneMaterials has an undeclared storage member after the derived row fields';
-  }
 
-  const visible = reflection.boundGlobals.find(
-    (global) => global.group === 3 && global.binding === visibleItemsBinding,
-  );
-  return validateStorageGlobal(
-    visible,
-    reflection.bindings,
-    'visibleItems',
-    16,
-    3,
-    visibleItemsBinding,
-  );
-}
-
-/**
- * Validate the generic scene row used by a non-Standard Surface model.
- * Medium templates own an opaque row payload, so the canonical Standard stride
- * and read-only binding facts are the contract while Standard member names
- * remain owned by its existing parameter schema validator.
- */
-export function validateSingleLayerMediumSceneIndexStorage(
-  reflection: Pick<ParsedReflection, 'boundGlobals' | 'bindings'>,
-  rowStride: number,
-  visibleItemsBinding: number,
-): string | undefined {
-  const scene = reflection.boundGlobals.find(
-    (global) => global.group === 1 && global.binding === 46,
-  );
-  const sceneFailure = validateStorageGlobal(
-    scene,
-    reflection.bindings,
-    'sceneMaterials',
-    rowStride,
-    1,
-    46,
-  );
-  if (sceneFailure !== undefined) return sceneFailure;
-  if (scene?.span !== rowStride) {
-    return `sceneMaterials element span ${String(scene?.span)} does not match row stride ${rowStride}`;
-  }
   const visible = reflection.boundGlobals.find(
     (global) => global.group === 3 && global.binding === visibleItemsBinding,
   );
@@ -339,7 +304,7 @@ function expectedMaterialMembers(derived: DerivedMaterialInterface): ExpectedMat
   const members: ExpectedMaterialMember[] = (derived.numericMembers ?? []).map((member) => ({
     parameter: member.name,
     name: member.name,
-    type: numericWgslType(member.type),
+    type: MATERIAL_NUMERIC_LAYOUT[member.type].wgslType,
     offset: member.offset,
     // A vec3 occupies a 16-byte tail in a WGSL struct even though its
     // reflected member payload is 12 bytes; this is the raw struct span.
@@ -383,26 +348,6 @@ function expectedMaterialMembers(derived: DerivedMaterialInterface): ExpectedMat
 
 function roundUp(value: number, alignment: number): number {
   return value === 0 ? 0 : Math.ceil(value / alignment) * alignment;
-}
-
-function numericWgslType(type: string): string {
-  switch (type) {
-    case 'f32':
-      return 'f32';
-    case 'i32':
-      return 'i32';
-    case 'u32':
-      return 'u32';
-    case 'vec2':
-      return 'vec2<f32>';
-    case 'vec3':
-      return 'vec3<f32>';
-    case 'vec4':
-    case 'color':
-      return 'vec4<f32>';
-    default:
-      return type;
-  }
 }
 
 function sameMember(expected: ExpectedMaterialMember, actual: ShaderReflectionMember): boolean {

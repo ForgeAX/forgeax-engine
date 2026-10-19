@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
+import { halfFloat } from '@forgeax/engine/math';
+import { linearChannelToSrgb } from '@forgeax/engine/types';
 import { chromium } from 'playwright';
 import UPNG from 'upng-js';
 
@@ -353,13 +355,7 @@ try {
   );
   const facts = JSON.parse(await readFile(resolve(output, 'capture.json'), 'utf8'));
   const half = (v, i) => {
-    const u = v.getUint16(i, true),
-      e = (u >> 10) & 31,
-      m = u & 1023;
-    return (
-      (u & 32768 ? -1 : 1) *
-      (e === 0 ? m * 2 ** -24 : e === 31 ? (m ? NaN : Infinity) : (1 + m / 1024) * 2 ** (e - 15))
-    );
+    return halfFloat.f16ToF32(v.getUint16(i, true));
   };
   const { width, height, resolution } = facts,
     a = await readFile(resolve(output, 'albedoRoughness.bin')),
@@ -376,10 +372,7 @@ try {
     else if (status !== 0) invalid++;
     const rgb = [0, 1, 2].map((c) => {
       const linear = Math.max(0, half(av, i * 8 + c * 2));
-      return Math.round(
-        255 *
-          Math.min(1, linear <= 0.0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - 0.055),
-      );
+      return Math.round(255 * Math.min(1, linearChannelToSrgb(linear)));
     });
     rgba.set([...(status === 1 ? rgb : [190, 0, 170]), 255], i * 4);
     mask.set([...(status === 1 ? [40, 190, 70] : [190, 0, 170]), 255], i * 4);

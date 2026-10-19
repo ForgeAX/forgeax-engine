@@ -8,11 +8,11 @@ import { createRenderPipelineTarget } from '../../render-pipeline';
 import { addTypedFullscreenPass } from '../../typed-render-graph-primitives';
 import type { DepthOfFieldParams } from './depth-of-field-params';
 
-export const DEPTH_OF_FIELD_COC_ID = 'forgeax.dof.coc';
-export const DEPTH_OF_FIELD_PREFILTER_ID = 'forgeax.dof.prefilter';
-export const DEPTH_OF_FIELD_PREFILTER_METADATA_ID = 'forgeax.dof.prefilter.metadata';
-export const DEPTH_OF_FIELD_GATHER_ID = 'forgeax.dof.gather';
-export const DEPTH_OF_FIELD_COMPOSITE_ID = 'forgeax.dof.composite';
+const DEPTH_OF_FIELD_COC_ID = 'forgeax.dof.coc';
+const DEPTH_OF_FIELD_PREFILTER_ID = 'forgeax.dof.prefilter';
+const DEPTH_OF_FIELD_PREFILTER_METADATA_ID = 'forgeax.dof.prefilter.metadata';
+const DEPTH_OF_FIELD_GATHER_ID = 'forgeax.dof.gather';
+const DEPTH_OF_FIELD_COMPOSITE_ID = 'forgeax.dof.composite';
 
 /** All declarations are registered together so the build catalog is finite. */
 export const DEPTH_OF_FIELD_POST_PROCESS_IDS = Object.freeze([
@@ -26,11 +26,11 @@ export const DEPTH_OF_FIELD_MSAA_POST_PROCESS_IDS = Object.freeze(
   DEPTH_OF_FIELD_POST_PROCESS_IDS.map((id) => `${id}.msaa` as const),
 );
 
-export function depthOfFieldPostProcessId(id: string, multisampled: boolean): string {
+function depthOfFieldPostProcessId(id: string, multisampled: boolean): string {
   return multisampled ? `${id}.msaa` : id;
 }
 
-export interface DepthOfFieldTopology {
+interface DepthOfFieldTopology {
   readonly blurSide: DepthOfFieldSide;
   readonly useNear: boolean;
   readonly useFar: boolean;

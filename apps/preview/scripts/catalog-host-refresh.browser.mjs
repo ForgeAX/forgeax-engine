@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 // Real Vite + browser proof for the preview host's opted-in asset refresh.
 //
 // This intentionally does not use Vitest's browser dev server: the assertion
@@ -22,10 +23,7 @@ mkdirSync(artifactDir, { recursive: true });
 
 async function availablePort() {
   const probe = createNetServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', resolve);
-  });
+  await once(probe.listen(0, '127.0.0.1'), 'listening');
   const address = probe.address();
   if (address === null || typeof address === 'string') throw new Error('could not allocate a TCP port');
   await new Promise((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));

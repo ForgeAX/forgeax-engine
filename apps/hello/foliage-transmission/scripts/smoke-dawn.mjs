@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { encodePng } from '@forgeax/engine-image/png';
 // Dawn-node smoke: three back-lit leaves. The opaque control must stay dark,
 // the transmissive leaf must glow green, and the masked leaf must match the
 // control on its masked half and the transmissive leaf on its open half.
@@ -10,7 +11,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeReferencePng } from '../../../shared/png-codec.mjs';
+
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { height, patch, runFoliage, width } from './dawn-harness.mjs';
 
@@ -28,7 +29,7 @@ const run = await runFoliage({
 });
 const pngOut = process.env.SMOKE_PNG_OUT ?? resolve(appRoot, 'artifacts', falsify ? `smoke-${falsify}.png` : 'smoke-frame.png');
 mkdirSync(dirname(pngOut), { recursive: true });
-writeFileSync(pngOut, writeReferencePng(run.pixels, width, height));
+writeFileSync(pngOut, encodePng(width, height, run.pixels));
 
 const opaque = patch(run.pixels, [85, 105, 75, 105]);
 const leaf = patch(run.pixels, [150, 170, 75, 105]);
@@ -59,7 +60,7 @@ const furnace = await runFoliage({
   frames: targetFrames,
 });
 const furnacePng = resolve(dirname(pngOut), falsify ? `furnace-${falsify}.png` : 'furnace-frame.png');
-writeFileSync(furnacePng, writeReferencePng(furnace.pixels, width, height));
+writeFileSync(furnacePng, encodePng(width, height, furnace.pixels));
 // Panel centres at world x -2.85, -0.95, 0.95, 2.85 project to these columns.
 const [control, ...split] = [72, 131, 190, 249].map((x) => patch(furnace.pixels, [x - 8, x + 8, 75, 105]));
 console.log(`[smoke] furnace control ${fmt(control)}`);

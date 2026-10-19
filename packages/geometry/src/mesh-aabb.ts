@@ -1,4 +1,4 @@
-import type { MeshAsset as TypesMeshAsset } from '@forgeax/engine-types';
+import { isFiniteBounds3, type MeshAsset as TypesMeshAsset } from '@forgeax/engine-types';
 
 /**
  * Compute the local-space AABB of a mesh from its position attribute.
@@ -61,27 +61,7 @@ function hasPositionData(position: unknown): boolean {
 
 /** Admit the complete finite, ordered six-value mesh bounds contract. */
 export function isFiniteAabb(aabb: unknown): aabb is Float32Array {
-  if (!(aabb instanceof Float32Array) || aabb.length !== 6) return false;
-  for (const value of aabb) {
-    if (!Number.isFinite(value)) return false;
-  }
-  const minX = aabb[0];
-  const minY = aabb[1];
-  const minZ = aabb[2];
-  const maxX = aabb[3];
-  const maxY = aabb[4];
-  const maxZ = aabb[5];
-  return (
-    minX !== undefined &&
-    minY !== undefined &&
-    minZ !== undefined &&
-    maxX !== undefined &&
-    maxY !== undefined &&
-    maxZ !== undefined &&
-    minX <= maxX &&
-    minY <= maxY &&
-    minZ <= maxZ
-  );
+  return aabb instanceof Float32Array && aabb.length === 6 && isFiniteBounds3(aabb);
 }
 
 // Assigns the computed AABB to the mesh in place when the object is

@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMockGpu } from '../../../rhi-webgpu/src/__tests__/__mocks__/gpu-device';
 import { makeRhiDevice } from '../../../rhi-webgpu/src/device';
 import { createShaderModuleImmediate } from '../../../rhi-webgpu/src/index';
+import * as materialPrograms from '../../../shader/src/material/program';
+import { ShaderRegistry } from '../../../shader/src/ShaderRegistry';
 import { PreparedRenderPipelineOwner } from '../assembly/material/prepared-pipeline-owner';
+import { prepareDevicePipelineLibrary } from '../assembly/webgpu-ready';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 
 async function fixture() {
@@ -19,6 +22,71 @@ async function fixture() {
 }
 
 describe('physical-device completion is consumed in the first preparation frame', () => {
+  it('prepares material source facts for the captured graphics roster before the first draw', async () => {
+    const source = await fixture();
+    const codes = [
+      '@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); }',
+      '@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }',
+      '@compute @workgroup_size(1) fn cs() {}',
+    ] as const;
+    const modules = codes.map((code) =>
+      createShaderModuleImmediate(source.device, { code }).unwrap(),
+    );
+    const [vertexModule, fragmentModule, computeModule] = modules;
+    if (vertexModule === undefined || fragmentModule === undefined || computeModule === undefined)
+      throw new Error('fixture shader modules are required');
+    for (const label of ['first', 'same source alias'])
+      (
+        await source.device.createRenderPipelineAsync?.({
+          label,
+          layout: 'auto',
+          vertex: { module: vertexModule, entryPoint: 'vs' },
+          fragment: {
+            module: fragmentModule,
+            entryPoint: 'fs',
+            targets: [{ format: 'rgba8unorm' }],
+          },
+        })
+      )?.unwrap();
+    (
+      await source.device.createComputePipelineAsync?.({
+        layout: 'auto',
+        compute: { module: computeModule, entryPoint: 'cs' },
+      })
+    )?.unwrap();
+    const manifest = source.device.pipelineLibrary?.export().unwrap();
+    if (manifest === undefined || manifest.renderPipelines[0] === undefined)
+      throw new Error('fixture graphics library is required');
+    const target = await fixture();
+    const registry = new ShaderRegistry({ manifestUrl: undefined });
+    const analyze = vi.spyOn(materialPrograms, 'createMaterialShaderProgram');
+    try {
+      await prepareDevicePipelineLibrary(target.device, manifest, registry);
+      expect(analyze).toHaveBeenCalledTimes(2);
+      const vertex = registry.materialProgram(codes[0]);
+      const fragment = registry.materialProgram(codes[1]);
+      expect(analyze).toHaveBeenCalledTimes(2);
+      const recovered = registry.forkForDevice(target.device);
+      await prepareDevicePipelineLibrary(target.device, manifest, recovered);
+      expect(recovered.materialProgram(codes[0])).toBe(vertex);
+      expect(recovered.materialProgram(codes[1])).toBe(fragment);
+      expect(analyze).toHaveBeenCalledTimes(2);
+      // Compute-only sources have no material contract and remain with their owner.
+      registry.materialProgram(codes[2]);
+      expect(analyze).toHaveBeenCalledTimes(3);
+      const invalid = {
+        ...manifest,
+        renderPipelines: [{ ...manifest.renderPipelines[0], vertex: { module: 999 } }],
+      };
+      await expect(
+        prepareDevicePipelineLibrary(target.device, invalid, registry),
+      ).rejects.toThrow();
+      expect(analyze).toHaveBeenCalledTimes(3);
+    } finally {
+      analyze.mockRestore();
+    }
+  });
+
   it('admits three separately named prewarmed compute recipes without an extra pending turn', async () => {
     const f = await fixture();
     const owner = createRenderFeatureGpuWorkOwner({

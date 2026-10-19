@@ -11,7 +11,7 @@ import type { FbxRawMaterial } from '../src/parse-material.js';
 describe('parseMaterial default fallback', () => {
   it('returns default grey baseColor for kind=fallback', () => {
     const raw: FbxRawMaterial = { kind: 'fallback' };
-    const pod: MaterialPod = parseMaterial(raw, 0);
+    const pod: MaterialPod = parseMaterial(raw);
     expect(pod.baseColorFactor[0]).toBeCloseTo(0.5);
     expect(pod.baseColorFactor[1]).toBeCloseTo(0.5);
     expect(pod.baseColorFactor[2]).toBeCloseTo(0.5);
@@ -21,12 +21,12 @@ describe('parseMaterial default fallback', () => {
   });
 
   it('returns default metallic=0 for fallback', () => {
-    const pod = parseMaterial({ kind: 'fallback' }, 0);
+    const pod = parseMaterial({ kind: 'fallback' });
     expect(pod.metallicFactor).toBeCloseTo(0);
   });
 
   it('returns default roughness=0.5 for fallback', () => {
-    const pod = parseMaterial({ kind: 'fallback' }, 0);
+    const pod = parseMaterial({ kind: 'fallback' });
     expect(pod.roughnessFactor).toBeCloseTo(0.5);
   });
 
@@ -36,7 +36,7 @@ describe('parseMaterial default fallback', () => {
       kind: 'lambert',
       diffuse: [0.7, 0.3, 0.1],
     };
-    const pod = parseMaterial(raw, 0);
+    const pod = parseMaterial(raw);
     expect(pod.name).toBe('Lamb');
     expect(pod.baseColorFactor[0]).toBeCloseTo(0.7);
     expect(pod.baseColorFactor[1]).toBeCloseTo(0.3);

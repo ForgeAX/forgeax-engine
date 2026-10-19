@@ -1,3 +1,4 @@
+import { calculateCatalogDelta } from '@forgeax/engine-pack/build';
 import { type CatalogDelta, type CatalogEntry, catalogOperationsFor } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { CatalogReplica } from '../registry/catalog-state.js';
@@ -301,4 +302,29 @@ describe('CatalogReplica', () => {
     });
     expect(replica.snapshot().stale).toBe(false);
   });
+});
+
+it.each([
+  { current: 0, code: 'catalog-revision-stale' },
+  { current: 1, code: 'catalog-revision-conflict' },
+  { current: 3, code: 'catalog-revision-conflict' },
+])('producer and replica retain the same revision failure for $current', async ({
+  current,
+  code,
+}) => {
+  const fixture = source();
+  const replica = new CatalogReplica(fixture.source as never);
+  await replica.start();
+  const changed = { ...base, packageUrl: '/new', revision: { ...base.revision, observedAt: 2 } };
+  const revisions = {
+    baseline: [{ rootId: 'fixture-root', revision: 1 }],
+    current: [{ rootId: 'fixture-root', revision: current }],
+  };
+  const produced = calculateCatalogDelta([base], [changed], revisions);
+  // Exercise receiver admission independently of the producer's degraded flag.
+  fixture.emit({ added: [], changed: [changed], removed: [], revisions });
+  expect(produced?.diagnostics?.[0]?.code).toBe(code);
+  expect(replica.snapshot().diagnostics).toEqual(produced?.diagnostics);
+  expect(replica.snapshot().entries[0]?.packageUrl).toBe(base.packageUrl);
+  replica.dispose();
 });

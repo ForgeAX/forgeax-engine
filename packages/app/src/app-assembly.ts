@@ -145,22 +145,14 @@ export async function createAppFromAssemble(
   const assembledAudioBackend = pluginContext.audio;
   const frameInspection = createFrameInspectionRef();
   const executionControl = createLocalExecutionControl(
-    {
-      ...createExecutionReport(
-        unavailableExecutionCapabilities('local assembly'),
-        selectExecutionWorkers({
-          workers: { engine: false },
-          capabilities: unavailableExecutionCapabilities('local assembly'),
-        }).unwrap(),
-      ),
-      engine: { realm: 'host', health: 'idle' },
-      world: {
-        identity: args.world.identity,
-        health: args.world.execution.health,
-        partialWrite: false,
-        retryable: true,
-      },
-    },
+    createExecutionReport(
+      unavailableExecutionCapabilities('local assembly'),
+      selectExecutionWorkers({
+        workers: { engine: false },
+        capabilities: unavailableExecutionCapabilities('local assembly'),
+      }).unwrap(),
+      args.world.execution,
+    ),
     {
       ...(assembledAudioBackend === undefined
         ? {}
@@ -277,6 +269,7 @@ export interface BuildAppArgs {
     readonly presentation: import('@forgeax/engine-render').FramePresentation;
     readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
     readonly worldIdentity?: string;
+    readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
   }) => void;
 }
 
@@ -320,22 +313,14 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
   const execution =
     args.executionControl ??
     createLocalExecutionControl(
-      {
-        ...createExecutionReport(
-          unavailableExecutionCapabilities('local assembly'),
-          selectExecutionWorkers({
-            workers: { engine: false },
-            capabilities: unavailableExecutionCapabilities('local assembly'),
-          }).unwrap(),
-        ),
-        engine: { realm: 'host', health: 'idle' },
-        world: {
-          identity: world.identity,
-          health: world.execution.health,
-          partialWrite: world.execution.fault?.partialWrite ?? false,
-          retryable: world.execution.fault?.retryable ?? true,
-        },
-      },
+      createExecutionReport(
+        unavailableExecutionCapabilities('local assembly'),
+        selectExecutionWorkers({
+          workers: { engine: false },
+          capabilities: unavailableExecutionCapabilities('local assembly'),
+        }).unwrap(),
+        world.execution,
+      ),
       {
         ...(audioBackend === undefined ? {} : { audio: () => audioBackend.getState() }),
         world: () => world.execution,
@@ -397,6 +382,9 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
           // presentation. If a legacy adapter omits it, do not turn an
           // unproven frame into startup success.
           presentation: receipt.presentation ?? 'pending',
+          ...(receipt.barrelDistortion === undefined
+            ? {}
+            : { barrelDistortion: receipt.barrelDistortion }),
           ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
             ? {}
             : { presentationPendingReason: receipt.presentationPendingReason }),

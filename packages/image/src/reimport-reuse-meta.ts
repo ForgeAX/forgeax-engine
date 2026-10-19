@@ -1,24 +1,16 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { ImportSubAsset } from '@forgeax/engine-types';
 import { deriveImageSourceKey } from './source-key.js';
-import type { ExternalAssetPackage, ExternalSubAsset } from './to-asset-pack.js';
+import type { ExternalAssetPackage } from './to-asset-pack.js';
 
-/** Persisted identity for the image producer's single texture output. */
-export interface ExistingSubAsset extends ExternalSubAsset {
-  readonly sourceKey?: string;
-}
-
-export interface ExistingExternalAssetPackage
-  extends Omit<ExternalAssetPackage, 'importSettings' | 'subAssets'> {
+export interface ExistingExternalAssetPackage extends Omit<ExternalAssetPackage, 'importSettings'> {
   readonly importSettings: Readonly<Record<string, unknown>>;
-  readonly subAssets: readonly ExistingSubAsset[];
 }
-
-export type EmittedSubAsset = ExistingSubAsset;
 
 /** Preserve the first matching source identity or unnamed legacy texture locator. */
 export function reimportReuseMeta(
   existing: ExistingExternalAssetPackage | undefined,
-): readonly EmittedSubAsset[] {
+): readonly ImportSubAsset[] {
   const sourceKey = deriveImageSourceKey('texture');
   const reused = existing?.subAssets.find(
     (candidate) =>

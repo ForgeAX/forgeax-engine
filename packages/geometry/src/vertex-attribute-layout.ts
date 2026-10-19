@@ -1,3 +1,4 @@
+import { fnv1aUtf16 } from '@forgeax/engine-types';
 // @forgeax/engine-runtime - Vertex attribute layout SSOT (14-key closed set
 // to GPUVertexBufferLayout derived function).
 //
@@ -292,11 +293,7 @@ function elementView(
 }
 
 function fnv1a(input: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
+  const hash = fnv1aUtf16(input);
   return `vlp-v1-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
@@ -503,13 +500,18 @@ export function unpackInterleavedVertexAttributes(
   if (vertexCount === undefined) return undefined;
   const view = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
   const attributes: Record<string, Float32Array | Uint16Array> = {};
+  let storageBytes = 0;
+  for (const entry of projection.attributes) storageBytes += vertexCount * entry.byteLength;
+  const storage = new ArrayBuffer(storageBytes);
+  let storageOffset = 0;
   for (const entry of projection.attributes) {
     const short = entry.format === 'uint16x4';
     const width = short ? 2 : 4;
     const components = entry.byteLength / width;
     const target = short
-      ? new Uint16Array(vertexCount * components)
-      : new Float32Array(vertexCount * components);
+      ? new Uint16Array(storage, storageOffset, vertexCount * components)
+      : new Float32Array(storage, storageOffset, vertexCount * components);
+    storageOffset += target.byteLength;
     if (nativeLittleEndian) {
       const values = short
         ? new Uint16Array(vertices.buffer, vertices.byteOffset, vertices.byteLength / 2)

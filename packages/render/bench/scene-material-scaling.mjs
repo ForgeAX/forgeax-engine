@@ -1,3 +1,4 @@
+import { encodePng } from '@forgeax/engine-image/png';
 // Built-package, real Renderer diagnostic. Run under the host's physical GPU lock.
 // node packages/render/bench/scene-material-scaling.mjs [output-directory]
 // Timing/readback/inspection facts come from Renderer; this adds no GPU registry.
@@ -17,7 +18,7 @@ import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { create, globals } from '@forgeax/engine-dawn-node';
-import { writeReferencePng } from '../../../apps/shared/png-codec.mjs';
+
 
 const root = resolve(import.meta.dirname, '../../..');
 const output = resolve(process.argv[2] ?? 'artifacts/scene-material-scaling/scale');
@@ -219,7 +220,7 @@ async function workload({ count, mixed, dirtyRatio }) {
     const statistics = Object.fromEntries(['A', 'B'].map((mode) => [mode, Object.fromEntries(['cpuWorldMs', 'cpuDrawMs', 'cpuTotalMs', 'completionWaitMs', 'gpuPassEnvelopeMs'].map((key) => [key, summary(raw[mode], key)]))]));
     await writeFile(resolve(output, `${id}-raw.json`), JSON.stringify(raw));
     await writeFile(resolve(output, `${id}-inspection.json`), JSON.stringify(inspections, null, 2));
-    for (const mode of ['A', 'B']) await writeFile(resolve(output, `${id}-${mode}.png`), writeReferencePng(images[mode], width, height));
+    for (const mode of ['A', 'B']) await writeFile(resolve(output, `${id}-${mode}.png`), encodePng(width, height, images[mode]));
     const result = { id, count, categories, dirtyRatio, statistics, parity: { rms, maxError, litChannels: lit, thresholdRms: 0.05 }, errors };
     console.error(JSON.stringify(result));
     if (errors.length > 0 || rms > 0.05 || lit === 0) throw new Error(`scale correctness failed: ${id}`);

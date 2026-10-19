@@ -126,7 +126,7 @@ test('older glibc hosts build the locked Mesa source instead of failing or skipp
   assert.equal(selectProducer('2.39'), 'prebuilt');
   assert.equal(selectProducer('3.0'), 'prebuilt');
   assert.equal(selectProducer('2.35'), 'source');
-  assert.match(lock.source.url, /mesa-25\.2\.8\.tar\.xz$/);
+  assert.match(lock.source.url, /mesa_25\.2\.8\.orig\.tar\.xz$/);
   assert.match(lock.source.sha256, /^[0-9a-f]{64}$/);
   assert.ok(lock.source.mesonOptions.includes('-Dvulkan-drivers=swrast'));
   const env = { XDG_CACHE_HOME: '/cache' };
@@ -141,4 +141,20 @@ test('a bundle receipt from the other producer is rejected', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// Distribution archives remove superseded versions; the producer must remain
+// fetchable without changing its locked package bytes.
+test('graphics producers use one immutable official archive snapshot', () => {
+  const lock = JSON.parse(readFileSync('scripts/ci/local-graphics.lock.json', 'utf8'));
+  const snapshots = new Set();
+  for (const entry of [...lock.packages, lock.source]) {
+    const url = new URL(entry.url);
+    assert.equal(url.origin, 'https://snapshot.ubuntu.com');
+    const match = url.pathname.match(/^\/ubuntu\/(\d{8}T\d{6}Z)\/pool\//);
+    assert.ok(match, entry.url);
+    snapshots.add(match[1]);
+    assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+  }
+  assert.equal(snapshots.size, 1);
 });

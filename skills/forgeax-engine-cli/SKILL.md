@@ -25,6 +25,8 @@ annotations to platform independent View; hand off its actual View/project URL.
 Use platform simulation for MCP bridge regression and platform native for actual
 host behavior. Keep simulation and native evidence distinct.
 
+For Linux batch jobs without a monitor, first follow [Linux unattended validation](references/linux-unattended.md): writable XDG state, explicit headless versus Xvfb, and sandboxed non-root Chromium.
+
 ## Persistent live control
 
 Run commands from a game project root, or pass `--root`. The live owner keeps
@@ -124,7 +126,7 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Package a hosted Web ZIP including Engine runtime | `forgeax project package --format web-zip [--output release/game-web.zip]` |
 | Create a single-HTML offline candidate | `forgeax project package --format single-html --output release/game-offline.html --json` |
 | Browser compositor screenshot including Canvas and HTML/Shadow DOM | `forgeax project capture --backend auto --require-ui --output <png> --json` |
-| Capture without a display or physical GPU | `forgeax project capture --backend software --require-ui --output <png> --json` |
+| Headless software compositor capture | `forgeax project capture --headless true --backend software --require-ui --output <png> --json` |
 | Play one session and capture multiple checkpoints | `node <scenario.mjs>` + `createBrowserCapture(root).open()` / `session.capture()` |
 | Discover commands and arguments | `forgeax help [path] [--tree] [--json]` |
 | Execute build/resource-preview/authoring operations | `forgeax project ...` / `forgeax asset ...` / `forgeax rhi ...` / `forgeax profile ...` / `forgeax preview analyze` |
@@ -161,7 +163,7 @@ serves built `dist/`; it does not start a source-development server.
 
 > [!IMPORTANT]
 > This development visual-evidence path supports available browser adapters through backend auto.
-> Explicitly select backend software on hosts without a display/physical GPU. Ordinary preview, player paths, and
+> Select `--headless true` without X11; select `--backend software` for software validation. A missing monitor does not require a software adapter. Ordinary preview, player paths, and
 > release acceptance do not silently switch to software.
 
 ```bash
@@ -233,7 +235,7 @@ Pages/sessions in finally.
 |:--|:--|:--|
 | Dawn/Node smoke | Mesa lavapipe | GPUTexture readback without DOM. |
 | forgeax project capture --backend auto | Chrome hardware, software fallback when unavailable | Final Canvas + DOM/Shadow DOM composition. |
-| forgeax project capture --backend software / persistent SDK command-client session | Chrome SwiftShader + Xvfb | Final Canvas + DOM/Shadow DOM composition; persistent sessions retain game state across captures. |
+| forgeax project capture --backend software / persistent SDK command-client session | Chrome SwiftShader, headless or Xvfb | Final Canvas + DOM/Shadow DOM composition; persistent sessions retain game state across captures. |
 
 > [!CAUTION]
 > Software pixels support screenshot iteration and deterministic regression, not physical GPU performance, vendor-driver compatibility, HDR displays, or release acceptance.

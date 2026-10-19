@@ -8,6 +8,8 @@ Install `physicsPlugin('rapier-3d')` in the World; game code consumes the option
 |:--|:--|
 | Load | Package-local patched WASM loading and native Cordis Physics service readiness. |
 | Fixed sync | Ordinary ECS Transform / RigidBody / Collider projection after fixed Scene propagation. Shapes consume resolved world scale; dynamic bodies own their pose after creation. |
+| Character supports | Native KCC applies one moving-support friction contribution before shape casting, including the no-hit descending-support path; later contacts share its accumulator. Caller adds input/gravity, never a second platform translation. |
+| Character pushes | Native KCC contact impulses push solid dynamic bodies; sensor filtering remains active. No game-side duplicate push is required. |
 | Native step | Exactly one `FixedTime.delta` step per World fixed iteration; World owns host clock, bounded catch-up and discarded time. |
 | Derived geometry | Convex point sets, heightfields and voxel regions become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
 | Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform; sleeping unchanged bodies avoid redundant writes. |

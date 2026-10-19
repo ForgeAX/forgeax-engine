@@ -48,3 +48,24 @@ it('records public CLI and SDK command calls while View and games are absent', a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('preserves the storage failure and recovery hint through the public CLI', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-cli-history-failure-'));
+  try {
+    const blocked = join(root, 'blocked');
+    await writeFile(blocked, 'not a directory');
+    vi.stubEnv('FORGEAX_HISTORY_DIR', blocked);
+    const result = await runUnifiedCli(['dev', 'status', '--root', root, '--json']);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'operation-history-write-failed',
+        hint: expect.stringContaining('FORGEAX_HISTORY_DIR'),
+        detail: { directory: expect.stringContaining(blocked) },
+      },
+    });
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});

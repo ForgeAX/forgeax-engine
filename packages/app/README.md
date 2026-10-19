@@ -661,7 +661,12 @@ The App `startupTimeoutMs` policy also bounds child Renderer initialization and
 replacement, plus SharedKernel worker initialization and module preflight; a child
 does not impose a separate shorter startup limit. Kernel startup and preflight
 share one pool-start deadline, while running kernel dispatch keeps its separate
-5-second deadline. Set it to `null` to remove these startup deadlines while
+5-second deadline. The first source frame uses this startup policy too: deferred
+source preparation must not inherit the shorter steady-frame admission budget.
+After its first accepted source completion, `frameTimeoutMs` bounds subsequent
+admissions (default two seconds). Each rebuilt World starts again at its first
+source frame; visibility and identity fencing retain the existing watchdog rules.
+Set `startupTimeoutMs` to `null` to remove these startup deadlines while
 retaining explicit cancellation and disposal. The preliminary DedicatedWorker
 capability probe also uses an explicit `startupTimeoutMs`; omission keeps its
 short probe default, and `null` leaves the probe unbounded.

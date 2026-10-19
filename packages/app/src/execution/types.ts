@@ -190,8 +190,9 @@ export interface ExecutionOptions {
   readonly assetCatalog?: ExecutionAssetCatalog;
   /** Opt-in diagnostics created inside the selected execution realm. */
   readonly diagnostics?: ExecutionDiagnosticsOptions;
-  /** Omit for the normal deadline; null waits until startup completes or is cancelled. */
+  /** Bounds initialization and the first source frame; null waits until completion or cancellation. */
   readonly startupTimeoutMs?: number | null;
+  /** Bounds source frame admission after the first source completion. */
   readonly frameTimeoutMs?: number;
 }
 

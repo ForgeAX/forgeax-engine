@@ -57,17 +57,14 @@ Web ZIPs require and preserve root README.md and docs/feedback.md.
 ## Browser compositor iteration
 
 > [!IMPORTANT]
-> This development evidence path uses available browser adapters. Select software explicitly without a display
-> or physical GPU. It is separate from ordinary player/release acceptance.
+> This development evidence path uses available browser adapters. Select software explicitly without a usable physical GPU.
+> A missing monitor alone does not require software rendering. It is separate from ordinary player/release acceptance.
 
-One-time Ubuntu browser/software-driver setup:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y mesa-vulkan-drivers vulkan-tools xvfb xauth
-pnpm dlx playwright@1.60.0 install-deps chromium
-pnpm dlx playwright@1.60.0 install chrome-beta
-```
+For Linux image preparation and writable XDG state, follow
+[Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md).
+Read the actual OS before choosing Ubuntu apt or TencentOS dnf packages. Use
+`--headless true` to capture without X11/Xvfb; the default virtual headed route
+requires Xvfb when `DISPLAY` is absent. Run sandboxed Chromium as a non-root user.
 
 Then run from the game root:
 
@@ -76,7 +73,7 @@ pnpm exec forgeax project capture --backend auto --require-ui \
   --output artifacts/capture/game-ui.png --json
 ```
 
-The CLI starts source-development asset services, adds Xvfb without DISPLAY on Linux, and uses real browser
+The CLI starts source-development asset services, adds Xvfb for a headed capture without DISPLAY on Linux, and uses real browser
 full-page composition for Canvas plus HTML/Shadow DOM. The neighboring JSON
 records adapter, browser, resolution, UI witness, and errors. Mesa lavapipe serves Dawn/Node
 offscreen readback; it does not compose browser DOM.

@@ -44,6 +44,11 @@ actual wgpu/Blitz checkouts with the Engine gitlinks before rebuilding. The shar
 input entry must synchronize existing public source checkouts too; `Cargo.toml`
 presence is not pin admission. Retain compiler source and byte verification.
 
+For Linux software validation, use `pnpm ci:graphics setup` and the
+[isolated graphics contract](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
+The pinned official archive snapshot retains package bytes after moving mirrors
+remove old releases; retain download/hash errors rather than bypassing setup.
+
 Basic source initialization and ordinary tests do not require Dawn. `pnpm test`
 retains its DevKit browser journeys; Dawn GPU testing is a local opt-in. For a missing
 carrier on macOS/Windows, explicitly run

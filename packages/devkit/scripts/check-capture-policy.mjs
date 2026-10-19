@@ -21,6 +21,9 @@ const viewport = lightweight
       height: positiveEnv('FORGEAX_BROWSER_CI_VIEWPORT_HEIGHT', 180),
     }
   : {};
+const captureOutput = (name) => process.env.FORGEAX_CAPTURE_POLICY_OUTPUT
+  ? { outputDir: join(process.env.FORGEAX_CAPTURE_POLICY_OUTPUT, name) }
+  : {};
 await writeFile(
   join(root, 'forge.json'),
   JSON.stringify({
@@ -81,6 +84,7 @@ const server = createServer((request, response) => {
 await once(server.listen(0, '127.0.0.1'), 'listening');
 const browser = createBrowserCapture(root);
 const results = [];
+const headlessOnly = process.env.FORGEAX_CAPTURE_HEADLESS_ONLY === '1';
 let watchdog;
 try {
   const help = JSON.parse(
@@ -102,6 +106,7 @@ try {
     backend: 'software',
     serverUrl: `http://127.0.0.1:${server.address().port}`,
     ...viewport,
+    ...captureOutput('observation'),
   });
   watchdog = setTimeout(() => void session.close(), 15_000);
   await session.page.evaluate(() => console.error('capture-policy diagnostic'));
@@ -142,6 +147,7 @@ try {
     backend: 'software',
     serverUrl: `http://127.0.0.1:${server.address().port}/probe-navigation`,
     ...viewport,
+    ...captureOutput('navigation'),
   });
   try {
     const capture = await navigated.capture(undefined, { timeoutMs: 10_000 });
@@ -153,15 +159,17 @@ try {
   } finally {
     await navigated.close();
   }
-  for (const headless of [true, false]) {
+  for (const headless of headlessOnly ? [true] : [true, false]) {
     const gpu = await browser.open({
       headless,
       backend: 'software',
       serverUrl: `http://127.0.0.1:${server.address().port}/gpu`,
       ...viewport,
+      ...captureOutput(headless ? 'headless' : 'virtual-display'),
     });
     try {
       const capture = await gpu.capture(undefined, { timeoutMs: 10_000 });
+      if (headless) assert.equal(gpu.report().display, null);
       assert.equal(capture.pixels.rendered, true);
       assert.deepEqual(gpu.report().pageErrors, []);
       assert.deepEqual(gpu.report().consoleErrors, []);
@@ -170,6 +178,10 @@ try {
         headless,
         rendered: capture.pixels.rendered,
         backend: gpu.report().backend,
+        display: gpu.report().display,
+        browser: gpu.report().browser.version,
+        adapter: capture.runtime.adapter,
+        report: gpu.reportPath,
       });
     } finally {
       await gpu.close();

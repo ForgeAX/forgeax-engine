@@ -264,6 +264,10 @@ or observed risk. Hand over the working game without expanding the acceptance lo
 Report the playable entry, core checks, viewed screenshot, and limitations. A build,
 URL, HTTP 200, or canonical-template test alone cannot accept the authored game.
 If browser verification is unavailable, retain diagnostics and state the missing evidence.
+For Linux batch jobs, follow [Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md)
+before retrying: explicit headless needs no Xvfb; virtual headed capture does.
+A blocked browser is not a completed runtime acceptance. If the requested capability
+has no supported entry, report that finding; an unchanged template is not its demo.
 After repair, recheck affected paths; unchanged bytes need no repeated packaging or unrelated validation.
 
 For Engine/SDK compatibility defects, reproduce on the pinned Engine, compare the selected

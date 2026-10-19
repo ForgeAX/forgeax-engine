@@ -130,6 +130,44 @@ describe('live command transport', () => {
     }
   }, 15_000);
 
+  it('honors the project startup deadline while a real detached owner remains waiting', async () => {
+    const root = await project();
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'live-test', type: 'module', forgeax: { startupTimeoutMs: 500 } }),
+    );
+    const entry = join(root, 'daemon.mjs');
+    await writeFile(
+      entry,
+      `
+      import { createServer } from 'node:http';
+      import { mkdir, writeFile } from 'node:fs/promises';
+      const root = process.argv[3], port = Number(process.argv[4]);
+      const server = createServer((req, res) => {
+        res.setHeader('content-type', 'application/json');
+        if (req.url === '/stop') { res.end('{}'); server.close(() => process.exit(0)); return; }
+        res.end(JSON.stringify({ ok: true, value: { phase: 'waiting', pid: process.pid } }));
+      });
+      await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
+      await mkdir(root + '/.forgeax', { recursive: true });
+      await writeFile(root + '/.forgeax/dev-session.json', JSON.stringify({ root, endpoint: 'http://127.0.0.1:' + port, pid: process.pid }));
+    `,
+    );
+    cleanup.push(async () => {
+      const session = JSON.parse(await readFile(join(root, '.forgeax/dev-session.json'), 'utf8'));
+      await fetch(`${session.endpoint}/stop`, { method: 'POST' });
+    });
+    daemonFixture.entry = entry;
+    try {
+      expect(await startLiveDev(root)).toMatchObject({
+        ok: false,
+        error: { code: 'live-start-timeout' },
+      });
+    } finally {
+      daemonFixture.entry = undefined;
+    }
+  }, 3_000);
+
   it('waits for a newly spawned owner to advance from waiting to ready', async () => {
     const root = await project();
     const entry = join(root, 'daemon.mjs');

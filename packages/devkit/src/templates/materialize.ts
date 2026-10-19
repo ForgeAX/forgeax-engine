@@ -44,7 +44,7 @@ function identityError(
       ? 'the project name to be a non-empty string without surrounding whitespace'
       : field === 'packageName'
         ? 'the package name to be a valid lowercase npm package name'
-        : 'the project id and target directory name to be a lowercase path-safe identifier';
+        : 'the project id to be a lowercase path-safe identifier';
   return {
     code: 'project-identity-invalid',
     expected,
@@ -101,7 +101,9 @@ export function resolveProjectIdentity(
 ): Result<ProjectIdentity, ProjectIdentityError> {
   const overrides = input.overrides ?? {};
   const targetBasename = input.targetBasename;
-  if (!isProjectId(targetBasename)) return err(identityError('target', targetBasename));
+  if (overrides.id === undefined && !isProjectId(targetBasename)) {
+    return err(identityError('target', targetBasename));
+  }
 
   const templateDefault = input.descriptor.defaultIdentity;
   if (

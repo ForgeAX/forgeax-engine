@@ -2069,7 +2069,7 @@ The remaining CSM fields keep these public units and defaults: `cascadeCount`
 is an integer in `[1, 4]` (default `3`), `splitLambda` is `[0, 1]` (default
 `0.5`), `cascadeBlend` is `[0, 0.5]` (default `0.2`), `mapSize` is a positive
 map resolution (default `2048`), `depthBias` is a depth value (default
-`0.00001`, subtracted from normalized receiver depth), `normalBias` offsets the
+`0.00001`, applied toward the light in normalized receiver depth), `normalBias` offsets the
 surface receiver position along its world-space normal before projection (default `0.05`), and
 `shadowDistance` is a positive world-unit cap (default `100000`); coverage ends at min(camera.far, shadowDistance). Camera far defaults to `2000`. A world unit represents a meter only when the scene uses that scale.
 CSM defaults to three cascades and practical split lambda `0.5`. Cascade blend `0.2`,

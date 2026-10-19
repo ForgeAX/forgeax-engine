@@ -78,9 +78,12 @@ flowchart LR
   C --> G
   G --> H
   H --> I
-  I --> D
+  G --> D
   D --> E
   E --> F
+  H --> J["All enabled publications complete; retire candidate"]
+  I --> J
+  F --> J
 ```
 
 ```bash
@@ -98,9 +101,11 @@ and Candidate consumer proof before the first stable publication.
 
 Candidate builds once, runs its complete npm and archive/browser consumers, and
 compares independent reproducibility and collision evidence before sealing.
-Promotion qualifies stable public source, publishes the GitHub Release, and
-completes the enabled stable mirror through public CI and remote-tree verification
-before uploading to npm. Development releases skip stable source qualification
+Promotion qualifies stable public source, then independently publishes the GitHub
+Release and npm products from the same sealed candidate. The enabled stable mirror
+follows GitHub publication to validate its formal Release/tag identity, retaining
+public CI and remote-tree verification. Npm does not wait for
+GitHub transport or mirror completion. Development releases skip stable source qualification
 and mirroring; paused stable mirroring still requires source qualification.
 The three npm products upload concurrently under `candidate`, then jointly verify
 exact public metadata and downloaded SHA-512 bytes. Before `latest` or `next`
@@ -108,7 +113,8 @@ moves, a fresh registry consumer installs the SDK, initializes it and exercises
 both templates through typecheck, tests, build, package and dev HTTP lifecycle.
 The publisher rejects focused-package publication and channel regression.
 Development GitHub Releases are prereleases and never become the latest Release.
-GitHub publication can complete while npm is pending. Cleanup waits for all
+Any publication can complete while another is pending or fails. Complete delivery
+and cleanup wait for all
 enabled stages, so retrying the same sealed Candidate can finish partial delivery.
 
 > [!WARNING]

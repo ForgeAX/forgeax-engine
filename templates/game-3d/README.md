@@ -15,7 +15,7 @@ collision, a fantasy PBR showcase, a procedural low-poly armored scout, and one 
 
 > [!IMPORTANT]
 > Click the game to lock the camera. Move with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>,
-> look with the mouse, jump with <kbd>Space</kbd>, hold <kbd>Shift</kbd> to run, and release the pointer with <kbd>Esc</kbd>.
+> look with the mouse (or hold the right mouse button and drag when unlocked), jump with <kbd>Space</kbd>, hold <kbd>Shift</kbd> to run, and release the pointer with <kbd>Esc</kbd>.
 > On touch displays, use the visible left joystick to move and drag the right **Look** pad to turn.
 > Tap **Jump** and hold **Run** for 1.7× movement speed. Release the joystick or Run button to stop that action.
 > **Shape a vase** opens the initially collapsed editor and pauses touch controls; **Close vase** returns to play.
@@ -29,6 +29,19 @@ flowchart LR
     C -->|"Partly"| E["Adjust or replace"]
     C -->|"No"| F["Remove scene, runtime, and pack references together"]
 ```
+
+## Adapting camera and physics interactions
+
+| Requested change | Implementation and acceptance |
+|:--|:--|
+| First-person camera | Adapt the camera and hide all self-occluding player render descendants for that view, including attachments; retain the collision body. Inspect standing, turning and sliding screenshots. Moving the camera inside the third-person head alone leaves self-occlusion. |
+| Mouse drag rotation | Implement the requested button-held drag using the shared InputSnapshot, or explicitly agree on click-to-lock controls. Check focus and the gesture inside the actual preview embedding; pointer lock is not a drag gesture. |
+| House LODs | Preserve silhouette and window/opening landmarks in every level. Use native `MeshAsset.lods` and `lodHysteresis`, then inspect both travel directions around the transition band. Coverage blending does not morph unrelated geometry; a predicted HUD tier is not Renderer evidence. |
+| Moving platforms or pushable crates | Follow the installed [Physics skill](skills/forgeax-engine-physics/SKILL.md#moving-supports-and-dynamic-pushes). Verify simulation contact, actual displacement and presentation through standing/reversal/jump/removal, rather than only pure math tests. |
+
+The starter's third-person controls are defaults. Keep the new game's README and
+HUD consistent with its actual controls. For unexplained lighting or flicker,
+capture the failing frame with RHI Debug before changing materials or shadows.
 
 ## Optional platform SDK integration
 

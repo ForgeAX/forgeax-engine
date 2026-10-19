@@ -7,6 +7,7 @@ import { Context, startNativePlugin } from '@forgeax/engine-plugin';
 import { expect, it } from 'vitest';
 import { createBrowserCapture } from '../browser-capture.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
+import { waitForFirstFrame } from '../live-dev.js';
 import { waitForBrowserToolHost } from '../tools/browser-host.js';
 
 it.each([
@@ -85,6 +86,9 @@ it.each([
     expect(session.report().pageErrors).toEqual([]);
     expect(session.report().consoleErrors).toEqual([]);
     const failureObservedAt = performance.now();
+    await expect(waitForFirstFrame(session, 5000)).rejects.toMatchObject({
+      code: 'live-startup-failed',
+    });
     await expect(
       waitForBrowserToolHost(session.page, '__forgeaxToolHost', 3000),
     ).rejects.toMatchObject({ code: 'tool-preview-startup-failed' });

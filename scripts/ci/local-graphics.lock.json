@@ -4,37 +4,37 @@
   "packages": [
     {
       "name": "mesa",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/m/mesa/mesa-vulkan-drivers_25.2.8-0ubuntu0.24.04.3_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/m/mesa/mesa-vulkan-drivers_25.2.8-0ubuntu0.24.04.3_amd64.deb",
       "sha256": "70f170b74639373adc8c6b8db7db8ee5d92ace095eaf23f78282b6bf897e3572"
     },
     {
       "name": "llvm",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/llvm-toolchain-20/libllvm20_20.1.2-0ubuntu1~24.04.3_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/l/llvm-toolchain-20/libllvm20_20.1.2-0ubuntu1~24.04.3_amd64.deb",
       "sha256": "f018e71c72c7a4742fb1aff9dc98b45586f42e6ea464d4918af7e3772b7f0658"
     },
     {
       "name": "stdcxx",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
       "sha256": "a51f8de7829211db961a31f02158058ad1a95f92ac6d0a5dff6350e2821c54c0"
     },
     {
       "name": "drm",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libd/libdrm/libdrm2_2.4.125-1ubuntu0.1~24.04.2_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/libd/libdrm/libdrm2_2.4.125-1ubuntu0.1~24.04.2_amd64.deb",
       "sha256": "4d3e858dd57be617c49d87c5ddcdb35df744a4f0a559981256ae2ba174718584"
     },
     {
       "name": "edit",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libe/libedit/libedit2_3.1-20230828-1build1_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/libe/libedit/libedit2_3.1-20230828-1build1_amd64.deb",
       "sha256": "3afbc8ddf835049dd4d88275b9d13680e4c4cdd59e191cbd63424152cc08e00e"
     },
     {
       "name": "bsd",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libb/libbsd/libbsd0_0.12.1-1build1_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/libb/libbsd/libbsd0_0.12.1-1build1_amd64.deb",
       "sha256": "8e97b7d541416512a81e7845c5f21910344c9c5c610893cf265d3298e0caad6b"
     },
     {
       "name": "md",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libm/libmd/libmd0_1.1.0-2build1_amd64.deb",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/libm/libmd/libmd0_1.1.0-2build1_amd64.deb",
       "sha256": "77f8cdbf03a43656bbf6604e18bd16834fc8bf2c949d4fbdf24ac297869b667a"
     }
   ],
@@ -51,7 +51,7 @@
   ],
   "source": {
     "id": "mesa-25.2.8-lavapipe-source-linux-x64",
-    "url": "https://archive.mesa3d.org/mesa-25.2.8.tar.xz",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20260918T000000Z/pool/main/m/mesa/mesa_25.2.8.orig.tar.xz",
     "sha256": "097842f3e49d996868b38688db87b006f7d4541e93ce86d2f341d8b3e7be7c93",
     "mesonOptions": [
       "--buildtype=release",

@@ -38,7 +38,9 @@ frame/checkpoint waiting. Hidden placeholder diagnostic text does not fail a hea
 |:--|:--|:--|
 | `auto` | Default local and CI route | Selects a browser adapter and reports the observed backend |
 | `hardware` | Explicit physical or non-software adapter check | Fails if the observed adapter is software or cannot be identified as hardware |
-| `software` | No physical GPU and/or no display | Uses the supported software browser flags and creates Xvfb on Linux when needed |
+| `software` | No physical GPU and/or no display | Uses supported software browser flags; explicit `headless: true` needs no X11, while headed Linux capture creates Xvfb when DISPLAY is absent |
+
+For container users, writable XDG state, browser dependencies and sandboxing, follow [Linux unattended validation](../../forgeax-engine-cli/references/linux-unattended.md).
 
 The report keeps `backendRequested` distinct from the observed backend. Do not infer the renderer from the requested flag.
 

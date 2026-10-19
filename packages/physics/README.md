@@ -285,7 +285,9 @@ unopinionated kinematic character primitive (modeled on Unity
 gravity + jump each frame; `moveAndSlide` resolves it against world geometry with
 collision response, slope handling, auto-step, and ground-snap, then writes the
 resolved position back to the entity's `Transform` and the contact state to
-`CharacterController.grounded`. It returns the actual displacement applied.
+`CharacterController.grounded`. It returns the actual displacement applied. Rapier 2D/3D controllers apply native
+contact impulses to solid dynamic bodies while excluding sensors. Game code
+must not duplicate ordinary pushing with an additional contact impulse.
 
 ```ts
 import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
@@ -297,7 +299,7 @@ const character = world.spawn(
   { component: CharacterController, data: {} },
 ).unwrap();
 
-// Per frame (e.g. inside app.registerUpdate):
+// Once per FixedUpdate, after physicsSyncBackend and before physicsStepSimulation:
 const pw = world.getResource('PhysicsWorld'); // PhysicsWorld | PhysicsWorld2D
 const actual = pw.moveAndSlide(character, [dx, dy, dz]); // Transform + grounded written back
 ```
@@ -309,13 +311,23 @@ time. Spawn the collider at its resting height (capsule center = ground top +
 radius + halfHeight); a capsule penetrating the floor has a degenerate contact and
 will not auto-step or report grounded correctly.
 
+In the 3D Rapier backend, contacted moving supports contribute their tangential
+motion through the native KCC friction accumulator before shape casting. This
+also carries a character when a descending platform produces no cast hit. Call
+`moveAndSlide` once per fixed tick with input and integrated gravity; adding
+platform displacement again duplicates that carry. Author platform motion before
+fixed Scene propagation, then solve the character after `physicsSyncBackend` and
+before `physicsStepSimulation`. Presentation reads Scene's sampled poses, never
+feeds those poses back into Physics. The moving-support integration regression
+covers reversals, mixed host deltas, relative presentation and support retirement.
+
 Character entities are routed exclusively through `moveAndSlide`: the
 `physicsSyncBackend` kinematic mirror skips any archetype carrying
 `CharacterController` so it does not double-write the body the primitive owns.
 
 **Readiness contract**: the Rapier body is built asynchronously by the first
 `physicsSyncBackend` tick after `app.start()` (WASM fire-and-forget load). Before
-that tick, `PhysicsWorld.hasBody(entity)` returns `false`. Per-frame drivers must
+that tick, `PhysicsWorld.hasBody(entity)` returns `false`. Fixed-step drivers must
 guard with `if (!pw.hasBody(entity)) return;` before calling `moveAndSlide` --
 do not rely on catching `body-not-found` as control flow.
 

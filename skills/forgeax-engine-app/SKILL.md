@@ -113,7 +113,9 @@ Renderer/WebGPU; source plugins inject World/Assets and use bootstrap
 bootstrap. Logic N+1 overlaps render N; admission of N+2 waits for N's GPU receipt.
 Kernel workers receive eligible shared numeric spans, independently of render
 placement. Their initialization and module preflight inherit App `startupTimeoutMs`;
-this startup budget does not extend the running kernel dispatch deadline. Missing isolation disables auto kernels only. Canvas/assemble calls
+the first source frame uses that same startup policy. Later source admissions retain
+their `frameTimeoutMs` bound, and running kernel dispatch retains its own deadline.
+Missing isolation disables auto kernels only. Canvas/assemble calls
 without a bootstrap explicitly construct local objects and remain local. DevKit generates that bootstrap for ordinary projects automatically; both templates therefore default to auto with browser UI (`roots.frontend`) and Engine gameplay (`roots.engine`) assets. `roots.host` remains the resident Node backend.
 Use the [App contract](../../packages/app/README.md#worker-execution) for placement,
 recovery and the report schema, and [ECS](../forgeax-engine-ecs/SKILL.md) for kernel eligibility.

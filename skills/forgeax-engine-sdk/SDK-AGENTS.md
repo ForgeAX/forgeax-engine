@@ -23,6 +23,15 @@ only when the task needs broader discovery; select the smallest useful capabilit
 > [!CAUTION]
 > Game work defaults to direct edits in the current project. Start a ForgeaX closed loop only when the user explicitly selects it; installed skills do not authorize it.
 
+## Unattended Linux tests
+
+Before SDK initialization in a container, read [Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md).
+It covers writable history/pnpm lock directories, headless capture without Xvfb,
+virtual headed capture and non-root Chromium sandboxing. Preserve the first real
+failure; never shim installation into success. A static build with a blocked
+browser remains unaccepted at runtime. Report unsupported capabilities explicitly
+instead of handing over an unchanged template as their demo.
+
 ## Create a game
 
 ```bash
@@ -119,7 +128,7 @@ For advanced Linux development without a display/physical GPU, read the
 [DevKit capture contract](packages/devkit/README.md), then capture Canvas and HTML/Shadow DOM:
 
 ```bash
-pnpm exec forgeax project capture --backend software --require-ui \
+pnpm exec forgeax project capture --headless true --backend software --require-ui \
   --output artifacts/capture/game-ui.png --json
 ```
 

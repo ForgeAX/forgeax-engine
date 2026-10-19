@@ -13,6 +13,7 @@ export function applyKccTuning(ctrl: any, cc: CharacterControllerData): void {
   ctrl.setMaxSlopeClimbAngle(cc.maxSlopeClimbDeg * DEG_TO_RAD);
   ctrl.setMinSlopeSlideAngle(cc.minSlopeSlideDeg * DEG_TO_RAD);
   ctrl.setSlideEnabled(true);
+  ctrl.setApplyImpulsesToDynamicBodies(true);
   if (cc.autoStepMaxHeight === 0) {
     ctrl.disableAutostep();
   } else {

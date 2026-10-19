@@ -111,7 +111,8 @@ export async function createOperationHistoryStore(rootInput: string, directoryIn
   const directory =
     directoryInput ??
     join(
-      process.env.FORGEAX_HISTORY_DIR ?? join(homedir(), '.local/share/ForgeaX/operations'),
+      process.env.FORGEAX_HISTORY_DIR ??
+        join(process.env.XDG_DATA_HOME || join(homedir(), '.local/share'), 'ForgeaX/operations'),
       createHash('sha256').update(root).digest('hex'),
     );
   const read = async (id: string): Promise<OperationHistoryEntry> => {
@@ -215,7 +216,16 @@ export async function createOperationHistoryStore(rootInput: string, directoryIn
         args: project(args),
         artifacts: [],
       };
-      await save(entry, true);
+      try {
+        await save(entry, true);
+      } catch (cause) {
+        throw Object.assign(new Error('Operation history directory is not writable', { cause }), {
+          code: 'operation-history-write-failed',
+          expected: 'a writable directory for durable operation receipts before command execution',
+          hint: 'Set FORGEAX_HISTORY_DIR or XDG_DATA_HOME to a writable data directory and retry the same command.',
+          detail: { directory, reason: cause instanceof Error ? cause.message : String(cause) },
+        });
+      }
       let terminal: ToolTerminal<T>;
       try {
         terminal = await execute();

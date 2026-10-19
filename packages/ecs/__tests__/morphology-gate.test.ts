@@ -17,10 +17,19 @@ import { Update } from '../src/schedule-token';
 // OR name its first parameter `world` / `_world`. Any other first-param name is a
 // residual 2-param-shape callback and a violation.
 //
-// O-1 (dist-staleness, plan-decisions): the scan walks src trees only and skips
-// dist/ so gitignored stale build output cannot produce a false positive.
+// Scan maintained source trees, excluding build output and hidden tool scratch.
+// Concurrent tests may create and retire generated projects in that scratch.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -35,9 +44,7 @@ const SKIP_DIRS = new Set([
   // historical APIs that the current morphology gate has since removed.
   'artifacts',
   'node_modules',
-  '.turbo',
   'coverage',
-  '.git',
   '__fixtures__',
 ]);
 
@@ -54,10 +61,8 @@ function listSources(dir: string, out: string[]): void {
     return;
   }
   for (const e of entries) {
-    if (SKIP_DIRS.has(e)) continue;
+    if (e.startsWith('.') || SKIP_DIRS.has(e)) continue;
     const p = join(dir, e);
-    // Dawn's private toolchain scratch is not Engine callback source.
-    if (p === join(repoRoot, 'packages', 'dawn-node', '.native-build')) continue;
     const st = statSync(p);
     if (st.isDirectory()) listSources(p, out);
     else if (/\.(ts|mjs)$/.test(p) && !p.endsWith('.d.ts') && p !== SELF) out.push(p);
@@ -131,6 +136,29 @@ function collectCallbacks(): { all: Callback[]; violations: Callback[] } {
 }
 
 describe('morphology-gate.test.ts (AC-14)', () => {
+  it('reads maintained sources after concurrent hidden fixtures are retired', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forgeax-morphology-'));
+    try {
+      const source = join(root, 'runtime', 'src', 'systems.ts');
+      const scratch = join(root, '.wechat-vfx-fixture-test');
+      const generated = join(scratch, '.forgeax', 'generated', 'execution-bootstrap.ts');
+      mkdirSync(dirname(source), { recursive: true });
+      mkdirSync(dirname(generated), { recursive: true });
+      writeFileSync(source, 'world.addSystem(Update, { fn: (world) => {} });');
+      writeFileSync(generated, 'world.addSystem(Update, { fn: (oldShape) => {} });');
+      const files: string[] = [];
+      listSources(root, files);
+      // Another test retires its fixture between discovery and source reads.
+      rmSync(scratch, { recursive: true });
+      expect(files.map((file) => readFileSync(file, 'utf8'))).toEqual([
+        'world.addSystem(Update, { fn: (world) => {} });',
+      ]);
+      expect(files).toEqual([source]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('finds the migrated addSystem/defineSystem fn callbacks (gate is wired)', () => {
     const { all } = collectCallbacks();
     // Sanity: the engine + demos define many inline systems. If this drops to

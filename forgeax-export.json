@@ -1,16 +1,16 @@
 {
   "schema": "forgeax-repository-export/2",
   "policy": "engine-public-source/1",
-  "producerSha256": "ddf493edbaf40f477129a2905fb95f2d352d2ea5a2feaca258d1261519900349",
+  "producerSha256": "90b67cff0fa61a2b2a32dfaad5370ab7ee07cb1a11ff93a24a04a825e7d100af",
   "release": {
-    "version": "0.4.14",
+    "version": "0.4.15",
     "channel": "stable",
-    "candidateSha256": "70fb6f67309f738b12e6aa6e14c50479ff272bba70f6913364e764972ca40008"
+    "candidateSha256": "3d307bc6bcb19e6c4be3e5a4534729aef23dae1e708baa2814065bc1efae665a"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "c7755726eb2178e4e5e03efb73b9aa561d5c64f6"
+      "commit": "0fef2d8a9f556407b43c89dfa1fe60d73921062f"
     },
     {
       "root": "forgeax-engine-assets",
@@ -70,6 +70,7 @@
     "scripts/forgeax/__tests__/repository-mirror.test.mjs",
     "scripts/forgeax/__tests__/repository-public-policy.test.mjs",
     "scripts/forgeax/__tests__/run-format-tier1-final-gates.test.mjs",
+    "scripts/forgeax/__tests__/sdk-candidate-native-inputs.test.mjs",
     "scripts/forgeax/check_state_doc_sync.mjs",
     "scripts/forgeax/export-repository.mjs",
     "scripts/forgeax/physical-material-sibling-integration.mjs",
@@ -31562,15 +31563,15 @@
     },
     {
       "path": "packages/devkit/README.md",
-      "bytes": 136410,
+      "bytes": 137520,
       "executable": false,
-      "sha256": "6f5d44c405ae7511386d9ec26f140ce64fecc62b32e432813e40f50f2a004938"
+      "sha256": "ea0caa9222a5881fba184fe6acbac4bc8748414eb9958ebf7c6bcca0bce6cb01"
     },
     {
       "path": "packages/devkit/scripts/check-capture-policy.mjs",
-      "bytes": 8150,
+      "bytes": 10445,
       "executable": false,
-      "sha256": "cff76f613d35ccb908be9188d43a2e918e0b44dd7dd935891f9828060edbcb4b"
+      "sha256": "8ade22ed3e5819f2cfc5e804b61463f692d684b25013c40070eca83b352beda0"
     },
     {
       "path": "packages/devkit/scripts/check-live-sync.mjs",
@@ -32228,9 +32229,9 @@
     },
     {
       "path": "packages/devkit/src/__tests__/software-browser-session.unit.test.ts",
-      "bytes": 26868,
+      "bytes": 29690,
       "executable": false,
-      "sha256": "81a981d2a8b41d66f7d72683880ec85864877c753457c97931af86234f376d0a"
+      "sha256": "8af799cab63e7f1e5433be14831a57eb76e7a9fc134a62a57032acf9fc072904"
     },
     {
       "path": "packages/devkit/src/__tests__/software-capture-pixels.unit.test.ts",
@@ -32426,9 +32427,9 @@
     },
     {
       "path": "packages/devkit/src/browser-capture.ts",
-      "bytes": 57655,
+      "bytes": 59336,
       "executable": false,
-      "sha256": "dd95f3fb300665e5c1c4758867710dead412f430e04b9a5c15cd6a7722f8a379"
+      "sha256": "72a07983b983bcfbde38167a9fef0ca0caffcaa0df1c76bb965908883fc1207e"
     },
     {
       "path": "packages/devkit/src/build/__tests__/builtin-worker.integration.test.ts",

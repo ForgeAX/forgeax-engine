@@ -75,10 +75,21 @@ const server = createServer((request, response) => {
     return;
   }
   if (request.url === '/gpu?probe-navigation') interruptedProbes++;
+  if (request.url === '/gpu-paused-raf') {
+    response.end(
+      gpuScene.replace('requestAnimationFrame(draw);', 'window.requestAnimationFrame = () => 0;'),
+    );
+    return;
+  }
   response.end(
-    request.url?.startsWith('/gpu')
-      ? gpuScene
-      : '<canvas width="64" height="64"></canvas><script>document.querySelector("canvas").getContext("2d").fillRect(0,0,64,64);document.documentElement.dataset.forgeaxFrameSubmitted="1";</script>',
+    request.url === '/gpu-moving'
+      ? gpuScene.replace(
+          'body{margin:0}',
+          'body{margin:0}canvas{position:absolute;top:4px;left:4px;animation:move 1s linear infinite alternate}@keyframes move{to{transform:translateX(20px)}}',
+        )
+      : request.url?.startsWith('/gpu')
+        ? gpuScene
+        : '<canvas width="64"></canvas><div style="position:absolute;inset:0;background:linear-gradient(90deg,red,blue)">UI is not a rendered canvas</div><script>const c=document.querySelector("canvas");c.height=innerHeight+64;const ctx=c.getContext("2d");ctx.fillRect(0,0,64,c.height);ctx.fillStyle="red";ctx.fillRect(0,innerHeight+4,32,32);document.documentElement.dataset.forgeaxFrameSubmitted="1";</script>',
   );
 });
 await once(server.listen(0, '127.0.0.1'), 'listening');
@@ -113,6 +124,7 @@ try {
   const observed = await session.capture(undefined, { purpose: 'observe', timeoutMs: 5_000 });
   assert.equal(observed.ok, true);
   assert.equal(observed.pixels.rendered, false);
+  assert.equal(observed.pixels.height, (viewport.height ?? 720) - 8);
   assert.deepEqual(session.report().consoleErrors, ['capture-policy diagnostic']);
   assert.equal(
     (await readFile(observed.output)).subarray(0, 8).toString('hex'),
@@ -186,6 +198,44 @@ try {
     } finally {
       await gpu.close();
     }
+  }
+  // The authored page has already submitted a real GPU frame and then suspends
+  // its own animation callbacks. Native composition, not a future game tick,
+  // owns screenshot readiness.
+  const pausedRaf = await browser.open({
+    headless: true,
+    backend: 'software',
+    serverUrl: `http://127.0.0.1:${server.address().port}/gpu-paused-raf`,
+    ...viewport,
+    ...captureOutput('paused-page-raf'),
+  });
+  try {
+    const capture = await pausedRaf.capture(undefined, { timeoutMs: 3_000 });
+    assert.equal(capture.pixels.rendered, true);
+    assert.equal(capture.runtime.engineFrameId, 1);
+    assert.deepEqual(pausedRaf.report().pageErrors, []);
+    assert.deepEqual(pausedRaf.report().consoleErrors, []);
+    results.push({ operation: 'page-raf-independent-compositor', rendered: true });
+  } finally {
+    await pausedRaf.close();
+  }
+  const moving = await browser.open({
+    headless: true,
+    backend: 'software',
+    serverUrl: `http://127.0.0.1:${server.address().port}/gpu-moving`,
+    ...viewport,
+    ...captureOutput('moving-canvas'),
+  });
+  try {
+    const capture = await moving.capture(undefined, { timeoutMs: 10_000 });
+    assert.equal(capture.pixels.rendered, true);
+    assert.equal(capture.pixels.width, 256);
+    assert.equal(capture.pixels.height, Math.min(256, (viewport.height ?? 720) - 4));
+    assert.deepEqual(moving.report().pageErrors, []);
+    assert.deepEqual(moving.report().consoleErrors, []);
+    results.push({ operation: 'moving-canvas-compositor', rendered: true });
+  } finally {
+    await moving.close();
   }
   console.log(JSON.stringify({ ok: true, results }));
 } catch (error) {

@@ -25,8 +25,12 @@ const browserMocks = vi.hoisted(() => {
       if (typeof value === 'string') captureReady = value;
     }),
     waitForTimeout: vi.fn(),
-    screenshot: vi.fn(async () => Buffer.from('compositor-png')),
-    locator: vi.fn((_selector?: string) => ({ first: () => ({ screenshot: canvasScreenshot }) })),
+    screenshot: vi.fn(async (options?: { readonly style?: string }) =>
+      options?.style ? canvasScreenshot(options) : Buffer.from('compositor-png'),
+    ),
+    locator: vi.fn((_selector?: string) => ({
+      first: () => ({ boundingBox: async () => ({ x: 0, y: 0, width: 1280, height: 720 }) }),
+    })),
     evaluate: vi.fn(async (callback: unknown) =>
       String(callback).includes('requestAdapter')
         ? {
@@ -40,7 +44,9 @@ const browserMocks = vi.hoisted(() => {
             fatalError: null,
             userAgent: 'Chrome Beta fixture',
           }
-        : undefined,
+        : String(callback).includes('innerWidth')
+          ? { width: 1280, height: 720 }
+          : undefined,
     ),
   };
   const browser = {
@@ -384,7 +390,7 @@ describe('software browser session', () => {
     expect(browserMocks.browser.close).not.toHaveBeenCalled();
     const second = await session.capture('boss-hit');
     expect(browserMocks.browser.newPage).toHaveBeenCalledTimes(1);
-    expect(browserMocks.page.screenshot).toHaveBeenCalledTimes(2);
+    expect(browserMocks.page.screenshot).toHaveBeenCalledTimes(4);
     expect(browserMocks.canvasScreenshot).toHaveBeenCalledTimes(2);
     expect(first.output).toMatch(/001-spawn\.png$/);
     expect(second.output).toMatch(/002-boss-hit\.png$/);
@@ -484,6 +490,59 @@ describe('software browser session', () => {
       ]);
     } finally {
       await session.close();
+    }
+  });
+
+  it('reserves full composition for the settled capture within its original budget', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    vi.stubEnv('DISPLAY', ':fixture');
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    browserMocks.setCanvasRendered(false);
+    const screenshot = browserMocks.page.screenshot.getMockImplementation();
+    if (screenshot === undefined)
+      throw new Error('The screenshot fixture requires an implementation');
+    browserMocks.page.screenshot.mockImplementation(async (options) => {
+      if (options?.style) return browserMocks.canvasScreenshot(options);
+      // Model the measured expensive software compositor without a wall-clock sleep.
+      now += 100;
+      return Buffer.from('compositor-png');
+    });
+    browserMocks.page.waitForTimeout.mockImplementation(async () => {
+      now += 1;
+      browserMocks.setCanvasRendered(true);
+    });
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-settled-composition-'));
+    const executable = resolve(root, 'chrome-beta');
+    await Promise.all([
+      writeFile(executable, ''),
+      writeFile(
+        resolve(root, 'forge.json'),
+        JSON.stringify({
+          schemaVersion: '3.0.0',
+          id: 'settled-capture',
+          name: 'Settled',
+          roots: {},
+        }),
+      ),
+      writeFile(resolve(root, 'package.json'), '{"name":"settled-capture"}'),
+      writeFile(resolve(root, 'main.ts'), 'export default {};\n'),
+    ]);
+    const browser = createBrowserCapture(root);
+    try {
+      const session = await browser.open({ backend: 'software', browser: executable });
+      const capture = await session.capture(undefined, { timeoutMs: 150, waitMs: 10 });
+      expect(capture.ok).toBe(true);
+      expect(capture.pixels.rendered).toBe(true);
+      expect(await readFile(capture.output, 'utf8')).toBe('compositor-png');
+      expect(now).toBeLessThan(150);
+      expect(
+        browserMocks.page.screenshot.mock.calls.filter(([options]) => !options?.style),
+      ).toHaveLength(1);
+    } finally {
+      await browser.close();
+      browserMocks.page.screenshot.mockImplementation(screenshot);
+      browserMocks.page.waitForTimeout.mockReset();
     }
   });
 
@@ -619,7 +678,7 @@ describe('software browser session', () => {
     }
   });
 
-  it('navigates and captures an explicit carrier frame without touching the owner page', async () => {
+  it('keeps frame navigation scoped and clips its canvas from the owner compositor', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-borrowed-frame-'));
@@ -643,7 +702,6 @@ describe('software browser session', () => {
       height: 240,
       gpu: 'software' as const,
     };
-    const frameCanvasScreenshot = vi.fn(async () => Buffer.from('canvas-rendered'));
     const frameSurfaceScreenshot = vi.fn(async () => Buffer.from('compositor-png'));
     const frame = {
       goto: vi.fn(async () => undefined),
@@ -652,7 +710,11 @@ describe('software browser session', () => {
       page: vi.fn(() => browserMocks.page),
       locator: vi.fn((selector: string) =>
         selector === 'canvas'
-          ? { first: () => ({ screenshot: frameCanvasScreenshot }) }
+          ? {
+              first: () => ({
+                boundingBox: async () => ({ x: 120, y: 80, width: 320, height: 240 }),
+              }),
+            }
           : { screenshot: frameSurfaceScreenshot },
       ),
       evaluate: vi.fn(async (callback: unknown) =>
@@ -688,7 +750,11 @@ describe('software browser session', () => {
               })),
               screenshot: frameSurfaceScreenshot,
             }
-          : { first: () => ({ screenshot: browserMocks.canvasScreenshot }) }) as never,
+          : {
+              first: () => ({
+                boundingBox: async () => ({ x: 0, y: 0, width: 1280, height: 720 }),
+              }),
+            }) as never,
     );
     const close = vi.fn(async () => undefined);
     const carrier = {
@@ -728,14 +794,22 @@ describe('software browser session', () => {
       const capture = await session.capture('true');
       expect(capture.ok).toBe(true);
       expect(frameSurfaceScreenshot).toHaveBeenCalled();
-      expect(browserMocks.page.screenshot).not.toHaveBeenCalled();
+      expect(browserMocks.page.screenshot).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          clip: { x: 120, y: 80, width: 320, height: 240 },
+          style: expect.stringContaining('visibility: hidden'),
+        }),
+      );
     } finally {
       await session.close();
       expect(close).toHaveBeenCalledTimes(1);
       await browser.close();
       await rm(root, { recursive: true, force: true });
       browserMocks.page.locator.mockImplementation(
-        () => ({ first: () => ({ screenshot: browserMocks.canvasScreenshot }) }) as never,
+        () =>
+          ({
+            first: () => ({ boundingBox: async () => ({ x: 0, y: 0, width: 1280, height: 720 }) }),
+          }) as never,
       );
     }
   });

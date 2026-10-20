@@ -936,7 +936,16 @@ lane when it cannot obtain hardware. `backend hardware` requires a non-software 
 backend, and fallback reason.
 
 The witness screenshot temporarily hides every non-canvas element, so a visible HUD cannot
-disguise a black 3D frame; the written PNG remains the complete page compositor output.
+disguise a black 3D frame. Readiness and settling sample only that Canvas witness;
+the final capture composes the complete page once, then refreshes runtime diagnostics.
+Readiness polls observe the frame, UI and fatal state without repeatedly requesting a GPU adapter;
+the completed capture still probes its actual adapter before backend validation.
+Successful captures, observations and visible fatal diagnostics retain the full page and UI.
+Until final composition completes, deadline failures preserve the initial Canvas witness
+rather than requesting another full-page image from the exhausted budget.
+It samples the visible canvas rectangle from the owner-page compositor, including iframe offsets,
+without scrolling the element, resizing the viewport, or waiting for layout to stop moving.
+Offscreen canvas pixels cannot make a flat visible frame pass.
 `--require-ui` requires at least one mounted child under the generated host's `#game-ui` root; unrelated
 Engine or browser ShadowRoots are only diagnostics and cannot satisfy the gate. A uniform black frame
 also fails even when canvas and adapter structure exist. Browser discovery includes the installed
@@ -953,7 +962,9 @@ readiness wait immediately, and automatic software retry is limited to structure
 unavailability before any capture artifact exists.
 
 Project capture fixes the viewport and screen size, DPR 1, sRGB colour profile, light colour
-scheme, `en-US` locale, UTC timezone, and waits for `document.fonts.ready`. An unsized headed development
+scheme, `en-US` locale and UTC timezone. Native Playwright screenshots wait for
+`document.fonts.ready` and synchronize composition; capture does not request future
+game-realm animation callbacks after the submitted-frame handshake. An unsized headed development
 session uses the native window and display density. Projects must ship the same
 Web font files on every machine; a system-font fallback is not a colour or layout parity contract.
 
@@ -1974,6 +1985,8 @@ It uses a real browser compositor with a flat-canvas fixture: observation preser
 black pixels and runtime diagnostics, validation still fails, and an absent
 checkpoint cannot become a successful observation. `dev capture` selects observation;
 project/Preview capture keeps validation by default.
+The same real WebGPU fixture submits one frame and suspends its page animation callbacks:
+capture must still return non-flat compositor pixels, without asking the game to tick again.
 
 A visible Engine fatal diagnostic always fails both capture modes, even if an older
 submitted frame and non-flat canvas remain and no browser error was emitted. Capture

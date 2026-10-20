@@ -591,110 +591,134 @@ async function withCaptureEnvelope<T>(
   }
 }
 
-async function screenshotWithWitness(
+async function screenshotCanvasWitness(
   execution: BrowserExecutionTarget,
   deadline: number,
   extent: { readonly width: number; readonly height: number },
 ): Promise<{ readonly png: Uint8Array; readonly pixels: CapturePixelWitness }> {
-  const { canvasPng, png } = await withCaptureEnvelope(execution, extent, async () => ({
-    canvasPng: await execution.realm
-      .locator('canvas')
-      .first()
-      .screenshot({
-        type: 'png',
-        timeout: Math.max(1, deadline - Date.now()),
-        style: '* { visibility: hidden !important; } canvas { visibility: visible !important; }',
-      }),
-    png: await captureBrowserExecutionSurfaceRaw(execution, deadline),
-  }));
-  return { png, pixels: inspectCapturePng(canvasPng) };
-}
-
-async function waitForCompositor(realm: Page | Frame): Promise<void> {
-  await realm.evaluate(async () => {
-    await document.fonts.ready;
-    await new Promise<void>((resolveFrame) => requestAnimationFrame(() => resolveFrame()));
-    await new Promise<void>((resolveFrame) => requestAnimationFrame(() => resolveFrame()));
-  });
-}
-
-async function runtimeWitness(realm: Page | Frame): Promise<BrowserCaptureRuntimeWitness> {
-  return realm.evaluate(async (datasetKey) => {
-    const canvas = document.querySelector('canvas');
-    const uiRoot = document.querySelector('#game-ui');
-    const shadowHosts = [...(uiRoot?.querySelectorAll('*') ?? [])].filter(
-      (element) => element.shadowRoot?.childElementCount !== 0,
-    );
-    let adapter: Readonly<Record<string, unknown>> | null = null;
-    let adapterError: string | null = null;
-    try {
-      const gpuAdapter = await navigator.gpu?.requestAdapter();
-      if (gpuAdapter === null || gpuAdapter === undefined) {
-        adapterError = 'navigator.gpu.requestAdapter() returned null';
-      } else {
-        const info = gpuAdapter.info;
-        adapter = {
-          vendor: info.vendor,
-          architecture: info.architecture,
-          device: info.device,
-          description: info.description,
-        };
-      }
-    } catch (cause) {
-      adapterError = String(cause);
+  const canvasPng = await withCaptureEnvelope(execution, extent, async () => {
+    const bounds = await execution.realm.locator('canvas').first().boundingBox();
+    if (bounds === null) {
+      fail(
+        'browser-capture-runtime-failed',
+        'a visible Engine canvas',
+        'Inspect the browser runtime before capturing canvas pixels.',
+      );
     }
-    const frameId = Number(document.documentElement.dataset[datasetKey]);
-    const fatal = document.querySelector('#forgeax-fatal');
-    const fatalError = fatal?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
-      ? (
-          document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
-          fatal.textContent?.trim() ||
-          'Engine execution failed'
-        ).slice(0, 16_384)
-      : null;
-    const singleHtmlState = (
-      globalThis as typeof globalThis & {
-        __forgeaxSingleHtml?: {
-          witness?: () => {
-            ready: boolean;
-            resourceHits: number;
-            resourceMisses: readonly Readonly<Record<string, unknown>>[];
-            externalRequests: readonly Readonly<Record<string, unknown>>[];
-          };
-        };
+    // Sample live canvas pixels without element scrolling or layout-stability waits.
+    // boundingBox is relative to the owner viewport, including for iframe canvases.
+    const viewport = await execution.ownerPage.evaluate(() => ({
+      width: innerWidth,
+      height: innerHeight,
+    }));
+    const x = Math.max(0, bounds.x);
+    const y = Math.max(0, bounds.y);
+    const width = Math.min(viewport.width, bounds.x + bounds.width) - x;
+    const height = Math.min(viewport.height, bounds.y + bounds.height) - y;
+    if (width <= 0 || height <= 0) {
+      fail(
+        'browser-capture-runtime-failed',
+        'Engine canvas pixels inside the browser viewport',
+        'Keep the capture canvas visible in its owning document.',
+      );
+    }
+    return execution.ownerPage.screenshot({
+      type: 'png',
+      clip: { x, y, width, height },
+      timeout: Math.max(1, deadline - Date.now()),
+      style: '* { visibility: hidden !important; } canvas { visibility: visible !important; }',
+    });
+  });
+  return { png: canvasPng, pixels: inspectCapturePng(canvasPng) };
+}
+
+async function runtimeWitness(
+  realm: Page | Frame,
+  probeAdapter = true,
+): Promise<BrowserCaptureRuntimeWitness> {
+  return realm.evaluate(
+    async ({ datasetKey, probeAdapter }) => {
+      const canvas = document.querySelector('canvas');
+      const uiRoot = document.querySelector('#game-ui');
+      const shadowHosts = [...(uiRoot?.querySelectorAll('*') ?? [])].filter(
+        (element) => element.shadowRoot?.childElementCount !== 0,
+      );
+      let adapter: Readonly<Record<string, unknown>> | null = null;
+      let adapterError: string | null = null;
+      if (probeAdapter) {
+        try {
+          const gpuAdapter = await navigator.gpu?.requestAdapter();
+          if (gpuAdapter === null || gpuAdapter === undefined) {
+            adapterError = 'navigator.gpu.requestAdapter() returned null';
+          } else {
+            const info = gpuAdapter.info;
+            adapter = {
+              vendor: info.vendor,
+              architecture: info.architecture,
+              device: info.device,
+              description: info.description,
+            };
+          }
+        } catch (cause) {
+          adapterError = String(cause);
+        }
       }
-    ).__forgeaxSingleHtml;
-    return {
-      title: document.title,
-      canvas:
-        canvas instanceof HTMLCanvasElement ? { width: canvas.width, height: canvas.height } : null,
-      domUi: {
-        rootChildren: uiRoot?.childElementCount ?? 0,
-        openShadowRoots: shadowHosts.length,
-        textWitness: shadowHosts
-          .map((host) =>
-            [...(host.shadowRoot?.children ?? [])]
-              .filter((element) => !['STYLE', 'SCRIPT'].includes(element.tagName))
-              .map((element) =>
-                element instanceof HTMLElement ? element.innerText : element.textContent,
-              )
-              .join(' ')
-              .replace(/\s+/g, ' ')
-              .trim(),
-          )
-          .filter((text) => text.length > 0)
-          .join(' | ')
-          .slice(0, 500),
-      },
-      adapter,
-      adapterError,
-      engineFrameId: Number.isSafeInteger(frameId) && frameId > 0 ? frameId : null,
-      captureReady: document.documentElement.dataset.forgeaxCaptureReady ?? null,
-      fatalError,
-      singleHtml: singleHtmlState?.witness?.() ?? null,
-      userAgent: navigator.userAgent,
-    };
-  }, FORGEAX_FRAME_SUBMITTED_DATASET);
+      const frameId = Number(document.documentElement.dataset[datasetKey]);
+      const fatal = document.querySelector('#forgeax-fatal');
+      const fatalError = fatal?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+        ? (
+            document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
+            fatal.textContent?.trim() ||
+            'Engine execution failed'
+          ).slice(0, 16_384)
+        : null;
+      const singleHtmlState = (
+        globalThis as typeof globalThis & {
+          __forgeaxSingleHtml?: {
+            witness?: () => {
+              ready: boolean;
+              resourceHits: number;
+              resourceMisses: readonly Readonly<Record<string, unknown>>[];
+              externalRequests: readonly Readonly<Record<string, unknown>>[];
+            };
+          };
+        }
+      ).__forgeaxSingleHtml;
+      return {
+        title: document.title,
+        canvas:
+          canvas instanceof HTMLCanvasElement
+            ? { width: canvas.width, height: canvas.height }
+            : null,
+        domUi: {
+          rootChildren: uiRoot?.childElementCount ?? 0,
+          openShadowRoots: shadowHosts.length,
+          textWitness: shadowHosts
+            .map((host) =>
+              [...(host.shadowRoot?.children ?? [])]
+                .filter((element) => !['STYLE', 'SCRIPT'].includes(element.tagName))
+                .map((element) =>
+                  element instanceof HTMLElement ? element.innerText : element.textContent,
+                )
+                .join(' ')
+                .replace(/\s+/g, ' ')
+                .trim(),
+            )
+            .filter((text) => text.length > 0)
+            .join(' | ')
+            .slice(0, 500),
+        },
+        adapter,
+        adapterError,
+        engineFrameId: Number.isSafeInteger(frameId) && frameId > 0 ? frameId : null,
+        captureReady: document.documentElement.dataset.forgeaxCaptureReady ?? null,
+        fatalError,
+        singleHtml: singleHtmlState?.witness?.() ?? null,
+        userAgent: navigator.userAgent,
+      };
+    },
+    { datasetKey: FORGEAX_FRAME_SUBMITTED_DATASET, probeAdapter },
+  );
 }
 
 function isSoftwareAdapter(runtime: BrowserCaptureRuntimeWitness): boolean {
@@ -1351,21 +1375,22 @@ async function openBrowserCaptureSession(
           );
         }
         const readFrame = async () => {
-          await withinBudget('browser composition', () => waitForCompositor(activeRealm));
-          const image = await withinBudget('a compositor screenshot', () =>
-            screenshotWithWitness(
+          // Native screenshots synchronize fonts and composition. A submitted image
+          // must not depend on future callbacks from the game's animation scheduler.
+          const image = await withinBudget('a canvas witness', () =>
+            screenshotCanvasWitness(
               execution ?? { kind: 'page', ownerPage: activePage, realm: activePage },
               deadline,
               { width, height },
             ),
           );
           const runtime = await withinBudget('runtime diagnostics', () =>
-            runtimeWitness(activeRealm),
+            runtimeWitness(activeRealm, false),
           );
           return { ...image, runtime };
         };
         let captured = await readFrame();
-        // Preserve a submitted image even if a later requested delay expires.
+        // Preserve the Canvas witness if readiness or a later settling delay fails.
         await mkdir(dirname(output), { recursive: true });
         await writeFile(output, captured.png);
         imageSaved = true;
@@ -1396,7 +1421,20 @@ async function openBrowserCaptureSession(
           captured = await readFrame();
           await waitForRendered();
         }
-        const { runtime } = captured;
+        let png = captured.png;
+        let runtime = captured.runtime;
+        if (observe || captured.pixels.rendered || runtime.fatalError !== null) {
+          // Readiness polling must not repeatedly compose the complete page.
+          // Successful/observed captures and fatal diagnostics still retain its UI.
+          png = await withinBudget('a compositor screenshot', () =>
+            captureBrowserExecutionSurface(
+              execution ?? { kind: 'page', ownerPage: activePage, realm: activePage },
+              deadline,
+              { width, height },
+            ),
+          );
+          runtime = await withinBudget('runtime diagnostics', () => runtimeWitness(activeRealm));
+        }
         latestRuntime = runtime;
         const requestSummary = summarizeRequests(requestRecords);
         const uiPresent = runtime.domUi.rootChildren > 0;
@@ -1415,13 +1453,13 @@ async function openBrowserCaptureSession(
           (expectedReady === undefined || runtime.captureReady === expectedReady) &&
           (!requireUi || uiPresent);
         await mkdir(dirname(output), { recursive: true });
-        await writeFile(output, captured.png);
+        await writeFile(output, png);
         const record: BrowserCaptureRecord = {
           index,
           checkpoint: checkpoint ?? null,
           ok,
           output,
-          digest: captureDigest(captured.png),
+          digest: captureDigest(png),
           pixels: captured.pixels,
           runtime,
         };

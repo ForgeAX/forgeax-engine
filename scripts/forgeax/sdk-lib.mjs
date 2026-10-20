@@ -481,6 +481,7 @@ export async function waitForNpmPublications(
     intervalMs = 10_000,
     now = Date.now,
     sleep = (duration) => new Promise((accept) => setTimeout(accept, duration)),
+    onProgress = () => {},
   },
 ) {
   const startedAt = now();
@@ -501,8 +502,14 @@ export async function waitForNpmPublications(
         reasons.set(item.name, result.reason);
       }
     }
-    if (pending.size === 0) return { verified: items.length, tag };
     const elapsed = now() - startedAt;
+    onProgress({
+      elapsedMs: elapsed,
+      tag,
+      verified: items.length - pending.size,
+      pending: [...pending.keys()].map((name) => ({ name, reason: reasons.get(name) })),
+    });
+    if (pending.size === 0) return { verified: items.length, tag };
     if (elapsed >= timeoutMs) {
       const detail = [...pending.keys()]
         .map((name) => `${name}: ${reasons.get(name) ?? 'unknown'}`)

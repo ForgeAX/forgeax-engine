@@ -135,7 +135,7 @@ API stance; published stable patch maintenance retains its public contract.
 
 | Failure | Recovery |
 |:--|:--|
-| Npm validating, metadata/tarball unavailable | Retain sealed Candidate; wait and retry Promotion with the same identity |
+| Npm validating, metadata/tarball unavailable | Retain sealed Candidate; rerun the failed Promotion jobs after the original run completes |
 | Previously staged conflict | Continue visibility/integrity verification; never mint a replacement version for transport recovery |
 | Integrity conflict | Stop; never overwrite or retag conflicting bytes |
 | Fresh public consumer fails | Preserve channel tags; fix source, create a new version and Candidate |
@@ -145,3 +145,15 @@ API stance; published stable patch maintenance retains its public contract.
 Candidate artifact expiry limits retry availability. Preserve the exact sealed
 artifact before expiry when npm validation remains pending. Published versions
 are immutable; no rebuild may replace different bytes under that identity.
+
+Recover a transport/visibility failure in the existing completed Promotion run:
+
+```bash
+gh run rerun <promotion-run-id> --failed
+```
+
+This retains the original controller SHA, sealed Candidate and successful
+public-source/GitHub/mirror jobs. Inspect its retained artifacts first. Do not
+dispatch an entirely new Promotion merely to retry npm: that repeats source
+qualification and successful publication work. An incomplete or expired Candidate
+requires the recovery described in the SDK production guide.

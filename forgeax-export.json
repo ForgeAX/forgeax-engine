@@ -1,16 +1,16 @@
 {
   "schema": "forgeax-repository-export/2",
   "policy": "engine-public-source/1",
-  "producerSha256": "90b67cff0fa61a2b2a32dfaad5370ab7ee07cb1a11ff93a24a04a825e7d100af",
+  "producerSha256": "12e8a711e245235e7c8ba15c4593c41f43b1c13445d681c5229f42fc527b470d",
   "release": {
-    "version": "0.4.15",
+    "version": "0.4.16",
     "channel": "stable",
-    "candidateSha256": "3d307bc6bcb19e6c4be3e5a4534729aef23dae1e708baa2814065bc1efae665a"
+    "candidateSha256": "48a196aef0f8ba1adef336c5825c8ba9062cdf4797e519c07d97e05372b91987"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "0fef2d8a9f556407b43c89dfa1fe60d73921062f"
+      "commit": "17ab7039d557715a7f8b0319128f8a177bc8f1b6"
     },
     {
       "root": "forgeax-engine-assets",
@@ -34647,9 +34647,9 @@
     },
     {
       "path": "packages/engine/RELEASING.md",
-      "bytes": 8030,
+      "bytes": 8555,
       "executable": false,
-      "sha256": "afe5255bd5ebbfaff55e7d209476b60df5a6a20f89cafcb18a17b66c11ef3fa6"
+      "sha256": "8d46f3d321d3a57b92e553afb8a9895e8fc330be134e2273fb082faf58ab5c76"
     },
     {
       "path": "packages/engine/scripts/__tests__/facade-publication.test.mjs",
@@ -71841,9 +71841,9 @@
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-lib.test.mjs",
-      "bytes": 48520,
+      "bytes": 49007,
       "executable": false,
-      "sha256": "05163bb82eb00e04c770a4485012b79b8aa299a5987b187f3eb70fd45e0ee282"
+      "sha256": "36640689d4731387481915f91738268cb99a5dac9dfa6480bd4bb46d873f880b"
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-live-progress.test.mjs",
@@ -71853,9 +71853,9 @@
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-pr-preflight.test.mjs",
-      "bytes": 29181,
+      "bytes": 29126,
       "executable": false,
-      "sha256": "a71c04da7de8423cef89840221f4d9267b787e0b0d8549686434e59290f442a9"
+      "sha256": "f48e9c9eb03e3b99296ef6e7259dd11cedc28372e623bce41143c71aa944a9d8"
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-source.test.mjs",
@@ -72285,9 +72285,9 @@
     },
     {
       "path": "scripts/forgeax/sdk-lib.mjs",
-      "bytes": 28578,
+      "bytes": 28801,
       "executable": false,
-      "sha256": "8b6a4257f5627f8958b7f0a7e167f939f2994b9ab315a05ca9c83bb84225b921"
+      "sha256": "b45d66501d40f02dabfff537b8e0d4e093a9ec1e795401b770d9f5cfa4b808f4"
     },
     {
       "path": "scripts/forgeax/sdk-pr-preflight.mjs",
@@ -72333,9 +72333,9 @@
     },
     {
       "path": "scripts/forgeax/verify-sdk.mjs",
-      "bytes": 71492,
+      "bytes": 71806,
       "executable": false,
-      "sha256": "7e83b587bb2ebd5d7fce4358883e9d8adcff1bdcc596e6284ba7052c6c0ae7eb"
+      "sha256": "69775ae0407d53ea118d84b26b4ab69279636e91a4420f41ab7b6e5c746680bf"
     },
     {
       "path": "scripts/forgeax/visual-evidence.schema.json",
@@ -73881,9 +73881,9 @@
     },
     {
       "path": "skills/forgeax-engine-sdk/references/sdk-production.md",
-      "bytes": 25970,
+      "bytes": 27055,
       "executable": false,
-      "sha256": "bec69c6b2e3951cd1b67425bf3d478b5ce4c7e1e262048f929e82dd4cd8b0b04"
+      "sha256": "dd26845b06f837bb1a68934e468810b0c8ebcfab7ccc763c90d213744972b5ea"
     },
     {
       "path": "skills/forgeax-engine-sdk/SDK-AGENTS.md",

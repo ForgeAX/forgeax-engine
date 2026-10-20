@@ -1689,34 +1689,38 @@ if (selected('project')) {
       return result;
     }),
   );
-  await sdkGpuStage('verifyPairedViewTool', () =>
-    execFileAsync(
-      process.execPath,
-      [
-        resolve(
-          import.meta.dirname,
-          '../../tools/view-plugins/integration/verify-diagnostic-pages.mjs',
-        ),
-      ],
-      {
-        cwd: sdkRoot,
-        env: {
-          ...offlineEnv,
-          FORGEAX_VIEW_TOOL_PACKAGE: resolve(
-            sdkRoot,
-            '.forgeax/cli-runtime/node_modules/@forgeax/view',
+  // Partitioned release gates retain installed diagnostics with npm. The ZIP
+  // still exercises its installed View through both complete language chains.
+  // A standalone, unpartitioned archive verification keeps full diagnostics.
+  if (group === 'all')
+    await sdkGpuStage('verifyPairedViewTool', () =>
+      execFileAsync(
+        process.execPath,
+        [
+          resolve(
+            import.meta.dirname,
+            '../../tools/view-plugins/integration/verify-diagnostic-pages.mjs',
           ),
-          FORGEAX_VIEW_ENGINE_PACKAGE: resolve(
-            sdkRoot,
-            '.forgeax/cli-runtime/node_modules/@forgeax/engine',
-          ),
-          FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sdkRoot, 'templates/game-3d'),
-          FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-zip'),
+        ],
+        {
+          cwd: sdkRoot,
+          env: {
+            ...offlineEnv,
+            FORGEAX_VIEW_TOOL_PACKAGE: resolve(
+              sdkRoot,
+              '.forgeax/cli-runtime/node_modules/@forgeax/view',
+            ),
+            FORGEAX_VIEW_ENGINE_PACKAGE: resolve(
+              sdkRoot,
+              '.forgeax/cli-runtime/node_modules/@forgeax/engine',
+            ),
+            FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sdkRoot, 'templates/game-3d'),
+            FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-zip'),
+          },
+          maxBuffer: 64 * 1024 * 1024,
         },
-        maxBuffer: 64 * 1024 * 1024,
-      },
-    ),
-  );
+      ),
+    );
   if (group !== 'all')
     await sdkStage('verifyInstalledViewRuntimeJS', () =>
       verifySdkViewRuntime({

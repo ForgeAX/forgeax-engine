@@ -380,12 +380,7 @@ test('archive project owns independent runs and installed View while source keep
     observed[group] = stages;
   }
   assert.deepEqual(observed, {
-    project: [
-      'verifyIndependentRun',
-      'verifyPairedViewTool',
-      'verifyInstalledViewRuntimeJS',
-      'verifyInstalledViewRuntime',
-    ],
+    project: ['verifyIndependentRun', 'verifyInstalledViewRuntimeJS', 'verifyInstalledViewRuntime'],
     source: [],
     all: ['verifyIndependentRun', 'verifyPairedViewTool', 'verifyInstalledViewRuntime'],
   });

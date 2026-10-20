@@ -524,6 +524,7 @@ describe('waitForNpmPublications', () => {
   it('waits for exact metadata, dist-tag, and tarball availability', async () => {
     let round = 0;
     let clock = 0;
+    const progress = [];
     const item = {
       name: '@forgeax/engine-sdk',
       version: '1.2.3',
@@ -556,6 +557,7 @@ describe('waitForNpmPublications', () => {
         timeoutMs: 100,
         intervalMs: 10,
         now: () => clock,
+        onProgress: (event) => progress.push(event),
         sleep: async (duration) => {
           clock += duration;
           round += 1;
@@ -563,6 +565,21 @@ describe('waitForNpmPublications', () => {
       }),
     ).resolves.toEqual({ verified: 1, tag: 'latest' });
     expect(round).toBe(2);
+    expect(progress).toEqual([
+      {
+        elapsedMs: 0,
+        tag: 'latest',
+        verified: 0,
+        pending: [{ name: item.name, reason: 'metadata-http-404' }],
+      },
+      {
+        elapsedMs: 10,
+        tag: 'latest',
+        verified: 0,
+        pending: [{ name: item.name, reason: 'tarball-http-404' }],
+      },
+      { elapsedMs: 20, tag: 'latest', verified: 1, pending: [] },
+    ]);
   });
 
   it('verifies downloaded bytes before tags and rejects corruption despite matching metadata', async () => {

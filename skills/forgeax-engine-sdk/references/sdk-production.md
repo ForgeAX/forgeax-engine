@@ -129,10 +129,23 @@ collision scene instead of recompiling unrelated Preview materials and fixture
 roots; a missing shared manifest is a preparation failure, not a reason to
 increase the startup timeout.
 
-Failed or cancelled Candidate runs delete their seed artifacts. After fixing the
-failed gate, dispatch a new Candidate run; do not use a failed-job rerun against
-the deleted seed or rebuild different bytes under its old identity. Successful
-sealed Candidates retain their artifacts for Promotion retries until expiry.
+Failed Candidate runs retain their existing seed and successful receipts within
+their declared artifact retention. For an external transport failure on unchanged
+source, inspect all required artifacts and rerun the completed Candidate with
+`gh run rerun <candidate-run-id> --failed`; successful producers and consumers
+remain authoritative. The earliest expiry limits recovery, normally one day for
+native inputs and owner reports. Missing/expired artifacts, source or controller
+repairs require a new complete Candidate. Cancelled Candidates are cleaned by
+the backstop. Successful sealed Candidates retain their payload and seal for
+Promotion retries until expiry.
+
+Candidate transports small metadata, the ZIP and npm payloads separately. Each
+consumer verifies only its transported closure against the complete producer
+manifest; the seal job downloads every payload once, verifies all four owner
+receipts, performs reproducibility/collision comparisons and seals all bytes in
+that same job. Receipt transport/aggregation runs from the trusted controller
+SHA, so a stable source does not need newer workflow helper code. Archive and
+npm runtime verification still execute the selected source's actual verifiers.
 
 Promote that exact Candidate:
 
@@ -160,9 +173,11 @@ rebuilding. One joint gate verifies public metadata and exact downloaded bytes;
 a fresh registry consumer must pass before each package's `latest` or `next`
 advances. These channel tags remain separate registry writes. Candidate cleanup
 requires every enabled publication stage to succeed. GitHub publication may be
-complete while npm is still pending. Re-running Promotion
-with the same Candidate is the recovery path for propagation or GitHub transport
-failures; a changed source needs a new Candidate. A same-version different-integrity
+complete while npm is still pending. After a failed Promotion completes, verify
+its artifacts remain available and run `gh run rerun <promotion-run-id> --failed`.
+This reuses the successful source qualification and independent publishers under
+the original controller SHA instead of dispatching the complete workflow again.
+A changed source needs a new Candidate. A same-version different-integrity
 response is terminal and must never be overwritten.
 
 ## Archive surfaces
@@ -294,7 +309,7 @@ same sealed Candidate. Because the repository and its Releases are private,
 public install paths require no GitHub token.
 
 `npm-publication-not-visible` leaves the existing channel unchanged. Preserve the
-sealed bytes; wait for npm validation and rerun the same Promotion. A previously
+sealed bytes; wait for npm validation and rerun only the failed Promotion jobs. A previously
 staged conflict is a pending identity, not permission to allocate a new version.
 `npm-published-integrity-mismatch` is terminal. Source repairs require a new
 Candidate and version. `engine-development-release.yml` submits successful

@@ -6,10 +6,6 @@ import type { AssetRuntimeError, AssetRuntimeErrorCode } from '@forgeax/engine-a
 
 function exhaustiveSwitchOnAssetCode(code: AssetRuntimeErrorCode): string {
   switch (code) {
-    case 'material-resolved-empty-passes':
-      return code;
-    case 'mesh-ssbo-capacity-exceeded':
-      return code;
     case 'mesh-ssbo-ceiling-reached':
       return code;
     case 'scene-collect-entity-ref-out-of-closure':
@@ -25,15 +21,6 @@ function exhaustiveSwitchOnAssetCode(code: AssetRuntimeErrorCode): string {
 
 function narrowAssetError(err: AssetRuntimeError): void {
   switch (err.code) {
-    case 'material-resolved-empty-passes':
-      void err.detail.materialGuid; // string
-      void err.detail.reason; // 'missing-parent' | 'no-pass-in-chain'
-      break;
-    case 'mesh-ssbo-capacity-exceeded':
-      void err.detail.requested; // number
-      void err.detail.capacity; // number
-      void err.detail.ceiling; // number
-      break;
     case 'mesh-ssbo-ceiling-reached':
       void err.detail.requested; // number
       void err.detail.capacity; // number

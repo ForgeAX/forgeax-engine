@@ -7,6 +7,7 @@ import { decodeTape } from '../protocol/codec';
 import type { Tape } from '../protocol/types';
 import { attachRecorder, type RecordableBackend } from '../recorder/session';
 import { openReplay } from '../replay/session';
+import { verifyPreparedPipelineCapture } from './pipeline-library-capture.fixture';
 import { runQuerySetReplayFixture } from './query-set-replay-fixture';
 
 const GPU_AVAILABLE = typeof navigator !== 'undefined' && navigator.gpu !== undefined;
@@ -292,4 +293,10 @@ describe.skipIf(!GPU_AVAILABLE)('M4 browser capture and replay gate', () => {
     expect(evidence.querySetHandleId).toBeDefined();
     expect(evidence.resolveDestinationHandleId).toBeDefined();
   }, 60_000);
+});
+
+it('keeps native pipeline warmup, 60 completed frames, capture, replay pixels and GPU timing through the recorder', {
+  timeout: 60_000,
+}, async () => {
+  await verifyPreparedPipelineCapture();
 });

@@ -135,3 +135,48 @@ it('serializes saves from independent documents targeting the same source', asyn
     second.dispose();
   }
 });
+
+describe('source refresh after external writes', () => {
+  const scaled = (source: string) =>
+    source.replace('parameters:[', "parameters:[{name:'scale',type:'f32',default:2},");
+
+  it('clears a truncated-read failure once the complete source parses', async () => {
+    const { root, source } = await setup();
+    const manager = createFileSystemPackDrafts({ gameRoot: root });
+    const opened = (await manager.execute({
+      action: 'open',
+      sourcePath: 'scene.pack.ts',
+    })) as PackDraftSnapshot;
+    await writeFile(join(root, 'scene.pack.ts'), '');
+    expect((await manager.refreshSource('scene.pack.ts'))?.error).toBeDefined();
+    await writeFile(join(root, 'scene.pack.ts'), scaled(source));
+    const recovered = await manager.refreshSource('scene.pack.ts');
+    expect(recovered?.error).toBeUndefined();
+    expect(recovered?.fields.map((field) => field.name)).toContain('scale');
+    expect(await manager.execute({ action: 'get', draftId: opened.id })).not.toHaveProperty(
+      'error',
+    );
+    manager.dispose();
+  });
+
+  it('settles overlapping refreshes on the latest disk content', async () => {
+    const { root, source } = await setup();
+    const manager = createFileSystemPackDrafts({ gameRoot: root });
+    const opened = (await manager.execute({
+      action: 'open',
+      sourcePath: 'scene.pack.ts',
+    })) as PackDraftSnapshot;
+    await writeFile(join(root, 'scene.pack.ts'), '');
+    const truncated = manager.refreshSource('scene.pack.ts');
+    await writeFile(join(root, 'scene.pack.ts'), scaled(source));
+    const complete = manager.refreshSource('scene.pack.ts');
+    await Promise.all([truncated, complete]);
+    const settled = (await manager.execute({
+      action: 'get',
+      draftId: opened.id,
+    })) as PackDraftSnapshot;
+    expect(settled.error).toBeUndefined();
+    expect(settled.fields.map((field) => field.name)).toContain('scale');
+    manager.dispose();
+  });
+});

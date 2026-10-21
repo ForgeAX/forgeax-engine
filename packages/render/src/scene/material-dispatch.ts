@@ -65,8 +65,32 @@ interface Binding {
   readonly entity: number;
   readonly layer: number;
   readonly shadowCaster: boolean;
+  readonly visible: boolean;
   readonly entries: WeakMap<Pass, DispatchEntry>;
 }
+/** The binding group key; equal keys select the same held materials and members. */
+function materialBindingKey(
+  snapshot: RenderableSnapshot,
+  overrides = snapshot.materialOverrides === undefined
+    ? undefined
+    : captureMaterialOverrides(snapshot.materialOverrides),
+  direct = [...new Set(snapshot.materials.length === 0 ? [snapshot.material] : snapshot.materials)],
+  geometry = meshMaterialGeometry(snapshot),
+): string {
+  return overrides === undefined
+    ? `direct:${direct.map(getOpaqueResourceIdentity).join(',')}`
+    : `mesh:${snapshot.worldId}:${snapshot.assetHandle}:${geometry}:${getOpaqueResourceIdentity(overrides)}`;
+}
+
+/** An unreadable source takes the ordinary replacement path, which retires the old binding. */
+function tryMaterialBindingKey(snapshot: RenderableSnapshot): string | undefined {
+  try {
+    return materialBindingKey(snapshot);
+  } catch {
+    return undefined;
+  }
+}
+
 interface Work {
   readonly pass: Pass;
   readonly groups: Node<Node<Binding>>;
@@ -367,9 +391,21 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     }
     return entry;
   }
+  /** Complete traversals are fixed for this root and slot roster; later readers reuse them. */
+  private traversed: readonly DispatchEntry[] | undefined;
   *[Symbol.iterator](): Generator<DispatchEntry> {
+    if (this.traversed !== undefined) {
+      yield* this.traversed;
+      return;
+    }
+    const traversed: DispatchEntry[] = [];
     for (const { value: work } of nodes(this.root))
-      for (const binding of workBindings(work)) yield this.entry(work.pass, binding);
+      for (const binding of workBindings(work)) {
+        const entry = this.entry(work.pass, binding);
+        traversed.push(entry);
+        yield entry;
+      }
+    this.traversed = traversed;
   }
   at(index: number): DispatchEntry | undefined {
     index = Math.trunc(index) || 0;
@@ -499,6 +535,26 @@ export class MaterialDispatch {
 
   bind(slot: number, snapshot: RenderableSnapshot): void {
     this.assertSourceWritable();
+    const current = this.bindings.get(slot);
+    if (current !== undefined) {
+      const { group, binding } = current;
+      // Pose-only republication keeps every material and membership fact; the
+      // retained query root, ranks and dispatch entries stay valid.
+      if (
+        binding.worldId === snapshot.worldId &&
+        binding.entity === snapshot.entityKey &&
+        binding.layer === (snapshot.layer ?? 0) &&
+        binding.shadowCaster === (snapshot.shadowCaster !== false) &&
+        binding.visible === (snapshot.authorVisible !== false) &&
+        group.key === tryMaterialBindingKey(snapshot)
+      ) {
+        for (const resource of group.held) {
+          this.adopt(resource);
+          this.unpublished.delete(resource);
+        }
+        return;
+      }
+    }
     const accepted = this.materialFrame;
     this.remove(slot);
     // Replacement is one source operation: preserve accepted Pass identities,
@@ -513,10 +569,7 @@ export class MaterialDispatch {
         ...new Set(snapshot.materials.length === 0 ? [snapshot.material] : snapshot.materials),
       ];
       const geometry = meshMaterialGeometry(snapshot);
-      const key =
-        overrides === undefined
-          ? `direct:${direct.map(getOpaqueResourceIdentity).join(',')}`
-          : `mesh:${snapshot.worldId}:${snapshot.assetHandle}:${geometry}:${getOpaqueResourceIdentity(overrides)}`;
+      const key = materialBindingKey(snapshot, overrides, direct, geometry);
       let group = this.groups.get(key);
       if (group === undefined) {
         let mesh: MeshExpression | undefined;
@@ -577,6 +630,7 @@ export class MaterialDispatch {
         entity: snapshot.entityKey,
         layer: snapshot.layer ?? 0,
         shadowCaster: snapshot.shadowCaster !== false,
+        visible: snapshot.authorVisible !== false,
         entries: new WeakMap(),
       };
       group.holders++;
@@ -737,7 +791,13 @@ export class MaterialDispatch {
         this.queryDirty = false;
         this.previous = undefined;
       }
-      if (this.previous?.slots !== slots) this.previous = new FrameDispatch(this.queryRoot, slots);
+      // Entry addresses are slot ranks. Pose-only frames replace slot records but
+      // keep the identity roster, so ranks and the projected work are unchanged.
+      if (
+        this.previous === undefined ||
+        (this.previous.slots !== slots && this.previous.slots.identities !== slots.identities)
+      )
+        this.previous = new FrameDispatch(this.queryRoot, slots);
       return this.previous;
     } finally {
       this.querying = false;

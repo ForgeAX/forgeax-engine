@@ -2,8 +2,8 @@
 name: forgeax-engine-sdk
 description: >-
   ForgeaX SDK onboarding, capability discovery, production, and acceptance. Use when
-  receiving the SDK, choosing Engine features for a game, building or releasing a
-  ZIP, checking reproducibility, or diagnosing bootstrap.
+  receiving the SDK, choosing Engine features, building a ZIP, publishing a dev, rc
+  or stable version, checking reproducibility, or diagnosing bootstrap.
 ---
 
 # ForgeaX Engine SDK
@@ -76,7 +76,7 @@ flowchart LR
 
 Run `forgeax help --tree --json`, then `forgeax help <command-path> --json`, before guessing authoring-operation inputs. Use the CLI skill for the command boundary. Start the seven-stage ForgeaX closed loop only when the user explicitly authorizes it for the current task.
 
-Successful `new` also performs a two-second, best-effort check of the configured npm registry's `@forgeax/engine-sdk` channel tag (`next` for a development SDK, `latest` for stable). Only a strictly newer semantic version produces a text warning; JSON always records `sdkUpdate` as `available`, `current`, `skipped`, or `unavailable`. Offline mode and `FORGEAX_DISABLE_UPDATE_CHECK=1` skip the query, and registry failure never rolls back a created game. Treat the warning as information, not migration authority: install the newer SDK in another directory, read its release notes, then migrate and test each existing game explicitly. Games remain pinned and are never rewritten by SDK discovery.
+Successful `new` also performs a two-second, best-effort check of the configured npm registry's `@forgeax/engine-sdk` channel tag (`next` for a development SDK, `latest` for stable; an rc SDK compares both `rc` and `latest`, so it is offered the promoted stable). Only a strictly newer semantic version produces a text warning; JSON always records `sdkUpdate` as `available`, `current`, `skipped`, or `unavailable`. Offline mode and `FORGEAX_DISABLE_UPDATE_CHECK=1` skip the query, and registry failure never rolls back a created game. Treat the warning as information, not migration authority: install the newer SDK in another directory, read its release notes, then migrate and test each existing game explicitly. Games remain pinned and are never rewritten by SDK discovery.
 
 ## SDK production and publication
 
@@ -85,9 +85,20 @@ publication, read [SDK production](references/sdk-production.md). Its exact-ZIP
 subject is the SDK distribution. Game ZIP packaging belongs to the game's release
 route; ordinary game creation does not enter Candidate, Promotion or SDK consumers.
 For channel/source and publication ordering, read the
-[release contract](../../packages/engine/RELEASING.md). GitHub and npm publish
-independently after stable source qualification; the source mirror retains its
-formal GitHub Release identity check. Delivery requires every enabled stage.
+[release contract](../../packages/engine/RELEASING.md): `main` publishes `next`,
+the weekly `rc` test line publishes `rc`, and `stable` publishes `latest`. GitHub
+and npm publish independently after source qualification of mirrored channels;
+the source mirror retains its formal GitHub Release identity check and advances
+public `main` (development) or `stable` (stable). Delivery requires every enabled
+stage.
+
+> [!IMPORTANT]
+> Every SDK publication starts with
+> [Select the release flow first](references/sdk-production.md#select-the-release-flow-first):
+> name the flow (development, rc cut/fix, rc promotion or stable hotfix), version,
+> source SHA and npm tag before pushing a release branch or dispatching a workflow.
+> If the user's request leaves any of them open, ask the user; never guess a
+> channel or version.
 
 ## Plugin asset authoring
 

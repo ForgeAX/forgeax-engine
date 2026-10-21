@@ -40,7 +40,7 @@ import {
   type VfxGpuTickIntent as SourceVfxGpuTickIntent,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   VFX_PARTICLE_CORE_STRIDE,
-  type VfxGpuEffectAssetAny,
+  type VfxGpuEffectAsset,
   type VfxGpuEmitterSource,
   type VfxGpuRuntime,
   vfxForceFieldFailure,
@@ -347,7 +347,7 @@ function resolveEmitter(
   const resolved = context.resolveAsset?.(sourceWorldIndex, reference.effect, reference.revision);
   if (resolved === undefined) throw new Error('VFX requires the feature asset resolver');
   if (!resolved.ok) throw resolved.error;
-  const effect = resolved.value as VfxGpuEffectAssetAny;
+  const effect = resolved.value as VfxGpuEffectAsset;
   if (effect.kind !== 'particle-effect' || effect.schemaVersion !== 3)
     throw new Error('VFX requires a schemaVersion 3 particle effect');
   const emitter = effect.program.emitters.find((candidate) => candidate.id === reference.id);
@@ -903,7 +903,7 @@ export function gpuParticleRenderFeature(
         const preparationPlayers = new Set<EntityHandle>();
         const emitterState = new Map<string, PublishedEmitterState>();
         const emitterReference = (
-          effect: VfxGpuEffectAssetAny,
+          effect: VfxGpuEffectAsset,
           emitter: VfxGpuTickIntent['emitter'],
         ): Pick<PublishedIntent, 'emitter'> => {
           const version = runtime.effectVersion(effect);
@@ -940,7 +940,7 @@ export function gpuParticleRenderFeature(
         const captureEmitter = (
           player: EntityHandle,
           emitter: VfxGpuTickIntent['emitter'],
-          effect: VfxGpuEffectAssetAny,
+          effect: VfxGpuEffectAsset,
           localToWorld: Float32Array,
           instanceGeneration = 0,
           forceFields?: SourceVfxGpuTickIntent['forceFields'],

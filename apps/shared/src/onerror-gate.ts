@@ -40,7 +40,6 @@ export const SUT_ATTRIBUTABLE_CODES: ReadonlySet<string> = new Set([
   // Render-loop / runtime onError surface.
   'asset-not-registered',
   'hierarchy-broken',
-  'material-resolved-empty-passes',
   // Bootstrap-time AssetError codes routed into __learnRenderErrors by
   // the demo SUT itself (added 2026-06-08 after `asset-not-imported`
   // bypassed the gate by being filtered out as not-a-runtime-error).

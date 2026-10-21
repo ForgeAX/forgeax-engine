@@ -49,6 +49,20 @@ export function lodCrossfadeCapable(batch: Pick<GpuDrivenBatch, 'prepared'>): bo
   );
 }
 
+/**
+ * Whether the GPU cull may write a nonzero LOD fade into this batch's visible
+ * items. A filtered batch keeps its source coverages and only upgrades
+ * `crossfade` under this capability, so the source and every filtered view of
+ * it give the same, conservative answer. False lets the Standard surface
+ * compile out its dither discard.
+ */
+export function lodCoverageMayFade(batch: Pick<GpuDrivenBatch, 'prepared' | 'lod'>): boolean {
+  return (
+    batch.lod?.crossfade === true ||
+    (lodCrossfadeCapable(batch) && (batch.lod?.coverages.length ?? 0) > 1)
+  );
+}
+
 /** Raster draws for one LOD owner at an explicit projected height. */
 export function rasterLodDraws(
   batch: Pick<GpuDrivenBatch, 'prepared'>,

@@ -1,8 +1,7 @@
 import { releasePolicy } from './release-policy.mjs';
 
-/** Mutable channel pointers move only after every immutable unit and consumer passes. */
-export async function promoteRelease({ version, items, upload, wait, verifyConsumer, setTag }) {
-  const { tag } = releasePolicy(version);
+/** Immutable units upload together; consumers prove the public bytes before any channel moves. */
+export async function publishRelease({ items, upload, wait, verifyConsumer }) {
   if (
     items.some(
       (item) => item.name.startsWith('@forgeax/engine-') && item.name !== '@forgeax/engine-sdk',
@@ -15,7 +14,13 @@ export async function promoteRelease({ version, items, upload, wait, verifyConsu
   const reports = uploads.map((result) => result.value);
   await wait(items);
   const consumer = await verifyConsumer();
+  return { reports, consumer };
+}
+
+/** Mutable channel pointers move only after every immutable unit and consumer passed. */
+export async function promoteRelease({ version, items, wait, setTag }) {
+  const { tag } = releasePolicy(version);
   for (const item of items) await setTag(item, tag);
   const registry = await wait(items, tag);
-  return { reports, consumer, registry, tag };
+  return { registry, tag };
 }

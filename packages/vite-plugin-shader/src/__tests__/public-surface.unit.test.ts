@@ -96,6 +96,10 @@ describe('vite-plugin-shader public engine input surface', () => {
       if (identifier !== 'forgeax::default-unlit') {
         for (const variant of shader?.variants ?? []) {
           expect(variant.composedWgsl).toContain('@id(64000)');
+          // Only the rigid Standard root owns the surface discard gates.
+          expect(variant.composedWgsl.match(/@id\(64001\)/g)?.length ?? 0).toBe(
+            identifier === 'forgeax::default-standard-pbr' ? 1 : 0,
+          );
           for (const field of [
             'baseColor',
             'metallicRoughness',

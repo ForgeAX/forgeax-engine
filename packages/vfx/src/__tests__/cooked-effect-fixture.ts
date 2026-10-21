@@ -1,5 +1,5 @@
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
-import type { VfxGpuEffectAsset, VfxGpuEmitterProgramV3, VfxReflectedField } from '../index';
+import type { VfxGpuEffectAsset, VfxGpuEmitterProgram, VfxReflectedField } from '../index';
 
 /** Real compiler output for bookkeeping fixtures that need no authored particle behavior. */
 export async function cookedEffectFixture(input: {
@@ -8,7 +8,7 @@ export async function cookedEffectFixture(input: {
 }): Promise<VfxGpuEffectAsset> {
   const modules: Record<string, { entry: string }> = {};
   const emitters = input.program.emitters.map((unknown, index) => {
-    const emitter = unknown as VfxGpuEmitterProgramV3;
+    const emitter = unknown as VfxGpuEmitterProgram;
     const module = emitter.module ?? `fixture-${index}.wgsl`;
     const struct = (name: string, fields: readonly VfxReflectedField[] | undefined) =>
       fields?.length

@@ -225,7 +225,7 @@ export class TemporalFrameSubmitError extends Error {
 // ── ShadowInvalidConfigError ──────────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'shadow-invalid-config'`.
+ * Detail for `RenderErrorCode 'shadow-invalid-config'`.
  *
  * The four fields are the only recovery surface: AI users read the invalid
  * field, actual value, structured bound, and reason without parsing prose.
@@ -247,9 +247,9 @@ export interface ShadowInvalidConfigDetail {
  *
  * Emitted by Directional, Point, and Spot shadow validation. All three
  * component owners share this error class so `switch (err.code)` on
- * `RuntimeErrorCode` needs one branch (charter P4 — closed-union SSOT).
+ * `RenderErrorCode` needs one branch (charter P4 — closed-union SSOT).
  * Four-field surface:
- *   - `.code = 'shadow-invalid-config'` (closed RuntimeErrorCode)
+ *   - `.code = 'shadow-invalid-config'` (closed RenderErrorCode)
  *   - `.expected` — expected-state description (programmatic predicate form)
  *   - `.hint` — actionable recovery guidance (imperative; AI users paste into
  *     spawn calls).
@@ -298,7 +298,7 @@ function shadowBoundReason(bound: ShadowInvalidConfigBound): string {
 // ── EquirectProjectionFailedError ────────────────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'equirect-projection-failed'`.
+ * Detail for `RenderErrorCode 'equirect-projection-failed'`.
  *
  * Emitted when the equirect-to-cubemap IBL projection fails for the equirect
  * handle referenced by a `Skylight` / `SkyboxBackground` component. The handle
@@ -327,7 +327,7 @@ export interface EquirectProjectionFailureCause {
  * Emitted by the record stage when the internal cubemap projection for an
  * equirect handle returns a failure (or records `status:'failed'`). Four-field
  * surface per AGENTS.md error model:
- *   - `.code = 'equirect-projection-failed'` (closed RuntimeErrorCode)
+ *   - `.code = 'equirect-projection-failed'` (closed RenderErrorCode)
  *   - `.expected` — equirect-to-cubemap projection + IBL precompute succeeds
  *   - `.hint` — declare `Skylight{equirect}` with a valid HDR equirect source;
  *     check `device.caps.rgba16floatRenderable`. The projection is internal —
@@ -512,7 +512,7 @@ export class PointShadowAtlasUninitializedError extends Error {
 // ── PointShadowAtlasBoundsViolationError ───────────────────────────────────
 
 /**
- * Detail for `RuntimeErrorCode 'point-shadow-atlas-bounds-violation'`.
+ * Detail for `RenderErrorCode 'point-shadow-atlas-bounds-violation'`.
  *
  * Emitted by `ShadowAtlas.faceView` when `layer` falls outside `[0, layers)`
  * or `face` falls outside `[0, 6)`. Both axes are reported as
@@ -558,7 +558,7 @@ export class PointShadowAtlasBoundsViolationError extends Error {
 // ── VideoUploadUnsupportedError ─────────────────────────────────────────
 
 /**
- * Structured error for `RuntimeErrorCode 'video-upload-unsupported'`
+ * Structured error for `RenderErrorCode 'video-upload-unsupported'`
  * (feat-20260623-world-space-video-asset M3 / w11 — AC-10).
  *
  * Fired once per loss episode by the per-frame record stage

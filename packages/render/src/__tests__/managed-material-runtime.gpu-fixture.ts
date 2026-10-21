@@ -14,6 +14,9 @@ import { samplerContribution } from '../assets/asset-decoders';
 import { Camera, MeshFilter, MeshRenderer, SpriteRegionOverride } from '../components';
 import { Materials, SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 
+// Both backends run this complete cold Renderer-and-edit journey.
+export const RUNTIME_MATERIAL_CASE_TIMEOUT_MS = 120_000;
+
 const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
 
 export async function verifyRuntimeMaterial(

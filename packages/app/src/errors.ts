@@ -1,8 +1,8 @@
-// @forgeax/engine-app -- AppError + closed AppErrorCode union (14 members) +
+// @forgeax/engine-app -- AppError + closed AppErrorCode union (13 members) +
 // APP_ERROR_HINTS / APP_EXPECTED + discriminated AppErrorDetail per code.
 //
 // Shape:
-//   - AppErrorCode = closed union 14 members (charter P4 closed-union
+//   - AppErrorCode = closed union 13 members (charter P4 closed-union
 //     exhaustive switch needs no default fallback; tsc strict mode guards
 //     completeness; AGENTS.md "Errors are structured" + AC-07).
 //     Members:
@@ -50,7 +50,7 @@ import type { RhiError } from '@forgeax/engine-rhi/errors';
 import type { ExecutionCapabilityName, ExecutionWorker } from './execution/types';
 
 /**
- * Closed AppErrorCode union (14 members).
+ * Closed AppErrorCode union (13 members).
  *
  * | code | trigger |
  * |:--|:--|
@@ -137,14 +137,6 @@ export interface AppDetailExecutionKernelFailed {
   readonly kernelName: string;
   readonly worldIdentity: string;
   readonly cause: unknown;
-  readonly partialWrite: true;
-  readonly retryable: false;
-}
-
-export interface AppDetailExecutionStaleWorld {
-  readonly expectedIdentity: string;
-  readonly receivedIdentity: string;
-  readonly messageKind: string;
 }
 
 /** Closed failure reasons for read-only inspection, distinct from frame faults. */
@@ -204,13 +196,11 @@ export type AppErrorDetailFor<C extends AppErrorCode> = C extends 'app-canvas-de
                 ? AppDetailExecutionDeadlineExceeded
                 : C extends 'app-execution-kernel-failed'
                   ? AppDetailExecutionKernelFailed
-                  : C extends 'app-execution-stale-world'
-                    ? AppDetailExecutionStaleWorld
-                    : C extends 'app-execution-rebuild-failed'
-                      ? AppDetailExecutionRebuildFailed
-                      : C extends 'app-renderer-inspection-unavailable'
-                        ? AppDetailRendererInspectionUnavailable
-                        : AppDetailEmpty;
+                  : C extends 'app-execution-rebuild-failed'
+                    ? AppDetailExecutionRebuildFailed
+                    : C extends 'app-renderer-inspection-unavailable'
+                      ? AppDetailRendererInspectionUnavailable
+                      : AppDetailEmpty;
 
 /**
  * Tagged union of `.detail` payloads carried by structured AppError.
@@ -425,11 +415,6 @@ const appErrorPolicy = {
     expected:
       'a shared kernel completes every dispatched shard without leaving a possibly partial World write',
     hint: 'do not retry or draw the poisoned World; inspect detail.kernelName and cause, then call app.execution.rebuild()',
-  },
-  'app-execution-stale-world': {
-    expected:
-      'every execution message targets the currently active World identity before it can write',
-    hint: 'discard the late message and keep the current World; inspect expectedIdentity, receivedIdentity and messageKind',
   },
   'app-execution-rebuild-failed': {
     expected:

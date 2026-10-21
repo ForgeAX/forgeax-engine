@@ -1,5 +1,6 @@
 import {
   type FrameReceipt,
+  type GpuPassTimingObservation,
   querySubmittedTerrainHeight,
   type Renderer,
   type RendererOperationError,
@@ -16,6 +17,7 @@ import {
   createRhiCapture,
   createRhiInstrumentation,
   type RhiCapture,
+  type RhiRemoteCaptureCompletion,
 } from '../internal/rhi-capture';
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
 import { prepareBootstrapEntry } from './bootstrap-entry';
@@ -64,9 +66,22 @@ let completing: Promise<void> = Promise.resolve();
 let attachment: RecorderAttachment | undefined;
 let capture: RhiCapture | undefined;
 let captureBoundary: ReturnType<RecorderAttachment['frameBoundary']> | undefined;
+interface CaptureDrawTransaction {
+  readonly recordingGenerations: number[];
+}
+interface WorkerCaptureRequest {
+  readonly controller: AbortController;
+  readonly frame: Promise<RhiRemoteCaptureCompletion>;
+  readonly resolveFrame: (frame: RhiRemoteCaptureCompletion) => void;
+  captureGeneration: number | undefined;
+  draw: CaptureDrawTransaction | undefined;
+  boundaryCount: number;
+  settled: boolean;
+}
+let activeCaptureDraw: CaptureDrawTransaction | undefined;
 let gpuPassTimingEnabled = false;
 const terrainReceipts = new Map<number, FrameReceipt>();
-const captureRequests = new Map<number, AbortController>();
+const captureRequests = new Map<number, WorkerCaptureRequest>();
 let synchronizeFeatures: (features: RenderPublication['features']) => Promise<void> =
   async () => {};
 type DrawMessage = Extract<RenderWorkerInput, { kind: 'draw' }>;
@@ -80,6 +95,121 @@ let geometryRequest:
 function closeVideoFrames(message: DrawMessage): void {
   for (const row of message.publication.videoFrames) row.frame.close();
   for (const row of message.publication.canvasFrames ?? []) row.frame?.close();
+}
+
+function unavailableCaptureFrame(
+  reason: Extract<RhiRemoteCaptureCompletion, { status: 'unavailable' }>['reason'],
+): RhiRemoteCaptureCompletion {
+  return { status: 'unavailable', reason };
+}
+
+function settleCaptureRequest(
+  request: WorkerCaptureRequest,
+  frame: RhiRemoteCaptureCompletion,
+): void {
+  if (request.settled) return;
+  request.settled = true;
+  request.resolveFrame(frame);
+}
+
+function invalidateCaptureRequests(): void {
+  for (const request of captureRequests.values()) {
+    request.controller.abort();
+    settleCaptureRequest(request, unavailableCaptureFrame('capture-invalidated'));
+  }
+}
+
+function captureTimingForReceipt(
+  timingResult: Awaited<ReturnType<Renderer['observe']>> | undefined,
+): GpuPassTimingObservation | undefined {
+  const timing = timingResult?.ok === true ? timingResult.value.timings : undefined;
+  if (timing?.status !== 'failed') return timing;
+  // A failed observation may carry latestKnownGood from an older receipt.
+  // Preserve the failure and its reason without transporting that stale frame.
+  return { status: 'failed', error: timing.error };
+}
+
+function settleCaptureDraw(
+  draw: CaptureDrawTransaction | undefined,
+  receipt: FrameReceipt,
+  timingResult: Awaited<ReturnType<Renderer['observe']>> | undefined,
+): void {
+  if (draw === undefined) return;
+  for (const request of captureRequests.values()) {
+    if (request.settled || request.draw !== draw) continue;
+    const captureGeneration = request.captureGeneration;
+    if (
+      request.controller.signal.aborted ||
+      captureGeneration === undefined ||
+      attachment?.captureGeneration !== captureGeneration
+    ) {
+      settleCaptureRequest(request, unavailableCaptureFrame('capture-invalidated'));
+      continue;
+    }
+    if (request.boundaryCount !== 1) {
+      settleCaptureRequest(request, unavailableCaptureFrame('multiple-submits'));
+      continue;
+    }
+    if (
+      draw.recordingGenerations.filter((generation) => generation === captureGeneration).length !==
+      1
+    ) {
+      settleCaptureRequest(request, unavailableCaptureFrame('multiple-submits'));
+      continue;
+    }
+    const gpuPassTiming = captureTimingForReceipt(timingResult);
+    settleCaptureRequest(request, {
+      status: 'remote-complete',
+      receipt: {
+        frameId: receipt.frameId,
+        deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+      },
+      captureGeneration,
+      ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
+    });
+  }
+}
+
+function failCaptureDraw(draw: CaptureDrawTransaction | undefined): void {
+  if (draw === undefined) return;
+  for (const request of captureRequests.values()) {
+    if (request.settled || request.draw !== draw) continue;
+    settleCaptureRequest(
+      request,
+      unavailableCaptureFrame(
+        request.controller.signal.aborted ||
+          request.captureGeneration === undefined ||
+          attachment?.captureGeneration !== request.captureGeneration
+          ? 'capture-invalidated'
+          : 'submit-failed',
+      ),
+    );
+  }
+}
+
+function trackRecordingBoundary(captureGeneration: number): void {
+  const draw = activeCaptureDraw;
+  draw?.recordingGenerations.push(captureGeneration);
+  for (const request of captureRequests.values()) {
+    if (request.settled || request.captureGeneration !== captureGeneration) continue;
+    if (request.controller.signal.aborted) {
+      settleCaptureRequest(request, unavailableCaptureFrame('capture-invalidated'));
+      continue;
+    }
+    request.boundaryCount += 1;
+    if (request.boundaryCount > 1) {
+      settleCaptureRequest(request, unavailableCaptureFrame('multiple-submits'));
+      continue;
+    }
+    if (draw === undefined) {
+      settleCaptureRequest(request, unavailableCaptureFrame('frame-unavailable'));
+      continue;
+    }
+    request.draw = draw;
+  }
 }
 
 function inspectRendererDiagnostics():
@@ -109,6 +239,7 @@ function fail(message: RenderWorkerInput, cause: unknown): void {
   if (failed) return;
   failed = true;
   activePreparationAbort?.abort();
+  invalidateCaptureRequests();
   terrainReceipts.clear();
   const rendererFacts = inspectRendererDiagnostics();
   const operationError = cause as
@@ -168,6 +299,7 @@ async function completeFrame(
   previous: Promise<void>,
   snapshotBoundary?: Promise<unknown>,
   meshConsumption?: CompletedMeshConsumption,
+  captureDraw?: CaptureDrawTransaction,
 ): Promise<void> {
   try {
     // Observe this receipt immediately, before the next draw changes frame state.
@@ -175,9 +307,15 @@ async function completeFrame(
       ? frameRenderer.observe(receipt, { include: ['timings'] })
       : undefined;
     const completion = receipt.completed.then((result) => {
-      if (!result.ok) throw result.error;
+      if (!result.ok) {
+        // Preserve the target receipt failure before worker teardown invalidates
+        // any other capture requests.
+        failCaptureDraw(captureDraw);
+        throw result.error;
+      }
     });
     const [, timingResult] = await Promise.all([completion, observedTiming, snapshotBoundary]);
+    settleCaptureDraw(captureDraw, receipt, timingResult);
     traceCompletion('render-own-composite-continuation', message, receipt);
     // Composite receipts/readbacks can finish out of order. The publisher and
     // Host advance only the contiguous completed prefix, never a newer frame.
@@ -263,7 +401,7 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     terrainReceipts.clear();
     shuttingDown = true;
     activePreparationAbort?.abort();
-    for (const controller of captureRequests.values()) controller.abort();
+    invalidateCaptureRequests();
     try {
       await initializing;
       await drawing;
@@ -386,7 +524,11 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       return;
     }
     if (message.kind === 'capture-cancel') {
-      captureRequests.get(message.requestId)?.abort();
+      const request = captureRequests.get(message.requestId);
+      if (request !== undefined) {
+        request.controller.abort();
+        settleCaptureRequest(request, unavailableCaptureFrame('capture-invalidated'));
+      }
       return;
     }
     if (message.kind === 'capture') {
@@ -405,10 +547,29 @@ async function receive(message: RenderWorkerInput): Promise<void> {
         return;
       }
       const controller = new AbortController();
-      captureRequests.set(message.requestId, controller);
-      const result = await capture.captureFrame({ ...message.options, signal: controller.signal });
-      captureRequests.delete(message.requestId);
+      let resolveFrame!: (frame: RhiRemoteCaptureCompletion) => void;
+      const request: WorkerCaptureRequest = {
+        controller,
+        frame: new Promise((resolve) => {
+          resolveFrame = resolve;
+        }),
+        resolveFrame: (frame) => resolveFrame(frame),
+        captureGeneration: undefined,
+        draw: undefined,
+        boundaryCount: 0,
+        settled: false,
+      };
+      captureRequests.set(message.requestId, request);
+      const previousGeneration = attachment?.captureGeneration;
+      const captureResult = capture.captureFrame({ ...message.options, signal: controller.signal });
+      const currentGeneration = attachment?.captureGeneration;
+      request.captureGeneration =
+        currentGeneration !== undefined && currentGeneration !== previousGeneration
+          ? currentGeneration
+          : undefined;
+      const result = await captureResult;
       if (!result.ok) {
+        captureRequests.delete(message.requestId);
         scope.postMessage({
           kind: 'capture-result',
           requestId: message.requestId,
@@ -416,12 +577,16 @@ async function receive(message: RenderWorkerInput): Promise<void> {
         });
         return;
       }
+      if (request.boundaryCount === 0)
+        settleCaptureRequest(request, unavailableCaptureFrame('frame-unavailable'));
+      const submittedFrame = await request.frame;
+      captureRequests.delete(message.requestId);
       const bytes = transferable(result.value.bytes);
       scope.postMessage(
         {
           kind: 'capture-result',
           requestId: message.requestId,
-          result: { ok: true, value: { kind: 'rhi-tape', bytes } },
+          result: { ok: true, value: { kind: 'rhi-tape', bytes, submittedFrame } },
         },
         [bytes.buffer],
       );
@@ -452,7 +617,12 @@ async function receive(message: RenderWorkerInput): Promise<void> {
                 rhiInstrumentation: {
                   ...createRhiInstrumentation(attachment),
                   onFrameBoundary: () => {
-                    captureBoundary = attachment?.frameBoundary();
+                    const recorder = attachment;
+                    if (recorder === undefined) return;
+                    const captureGeneration = recorder.captureGeneration;
+                    if (recorder.isRecordingCapture(captureGeneration))
+                      trackRecordingBoundary(captureGeneration);
+                    captureBoundary = recorder.frameBoundary();
                   },
                 },
               }),
@@ -640,23 +810,32 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       onFeatureSourceSubmitted: (identity, feedback) => features.push({ identity, feedback }),
     };
     let draw: ReturnType<Renderer['draw']>;
-    if (renderTaskYield === 'features') {
-      if (renderer.drawScheduled === undefined)
-        throw new Error('Renderer has no cooperative preparation entry');
-      const abort = new AbortController();
-      activePreparationAbort = abort;
-      try {
-        draw = await renderer.drawScheduled(input, {
-          signal: abort.signal,
-          isCurrent: () => !failed && !shuttingDown,
-          checkpoint: () => (unretiredReceipts > 0 ? featureTaskTurns.yield() : Promise.resolve()),
-        });
-      } finally {
-        if (activePreparationAbort === abort) activePreparationAbort = undefined;
-      }
-    } else draw = renderer.draw(input);
+    const captureDraw = attachment === undefined ? undefined : { recordingGenerations: [] };
+    const previousCaptureDraw = activeCaptureDraw;
+    activeCaptureDraw = captureDraw;
+    try {
+      if (renderTaskYield === 'features') {
+        if (renderer.drawScheduled === undefined)
+          throw new Error('Renderer has no cooperative preparation entry');
+        const abort = new AbortController();
+        activePreparationAbort = abort;
+        try {
+          draw = await renderer.drawScheduled(input, {
+            signal: abort.signal,
+            isCurrent: () => !failed && !shuttingDown,
+            checkpoint: () =>
+              unretiredReceipts > 0 ? featureTaskTurns.yield() : Promise.resolve(),
+          });
+        } finally {
+          if (activePreparationAbort === abort) activePreparationAbort = undefined;
+        }
+      } else draw = renderer.draw(input);
+    } finally {
+      if (activeCaptureDraw === captureDraw) activeCaptureDraw = previousCaptureDraw;
+    }
     if (!draw.ok) {
       if (failed || shuttingDown) return;
+      failCaptureDraw(captureDraw);
       throw draw.error;
     }
     const receipt = draw.value;
@@ -681,6 +860,7 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       completing,
       snapshotBoundary,
       meshConsumption,
+      captureDraw,
     );
     if (failed) return;
     scope.postMessage({

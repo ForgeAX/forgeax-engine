@@ -791,6 +791,13 @@ fn standardObjectToWorld(in : VsOut) -> mat3x3<f32> {
 #endif
 }
 
+// Pipeline-selected surface discard gates (bit 1: LOD crossfade coverage,
+// bit 2: camera view clipping). A static discard defeats hidden-surface
+// removal on tile GPUs even when it never fires, so GPU-driven raster clears a
+// bit when its batch cannot fade or its view carries no clipping planes. The
+// default keeps both discards for every other consumer of this template.
+@id(64001) override standardSurfaceDiscards: u32 = 3u;
+
 // Standard owns the lighting and pass policy; the selected Surface owns only
 // the base facts exchanged through surface_v1.
 fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec3<f32>) -> SurfaceData {
@@ -798,7 +805,9 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
   let triangleNormal = displacedNormal(in.worldPos, in.worldNormal);
 #endif
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
-  applyLodCoverage(in.clip.xy, bitcast<f32>(in.materialAddress.w));
+  if ((standardSurfaceDiscards & 1u) != 0u) {
+    applyLodCoverage(in.clip.xy, bitcast<f32>(in.materialAddress.w));
+  }
 #endif
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   // Scene-index Surface helpers may close over the imported `material` symbol.
@@ -808,7 +817,9 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
   material = selectedMaterial(in.materialAddress.x);
 #endif
 
-  applyViewClipping(in.worldPos, false);
+  if ((standardSurfaceDiscards & 2u) != 0u) {
+    applyViewClipping(in.worldPos, false);
+  }
 #ifdef MATERIAL_CLIPPING_AVAILABLE
   applyLocalClipping(in.worldPos, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
 #endif

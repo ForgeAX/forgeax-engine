@@ -142,7 +142,7 @@ test('keeps the pinned View source and removes a stale uninitialized checkout', 
   }
 });
 
-test('every frozen install in the required CI workflow cleans stale workspace sources first', () => {
+test('CI install entrypoints clean stale workspace sources first', () => {
   const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
   const installs = workflow
     .split(/\r?\n/)
@@ -151,6 +151,11 @@ test('every frozen install in the required CI workflow cleans stale workspace so
   assert.ok(installs.every((line) => line.includes('scripts/ci/prepare-pnpm-workspace.mjs')));
   assert.doesNotMatch(workflow, /pnpm install --frozen-lockfile/);
   assert.match(workflow, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);
+  for (const path of ['sdk-pr-preflight.yml', 'bench.yml', 'ci-focus.yml']) {
+    const consumer = readFileSync(`.github/workflows/${path}`, 'utf8');
+    assert.doesNotMatch(consumer, /pnpm install --frozen-lockfile/);
+    assert.match(consumer, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);
+  }
 });
 
 test('ordinary CI installs only the current platform and never executes root lifecycle hooks', async () => {

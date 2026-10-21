@@ -9,8 +9,8 @@ import { err } from '@forgeax/engine-types';
 import {
   VFX_GPU_PROGRAM_ARTIFACT_KEY,
   VFX_GPU_PROGRAM_FORMAT,
-  type VfxGpuEffectAssetAny,
-  type VfxGpuEmitterProgramV3,
+  type VfxGpuEffectAsset,
+  type VfxGpuEmitterProgram,
 } from './gpu-program.js';
 import { prepareRuntimeParticleEffect } from './runtime-prepare.js';
 
@@ -77,7 +77,7 @@ function freezeProgramJson<T>(value: T): T {
 /** Validate cooked bytes before code-created or source-loaded effects are adopted. */
 export async function prepareVfxGpuEffect(
   input: VfxProgramInput,
-): Promise<Result<VfxGpuEffectAssetAny, VfxGpuAssetError>> {
+): Promise<Result<VfxGpuEffectAsset, VfxGpuAssetError>> {
   const schemaVersion = input.payload.schemaVersion;
   if (schemaVersion !== 3) {
     return failure(
@@ -137,7 +137,7 @@ export async function prepareVfxGpuEffect(
       'recook with the current VFX compiler ABI',
     );
   }
-  const decodedEmitters = decoded.emitters as VfxGpuEmitterProgramV3[];
+  const decodedEmitters = decoded.emitters as VfxGpuEmitterProgram[];
   if (
     input.payload.program.format !== expectedFormat ||
     input.payload.program.fingerprint !== input.payload.programFingerprint ||
@@ -203,10 +203,10 @@ export async function prepareVfxGpuEffect(
 
 /** VFX owner decoder contribution for the core registry's typed map. */
 export const particleEffectContribution: AssetDecoderContribution<
-  VfxGpuEffectAssetAny,
+  VfxGpuEffectAsset,
   'particle-effect'
 > = {
-  kind: { kind: 'particle-effect' } as AssetKind<VfxGpuEffectAssetAny, 'particle-effect'>,
+  kind: { kind: 'particle-effect' } as AssetKind<VfxGpuEffectAsset, 'particle-effect'>,
   consumer: 'VfxGpuRuntime',
   decoder: {
     prepare: prepareRuntimeParticleEffect,

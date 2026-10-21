@@ -1,4 +1,3 @@
-import type { RuntimeErrorCode } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
   ObservationUnavailableDetail,
@@ -146,9 +145,7 @@ describe('RenderError code owner', () => {
 
   it('keeps retired HDRP error namespaces out of every public code union', () => {
     type RetiredRenderCode = Extract<RenderErrorCode, `hdrp-${string}`>;
-    type RetiredRuntimeCode = Extract<RuntimeErrorCode, `hdrp-${string}`>;
     expectTypeOf<RetiredRenderCode>().toEqualTypeOf<never>();
-    expectTypeOf<RetiredRuntimeCode>().toEqualTypeOf<never>();
   });
 
   it('preserves correlated detail and value declarations', () => {

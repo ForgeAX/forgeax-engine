@@ -74,8 +74,6 @@ function runtimeError(message: ExecutionFaultMessage): AppErrorType {
         kernelName: (message.detail as { kernelName?: string })?.kernelName ?? 'unknown',
         worldIdentity: message.worldIdentity,
         cause: message.detail,
-        partialWrite: true,
-        retryable: false,
       },
     });
   }

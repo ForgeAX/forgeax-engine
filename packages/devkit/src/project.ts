@@ -178,6 +178,16 @@ export function commandError(cause: unknown, fallbackCode: string): CommandError
     code: fallbackCode,
     expected: 'the ForgeaX command to complete',
     hint: 'Inspect the underlying diagnostic and repair the owning input.',
-    detail: { reason: cause instanceof Error ? cause.message : String(cause) },
+    detail: {
+      reason:
+        cause instanceof Error
+          ? cause.message
+          : cause !== null &&
+              typeof cause === 'object' &&
+              'message' in cause &&
+              typeof cause.message === 'string'
+            ? cause.message
+            : String(cause),
+    },
   };
 }

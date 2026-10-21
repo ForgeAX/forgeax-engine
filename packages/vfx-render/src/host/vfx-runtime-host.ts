@@ -156,14 +156,6 @@ export interface VfxRuntimeHost {
   }): Promise<Result<{ readonly state: 'detached' | 'not-attached' }, VfxRuntimeHostError>>;
 }
 
-/** Install the VFX owner decoder into the core registry. */
-export function installVfxRuntimeDecoder(registry: AssetRegistry): AssetDecoderLease {
-  return registry.installDecoder(
-    particleEffectContribution.kind,
-    particleEffectContribution.decoder,
-  );
-}
-
 export interface VfxRuntimeHostInspectSnapshot {
   readonly generation: number;
   /** VFX GPU resource generation; distinct from host attachment generation. */

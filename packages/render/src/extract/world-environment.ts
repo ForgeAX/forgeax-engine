@@ -140,6 +140,7 @@ export function extractWorldEnvironment(
         shadowAutoUpdate: boolean;
         shadowRevision: number;
         staggerCascades: boolean;
+        staticShadowCache: boolean;
         shadowProjection: number;
         shadowViewProjection: Float32Array;
         shadowBiasMode: number;
@@ -195,6 +196,7 @@ export function extractWorldEnvironment(
         shadowAutoUpdate: l.shadowAutoUpdate,
         shadowRevision: l.shadowRevision,
         staggerCascades: l.staggerCascades,
+        staticShadowCache: l.staticShadowCache,
         shadowProjection: l.shadowProjection,
         shadowViewProjection: new Float32Array(l.shadowViewProjection),
         shadowBiasMode: l.shadowBiasMode,
@@ -755,6 +757,7 @@ export function extractWorldEnvironment(
         shadowAngularRadius: sf.shadowAngularRadius,
         maxPenumbraTexels: sf.maxPenumbraTexels,
         ...(sf.staggerCascades ? { staggerCascades: true } : {}),
+        ...(sf.staticShadowCache ? {} : { staticShadowCache: false as const }),
       };
       directionalCsmDirection = dirSnapshot.direction;
       const csm = computeDirectionalCsm(dirSnapshot.direction, directionalCsmConfig, cameraData);

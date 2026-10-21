@@ -53,7 +53,12 @@ export function prepareRuntimeAsset(
   const resolved = resolveMaterialAsset('root', table);
   if (!resolved.ok) return resolved;
   const selected = selectMaterialStaticContract(resolved.value.asset);
-  const { parent: _parent, staticSwitches: _selectedDefaults, ...selectedContent } = selected;
+  const {
+    parent: _parent,
+    staticSwitches: _selectedDefaults,
+    cooked: _publication,
+    ...selectedContent
+  } = selected as MaterialAsset & { readonly cooked?: unknown };
   // The selected parameter contract contains derived default switches. Retain
   // only authored selections; defaults must not become new Cook requirements.
   const asset = {

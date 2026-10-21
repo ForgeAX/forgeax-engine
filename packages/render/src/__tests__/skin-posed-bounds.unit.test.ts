@@ -432,4 +432,46 @@ describe('opt-in conservative current-joint envelopes', () => {
       );
     }
   });
+
+  it('keeps envelopes for skins above the exact-reuse cap within one World budget', () => {
+    const vertices = 60_000;
+    const large = (): MeshAsset => {
+      const position = new Float32Array(vertices * 3);
+      const skinIndex = new Uint16Array(vertices * 4);
+      const skinWeight = new Float32Array(vertices * 4);
+      for (let vertex = 0; vertex < vertices; vertex++) {
+        position.set([Math.sin(vertex), Math.cos(vertex * 0.7), (vertex % 97) * 0.01], vertex * 3);
+        skinIndex.set([0, 1, 0, 0], vertex * 4);
+        skinWeight.set([0.5, 0.5, 0, 0], vertex * 4);
+      }
+      return { ...fixture().mesh, attributes: { position, skinIndex, skinWeight } };
+    };
+    const { pose, world, second } = fixture();
+    second[0] = Math.cos(0.4);
+    second[2] = -Math.sin(0.4);
+    second[8] = Math.sin(0.4);
+    second[10] = Math.cos(0.4);
+    const owner = new World();
+    const meshes = [large(), large(), large(), large()];
+    const results = meshes.map((mesh, index) => ({
+      exact: skinPosedBounds(mesh, pose, world),
+      bounds: skinPosedBounds(mesh, pose, world, skinPosedBoundsCache(owner, `big-${index}`), true),
+    }));
+    // About 2 MiB per snapshot: three fit the 8 MiB budget, the fourth stays exact.
+    for (const { exact, bounds } of results.slice(0, 3)) {
+      enclosing(bounds, exact);
+      expect(bounds).not.toEqual(exact);
+    }
+    expect(results[3]?.bounds).toEqual(results[3]?.exact);
+    for (let index = 0; index < 32; index++) skinPosedBoundsCache(owner, `small-${index}`);
+    const freed = skinPosedBounds(
+      meshes[3] as MeshAsset,
+      pose,
+      world,
+      skinPosedBoundsCache(owner, 'big-3'),
+      true,
+    );
+    enclosing(freed, results[3]?.exact);
+    expect(freed).not.toEqual(results[3]?.exact);
+  });
 });

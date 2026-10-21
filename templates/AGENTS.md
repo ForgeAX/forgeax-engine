@@ -249,11 +249,21 @@ pnpm exec forgeax dev start --json
 `project check` validates Node/pnpm, manifest, and dependencies; `pnpm test` runs Vitest.
 New/init projects provide `typecheck`; older games can use `pnpm exec tsc --noEmit`,
 reporting the missing script as onboarding debt. Select relevant tests and asset checks.
-In a real browser, inspect the final game's startup and page/console/App/GPU/resource
-errors, view a screenshot, exercise core interaction and its visible result, and check
-restart/reload. `plugin-startup-failed` fails acceptance even with an active root Fiber
-or empty browser error lists. Fix its owner and start a fresh session; never suppress
-the error or remove the plugin.
+Accept the final game only with evidence from the actual entry and host handed to the user:
+
+| Required evidence | Passing condition |
+|:--|:--|
+| Startup and errors | Run `dev verify --revision <current-revision> --json` against the delivery execution; inspect its runtime report and artifacts. A failed or blocked gate cannot establish runtime acceptance. |
+| Appearance | Open the captured screenshot and confirm the requested scene and UI are visible; a saved image path alone is insufficient. |
+| Core interaction | Drive the requested controls and observe their gameplay result in the running game; data/unit tests do not exercise this path. |
+| Restart/reload | Repeat startup and a core interaction after reload; use evidence from the final code and build. |
+
+Each successful check qualifies only the subject and execution it observed. Service
+availability, transport readiness and build success do not establish runtime health
+or gameplay. Missing observations remain unverified. A visible fatal or failed Engine
+startup fails acceptance even when other checks pass.
+Fix the failing owner and verify a fresh session; never suppress the error or remove the
+required plugin to obtain a pass.
 
 Use `project build` and `project preview` to verify served `dist` when delivery or
 changed build/asset paths require production output. Local delivery provides a usable
@@ -261,9 +271,16 @@ local URL. ZIP packaging, HTTPS hosting, full-board/stress runs, fixed frame cou
 performance counters, and unrelated shortcut regressions need an explicit requirement
 or observed risk. Hand over the working game without expanding the acceptance loop.
 
-Report the playable entry, core checks, viewed screenshot, and limitations. A build,
-URL, HTTP 200, or canonical-template test alone cannot accept the authored game.
-If browser verification is unavailable, retain diagnostics and state the missing evidence.
+Report the playable entry, observed interaction/result, viewed screenshot reference,
+reload result, and limitations. A build, URL, HTTP 200, canonical-template test, or service
+handshake alone cannot accept the authored game. Say "complete" or "fixed" only when
+all required evidence above passes; retain each missing check as unverified.
+When a check is blocked, diagnose its owner and attempt supported recovery or another
+available observation route. `dev verify` can use the Engine browser owner when the
+interactive browser tool is unavailable; `dev status`/`dev capture` retain diagnostics.
+A different execution can diagnose the owner but cannot accept the failing or unobserved
+delivery target. If recovery remains blocked, report the concrete error, attempted remedies, completed checks, and
+missing evidence to the user; never turn an unavailable check into a pass.
 For Linux batch jobs, follow [Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md)
 before retrying: explicit headless needs no Xvfb; virtual headed capture does.
 A blocked browser is not a completed runtime acceptance. If the requested capability

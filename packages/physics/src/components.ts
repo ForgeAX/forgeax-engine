@@ -44,50 +44,35 @@ export type ColliderShape = keyof typeof ColliderShapeValue;
 // (Derive, don't Duplicate — one object is both the AI-facing const AND the
 // schema-projected label map that `describeComponent` surfaces).
 
-/** Numeric value for static rigid body (Rapier Fixed). */
-export const RIGID_BODY_TYPE_STATIC = 0;
-/** Numeric value for dynamic rigid body (Rapier Dynamic). */
-export const RIGID_BODY_TYPE_DYNAMIC = 1;
-/** Numeric value for kinematic rigid body (Rapier KinematicPositionBased). */
-export const RIGID_BODY_TYPE_KINEMATIC = 2;
-
 export const RigidBodyTypeValue = {
-  static: RIGID_BODY_TYPE_STATIC,
-  dynamic: RIGID_BODY_TYPE_DYNAMIC,
-  kinematic: RIGID_BODY_TYPE_KINEMATIC,
+  /** Rapier Fixed. */
+  static: 0,
+  /** Rapier Dynamic. */
+  dynamic: 1,
+  /** Rapier KinematicPositionBased. */
+  kinematic: 2,
 } as const;
 
+const RIGID_BODY_TYPES = Object.keys(RigidBodyTypeValue) as RigidBodyType[];
+
 export function rigidBodyTypeFromF32(n: number): RigidBodyType {
-  if (n === RIGID_BODY_TYPE_DYNAMIC) return 'dynamic';
-  if (n === RIGID_BODY_TYPE_KINEMATIC) return 'kinematic';
-  return 'static';
+  return RIGID_BODY_TYPES.find((type) => RigidBodyTypeValue[type] === n) ?? 'static';
 }
 
-/** Numeric value for cuboid collider shape. */
-export const COLLIDER_SHAPE_CUBOID = 0;
-/** Numeric value for sphere collider shape. */
-export const COLLIDER_SHAPE_SPHERE = 1;
-/** Numeric value for capsule collider shape. */
-export const COLLIDER_SHAPE_CAPSULE = 2;
-
 export const ColliderShapeValue = {
-  cuboid: COLLIDER_SHAPE_CUBOID,
-  sphere: COLLIDER_SHAPE_SPHERE,
-  capsule: COLLIDER_SHAPE_CAPSULE,
+  cuboid: 0,
+  sphere: 1,
+  capsule: 2,
   cylinder: 3,
   cone: 4,
   convexHull: 5,
   trimesh: 6,
 } as const;
 
+const COLLIDER_SHAPES = Object.keys(ColliderShapeValue) as ColliderShape[];
+
 export function colliderShapeFromF32(n: number): ColliderShape {
-  if (n === ColliderShapeValue.cylinder) return 'cylinder';
-  if (n === ColliderShapeValue.cone) return 'cone';
-  if (n === ColliderShapeValue.convexHull) return 'convexHull';
-  if (n === ColliderShapeValue.trimesh) return 'trimesh';
-  if (n === COLLIDER_SHAPE_SPHERE) return 'sphere';
-  if (n === COLLIDER_SHAPE_CAPSULE) return 'capsule';
-  return 'cuboid';
+  return COLLIDER_SHAPES.find((shape) => ColliderShapeValue[shape] === n) ?? 'cuboid';
 }
 
 /**
@@ -112,7 +97,7 @@ export function colliderShapeFromF32(n: number): ColliderShape {
 export const RigidBody = defineComponent(
   'RigidBody',
   {
-    type: { type: 'enum', default: RIGID_BODY_TYPE_DYNAMIC, labels: RigidBodyTypeValue },
+    type: { type: 'enum', default: RigidBodyTypeValue.dynamic, labels: RigidBodyTypeValue },
     mass: { type: 'f32', default: 1 },
     linearDamping: { type: 'f32', default: 0 },
     angularDamping: { type: 'f32', default: 0 },
@@ -149,7 +134,7 @@ export const RigidBody = defineComponent(
  * | `solverGroups` | `u32` | `0xFFFF_FFFF` | 32-bit packed constraint groups |
  */
 export const Collider = defineComponent('Collider', {
-  shape: { type: 'enum', default: COLLIDER_SHAPE_CUBOID, labels: ColliderShapeValue },
+  shape: { type: 'enum', default: ColliderShapeValue.cuboid, labels: ColliderShapeValue },
   /** ConvexHull/trimesh resolve this ordinary mesh asset; slot zero is unbound. */
   mesh: { type: 'asset<mesh>' },
   // feat-20260709 M4: cuboid half-extents collapsed from 3 per-axis scalar

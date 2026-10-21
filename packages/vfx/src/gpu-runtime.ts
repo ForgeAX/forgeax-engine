@@ -20,7 +20,7 @@ import {
   type VfxFieldTexture,
 } from './force-field-inputs.js';
 import type { VfxForceFieldError } from './force-fields.js';
-import type { VfxGpuEffectAssetAny, VfxGpuEmitterProgramAny } from './gpu-program.js';
+import type { VfxGpuEffectAsset, VfxGpuEmitterProgram } from './gpu-program.js';
 import {
   ParticleEffectInstance,
   type VfxChannelCounters,
@@ -67,9 +67,9 @@ export interface VfxGpuTickIntent {
   readonly forceFields?: Result<readonly VfxFieldTexture[], VfxForceFieldError>;
   readonly sequence: number;
   readonly player: EntityHandle;
-  readonly emitter: VfxGpuEmitterProgramAny;
+  readonly emitter: VfxGpuEmitterProgram;
   /** Exact immutable definition; queued work survives asset replacement. */
-  readonly effect: VfxGpuEffectAssetAny;
+  readonly effect: VfxGpuEffectAsset;
   readonly programFingerprint: string;
   readonly reset: boolean;
   readonly fixedDelta: number;
@@ -106,12 +106,12 @@ export interface VfxGpuEmitterInspectSnapshot {
   readonly spawnCount: number;
   readonly firstParticleId: number;
   readonly reset: boolean;
-  readonly schedule: VfxGpuEmitterProgramAny['schedule'];
-  readonly bounds: VfxGpuEmitterProgramAny['bounds'];
-  readonly simulationWhenCulled: VfxGpuEmitterProgramAny['simulationWhenCulled'];
+  readonly schedule: VfxGpuEmitterProgram['schedule'];
+  readonly bounds: VfxGpuEmitterProgram['bounds'];
+  readonly simulationWhenCulled: VfxGpuEmitterProgram['simulationWhenCulled'];
   readonly renderers: readonly {
     readonly index: number;
-    readonly kind: VfxGpuEmitterProgramAny['renderers'][number]['kind'];
+    readonly kind: VfxGpuEmitterProgram['renderers'][number]['kind'];
     readonly enabled: boolean;
   }[];
   readonly stages: readonly string[];
@@ -123,9 +123,9 @@ export interface VfxGpuEmitterSource {
   readonly forceFields?: Result<readonly VfxFieldTexture[], VfxForceFieldError>;
   readonly instanceGeneration: number;
   readonly player: EntityHandle;
-  readonly emitter: VfxGpuEmitterProgramAny;
+  readonly emitter: VfxGpuEmitterProgram;
   /** Exact immutable definition; queued work survives asset replacement. */
-  readonly effect: VfxGpuEffectAssetAny;
+  readonly effect: VfxGpuEffectAsset;
 }
 
 export interface VfxGpuCommittedInspectSnapshot {
@@ -193,10 +193,10 @@ function playerSource(world: World) {
 }
 
 interface PlayerState {
-  readonly fields: Map<VfxGpuEmitterProgramAny, VfxFieldInputs>;
+  readonly fields: Map<VfxGpuEmitterProgram, VfxFieldInputs>;
   effect: AssetHandle<'particle-effect'>;
-  asset: VfxGpuEffectAssetAny;
-  version: AssetVersion<VfxGpuEffectAssetAny>;
+  asset: VfxGpuEffectAsset;
+  version: AssetVersion<VfxGpuEffectAsset>;
   contentRevision: number;
   emitterIds: ReadonlySet<string>;
   seed: number;
@@ -245,7 +245,7 @@ export class VfxGpuRuntime {
   readonly #intentVersions = new WeakMap<
     VfxGpuTickIntent,
     {
-      readonly effect: AssetVersion<VfxGpuEffectAssetAny>;
+      readonly effect: AssetVersion<VfxGpuEffectAsset>;
       readonly fields: readonly AssetVersion<TextureAsset>[];
     }
   >();
@@ -254,7 +254,7 @@ export class VfxGpuRuntime {
     readonly AssetVersion<TextureAsset>[]
   >();
   readonly #definitionVersions = new WeakMap<
-    VfxGpuEffectAssetAny,
+    VfxGpuEffectAsset,
     { readonly handle: number; readonly revision: number }
   >();
   readonly #instances = new Map<EntityHandle, ParticleEffectInstance>();
@@ -286,7 +286,7 @@ export class VfxGpuRuntime {
   }
 
   /** Exact owner version used by local and Worker rendering; never a second asset identity. */
-  effectVersion(effect: VfxGpuEffectAssetAny): {
+  effectVersion(effect: VfxGpuEffectAsset): {
     readonly handle: number;
     readonly revision: number;
   } {
@@ -304,7 +304,7 @@ export class VfxGpuRuntime {
   #captureFields(
     world: World,
     state: PlayerState,
-    emitter: VfxGpuEmitterProgramAny,
+    emitter: VfxGpuEmitterProgram,
   ): VfxFieldInputs | undefined {
     if (emitter.forceFields === undefined) return undefined;
     const captured = captureVfxFieldInputs(
@@ -782,7 +782,7 @@ export class VfxGpuRuntime {
     this.#clearDiagnostics(input.player, 'vfx-player-invalid');
     const records = runtimeAssets(world.assets);
     const contentRevision = records.version(input.effect);
-    const current = records.borrow<VfxGpuEffectAssetAny>(input.effect);
+    const current = records.borrow<VfxGpuEffectAsset>(input.effect);
     if (
       !current.ok ||
       !contentRevision.ok ||
@@ -814,7 +814,7 @@ export class VfxGpuRuntime {
       previous.effect !== input.effect ||
       previous.contentRevision !== contentRevision.value
     ) {
-      const pinned = records.pin<VfxGpuEffectAssetAny>(input.effect);
+      const pinned = records.pin<VfxGpuEffectAsset>(input.effect);
       if (!pinned.ok) {
         this.#report({
           code: 'vfx-effect-unavailable',
@@ -853,7 +853,7 @@ export class VfxGpuRuntime {
     if (restartRequested) this.#releaseFields(previous);
     const state = restartRequested
       ? {
-          fields: new Map<VfxGpuEmitterProgramAny, VfxFieldInputs>(),
+          fields: new Map<VfxGpuEmitterProgram, VfxFieldInputs>(),
           effect: input.effect,
           asset,
           version,
@@ -1031,7 +1031,7 @@ export class VfxGpuRuntime {
 
   #createInstance(
     player: EntityHandle,
-    effect: VfxGpuEffectAssetAny,
+    effect: VfxGpuEffectAsset,
   ): ParticleEffectInstance | undefined {
     const layout = effect.program.emitters.find(
       (emitter) => emitter.reflection.layout !== undefined,
@@ -1075,7 +1075,7 @@ export class VfxGpuRuntime {
 }
 
 function spawnCount(
-  emitter: VfxGpuEmitterProgramAny,
+  emitter: VfxGpuEmitterProgram,
   previous: number,
   next: number,
   firstTick: boolean,

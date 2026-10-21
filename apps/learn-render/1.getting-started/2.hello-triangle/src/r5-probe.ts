@@ -61,7 +61,6 @@ interface R5ProbeResult {
   errors: typeof errors;
   overCapacitySpawned: number;
   ceilingHitCount: number;
-  exceededHitCount: number;
   drawFailures: Array<{ code: string; hint: string; detail?: unknown }>;
   badSubmitDone: boolean;
   badSubmitResult: { ok: boolean; code?: string; hint?: string; reason?: string; message?: string } | null;
@@ -76,7 +75,6 @@ const P: R5ProbeResult = {
   errors,
   overCapacitySpawned: 0,
   ceilingHitCount: 0,
-  exceededHitCount: 0,
   drawFailures: [],
   badSubmitDone: false,
   badSubmitResult: null,
@@ -209,8 +207,7 @@ const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unw
       }
 
       P.ceilingHitCount = errors.filter((e) => e.code === 'mesh-ssbo-ceiling-reached').length;
-      P.exceededHitCount = errors.filter((e) => e.code === 'mesh-ssbo-capacity-exceeded').length;
-      log('done. errors=' + errors.length + ' ceiling=' + P.ceilingHitCount + ' exceeded=' + P.exceededHitCount);
+      log('done. errors=' + errors.length + ' ceiling=' + P.ceilingHitCount);
 
       // One more draw + rAF to flush a frame for screenshot.
       world.update().unwrap();

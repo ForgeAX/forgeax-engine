@@ -11,7 +11,7 @@ import type {
   ParticleRendererSourceV3,
   VfxDataInterfaceRequirement,
   VfxEffectReflection,
-  VfxGpuRendererReflectionV3,
+  VfxGpuRendererReflection,
   VfxReflectedField,
   VfxReflectedStruct,
   VfxValue,
@@ -28,7 +28,7 @@ import {
 
 /** Kind-derived renderer facts, before material inputs, attributes and lighting are reflected. */
 export type ParticleRendererReflection = Omit<
-  VfxGpuRendererReflectionV3,
+  VfxGpuRendererReflection,
   | 'attributes'
   | 'materialInputs'
   | 'materialInputDefinitions'
@@ -686,7 +686,7 @@ export function reflectVfxRendererV3(
   renderers: readonly ParticleRendererSourceV3[],
   materials?: Readonly<Record<string, readonly MaterialParticleInput[]>>,
   layout?: VfxEffectReflection,
-): Result<readonly VfxGpuRendererReflectionV3[], VfxReflectionError> {
+): Result<readonly VfxGpuRendererReflection[], VfxReflectionError> {
   const baseReflections = reflectVfxRenderer(renderers);
   if (!baseReflections.ok) return baseReflections;
   for (const [index, renderer] of renderers.entries()) {

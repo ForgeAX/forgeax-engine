@@ -33,10 +33,9 @@ import {
   resolveRuntimeAssetReference,
 } from '../render-system-extract';
 import {
-  applyParamSchemaDefaultsToUbo,
-  applyParamSnapshotToUbo,
   defaultViewForUserRegionField,
   residentTextureView,
+  writePreparedMaterialUbo,
 } from './main-pass-material';
 import type { RenderSystemInternals } from './render-context';
 
@@ -180,8 +179,7 @@ export function preparedMaterialBindings(
   let payload: Uint8Array | undefined;
   if (derived.uboLayout.totalBytes > 0) {
     payload = new Uint8Array(Math.max(16, derived.uboLayout.totalBytes));
-    applyParamSchemaDefaultsToUbo(payload, schema);
-    applyParamSnapshotToUbo(
+    writePreparedMaterialUbo(
       payload,
       schema,
       values as Readonly<Record<string, number | readonly number[]>>,

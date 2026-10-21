@@ -18,9 +18,9 @@ import {
   parseParticleEffectSourceV3,
   VFX_PARTICLE_CORE_LAYOUT,
   type VfxDataInterfaceRequirement,
-  type VfxGpuEmitterProgramV3,
-  type VfxGpuProgramV3,
-  type VfxGpuRendererReflectionV3,
+  type VfxGpuEmitterProgram,
+  type VfxGpuProgram,
+  type VfxGpuRendererReflection,
   type VfxValueType,
 } from '@forgeax/engine-vfx';
 import { VFX_FORCE_FIELDS_WGSL } from './force-fields.js';
@@ -970,7 +970,7 @@ function rendererAttributeExpression(
 /** Generate topology-aware accessors so reflected renderer mappings reach GPU projection code. */
 function createParticleRendererAttributeRuntime(
   custom: import('@forgeax/engine-vfx').VfxCustomLayout | undefined,
-  renderers: readonly VfxGpuRendererReflectionV3[],
+  renderers: readonly VfxGpuRendererReflection[],
 ): string {
   return Object.entries(PARTICLE_RENDERER_ACCESSOR_TYPES)
     .map(([semantic, type]) => {
@@ -1030,7 +1030,7 @@ function materialInputValue(
  */
 function createParticleMaterialInputRuntime(
   custom: import('@forgeax/engine-vfx').VfxCustomLayout | undefined,
-  renderers: readonly VfxGpuRendererReflectionV3[],
+  renderers: readonly VfxGpuRendererReflection[],
 ): { readonly wgsl: string; readonly maxLanes: number } {
   const cases: MaterialInputSource[] = [];
   let maxLanes = 0;
@@ -1173,7 +1173,7 @@ function createParticleManagedRuntimeV3(options: {
   readonly custom: import('@forgeax/engine-vfx').VfxCustomLayout | undefined;
   readonly parameters: boolean;
   readonly customHook: boolean;
-  readonly renderers: readonly VfxGpuRendererReflectionV3[];
+  readonly renderers: readonly VfxGpuRendererReflection[];
 }): string {
   const custom = options.custom;
   const materialInputs = createParticleMaterialInputRuntime(custom, options.renderers);
@@ -1252,7 +1252,7 @@ export interface ParticleCodeModuleSet {
 }
 
 /** The runtime GPU program before its canonical bytes are fingerprinted. */
-export type ParticleCodeProgram = Omit<VfxGpuProgramV3, 'fingerprint'>;
+export type ParticleCodeProgram = Omit<VfxGpuProgram, 'fingerprint'>;
 
 export interface ParticleCodeProgramArtifact {
   readonly artifactKey: typeof PARTICLE_CODE_PROGRAM_ARTIFACT_KEY;
@@ -1273,6 +1273,13 @@ export interface ParticleCodeCookProduct {
 export interface ParticleCodeNativeCookInput {
   readonly guid: string;
   readonly source: unknown;
+}
+
+/** Serializable Pack Cook source; shader compilation belongs to Native Cook. */
+export interface ParticleCodeCookSource {
+  readonly effect: import('@forgeax/engine-vfx').ParticleEffectSourceV3;
+  readonly modules: Readonly<Record<string, ParticleCodeModuleSet>>;
+  readonly materials?: ParticleMaterialInputCatalog;
 }
 
 function readParticleCodeModules(root: string): Record<string, ParticleCodeModuleSet> {
@@ -1357,7 +1364,7 @@ async function compileEmitterV3(
   emitter: ParticleEmitterSourceV3,
   modules: Readonly<Record<string, ParticleCodeModuleSet>>,
   materials?: ParticleMaterialInputCatalog,
-): Promise<Result<VfxGpuEmitterProgramV3, ParticleCodeCookError>> {
+): Promise<Result<VfxGpuEmitterProgram, ParticleCodeCookError>> {
   const moduleId = emitter.program.module;
   const module =
     modules[moduleId] ??
@@ -1557,7 +1564,7 @@ async function compileEmitterV3(
     ...(dataInterfaces.length > 0 ? dataInterfaces.map((entry) => entry.kind) : []),
     ...(hasEvents ? ['eventBuffer'] : []),
   ];
-  const program: VfxGpuEmitterProgramV3 = {
+  const program: VfxGpuEmitterProgram = {
     id: emitter.id,
     module: moduleId,
     capacity: emitter.capacity,
@@ -1648,7 +1655,7 @@ export async function cookParticleCodeProgram(
 ): Promise<Result<ParticleCodeProgramArtifact, ParticleCodeCookError>> {
   const parsed = parseParticleEffectSourceV3(sourceValue);
   if (!parsed.ok) return parsed;
-  const emitters: VfxGpuEmitterProgramV3[] = [];
+  const emitters: VfxGpuEmitterProgram[] = [];
   for (const emitter of parsed.value.emitters) {
     const compiled = await compileEmitterV3(emitter, modules, materials);
     if (!compiled.ok) return compiled;
@@ -1737,7 +1744,41 @@ export function createParticleCodeNativeCooker(
       return `sha256:${hash.digest('hex')}`;
     },
     async cook({ guid, source }) {
-      const cooked = await cookParticleCodeEffect(source, modules, materials);
+      let effect = source;
+      let sourceModules = modules;
+      let sourceMaterials = materials;
+      if (source !== null && typeof source === 'object' && Object.hasOwn(source, 'effect')) {
+        const explicit = source as ParticleCodeCookSource;
+        if (
+          Object.keys(source).some((key) => !['effect', 'modules', 'materials'].includes(key)) ||
+          explicit.modules === null ||
+          typeof explicit.modules !== 'object' ||
+          Array.isArray(explicit.modules) ||
+          Object.values(explicit.modules).some(
+            (module) =>
+              module === null ||
+              typeof module !== 'object' ||
+              typeof module.entry !== 'string' ||
+              Object.keys(module).some((key) => key !== 'entry' && key !== 'imports') ||
+              (module.imports !== undefined &&
+                (module.imports === null ||
+                  typeof module.imports !== 'object' ||
+                  Array.isArray(module.imports) ||
+                  Object.values(module.imports).some((text) => typeof text !== 'string'))),
+          ) ||
+          (explicit.materials !== undefined &&
+            (explicit.materials === null ||
+              typeof explicit.materials !== 'object' ||
+              Array.isArray(explicit.materials)))
+        )
+          throw new TypeError(
+            'Particle Cook source requires effect, WGSL modules and optional material inputs',
+          );
+        effect = explicit.effect;
+        sourceModules = explicit.modules;
+        sourceMaterials = explicit.materials;
+      }
+      const cooked = await cookParticleCodeEffect(effect, sourceModules, sourceMaterials);
       if (!cooked.ok) throw new Error(cooked.error.hint);
       return {
         guid,

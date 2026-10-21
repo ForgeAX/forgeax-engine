@@ -1,8 +1,9 @@
 import {
+  type CookedMaterialRecord,
   createMaterialProgramSetDigest,
   serializeCookedMaterialRecord,
-  validateCookedMaterialRecord,
 } from '@forgeax/engine-pack';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { materialProductionFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-production.js';
 import {
@@ -10,13 +11,8 @@ import {
   materialRecordFixture,
 } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
 import { AssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
+import { runtimeAssets } from '../../../assets-runtime/src/internal/runtime-assets.js';
 import { materialContribution } from '../assets/asset-decoders.js';
-
-function cookedRecord(value: unknown): unknown {
-  if (value === null || typeof value !== 'object')
-    throw new Error('decoded material must be a payload');
-  return Reflect.get(value, 'cooked');
-}
 
 async function load(fixture: Awaited<ReturnType<typeof materialProductionFixture>>) {
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -32,22 +28,46 @@ async function load(fixture: Awaited<ReturnType<typeof materialProductionFixture
   const lease = registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     const loaded = await registry.load(fixture.record.guid, 'material');
-    return { result: loaded.ok ? registry.read(loaded.value) : loaded, fetcher };
+    if (!loaded.ok) return { result: loaded, fetcher };
+    const result = registry.read(loaded.value);
+    const projection = registry.getMaterialProjectionForPayload(
+      runtimeAssets(registry).borrow<MaterialAsset>(loaded.value).unwrap(),
+    );
+    const sources = fixture.record.programs.map((program) => {
+      const artifact = registry.shaderRegistry.findMaterialArtifact(program.specializationKey);
+      return artifact.ok ? artifact.value.source : artifact.error;
+    });
+    return { result, projection, sources, fetcher };
   } finally {
     lease.dispose();
     registry.dispose();
   }
 }
 
+function expectPublished(
+  loaded: Awaited<ReturnType<typeof load>>,
+  record: CookedMaterialRecord,
+): void {
+  expect(loaded.result).toMatchObject({ ok: true });
+  if (!loaded.result.ok) throw loaded.result.error;
+  // Cook records stay with the publication and shader owners, not mutable content.
+  expect(loaded.result.value).not.toHaveProperty('cooked');
+  expect(loaded.projection).toMatchObject({
+    materialGuid: record.guid,
+    specializationKey: record.specializationKey,
+    artifactHash: record.artifactDigest,
+  });
+  expect(loaded.sources).toEqual(
+    record.programs.map((program) => new TextDecoder().decode(program.artifact.bytes)),
+  );
+}
+
 it('loads production compact transport through the actual Render decoder with the complete original cooked record', async () => {
   const fixture = await materialProductionFixture();
   expect(fixture.pack.assets[0].payload.cooked.programs[0].artifact).not.toHaveProperty('bytes');
-  const { result, fetcher } = await load(fixture);
-  expect(result).toMatchObject({ ok: true });
-  if (!result.ok) throw result.error;
-  const parsed = validateCookedMaterialRecord(cookedRecord(result.value));
-  expect(parsed).toEqual({ ok: true, value: fixture.record });
-  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(1);
+  const loaded = await load(fixture);
+  expectPublished(loaded, fixture.record);
+  expect(loaded.fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(1);
 });
 
 it('retains the existing typed inline transport contract', async () => {
@@ -55,14 +75,9 @@ it('retains the existing typed inline transport contract', async () => {
   expect(fixture.pack.assets[0].payload.cooked).toEqual(
     JSON.parse(serializeCookedMaterialRecord(fixture.record)),
   );
-  const { result, fetcher } = await load(fixture);
-  expect(result).toMatchObject({ ok: true });
-  if (!result.ok) throw result.error;
-  expect(validateCookedMaterialRecord(cookedRecord(result.value))).toEqual({
-    ok: true,
-    value: fixture.record,
-  });
-  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(0);
+  const loaded = await load(fixture);
+  expectPublished(loaded, fixture.record);
+  expect(loaded.fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(0);
 });
 
 it.each([
@@ -118,12 +133,7 @@ it('restores every compact program sharing one verified external read', async ()
     receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
   };
   const fixture = await materialProductionFixture(true, record);
-  const { result, fetcher } = await load(fixture);
-  expect(result).toMatchObject({ ok: true });
-  if (!result.ok) throw result.error;
-  expect(validateCookedMaterialRecord(cookedRecord(result.value))).toEqual({
-    ok: true,
-    value: record,
-  });
-  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(1);
+  const loaded = await load(fixture);
+  expectPublished(loaded, record);
+  expect(loaded.fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(1);
 });

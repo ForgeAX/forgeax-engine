@@ -180,22 +180,24 @@ try {
     }
     throw new Error(`renderer state did not reach ${state}: ${JSON.stringify(last)}`);
   };
-  const waitForSubmitted = async (additional) => {
-    const before = await inspect();
-    const target = before.submittedFrames + additional;
-    await page.waitForFunction(
-      (expected) => (globalThis.__bloomCarrierProbe?.inspect()?.submittedFrames ?? 0) >= expected,
-      target,
-      { timeout: 30_000 },
-    );
-  };
+  const waitForReady = (count) => page.evaluate(
+    (expected) => globalThis.__bloomCarrierProbe.waitForReadyFrames(expected), count,
+  );
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('device-loss-before'));
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(true));
-  await waitForSubmitted(60);
+  evidence.completedReadyFramesBefore = await waitForReady(60);
   const before = await inspect();
+  if (before.bloom.graphStatus !== 'valid' || before.bloom.passCount !== 11 || before.bloom.enabled !== true) {
+    throw new Error(`Bloom initial ready frames lack their graph: ${JSON.stringify(before.bloom)}`);
+  }
+  await page.addStyleTag({ content: '#bloom-hud { visibility: hidden !important; }' });
   const beforePng = resolve(evidenceDir, 'browser-device-loss-before.png');
-  await page.screenshot({ path: beforePng });
+  await page.locator('canvas').screenshot({ path: beforePng });
+  const beforeVisual = imageStats(beforePng);
+  if (beforeVisual.nonBlackPixels === 0 || beforeVisual.maxLuma <= 0.02) {
+    throw new Error(`Bloom initial canvas is black: ${JSON.stringify(beforeVisual)}`);
+  }
   const cdp = await browser.newBrowserCDPSession();
   await cdp.send('Browser.crashGpuProcess');
   const lost = await waitForState('device-lost');
@@ -219,11 +221,10 @@ try {
     if (retry?.ok !== true) throw new Error(`renderer.recover failed: ${JSON.stringify(evidence.recoveryAttempts)}`);
   }
   const recovered = await waitForState('alive');
-  await waitForSubmitted(3);
+  evidence.completedReadyFramesAfter = await waitForReady(60);
   const after = await inspect();
   const afterPng = resolve(evidenceDir, 'browser-device-loss-after.png');
-  await page.screenshot({ path: afterPng });
-  const beforeVisual = imageStats(beforePng);
+  await page.locator('canvas').screenshot({ path: afterPng });
   const afterVisual = imageStats(afterPng);
   evidence.before = { ...before, screenshot: 'apps/hello/bloom/evidence/browser-device-loss-before.png' };
   evidence.lost = lost;
@@ -233,7 +234,7 @@ try {
     before: beforeVisual,
     after: afterVisual,
     minimumRestoredFraction: 0.5,
-    rule: 'post-loss PNG must retain at least half of the pre-loss non-black pixels and peak luma',
+    rule: 'post-loss canvas PNG, excluding the HUD, must retain at least half of the pre-loss non-black pixels and peak luma',
   };
   const transitions = after.rendererTransitions.map((entry) => entry.current);
   if (!transitions.includes('device-lost') || !transitions.includes('recovering') || !transitions.includes('alive')) {

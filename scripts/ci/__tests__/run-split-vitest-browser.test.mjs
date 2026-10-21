@@ -1235,7 +1235,8 @@ test('the native PCM loop owner retains a fresh complete browser process', () =>
 // the environment/calibration neighbors passed their unchanged solo retries.
 test('exclusive renderer owners drain neighboring browser groups', async () => {
   const files = [
-    'packages/three/src/__tests__/material-output.browser.test.ts',
+    'packages/three/src/__tests__/material-output-0.browser.test.ts',
+    'packages/three/src/__tests__/material-output-1.browser.test.ts',
     'packages/app/__tests__/subsurface.browser.test.ts',
     'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
     'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',

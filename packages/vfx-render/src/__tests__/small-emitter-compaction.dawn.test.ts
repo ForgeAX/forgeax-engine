@@ -80,7 +80,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
       emitter: reference,
 
       programFingerprint: runtimeAssets(world.assets)
-        .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAssetAny>(
+        .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAsset>(
           reference.effect,
           reference.revision,
         )

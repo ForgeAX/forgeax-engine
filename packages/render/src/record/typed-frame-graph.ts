@@ -185,19 +185,6 @@ import type {
 import { resolveSurfaceProfile } from './render-context';
 import { installScenePasses, registerScenePass, scenePassContext } from './scene-pass-work';
 
-export interface TemporalGraphCapabilities {
-  readonly rgba16floatRender: boolean;
-  readonly rgba16floatSample: boolean;
-  readonly mrt: boolean;
-}
-
-export interface TemporalGraphRoster {
-  readonly enabled?: boolean;
-  readonly targets: readonly string[];
-  readonly passes: readonly string[];
-  readonly uploads: number;
-}
-
 /** Consumers other than the main camera that may sample a frame's shadow maps. */
 export interface ShadowSamplerRoster {
   readonly rayDiffuse: boolean;
@@ -543,39 +530,6 @@ export function isMotionBlurTemporalDemand(
       targetFps: motionBlur.targetFps ?? 60,
     })
   );
-}
-
-/**
- * Derive the TAA topology from camera POD and backend capabilities. Both
- * Standard lanes consume this declaration; the lane only affects lighting
- * work and never creates a second temporal resolve.
- */
-export function createTemporalGraphRoster(input: {
-  readonly antialias: 'none' | 'fxaa' | 'taa';
-  readonly lane: 'direct' | 'clustered';
-  readonly capabilities?: TemporalGraphCapabilities;
-}): TemporalGraphRoster {
-  if (input.antialias !== 'taa') return { targets: [], passes: [], uploads: 0 };
-  const capabilities = input.capabilities ?? {
-    rgba16floatRender: true,
-    rgba16floatSample: true,
-    mrt: true,
-  };
-  if (!capabilities.rgba16floatRender || !capabilities.rgba16floatSample || !capabilities.mrt) {
-    return { enabled: false, targets: [], passes: [], uploads: 0 };
-  }
-  return {
-    enabled: true,
-    targets: [
-      'standard-scene-temporal',
-      'taa-history-current-color',
-      'taa-history-previous-color',
-      'taa-history-current-temporal',
-      'taa-history-previous-temporal',
-    ],
-    passes: ['main', 'standard-scene-data', 'taa-resolve', 'output-transform'],
-    uploads: 1,
-  };
 }
 
 export interface ReflectionProbeFilterGraphWork {
@@ -1573,7 +1527,13 @@ function directionalTopologyOf(
   return terrainShadowTopology(
     shadowMapSize === undefined || lights.cascadeCount === undefined
       ? 'disabled'
-      : { mapSize: shadowMapSize, cascadeCount },
+      : {
+          mapSize: shadowMapSize,
+          cascadeCount,
+          ...(lights.directionalCsmConfig?.staticShadowCache === false
+            ? { staticLayer: false as const }
+            : {}),
+        },
     lights.directionalShadowQuality?.kind === 'pcss' ? [] : terrainReceivers,
     internals.device.limits.maxTextureArrayLayers,
   );

@@ -17,9 +17,8 @@ import {
 // Scene recipe is unchanged from the previous main.ts; the only behavioural
 // difference is the unlit MaterialAsset is now constructed by the
 // `Materials.unlit` factory (a valid pass-based POD) instead of the legacy
-// hand-written unlit-discriminant shape that carried no passes, resolved to
-// zero passes at draw time, and fired `material-resolved-empty-passes`
-// through the renderer error event.
+// hand-written unlit-discriminant shape that carried no passes and resolved
+// to zero passes at draw time.
 
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';

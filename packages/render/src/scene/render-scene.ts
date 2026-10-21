@@ -87,7 +87,7 @@ import { projectTerrainView, terrainSectionKey } from '../terrain/view.js';
 import { projectTilemapView, TilemapSources } from '../tilemap-source';
 import type { TransmissionDemand } from '../transmission/projection';
 import { SceneAssetClosure } from './asset-closure';
-import { type FrameList, FrameProjection } from './frame-list';
+import { type FrameList, FrameProjection, RetainedFrameProjection } from './frame-list';
 import { FrameSet } from './frame-set';
 import { MaterialDispatch, type MaterialFrame } from './material-dispatch';
 import { meshDrawSnapshot } from './mesh-draw';
@@ -97,12 +97,12 @@ import {
   type MeshMaterialGeometry,
   meshMaterialGeometry,
 } from './mesh-materials';
+import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
 import {
   type ProbeBlendBufferProjection,
   ProbeBlendSceneProjection,
   type ProbeSceneObjectInput,
 } from './probe-blend';
-import type { ProbeBlendRecord } from './probe-blend-record';
 import type {
   RenderSceneApplyResult,
   RenderSceneBounds,
@@ -325,6 +325,8 @@ function temporalDrawSnapshot(
   materials: MaterialFrame | undefined,
   cache: TemporalCache,
 ): RenderableSnapshot {
+  // Hidden authored rows keep their source identity but own no accepted draw materials.
+  if (snapshot.authorVisible === false) return snapshot;
   const slot = current.lookup(snapshot.worldId, snapshot.entityKey);
   if (slot === undefined) return snapshot;
   const submitted = submittedFrame.slotAt(slot.slot);
@@ -758,6 +760,7 @@ export class RenderScene {
         readonly visible: ReadonlyMap<number, number>;
         readonly materials: MaterialFrame;
         readonly meshes: MeshFrame;
+        readonly unavailable: FrameSet | undefined;
         readonly value: FrameList<RenderableSnapshot>;
       }
     | undefined;
@@ -1073,7 +1076,9 @@ export class RenderScene {
     if (this.materialized?.value.source !== current || this.materialized.meshes !== meshes)
       this.materialized = {
         meshes,
-        value: new FrameProjection(current, (record) => meshDrawSnapshot(record.snapshot, meshes)),
+        value: new RetainedFrameProjection(current, (record) =>
+          meshDrawSnapshot(record.snapshot, meshes),
+        ),
       };
     return this.materialized.value;
   }
@@ -1143,6 +1148,7 @@ export class RenderScene {
   materializeTemporal(
     counters: FrameCacheTally,
     materials: MaterialFrame,
+    unavailable?: FrameSet,
   ): FrameList<RenderableSnapshot> {
     const current = this.slots.capture(),
       submitted = this.lastSubmittedFrame;
@@ -1155,12 +1161,18 @@ export class RenderScene {
       previous.submitted === submitted &&
       previous.visible === visible &&
       previous.materials === materials &&
-      previous.meshes === meshes
+      previous.meshes === meshes &&
+      previous.unavailable === unavailable
     )
       return previous.value;
     const memo = this.temporalBySlot;
-    const value = new FrameProjection(current, (record) =>
-      temporalDrawSnapshot(
+    // The unavailable roster is live; only a fixed frame without it retains rows.
+    const Projection = unavailable === undefined ? RetainedFrameProjection : FrameProjection;
+    const value = new Projection(current, (record) => {
+      // Pending source rows are retained for retry but have no accepted material.
+      // Keep them hidden before consuming temporal facts from the accepted root.
+      if (unavailable?.has(record.slot)) return { ...record.snapshot, authorVisible: false };
+      return temporalDrawSnapshot(
         meshDrawSnapshot(record.snapshot, meshes),
         counters,
         current,
@@ -1168,9 +1180,17 @@ export class RenderScene {
         visible,
         materials,
         memo,
-      ),
-    );
-    this.temporalMaterialized = { current, submitted, visible, materials, meshes, value };
+      );
+    });
+    this.temporalMaterialized = {
+      current,
+      submitted,
+      visible,
+      materials,
+      meshes,
+      unavailable,
+      value,
+    };
     return value;
   }
 
@@ -1706,6 +1726,21 @@ export interface GpuRasterOwnership {
   readonly selection: GpuDrawSelection;
 }
 
+const casterIndexCache = new WeakMap<DispatchList, ReadonlySet<number>>();
+
+/** Fixed dispatch lists are retained across pose frames; scan their casters once. */
+function shadowCasterIndices(dispatch: DispatchList): ReadonlySet<number> {
+  let indices = casterIndexCache.get(dispatch);
+  if (indices === undefined) {
+    const collected = new Set<number>();
+    for (const draw of dispatch)
+      if (draw.tags.LightMode === 'ShadowCaster') collected.add(draw.renderableIndex);
+    indices = collected;
+    casterIndexCache.set(dispatch, indices);
+  }
+  return indices;
+}
+
 function cullPersistentFrame(
   frame: ExtractedFrame,
   materials: import('./material-dispatch').MaterialFrame,
@@ -1735,7 +1770,7 @@ function cullPersistentFrame(
   // camera frustum when its bounds intersect one of the active light-space
   // frusta. This is especially important for point-light cube faces: the
   // caster can be behind the camera while still occluding the receiver.
-  let casterIndices: Set<number> | undefined;
+  let casterIndices: ReadonlySet<number> | undefined;
   let shadowFrusta: ReturnType<typeof buildShadowFrusta> | undefined;
   const shadowOnly = new Set<number>();
   const hidden = new Set<number>();
@@ -1798,11 +1833,7 @@ function cullPersistentFrame(
         }
       }
       if (!isVisible && !gpuOwned) {
-        if (casterIndices === undefined) {
-          casterIndices = new Set<number>();
-          for (const draw of frame.dispatch)
-            if (draw.tags.LightMode === 'ShadowCaster') casterIndices.add(draw.renderableIndex);
-        }
+        casterIndices ??= shadowCasterIndices(frame.dispatch);
         if (casterIndices.has(index)) {
           shadowFrusta ??= buildShadowFrusta(frame.lights);
           isShadowVisible = shadowFrusta.some((lightPlanes) =>
@@ -1942,26 +1973,6 @@ function cullPersistentFrame(
   });
 }
 
-/**
- * Probe attachment memo: a candidate keeps its attached snapshot while its
- * record is unchanged, and the output array keeps its identity while every
- * element does, so camera-only frames stay on identity-keyed caches.
- */
-interface ProbeAttachMemo {
-  readonly bySnapshot: WeakMap<
-    RenderableSnapshot,
-    { readonly record: ProbeBlendRecord; readonly value: RenderableSnapshot }
-  >;
-  previous:
-    | {
-        readonly candidates: FrameList<RenderableSnapshot>;
-        readonly slots: SceneSlotFrame;
-        readonly records: ProbeBlendBufferProjection;
-        readonly value: FrameList<RenderableSnapshot>;
-      }
-    | undefined;
-}
-
 function sameWorldSequence(
   left: readonly RenderResourceScope[],
   right: readonly RenderResourceScope[],
@@ -1971,52 +1982,6 @@ function sameWorldSequence(
     if (left[index] !== right[index]) return false;
   }
   return true;
-}
-
-function attachProbeRecord(
-  candidate: RenderableSnapshot,
-  record: RenderableSnapshot['probeBlendRecord'],
-  memo: ProbeAttachMemo['bySnapshot'],
-): RenderableSnapshot {
-  if (record === undefined) return candidate;
-  const cached = memo.get(candidate);
-  if (cached?.record === record) return cached.value;
-  const value = { ...candidate, probeBlendRecord: record };
-  memo.set(candidate, { record, value });
-  return value;
-}
-
-function attachProbeRecords(
-  frame: ExtractedFrame,
-  candidates: FrameList<RenderableSnapshot>,
-  slots: SceneSlotFrame,
-  projection: ProbeBlendSceneProjection,
-  memo: ProbeAttachMemo,
-): ExtractedFrame {
-  if (!projection.hasRecords()) {
-    memo.previous = undefined;
-    return frame.renderables === candidates ? frame : { ...frame, renderables: candidates };
-  }
-  const records = projection.recordBufferProjection();
-  const previous = memo.previous;
-  if (
-    previous?.candidates === candidates &&
-    previous.slots === slots &&
-    previous.records === records
-  )
-    return { ...frame, renderables: previous.value };
-  const probeAt = projection.captureRecordLookup();
-  const attachments = memo.bySnapshot;
-  const value = new FrameProjection(candidates, (candidate) => {
-    const slot = slots.lookup(candidate.worldId, candidate.entityKey);
-    return attachProbeRecord(
-      candidate,
-      slot === undefined ? undefined : probeAt(slot.slot),
-      attachments,
-    );
-  });
-  memo.previous = { candidates, slots, records, value };
-  return { ...frame, renderables: value };
 }
 
 const EMPTY_MATERIAL_UPDATES: readonly MaterialResource[] = Object.freeze([]);
@@ -3798,12 +3763,13 @@ export class PersistentRenderScene {
       ? entry.projection.materializeTemporal(
           this.temporalCounters,
           entry.materialDispatch.materials(),
+          entry.unavailableSlots.size === 0 ? undefined : entry.unavailableSlots,
         )
       : materialized;
     const acceptedSlots = entry.projection.slotsSnapshot();
     const unavailable = entry.unavailableSlots;
     const drawableCandidates =
-      unavailable.size === 0
+      unavailable.size === 0 || entry.temporalDemanded
         ? candidates
         : new FrameProjection(candidates, (snapshot) => {
             const slot = acceptedSlots.lookup(snapshot.worldId, snapshot.entityKey);

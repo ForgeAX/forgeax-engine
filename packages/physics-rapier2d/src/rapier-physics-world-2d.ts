@@ -31,8 +31,8 @@ import {
   PHYSICS_ERROR_HINTS,
   PhysicsError,
   PhysicsSet,
-  RIGID_BODY_TYPE_STATIC,
   RigidBody,
+  RigidBodyTypeValue,
   registerPhysicsComponents,
   rigidBodyTypeFromF32,
   snapshotCollider,
@@ -1138,7 +1138,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
               additionalSolverIterations: rigidBodyData?.additionalSolverIterations ?? 0,
             }
           : {
-              type: RIGID_BODY_TYPE_STATIC,
+              type: RigidBodyTypeValue.static,
               mass: 0,
               linearDamping: 0,
               angularDamping: 0,

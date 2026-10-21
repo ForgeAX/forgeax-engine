@@ -98,6 +98,26 @@ describe('SDK update discovery', () => {
     });
   });
 
+  it('moves an rc install along its test line and then onto its promoted stable', async () => {
+    delete process.env.npm_config_offline;
+    delete process.env.FORGEAX_DISABLE_UPDATE_CHECK;
+    const tags = { latest: '1.2.3', rc: '1.2.4-rc.2', next: '1.3.0-dev.9.abcdef123456' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ 'dist-tags': tags }), { status: 200 })),
+    );
+    await expect(checkSdkUpdate('1.2.4-rc.1')).resolves.toMatchObject({
+      status: 'available',
+      latestVersion: '1.2.4-rc.2',
+    });
+    await expect(checkSdkUpdate('1.2.3')).resolves.toMatchObject({ status: 'current' });
+    tags.latest = '1.2.4';
+    await expect(checkSdkUpdate('1.2.4-rc.2')).resolves.toMatchObject({
+      status: 'available',
+      latestVersion: '1.2.4',
+    });
+  });
+
   it('skips the registry check in explicit offline mode', async () => {
     process.env.npm_config_offline = 'true';
     await expect(checkSdkUpdate('0.1.5')).resolves.toEqual({

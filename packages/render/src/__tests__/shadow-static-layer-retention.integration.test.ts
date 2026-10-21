@@ -60,6 +60,7 @@ function compile(
   terrainReceivers?: readonly TerrainShadowReceiver[],
   point = false,
   pool?: ShadowViewStatePool,
+  staticLayer = true,
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const spot = spotTopology(spotMapSize);
@@ -72,7 +73,12 @@ function compile(
           shadow: {
             ...base.shadow,
             spotCount: 0,
-            directional: { mapSize: 32, cascadeCount: 1, terrainReceivers },
+            directional: {
+              mapSize: 32,
+              cascadeCount: 1,
+              ...(staticLayer ? {} : { staticLayer: false as const }),
+              terrainReceivers,
+            },
           },
         };
   addTypedShadowPasses(graph, topology, {
@@ -322,6 +328,47 @@ describe('static shadow layer retention', () => {
     ]);
     expect(operations.filter((op) => op.startsWith('copy:'))).toEqual([]);
     (await compiled.retire()).unwrap();
+    staticLayers.dispose();
+  });
+
+  it('omits the static layer, its producer and copies when a light disables the static cache', async () => {
+    const device = await nullDevice();
+    const staticLayers = new ShadowDepthLayers(device);
+    const receivers = [{ worldId: 0, entityKey: 7 }];
+    const labels = (operations: readonly string[]) =>
+      operations.filter((op) => op.startsWith('raster:shadowCascade') || op.startsWith('copy:'));
+    // Default topology keeps the static producer and its Terrain copy.
+    const cached = compile(device, staticLayers, undefined, receivers);
+    const cachedOps: string[] = [];
+    frame(device, cached, staticLayers, 'submit', cachedOps);
+    expect(cachedOps).toContain('raster:shadowCascade0.static');
+    expect(cachedOps.some((op) => op.startsWith('copy:'))).toBe(true);
+    (await cached.retire()).unwrap();
+
+    // A single-layer pool has an active final view and no static view.
+    const singlePool: typeof hitPool = {
+      ...hitPool,
+      invalidationReason: (identity) => (identity.layer === 'static' ? 'uncached' : undefined),
+    };
+    const single = compile(device, staticLayers, undefined, receivers, false, undefined, false);
+    const operations: string[] = [];
+    expect(frame(device, single, staticLayers, 'submit', operations, singlePool)).toEqual([
+      'final:graph-compiled',
+      'terrain-0-7:graph-compiled',
+    ]);
+    expect(labels(operations)).toEqual([
+      'raster:shadowCascade0',
+      'raster:shadowCascade0.terrain-0-7',
+    ]);
+    operations.length = 0;
+    // A retained final view hits; its Terrain family does not re-raster for
+    // want of a static view.
+    expect(frame(device, single, staticLayers, 'submit', operations, singlePool)).toEqual([
+      'final:hit',
+      'terrain-0-7:hit',
+    ]);
+    expect(labels(operations)).toEqual([]);
+    (await single.retire()).unwrap();
     staticLayers.dispose();
   });
 

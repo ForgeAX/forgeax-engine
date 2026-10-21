@@ -293,10 +293,10 @@ it.each([
   f.detach();
 });
 
-it('restores a snapshot budget refusal before upload and can retry', async () => {
-  const f = fixture(1, createDynamicGeometryLifecycle(), false, 1);
-  const held = runtimeAssetRegistry(f.world.assets).snapshot(f.meshHandle).unwrap();
+it('restores a candidate budget refusal before upload and can retry', async () => {
+  const f = fixture(1, createDynamicGeometryLifecycle(1), false, 1);
   f.lifecycle.invalidateGeneration(1);
+  const held = f.lifecycle.prepare({ ...f.input, revision: 99 }, 1).unwrap();
   const before = f.lifecycle.inspect();
   const refs = [f.previous, f.meshHandle].map((handle) =>
     runtimeAssets(f.world.assets).refcount(handle),
@@ -312,7 +312,7 @@ it('restores a snapshot budget refusal before upload and can retry', async () =>
   ).toEqual(refs);
   expect(f.host.dynamicGeometryFault(f.world)).toBeUndefined();
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
-  held.dispose();
+  f.lifecycle.cancel(held).unwrap();
   const retry = f.host.prepareDynamicGeometry(f.input);
   await Promise.resolve();
   f.ready();
@@ -410,9 +410,13 @@ it('snapshots every batch member before an earlier upload delays its window', as
   f.detach();
 });
 
-it('rolls back a later snapshot budget refusal before starting any batch upload and can retry', async () => {
-  const f = fixture(2, createDynamicGeometryLifecycle(), false, 2);
-  const held = runtimeAssetRegistry(f.world.assets).snapshot(f.meshHandle).unwrap();
+it('rolls back a later mesh byte budget refusal before starting any batch upload and can retry', async () => {
+  const sizing = createDynamicGeometryLifecycle();
+  const meshBytes = sizing
+    .prepare({ world: {}, mesh: createBoxGeometry(2, 2, 2).unwrap(), revision: 1 }, 1)
+    .unwrap().meshBytes;
+  sizing.dispose();
+  const f = fixture(2, createDynamicGeometryLifecycle(2, meshBytes * 2), false, 2);
   const secondEntity = f.world
     .spawn(
       { component: Transform, data: {} },
@@ -422,6 +426,7 @@ it('rolls back a later snapshot budget refusal before starting any batch upload 
     .unwrap();
   const inputs = [f.input, { ...f.input, entity: secondEntity }];
   f.lifecycle.invalidateGeneration(1);
+  const held = f.lifecycle.prepare({ ...f.input, revision: 99 }, 1).unwrap();
   const before = f.lifecycle.inspect();
   const refs = [f.previous, f.meshHandle].map((handle) =>
     runtimeAssets(f.world.assets).refcount(handle),
@@ -437,7 +442,7 @@ it('rolls back a later snapshot budget refusal before starting any batch upload 
   ).toEqual(refs);
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
   expect(f.world.get(secondEntity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
-  held.dispose();
+  f.lifecycle.cancel(held).unwrap();
   const retry = f.host.prepareDynamicGeometryCandidates(inputs);
   await Promise.resolve();
   f.ready();
@@ -600,6 +605,75 @@ function batchInputs(f: ReturnType<typeof fixture>) {
     return { ...f.input, entity };
   });
 }
+
+it('keeps domain-owned candidate copies outside the fixed snapshot quota', async () => {
+  const f = fixture(3, createDynamicGeometryLifecycle(), false, 1);
+  const records = runtimeAssets(f.world.assets);
+  const held = records.snapshot(f.previous).unwrap();
+  const before = records.inspect();
+  const inputs = batchInputs(f).slice(0, 3);
+  const pending = f.host.prepareDynamicGeometryCandidates(inputs);
+  await Promise.resolve();
+  expect(f.prepare).toHaveBeenCalledTimes(3);
+  expect(records.inspect()).toMatchObject({
+    snapshots: before.snapshots,
+    snapshotBytes: before.snapshotBytes,
+  });
+  while (f.pendingCount()) f.ready();
+  const candidates = (await pending).unwrap();
+  expect(candidates).toHaveLength(3);
+  expect(candidates.every((candidate) => f.host.isDynamicGeometryCurrent(candidate))).toBe(true);
+  for (const candidate of candidates) f.host.cancelDynamicGeometry(candidate).unwrap();
+  expect(f.lifecycle.inspect().meshBytes).toBe(0);
+  expect(records.snapshot(f.meshHandle)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-budget-exceeded' },
+  });
+  held.dispose();
+  expect(records.inspect()).toMatchObject({ snapshots: 0, snapshotBytes: 0 });
+  f.detach();
+});
+
+it('rejects oversized morph target copies before upload and preserves World ownership for retry', async () => {
+  const f = fixture(1, createDynamicGeometryLifecycle(32, 8 * 1024));
+  const registry = runtimeAssetRegistry(f.world.assets),
+    records = runtimeAssets(f.world.assets);
+  const lanes = (f.input.mesh.attributes.position as Float32Array).length;
+  registry
+    .update(f.meshHandle, {
+      morphTargets: Array.from({ length: 8 }, () => ({
+        position: new Float32Array(lanes),
+        normal: new Float32Array(lanes),
+        tangent: new Float32Array((lanes / 3) * 4),
+      })),
+      morphWeights: new Float32Array(8),
+    })
+    .unwrap();
+  const before = f.lifecycle.inspect(),
+    references = [f.previous, f.meshHandle].map((handle) => records.refcount(handle));
+  expect(await f.host.prepareDynamicGeometry(f.input)).toMatchObject({
+    ok: false,
+    error: { code: 'dynamic-geometry-budget-exceeded', detail: { reason: 'mesh-bytes' } },
+  });
+  expect(f.prepare).not.toHaveBeenCalled();
+  expect(f.lifecycle.inspect()).toEqual({ ...before, generation: 1 });
+  expect([f.previous, f.meshHandle].map((handle) => records.refcount(handle))).toEqual(references);
+  expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
+  expect(records.inspect()).toMatchObject({ snapshots: 0, snapshotBytes: 0 });
+  const {
+    morphTargets: _targets,
+    morphWeights: _weights,
+    ...rigid
+  } = registry.read(f.meshHandle).unwrap();
+  registry.replace(f.meshHandle, rigid).unwrap();
+  const pending = f.host.prepareDynamicGeometry(f.input);
+  await Promise.resolve();
+  f.ready();
+  const candidate = (await pending).unwrap();
+  f.host.cancelDynamicGeometry(candidate).unwrap();
+  expect(f.lifecycle.inspect().meshBytes).toBe(0);
+  f.detach();
+});
 
 it.each([
   'abort',
@@ -844,12 +918,12 @@ it.each([
   }
 });
 
-it('rejects asynchronous residency prepared before a mesh edit and releases its snapshot', async () => {
+it('rejects asynchronous residency prepared before a mesh edit without a fixed content snapshot', async () => {
   const f = fixture();
   const records = runtimeAssets(f.world.assets);
   const pending = f.host.prepareDynamicGeometry(f.input);
   await Promise.resolve();
-  expect(records.inspect().snapshots).toBe(1);
+  expect(records.inspect().snapshots).toBe(0);
   const positions = new Float32Array(f.input.mesh.attributes.position as Float32Array);
   positions[0] = 5;
   runtimeAssetRegistry(f.world.assets)

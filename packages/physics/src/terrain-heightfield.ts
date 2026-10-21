@@ -5,7 +5,7 @@ import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Terrain, terrainTranslationValid } from '@forgeax/engine-terrain';
 import type { TerrainAsset, TerrainError } from '@forgeax/engine-types';
-import { RIGID_BODY_TYPE_STATIC, RigidBody } from './components.js';
+import { RigidBody, RigidBodyTypeValue } from './components.js';
 
 export interface TerrainColliderOwner {
   /** Actual entity admission/rebinding; the backend owns shared asset geometry. */
@@ -51,7 +51,7 @@ export function createTerrainHeightfieldSync(
           detail: { field },
         } satisfies TerrainError;
       };
-      if (row.get(RigidBody).type !== RIGID_BODY_TYPE_STATIC)
+      if (row.get(RigidBody).type !== RigidBodyTypeValue.static)
         fail('RigidBody', 'static terrain physics');
       const handle = row.get(Terrain).asset;
       const asset = runtimeAssets(world.assets).resolveAsset<TerrainAsset>(handle).unwrap();

@@ -17,6 +17,25 @@ const mesh = (): MeshAsset => ({
 });
 
 describe('standard dynamic geometry lifecycle', () => {
+  it('charges morph target copies to the candidate mesh byte budget', () => {
+    const lifecycle = createDynamicGeometryLifecycle(32, 1024);
+    const source: MeshAsset = {
+      ...mesh(),
+      morphTargets: Array.from({ length: 8 }, () => ({
+        position: new Float32Array(9),
+        normal: new Float32Array(9),
+        tangent: new Float32Array(12),
+      })),
+      morphWeights: new Float32Array(8),
+    };
+    const before = lifecycle.inspect();
+    expect(lifecycle.prepare({ world: {}, mesh: source, revision: 1 }, 1)).toMatchObject({
+      ok: false,
+      error: { code: 'dynamic-geometry-budget-exceeded', detail: { reason: 'mesh-bytes' } },
+    });
+    expect(lifecycle.inspect()).toEqual(before);
+  });
+
   it('retains the published candidate while validating each frame and issuing fresh receipts', () => {
     const lifecycle = createDynamicGeometryLifecycle();
     const world = {};

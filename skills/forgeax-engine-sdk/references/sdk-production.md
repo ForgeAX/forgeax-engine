@@ -79,12 +79,45 @@ pnpm sdk:verify -- --archive artifacts/sdk/forgeax-sdk-v1.2.3.zip
 
 Read `artifacts/sdk/sdk-build-result.json` and `artifacts/sdk/sdk-verify-result.json`. Both must contain `"ok": true`; the `engineCommit` values must equal `git rev-parse HEAD`, and the verify result must list all seven commands: `new`, `skill.verify`, `doctor`, `test`, `build`, `dev`, and `preview`.
 
+## Select the release flow first
+
+> [!IMPORTANT]
+> Before any branch push or workflow dispatch, state the exact flow, version,
+> source SHA and npm tag you are about to publish. If the request does not fix
+> every row below, **ask the user and wait**. Never infer a channel from words
+> such as "release", "publish" or "ship", and never pick a version yourself.
+
+| Request | Flow | Branch action | Dispatch | Result |
+|:--|:--|:--|:--|:--|
+| Development release | One green `main` commit | None | `gh workflow run engine-development-release.yml [-f source_sha=<main-sha>]` | `x.y.z-dev.N.sha12` on `next`, public `main` mirror; promotes automatically |
+| Weekly test cut | `main` tree onto `rc` | Cut commit on `rc` ([commands](../../../packages/engine/RELEASING.md#test-cycle)) | Candidate `version=<latest+1 patch>-rc.1` | `rc` tag only, no mirror; promotes automatically |
+| Test fix | Fix lands on `main`, cherry-picked to `rc` | Push `rc` | Candidate `version=<same core>-rc.<n+1>` | Next rc on the same core |
+| Promote rc to stable | Tested rc commit | Fast-forward `stable` to that exact rc SHA | Candidate `version=<rc core>` `source_sha=<rc-sha>`, then explicit Promotion | `latest`, public `stable` mirror |
+| Urgent stable hotfix | Fix on `stable` | Push `stable`; then merge `stable` into `rc` and port to `main` | Candidate `version=<latest+1 patch>`, then explicit Promotion | `latest`; an open rc line moves up one patch |
+
+Confirm these facts with the user when any is missing or ambiguous:
+
+- **Channel**: development (`next`), test (`rc`) or stable (`latest`). Only stable
+  changes what users install by default.
+- **Version**: read the current tags with `npm view @forgeax/engine dist-tags`.
+  An rc core is exactly one patch above `latest`. A promotion reuses the rc core.
+  A hotfix that takes the open rc's number means the rc line continues one patch
+  higher; confirm that with the user before publishing.
+- **Source**: the exact SHA on its channel branch. Releases do not wait for
+  branch push CI; the Candidate gates are the release proof. For a promotion, it must be the tested rc commit, not a newer one.
+- **Hotfix porting**: an urgent hotfix is also merged into `rc` and ported to
+  `main`. The next weekly cut takes `main`'s tree and would otherwise drop it.
+
+Stop and ask instead of improvising when a precondition fails: an rc source that does not contain `stable`, a non-fast-forward `stable` update,
+or a publisher error such as `release-rc-not-above-stable`. These errors are policy
+decisions, not transport failures to retry.
+
 ## Allocate an official release
 
 > [!IMPORTANT]
 > Do not create or push `sdk-v{version}` before verification. A formal tag is an immutable published identity, not a release-candidate trigger. The old quick/unverified route is retired.
 
-Select a version and source through [the Engine release contract](../../../packages/engine/RELEASING.md). Stable versions resolve `stable`; development versions resolve `main`. Dispatch the maintained controller from current `main`:
+Select a version and source through [the Engine release contract](../../../packages/engine/RELEASING.md). Stable versions resolve `stable`, test versions (`x.y.z-rc.n`) resolve `rc`, and development versions resolve `main`. Dispatch the maintained controller from current `main`:
 
 ```bash
 gh workflow run sdk-release-candidate.yml \
@@ -108,9 +141,9 @@ script's Preview-disposal handshake; otherwise it keeps the source-owned smoke
 script. The source commit, actual witness commit, and script blob are recorded
 in the gate report. This repairs a test timeout without introducing a new
 lifecycle contract into older release bytes. The source must belong to its channel branch; a current-main witness is restricted
-to development Candidates, and the source still needs its own successful push CI baseline.
+to development Candidates.
 
-The Candidate workflow resolves one channel-branch source SHA and binds its CI baseline, builds the SDK seed once, runs npm-consumer and exact archive/browser gates against it while the reproducibility and collision lanes rebuild the same commit in parallel, compares their evidence with the exact seed (npm-tree byte inventory, version/tag collision) in `seal`, then seals `sdk-candidate.json` with per-file SHA-256 and npm integrity. The normal baseline is a successful `ci.yml` `push` run for that exact source SHA; when an admin merge is intentionally tree-empty, the workflow may instead reuse a successful `ci.yml` `push` run for the merge commit's first parent, but only after proving the two commit trees are byte-identical and recording that basis in the run summary. A PR check, a non-empty merge, or an unrelated SHA is never interchangeable. If neither baseline exists, Candidate remains fail-closed and must not be promoted. The reproducibility lane keeps full Git history because `sdk:build` validates the feature-catalog baseline ancestry; a depth-1 checkout can falsely reject a valid main commit. Record the successful workflow run ID; only a sealed Candidate is promotable.
+The Candidate workflow resolves one channel-branch source SHA, builds the SDK seed once, runs npm-consumer and exact archive/browser gates against it while the reproducibility and collision lanes rebuild the same commit in parallel, compares their evidence with the exact seed (npm-tree byte inventory, version/tag collision) in `seal`, then seals `sdk-candidate.json` with per-file SHA-256 and npm integrity. The reproducibility lane keeps full Git history because `sdk:build` validates the feature-catalog baseline ancestry; a depth-1 checkout can falsely reject a valid main commit. Record the successful workflow run ID; only a sealed Candidate is promotable.
 
 Candidate prepares and source-verifies its Rapier payload once before the seed,
 independent JavaScript rebuild and collision jobs. Each receiver verifies the same
@@ -123,9 +156,12 @@ gates pass, retaining each owner's existing deadline. Its four receipts,
 runner scheduling and seed-byte manifest are documented in the [Candidate
 critical path guide](../../../scripts/ci/README.md#sdk-consumers).
 
-Promotion holds a channel-specific lock only for npm publication. Stable `latest`
-and development `next` do not block each other; public-source preflight and
-Release/mirror work run outside that lock. Never cancel an active npm publisher
+Promotion starts npm publication, the GitHub Release and public-source preflight
+together. `publish-npm` uploads under `candidate` and proves the public bytes with a
+fresh consumer; `promote-npm` moves the channel tag only after it and (for mirrored
+channels) preflight succeed, so npm visibility overlaps qualification. Npm work is
+locked per channel: stable `latest`, test `rc` and development `next` do not block
+each other, and a development and an rc release can run at the same time. Never cancel an active npm publisher
 to advance another release: immutable units may already have been submitted.
 
 The collision lane's `game-3d` Preview smoke reuses the exact
@@ -163,22 +199,23 @@ gh workflow run sdk-release-promote.yml \
 ```
 
 Promotion downloads the sealed artifact and revalidates every byte and identity.
-For stable versions, the original source exporter first qualifies the complete
-public snapshot and target without remote writes. This mandatory admission runs
+For stable and development versions, the original source exporter first
+qualifies the complete public snapshot and target branch without remote writes. This mandatory admission runs
 even when mirror synchronization is paused; its Candidate-bound proof is required
-by the npm publisher. See [public-source admission](../../../scripts/forgeax/EXPORT.md#stable-publication)
+by the npm publisher. See [public-source admission](../../../scripts/forgeax/EXPORT.md#mirrored-publication)
 for coverage and local recovery commands. Promotion creates or completes the
 GitHub Release idempotently and publishes npm products independently after this
-shared source qualification. The enabled stable source mirror follows GitHub
+shared source qualification. The enabled source mirror follows GitHub
 publication to validate the formal Release/tag identity, using the same export
 manifest and Git tree as preflight. Its public CI and final tree must pass for
 complete delivery, but npm does not wait for GitHub or mirror completion. A paused
 mirror still requires mandatory source qualification before npm publication.
-Development releases skip the stable source stages.
+Each mirrored channel advances only its own public branch (development to
+`main`, stable to `stable`). The rc test line skips the source stages.
 
 The three existing npm tarballs upload concurrently under `candidate` without
 rebuilding. One joint gate verifies public metadata and exact downloaded bytes;
-a fresh registry consumer must pass before each package's `latest` or `next`
+a fresh registry consumer must pass before each package's `latest`, `rc` or `next`
 advances. These channel tags remain separate registry writes. Candidate cleanup
 requires every enabled publication stage to succeed. GitHub publication may be
 complete while npm is still pending. After a failed Promotion completes, verify
@@ -234,7 +271,7 @@ source snapshot. It records the long `game-3d` collision journey as exactly
 missing state fails verification. Collision acceptance remains owned by the
 default full `@forgeax/preview smoke:templates` gate. The Candidate workflow runs
 that complete `game-3d` collision journey through the exact archive/browser
-lane and requires successful baseline CI for the exact commit before sealing.
+lane before sealing.
 That lane must fetch the content-keyed private `wgpu-wasm` release with
 `GHA` and pass `verify-current.mjs` before building Engine; best-effort WASM
 hydration is not release evidence.
@@ -320,9 +357,9 @@ public install paths require no GitHub token.
 sealed bytes; wait for npm validation and rerun only the failed Promotion jobs. A previously
 staged conflict is a pending identity, not permission to allocate a new version.
 `npm-published-integrity-mismatch` is terminal. Source repairs require a new
-Candidate and version. `engine-development-release.yml` submits successful
-current-main push CI as a development Candidate; successful development
-Candidates promote automatically. Stable Candidate promotion remains explicit.
+Candidate and version. Development releases are explicit:
+`gh workflow run engine-development-release.yml [-f source_sha=<main-sha>]`
+continues the published `next` sequence and submits a Candidate; successful development and rc Candidates promote automatically. Stable Candidate promotion remains explicit.
 
 ## Reproducibility check
 

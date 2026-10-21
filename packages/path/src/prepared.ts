@@ -8,13 +8,13 @@ import {
   vec3,
 } from '@forgeax/engine-math';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { PathDefinition } from './components';
+import { type PathDefinition, PathParameterization } from './components';
 import { invalidPath, type PathError } from './errors';
 import { createPathSample, orientSample, type PathSample, projectNormal } from './frame';
 
 export const PATH_MAX_POINTS = 4096;
 export const PATH_MAX_SUBDIVISIONS = 65536;
-const MODES = ['uniform', 'centripetal', 'chordal'] as const;
+const MODES = Object.keys(PathParameterization) as (keyof typeof PathParameterization)[];
 
 /** Derived, private buffers; all followers share the same immutable preparation. */
 export class PreparedPath {
@@ -35,7 +35,10 @@ export class PreparedPath {
       throw invalidPath('points', `2..${PATH_MAX_POINTS} local XYZ control points`);
     for (const value of definition.points)
       if (!Number.isFinite(value)) throw invalidPath('points', 'Finite Float32 coordinates');
-    if (typeof definition.closed !== 'boolean' || !MODES[definition.parameterization])
+    const parameterization = MODES.find(
+      (mode) => PathParameterization[mode] === definition.parameterization,
+    );
+    if (typeof definition.closed !== 'boolean' || parameterization === undefined)
       throw invalidPath('curve options', 'Boolean closed and declared parameterization');
     if (
       !Number.isInteger(definition.subdivisions) ||
@@ -69,7 +72,7 @@ export class PreparedPath {
     );
     this.options = {
       closed: definition.closed,
-      parameterization: MODES[definition.parameterization] as (typeof MODES)[number],
+      parameterization,
     };
     const segments = definition.closed ? this.points.length : this.points.length - 1;
     if (definition.subdivisions < segments)

@@ -92,6 +92,13 @@ cannot advance the root past updates to other assets: an unpublished result is
 rejected while the accepted rows and stream remain unchanged and ready for later
 valid windows. Sources without sequence evidence retain ordinary demand admission.
 
+Material Cook records remain with the decoded publication and shader owners.
+Mutable runtime content and its snapshots contain the material contract and
+values, without another `cooked` program/ABI tree per material. Content budgets
+therefore charge the accepted material data rather than duplicate publication
+records. Program validation and static-selection admission still precede content
+publication; numeric edits retain their accepted program projection.
+
 ```ts
 assets.configurePackIndex('/pack-index.json');
 const material = (await assets.load(materialGuid, 'material')).unwrap();
@@ -333,6 +340,14 @@ channels and 1,024 dependencies per asset. Exceeding a limit returns a structure
 failure before adoption.
 
 ### Internal readers across realms
+
+Domain owners that already reserve bytes for an exclusive content copy can
+capture a revision guard through the internal records owner. The guard retains
+only the exact dependency revisions and their change cursor; it cannot read
+historical content and consumes no fixed-content snapshot slot. Changes to a
+dependency invalidate it even when the root revision is unchanged. Dispose the
+guard with the domain transaction. Public `snapshot(handle)` keeps its existing
+copy ownership, capacity limit and historical read contract.
 
 The package's `internal` entry supplies borrowed reads for engine consumers.
 Their content is valid only until the next adoption boundary. This is separate

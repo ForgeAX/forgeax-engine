@@ -26,7 +26,11 @@ import type {
 import { GpuDrawSelection } from './draw-selection';
 import { fixedTaskPlan } from './fixed-task-plan';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
-import { lodCrossfadeCapable, prepareLodProjectionPlan } from './production-raster-lod';
+import {
+  lodCoverageMayFade,
+  lodCrossfadeCapable,
+  prepareLodProjectionPlan,
+} from './production-raster-lod';
 
 export interface PreparedBatch {
   readonly batch: GpuDrivenBatch;
@@ -124,6 +128,8 @@ function rasterClassKeys(
     artifact.uvSetCount ?? -1,
     artifact.reflectionFallbackOutputAvailable === true,
     materialArtifactProgramIdentity(artifact),
+    // Selects the Standard surface's LOD coverage discard specialization.
+    lodCoverageMayFade(batch),
   ];
   const rasterClassKey = JSON.stringify(fields);
   // Main-pass direct draws already bind residency-owned mesh buffers outside

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { emit_reflection, parse, readReflectionWire, validate } from '../index';
+import { emit_reflection, parse, parseReflectionWire, validate } from '../index';
 
 it('reflects each native entry through helper structure parameters and returns', async () => {
   const parsed = (
@@ -15,7 +15,7 @@ fn unreachable() -> f32 { return params.roughness; }
   ).unwrap();
   const module = (await validate(parsed)).unwrap();
   try {
-    const reflected = readReflectionWire((await emit_reflection(module, '{}')).unwrap()).unwrap();
+    const reflected = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
     expect(reflected.entryPoints).toEqual([
       {
         name: 'vs',
@@ -44,7 +44,7 @@ struct Wrapper { value: Params, }
   ).unwrap();
   const module = (await validate(parsed)).unwrap();
   try {
-    const reflection = readReflectionWire((await emit_reflection(module, '{}')).unwrap()).unwrap();
+    const reflection = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
     expect(reflection.entryPoints?.[0]?.bindings[0]?.fields).toEqual([
       'color',
       'roughness',
@@ -71,7 +71,7 @@ fn unused() -> vec4<f32> { return textureLoad(other, vec2<i32>(0), 0); }
   ).unwrap();
   const module = (await validate(parsed)).unwrap();
   try {
-    const reflection = readReflectionWire((await emit_reflection(module, '{}')).unwrap()).unwrap();
+    const reflection = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
     expect(reflection.entryPoints?.[0]?.bindings).toEqual([
       { group: 1, binding: 0, fields: ['entries'] },
       { group: 1, binding: 2 },

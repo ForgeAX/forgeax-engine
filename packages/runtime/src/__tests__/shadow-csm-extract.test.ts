@@ -160,6 +160,23 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     });
   });
 
+  describe('staticShadowCache', () => {
+    it('defaults on and surfaces only an explicit opt-out on the CSM config', () => {
+      const world = makeWorld(true);
+      expect(
+        extractFrame(world, prepareExtractContext(world)).lights.directionalCsmConfig,
+      ).not.toHaveProperty('staticShadowCache');
+      const [light] = [...world.query({ read: [DirectionalLight] }).unwrap()].map(
+        (row) => row.entity,
+      );
+      if (light === undefined) throw new Error('expected a directional light');
+      world.set(light, DirectionalLight, { staticShadowCache: false }).unwrap();
+      const disabled = extractFrame(world, prepareExtractContext(world)).lights;
+      expect(disabled.directionalCsmConfig?.staticShadowCache).toBe(false);
+      expect(disabled.lightViewProj).toBeDefined();
+    });
+  });
+
   describe('N=1 (single cascade degeneracy)', () => {
     it('lightViewProj[0] valid, [1..3] zero matrices', () => {
       const world = new World();

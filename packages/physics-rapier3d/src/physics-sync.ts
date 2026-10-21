@@ -9,8 +9,8 @@ import {
   type ColliderSnapshot,
   CollidingEntities,
   PhysicsSet,
-  RIGID_BODY_TYPE_STATIC,
   RigidBody,
+  RigidBodyTypeValue,
   registerPhysicsComponents,
   rigidBodyTypeFromF32,
   snapshotCollider,
@@ -200,7 +200,7 @@ export function readPhysicsSyncDescriptor(
     rigidBody:
       rigidBodyData === undefined
         ? {
-            type: RIGID_BODY_TYPE_STATIC,
+            type: RigidBodyTypeValue.static,
             mass: 0,
             linearDamping: 0,
             angularDamping: 0,

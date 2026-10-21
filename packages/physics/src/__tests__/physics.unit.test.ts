@@ -15,9 +15,6 @@ import { componentDefinition, componentSchema } from '@forgeax/engine-ecs/intern
 import { describe, expect, it } from 'vitest';
 import type { PhysicsErrorCode } from '../index';
 import {
-  COLLIDER_SHAPE_CAPSULE,
-  COLLIDER_SHAPE_CUBOID,
-  COLLIDER_SHAPE_SPHERE,
   Collider,
   ColliderShapeValue,
   CollidingEntities,
@@ -25,9 +22,6 @@ import {
   colliderShapeFromF32,
   PHYSICS_ERROR_HINTS,
   PhysicsError,
-  RIGID_BODY_TYPE_DYNAMIC,
-  RIGID_BODY_TYPE_KINEMATIC,
-  RIGID_BODY_TYPE_STATIC,
   RigidBody,
   RigidBodyTypeValue,
   rigidBodyTypeFromF32,
@@ -245,18 +239,6 @@ import {
         expect(ColliderShapeValue.cuboid).toBe(0);
         expect(ColliderShapeValue.sphere).toBe(1);
         expect(ColliderShapeValue.capsule).toBe(2);
-      });
-
-      it('individual RigidBody constants match RigidBodyTypeValue', () => {
-        expect(RIGID_BODY_TYPE_STATIC).toBe(0);
-        expect(RIGID_BODY_TYPE_DYNAMIC).toBe(1);
-        expect(RIGID_BODY_TYPE_KINEMATIC).toBe(2);
-      });
-
-      it('individual ColliderShape constants match ColliderShapeValue', () => {
-        expect(COLLIDER_SHAPE_CUBOID).toBe(0);
-        expect(COLLIDER_SHAPE_SPHERE).toBe(1);
-        expect(COLLIDER_SHAPE_CAPSULE).toBe(2);
       });
     });
 

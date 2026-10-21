@@ -44,7 +44,6 @@ expectTypeOf<ToolRuntimeError['code']>().toEqualTypeOf<
   | 'tool-run-timeout'
   | 'tool-run-disconnected'
   | 'tool-run-terminal'
-  | 'tool-catalog-stale'
   | 'tool-cleanup-failed'
   | 'tool-domain-failed'
   | 'tool-bootstrap-not-clone-safe'
